@@ -1,0 +1,38 @@
+{
+  "name": "@nookeb/api",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -n api,worker -c blue,magenta \"npm:dev:api\" \"npm:dev:worker\"",
+    "dev:api": "tsx watch --env-file=../../.env src/index.ts",
+    "dev:worker": "tsx watch --env-file=../../.env src/workers/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "start:worker": "node dist/workers/index.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.600.0",
+    "@fastify/rate-limit": "^9.1.0",
+    "@aws-sdk/lib-storage": "^3.600.0",
+    "@aws-sdk/s3-request-presigner": "^3.600.0",
+    "@nookeb/shared": "*",
+    "@supabase/supabase-js": "^2.44.0",
+    "bullmq": "^5.8.0",
+    "fastify": "^4.28.0",
+    "fastify-plugin": "^4.5.1",
+    "ioredis": "5.10.1",
+    "jsonwebtoken": "^9.0.2",
+    "pdf-lib": "^1.17.1",
+    "sharp": "^0.35.3",
+    "tesseract.js": "^7.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/jsonwebtoken": "^9.0.6",
+    "@types/node": "^20.14.9",
+    "concurrently": "^10.0.3",
+    "tsx": "^4.16.0",
+    "typescript": "^5.5.3"
+  }
+}

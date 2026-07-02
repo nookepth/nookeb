@@ -1,0 +1,12 @@
+# Railway service: nookeb Worker (BullMQ consumer — OCR, thumbnails, scan-to-PDF, purge)
+# NOT read automatically. In the Railway UI for the Worker service, set
+#   Settings → Config-as-code → Config file path = railway.worker.toml
+# The worker has no HTTP server, so there is intentionally NO healthcheckPath.
+[build]
+builder = "nixpacks"
+buildCommand = "npm run build --workspace @nookeb/shared --workspace @nookeb/api"
+
+[deploy]
+startCommand = "npm run start:worker --workspace @nookeb/api"
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10

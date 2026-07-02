@@ -1,0 +1,19 @@
+node_modules/
+dist/
+.next/
+.turbo/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+.DS_Store
+
+# OCR runtime cache (tesseract.js auto-downloads these — not source)
+*.traineddata
+
+# Local Claude Code settings (machine-specific)
+.claude/settings.local.json
+
+# Stray / unrelated local files
+CLAUDE.md.txt
+download.docx

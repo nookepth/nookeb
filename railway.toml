@@ -1,0 +1,14 @@
+# Railway service: nookeb API (Fastify + LINE webhook + REST)
+# Default config file Railway reads at repo root.
+[build]
+builder = "nixpacks"
+# Build @nookeb/shared first (api depends on its dist), then the api.
+buildCommand = "npm run build --workspace @nookeb/shared --workspace @nookeb/api"
+
+[deploy]
+# Start the API process only (worker runs as a separate Railway service).
+startCommand = "npm run start --workspace @nookeb/api"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 10
