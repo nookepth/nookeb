@@ -58,6 +58,15 @@ export function loadConfig(): Config {
       .join('\n');
     throw new Error(`Invalid environment variables:\n${issues}`);
   }
+  // In production a localhost base URL means the env var was never set —
+  // it would leak into user-facing links (LINE messages, invite/join URLs).
+  if (parsed.data.NODE_ENV === 'production') {
+    for (const key of ['APP_URL', 'WEB_URL'] as const) {
+      if (parsed.data[key].includes('localhost')) {
+        throw new Error(`${key} is "${parsed.data[key]}" in production — set it to the deployed URL`);
+      }
+    }
+  }
   return parsed.data;
 }
 

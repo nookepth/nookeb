@@ -48,6 +48,17 @@ async function lineFetch(url: string, init: RequestInit): Promise<Response> {
 }
 
 async function main(): Promise<void> {
+  // The uri action is baked into the menu permanently — a localhost WEB_URL
+  // here ships broken links to every user of the OA.
+  const dashboardUri = `${config.WEB_URL}/dashboard`;
+  if (dashboardUri.includes('localhost') && process.env.RICH_MENU_ALLOW_LOCALHOST !== '1') {
+    throw new Error(
+      `WEB_URL resolves to "${config.WEB_URL}" — refusing to bake a localhost URL into the rich menu. ` +
+        'Set WEB_URL to the production web URL (or RICH_MENU_ALLOW_LOCALHOST=1 to override).',
+    );
+  }
+  console.log(`rich menu คลังไฟล์ uri: ${dashboardUri}`);
+
   // 1. Existing menus (cleaned up after the new one is live)
   const listRes = await lineFetch(`${LINE_API}/richmenu/list`, { headers: authHeaders });
   const existing = ((await listRes.json()) as { richmenus: { richMenuId: string }[] }).richmenus;
@@ -64,7 +75,7 @@ async function main(): Promise<void> {
       areas: [
         {
           bounds: { x: 0, y: 0, width: CELL, height: HEIGHT },
-          action: { type: 'uri', uri: `${config.WEB_URL}/dashboard` },
+          action: { type: 'uri', uri: dashboardUri },
         },
         {
           bounds: { x: CELL, y: 0, width: CELL, height: HEIGHT },
