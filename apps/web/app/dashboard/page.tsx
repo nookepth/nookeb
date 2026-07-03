@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import Image from 'next/image';
 import type { FileDto, FolderDto, SpaceDto, TagDto } from '@nookeb/shared';
 import {
   ApiError,
@@ -24,8 +25,26 @@ import {
   type UsageResponse,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { formatBytes } from '@/lib/format';
+import { fileGroup, type FileGroup } from '@/lib/filetype';
 import { FileGrid } from '@/components/FileGrid';
+import { FilePreviewModal } from '@/components/FilePreviewModal';
+import { Navbar, type NavbarUser } from '@/components/Navbar';
+import { BottomNav, type BottomTab } from '@/components/BottomNav';
+import { RecentStrip } from '@/components/RecentStrip';
 import { UsageBar } from '@/components/UsageBar';
+import { BoxIcon, DatabaseIcon, DocIcon, FolderIcon, GridIcon, ImageIcon, ListIcon } from '@/components/icons';
+
+type TypeFilter = 'all' | FileGroup;
+type SortKey = 'newest' | 'oldest' | 'name' | 'size';
+
+const TYPE_TABS: { id: TypeFilter; label: string }[] = [
+  { id: 'all', label: 'ทั้งหมด' },
+  { id: 'image', label: 'รูปภาพ' },
+  { id: 'doc', label: 'เอกสาร' },
+  { id: 'video', label: 'วิดีโอ' },
+  { id: 'other', label: 'อื่นๆ' },
+];
 
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileDto[] | null>(null);
@@ -35,14 +54,23 @@ export default function DashboardPage() {
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [drive, setDrive] = useState<GoogleStatus | null>(null);
+  const [user, setUser] = useState<NavbarUser | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
 
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   const [currentFolder, setCurrentFolder] = useState<FolderDto | null>(null);
   const [activeTagId, setActiveTagId] = useState<string | null>(null);
+
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [sort, setSort] = useState<SortKey>('newest');
+  const [view, setView] = useState<'grid' | 'list'>('grid');
+  const [activeTab, setActiveTab] = useState<BottomTab>('vault');
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [previewFile, setPreviewFile] = useState<FileDto | null>(null);
 
   const currentSpace = spaces.find((s) => s.id === spaceId) ?? null;
   const canInvite = currentSpace?.type === 'team' && (currentSpace.role === 'owner' || currentSpace.role === 'admin');
@@ -67,7 +95,12 @@ export default function DashboardPage() {
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
       });
-    getMe().then((me) => setIsAdmin(me.isAdmin)).catch(() => {});
+    getMe()
+      .then((me) => {
+        setIsAdmin(me.isAdmin);
+        setUser({ displayName: me.displayName, pictureUrl: me.pictureUrl });
+      })
+      .catch(() => {});
     getGoogleStatus().then(setDrive).catch(() => {});
 
     // Returning from the Google OAuth flow
@@ -120,7 +153,13 @@ export default function DashboardPage() {
     setCurrentFolder(null);
     setActiveTagId(null);
     setSearch('');
+    setTypeFilter('all');
     setFiles(null);
+  }
+
+  function handleLogout(): void {
+    clearSession();
+    setNeedsLogin(true);
   }
 
   async function handleCreateTeam(): Promise<void> {
@@ -195,11 +234,62 @@ export default function DashboardPage() {
     }
   }
 
+  function handleBottomNav(tab: BottomTab): void {
+    setActiveTab(tab);
+    if (tab === 'vault') {
+      setTypeFilter('all');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (tab === 'search') {
+      setSearchOpen(true);
+    } else if (tab === 'recent') {
+      document.getElementById('recent')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } else if (tab === 'profile') {
+      setProfileOpen(true);
+    }
+  }
+
+  // ---------- derived lists (client-side filter + sort) ----------
+
+  const groupCounts = useMemo(() => {
+    const counts: Record<FileGroup, number> = { image: 0, doc: 0, video: 0, other: 0 };
+    for (const f of files ?? []) counts[fileGroup(f.mimeType)]++;
+    return counts;
+  }, [files]);
+
+  const shownFiles = useMemo(() => {
+    if (!files) return null;
+    const filtered = typeFilter === 'all' ? files : files.filter((f) => fileGroup(f.mimeType) === typeFilter);
+    const sorted = [...filtered];
+    switch (sort) {
+      case 'newest':
+        sorted.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        break;
+      case 'oldest':
+        sorted.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        break;
+      case 'name':
+        sorted.sort((a, b) => a.name.localeCompare(b.name, 'th'));
+        break;
+      case 'size':
+        sorted.sort((a, b) => b.fileSize - a.fileSize);
+        break;
+    }
+    return sorted;
+  }, [files, typeFilter, sort]);
+
+  const recentFiles = useMemo(() => {
+    if (!files) return [];
+    return [...files].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 6);
+  }, [files]);
+
+  const showRecent = recentFiles.length > 0 && !debouncedSearch && typeFilter === 'all' && !currentFolder;
+
   if (needsLogin) {
     return (
       <div className="center-page">
+        <Image src="/logo.png" alt="หนูเก็บ" width={120} height={120} className="login-logo" priority />
         <h1>หนูเก็บ</h1>
-        <p>เข้าสู่ระบบด้วย LINE เพื่อเปิดคลังไฟล์ของคุณ</p>
+        <p>เข้าสู่ระบบด้วย LINE เพื่อเปิดคลังสมบัติของคุณ</p>
         <button className="btn" onClick={startLineLogin}>
           เข้าสู่ระบบด้วย LINE
         </button>
@@ -213,9 +303,80 @@ export default function DashboardPage() {
 
   return (
     <>
-      <header className="topbar">
-        <h1>หนูเก็บ</h1>
-        <div className="topbar-actions">
+      <Navbar
+        search={search}
+        onSearchChange={setSearch}
+        user={user}
+        onLogout={handleLogout}
+        searchOpen={searchOpen}
+        onSearchOpenChange={(open) => {
+          setSearchOpen(open);
+          if (!open && activeTab === 'search') setActiveTab('vault');
+        }}
+      />
+
+      <main className="container">
+        {/* ---------- quick stats ---------- */}
+        {files !== null && (
+          <div className="stats-row">
+            <button
+              className={`stat-chip ${typeFilter === 'all' ? 'active' : ''}`}
+              onClick={() => setTypeFilter('all')}
+            >
+              <span className="stat-icon">
+                <BoxIcon />
+              </span>
+              <span>
+                <span className="stat-num">{files.length}</span>
+                <br />
+                <span className="stat-label">ไฟล์ทั้งหมด</span>
+              </span>
+            </button>
+            <button
+              className={`stat-chip ${typeFilter === 'image' ? 'active' : ''}`}
+              onClick={() => setTypeFilter(typeFilter === 'image' ? 'all' : 'image')}
+            >
+              <span className="stat-icon">
+                <ImageIcon />
+              </span>
+              <span>
+                <span className="stat-num">{groupCounts.image}</span>
+                <br />
+                <span className="stat-label">รูปภาพ</span>
+              </span>
+            </button>
+            <button
+              className={`stat-chip ${typeFilter === 'doc' ? 'active' : ''}`}
+              onClick={() => setTypeFilter(typeFilter === 'doc' ? 'all' : 'doc')}
+            >
+              <span className="stat-icon">
+                <DocIcon />
+              </span>
+              <span>
+                <span className="stat-num">{groupCounts.doc}</span>
+                <br />
+                <span className="stat-label">เอกสาร</span>
+              </span>
+            </button>
+            {usage && (
+              <div className="stat-chip" role="status">
+                <span className="stat-icon">
+                  <DatabaseIcon />
+                </span>
+                <span>
+                  <span className="stat-num">{formatBytes(usage.storageUsed)}</span>
+                  <br />
+                  <span className="stat-label">พื้นที่ใช้ไป</span>
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {usage && <UsageBar usage={usage} />}
+
+        {/* ---------- space / tools row ---------- */}
+        <div className="actions-row">
           {spaces.length > 0 && (
             <select
               className="select"
@@ -230,16 +391,22 @@ export default function DashboardPage() {
               ))}
             </select>
           )}
-          <button className="btn secondary" onClick={handleCreateTeam}>
+          <button className="btn secondary small" onClick={() => void handleCreateTeam()}>
             + ทีม
           </button>
           {canInvite && (
-            <button className="btn secondary" onClick={handleInvite}>
+            <button className="btn secondary small" onClick={() => void handleInvite()}>
               เชิญสมาชิก
             </button>
           )}
+          <button className="btn secondary small" onClick={() => void handleCreateFolder()}>
+            + โฟลเดอร์
+          </button>
+          <button className="btn secondary small" onClick={() => void handleCreateTag()}>
+            + Tag
+          </button>
           {drive?.enabled && !drive.connected && (
-            <button className="btn secondary" onClick={handleConnectDrive}>
+            <button className="btn secondary small" onClick={() => void handleConnectDrive()}>
               เชื่อม Google Drive
             </button>
           )}
@@ -250,37 +417,58 @@ export default function DashboardPage() {
             </span>
           )}
           {isAdmin && (
-            <a className="btn secondary" href="/admin">
+            <a className="btn secondary small" href="/admin">
               ผู้ดูแล
             </a>
           )}
-          <button
-            className="btn secondary"
-            onClick={() => {
-              clearSession();
-              setNeedsLogin(true);
-            }}
-          >
-            ออกจากระบบ
-          </button>
         </div>
-      </header>
-      <main className="container">
-        {usage && <UsageBar usage={usage} />}
-        <div className="toolbar">
-          <input
-            className="search-input"
-            type="search"
-            placeholder="ค้นหาไฟล์ (ชื่อ หรือข้อความในรูปจาก OCR)..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-          <button className="btn secondary" onClick={handleCreateFolder}>
-            + โฟลเดอร์
-          </button>
-          <button className="btn secondary" onClick={handleCreateTag}>
-            + Tag
-          </button>
+
+        {/* ---------- filter tabs + sort + view ---------- */}
+        <div className="filter-toolbar">
+          <div className="type-tabs" role="tablist" aria-label="ชนิดไฟล์">
+            {TYPE_TABS.map((t) => (
+              <button
+                key={t.id}
+                role="tab"
+                aria-selected={typeFilter === t.id}
+                className={`type-tab ${typeFilter === t.id ? 'active' : ''}`}
+                onClick={() => setTypeFilter(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="toolbar-right">
+            <select
+              className="select"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+              aria-label="เรียงตาม"
+            >
+              <option value="newest">ล่าสุด</option>
+              <option value="oldest">เก่าสุด</option>
+              <option value="name">ชื่อ A-Z</option>
+              <option value="size">ขนาด</option>
+            </select>
+            <div className="view-toggle" role="group" aria-label="รูปแบบการแสดงผล">
+              <button
+                className={view === 'grid' ? 'active' : ''}
+                aria-label="มุมมองตาราง"
+                aria-pressed={view === 'grid'}
+                onClick={() => setView('grid')}
+              >
+                <GridIcon size={16} />
+              </button>
+              <button
+                className={view === 'list' ? 'active' : ''}
+                aria-label="มุมมองรายการ"
+                aria-pressed={view === 'list'}
+                onClick={() => setView('list')}
+              >
+                <ListIcon size={16} />
+              </button>
+            </div>
+          </div>
         </div>
 
         {tags.length > 0 && (
@@ -310,6 +498,9 @@ export default function DashboardPage() {
             {visibleFolders.map((f) => (
               <div key={f.id} className="folder-chip">
                 <button className="folder-open" onClick={() => setCurrentFolder(f)}>
+                  <span className="folder-glyph">
+                    <FolderIcon />
+                  </span>
                   {f.name}
                 </button>
                 <button
@@ -324,8 +515,20 @@ export default function DashboardPage() {
           </div>
         )}
 
+        {/* ---------- recent strip ---------- */}
+        {showRecent && (
+          <RecentStrip
+            files={recentFiles}
+            onOpen={setPreviewFile}
+            onSeeAll={() => {
+              setTypeFilter('all');
+              setSort('newest');
+            }}
+          />
+        )}
+
         {error && <p className="empty-state">{error}</p>}
-        {!error && files === null && (
+        {!error && shownFiles === null && (
           <div className="file-grid" aria-label="กำลังโหลด" aria-busy="true">
             {Array.from({ length: 8 }, (_, i) => (
               <div key={i} className="skeleton-card">
@@ -336,16 +539,80 @@ export default function DashboardPage() {
             ))}
           </div>
         )}
-        {!error && files !== null && (
+        {!error && shownFiles !== null && (
           <FileGrid
-            files={files}
+            files={shownFiles}
             folders={folders}
             tags={tags}
             driveConnected={drive?.connected}
+            view={view}
             onChanged={() => void load()}
           />
         )}
       </main>
+
+      {previewFile && <FilePreviewModal files={[previewFile]} onClose={() => setPreviewFile(null)} />}
+
+      {/* ---------- profile sheet (mobile) ---------- */}
+      {profileOpen && (
+        <div
+          className="modal-overlay"
+          onClick={() => {
+            setProfileOpen(false);
+            setActiveTab('vault');
+          }}
+        >
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="profile-sheet-head">
+              {user?.pictureUrl ? (
+                <img className="avatar" src={user.pictureUrl} alt="" />
+              ) : (
+                <span className="avatar-fallback">{(user?.displayName ?? 'ห').charAt(0)}</span>
+              )}
+              <div>
+                <div className="profile-sheet-name">{user?.displayName ?? 'ผู้ใช้'}</div>
+                {usage && (
+                  <div className="profile-sheet-sub">
+                    ใช้ไป {formatBytes(usage.storageUsed)} จาก {formatBytes(usage.storageLimit)}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="profile-sheet-actions">
+              {drive?.enabled && !drive.connected && (
+                <button className="btn secondary" onClick={() => void handleConnectDrive()}>
+                  เชื่อม Google Drive
+                </button>
+              )}
+              {drive?.connected && (
+                <span className="drive-badge">
+                  <span className="drive-dot" />
+                  Drive: {drive.email}
+                </span>
+              )}
+              {isAdmin && (
+                <a className="btn secondary" href="/admin">
+                  หน้าผู้ดูแล
+                </a>
+              )}
+              <button className="btn danger" onClick={handleLogout}>
+                ออกจากระบบ
+              </button>
+              <button
+                className="btn ghost-muted"
+                onClick={() => {
+                  setProfileOpen(false);
+                  setActiveTab('vault');
+                }}
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <BottomNav active={activeTab} onNavigate={handleBottomNav} />
     </>
   );
 }

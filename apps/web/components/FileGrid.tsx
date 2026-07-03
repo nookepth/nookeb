@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Image from 'next/image';
 import type { FileDto, FolderDto, TagDto } from '@nookeb/shared';
 import { deleteFile, moveFile } from '@/lib/api';
 import { FileCard } from './FileCard';
@@ -11,10 +12,11 @@ export interface FileGridProps {
   folders: FolderDto[];
   tags: TagDto[];
   driveConnected?: boolean;
+  view?: 'grid' | 'list';
   onChanged: () => void;
 }
 
-export function FileGrid({ files, folders, tags, driveConnected, onChanged }: FileGridProps) {
+export function FileGrid({ files, folders, tags, driveConnected, view = 'grid', onChanged }: FileGridProps) {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // Ids hidden optimistically after a bulk delete, until the server list refreshes.
@@ -92,7 +94,7 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
     onChanged();
   }
 
-  function openPreview(): void {
+  function openSelectedPreview(): void {
     const selected = visibleFiles.filter((f) => selectedIds.has(f.id));
     if (selected.length === 0) return;
     setPreviewFiles(selected);
@@ -101,7 +103,8 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
   if (visibleFiles.length === 0 && !selectMode) {
     return (
       <div className="empty-state">
-        <p>ยังไม่มีไฟล์เลย</p>
+        <Image src="/logo.png" alt="" width={96} height={96} className="empty-art" />
+        <p className="empty-title">ยังไม่มีไฟล์</p>
         <p>ส่งรูปหรือไฟล์หา LINE OA แล้วหนูจะเก็บให้เอง</p>
       </div>
     );
@@ -111,31 +114,32 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
     <>
       <div className="select-bar">
         {!selectMode ? (
-          <button className="btn secondary" onClick={() => setSelectMode(true)}>
+          <button className="btn secondary small" onClick={() => setSelectMode(true)}>
             เลือกไฟล์
           </button>
         ) : (
           <>
             <button
-              className="btn secondary"
+              className="btn secondary small"
               onClick={selectAll}
               disabled={visibleFiles.length === 0}
             >
               เลือกทั้งหมด
             </button>
-            {count > 0 && <span className="select-count">เลือกแล้ว {count} ไฟล์</span>}
+            {actionError && <span className="select-error">{actionError}</span>}
           </>
         )}
       </div>
 
       {selectMode && (
-        <div className="select-actionbar">
+        <div className="select-actionbar" role="toolbar" aria-label="จัดการไฟล์ที่เลือก">
+          <span className="pill-label">เลือก {count} ไฟล์</span>
           <button
-            className="btn danger"
+            className="btn secondary"
             disabled={busy || count === 0}
-            onClick={() => void handleBulkDelete()}
+            onClick={openSelectedPreview}
           >
-            ลบ {count} ไฟล์
+            ดูไฟล์
           </button>
           <button
             className="btn secondary"
@@ -144,13 +148,16 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
           >
             ย้าย
           </button>
-          <button className="btn secondary" disabled={busy || count === 0} onClick={openPreview}>
-            ดูไฟล์
+          <button
+            className="btn danger"
+            disabled={busy || count === 0}
+            onClick={() => void handleBulkDelete()}
+          >
+            ลบ
           </button>
           <button className="btn ghost-muted" onClick={exitSelectMode}>
             ยกเลิก
           </button>
-          {actionError && <span className="select-error">{actionError}</span>}
         </div>
       )}
 
@@ -191,9 +198,11 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
       {toast && <div className="toast">{toast}</div>}
 
       {visibleFiles.length === 0 ? (
-        <p className="empty-state">ยังไม่มีไฟล์เลย</p>
+        <p className="empty-state">ยังไม่มีไฟล์</p>
       ) : (
-        <div className={`file-grid ${selectMode ? 'with-actionbar' : ''}`}>
+        <div
+          className={`${view === 'list' ? 'file-list' : 'file-grid'} ${selectMode ? 'with-actionbar' : ''}`}
+        >
           {visibleFiles.map((file) => (
             <FileCard
               key={file.id}
@@ -202,6 +211,8 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
               tags={tags}
               driveConnected={driveConnected}
               onChanged={onChanged}
+              onPreview={(f) => setPreviewFiles([f])}
+              view={view}
               selectMode={selectMode}
               selected={selectedIds.has(file.id)}
               onToggleSelect={toggleSelect}
