@@ -43,6 +43,16 @@ export function Navbar({
     if (searchOpen) overlayInputRef.current?.focus();
   }, [searchOpen]);
 
+  // Enter commits the (already-live) search: close the mobile overlay and blur so
+  // the results underneath are visible. The query itself is kept intact.
+  function handleSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>): void {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      onSearchOpenChange(false);
+      e.currentTarget.blur();
+    }
+  }
+
   const initial = (user?.displayName ?? 'ห').trim().charAt(0) || 'ห';
 
   return (
@@ -64,6 +74,7 @@ export function Navbar({
               aria-label="ค้นหาไฟล์"
               value={search}
               onChange={(e) => onSearchChange(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
             />
           </div>
         </div>
@@ -107,6 +118,7 @@ export function Navbar({
                 aria-label="ค้นหาไฟล์"
                 value={search}
                 onChange={(e) => onSearchChange(e.target.value)}
+                onKeyDown={handleSearchKeyDown}
               />
             </div>
             <button
