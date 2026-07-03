@@ -6,7 +6,7 @@ import { getProfile, replyMessage } from '../../services/line.service';
 import { buildMergeFlexMessage, type FlexMessage } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
 import { ensureGroupSpace } from '../../services/space.service';
-import { enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
+import { enqueueScanPageReply, enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
 import {
   cancelSession,
   countPages,
@@ -238,8 +238,16 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         jobId: sanitizeJobId('scan-page', message.id),
         ...RETRY_OPTS,
       });
-      const pageNo = (await countPages(app.supabase, session.id)) + 1;
-      await replyFlex(event, buildMergeFlexMessage({ kind: 'page', pageNo }));
+      // One confirmation per burst, not per image: debounce the reply and show the
+      // accumulated session total. `basePageCount` is the count BEFORE this burst;
+      // only the first event of a burst uses it (see enqueueScanPageReply).
+      const basePageCount = await countPages(app.supabase, session.id);
+      enqueueScanPageReply(app, {
+        lineUserId,
+        replyToken: event.replyToken ?? null,
+        target: source.groupId ?? lineUserId,
+        basePageCount,
+      });
       return;
     }
   }

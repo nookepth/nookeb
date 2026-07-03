@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
-import { buildProgressFlexMessage } from './flex.service';
+import { buildMergeFlexMessage, buildProgressFlexMessage } from './flex.service';
 import { pushMessage, replyMessage } from './line.service';
 
 /**
@@ -175,6 +175,71 @@ export function enqueueUpload(app: FastifyInstance, p: EnqueueParams): void {
     lineGroupId: p.lineGroupId,
     username: p.username,
   });
+}
+
+// ── Per-user scan-page reply debounce ────────────────────────────────────────
+//
+// Images sent during a merge (ระบบรวมไฟล์) session each enqueue their own
+// `add_scan_page` job, but we must NOT reply per image — that floods the chat
+// with duplicate "เพิ่มไฟล์ …" cards. Instead we debounce the confirmation on
+// the same sliding 1500ms window as uploads and send ONE card showing the total
+// pages accumulated in the session. The count is tracked in-memory (seeded from
+// the DB count at the start of a burst, then +1 per event) so it never depends
+// on the async worker having persisted this burst's pages yet.
+
+interface ScanReplyEntry {
+  timer: NodeJS.Timeout;
+  /** first event's replyToken — the only one we may reply with */
+  replyToken: string | null;
+  /** group id or user id — where a push fallback goes */
+  target: string;
+  /** running total of pages in the session (pre-burst count + events so far) */
+  count: number;
+}
+
+const scanReplyQueues = new Map<string, ScanReplyEntry>();
+
+/**
+ * Register one collected scan page for the debounced confirmation card.
+ * @param p.basePageCount pages already in the session BEFORE this burst (only
+ *        read when opening a new burst; ignored while one is in flight).
+ */
+export function enqueueScanPageReply(
+  app: FastifyInstance,
+  p: { lineUserId: string; replyToken: string | null; target: string; basePageCount: number },
+): void {
+  const existing = scanReplyQueues.get(p.lineUserId);
+  if (existing) {
+    existing.count += 1;
+    if (!existing.replyToken && p.replyToken) existing.replyToken = p.replyToken;
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => void flushScanReply(app, p.lineUserId), WINDOW_MS);
+    return;
+  }
+  scanReplyQueues.set(p.lineUserId, {
+    timer: setTimeout(() => void flushScanReply(app, p.lineUserId), WINDOW_MS),
+    replyToken: p.replyToken,
+    target: p.target,
+    count: p.basePageCount + 1,
+  });
+}
+
+async function flushScanReply(app: FastifyInstance, lineUserId: string): Promise<void> {
+  const entry = scanReplyQueues.get(lineUserId);
+  if (!entry) return;
+  scanReplyQueues.delete(lineUserId);
+
+  const card = buildMergeFlexMessage({ kind: 'page', count: entry.count });
+  try {
+    if (entry.replyToken) await replyMessage(entry.replyToken, [card]);
+    else await pushMessage(entry.target, [card]);
+  } catch (err) {
+    try {
+      await pushMessage(entry.target, [card]);
+    } catch (pushErr) {
+      app.log.error({ err, pushErr }, 'scan page reply send failed');
+    }
+  }
 }
 
 async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {

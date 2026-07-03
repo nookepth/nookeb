@@ -610,13 +610,18 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     }
   }
 
-  // Best-effort — the PDF is already stored; a failed push must not rebuild it
+  // Best-effort — the PDF is already stored; a failed push must not rebuild it.
+  // Same Flex builder as the upload summary card, in its "merge" variant.
   try {
     await pushMessage(job.lineUserId, [
-      {
-        type: 'text',
-        text: `หนูรวม ${pages.length} ไฟล์เป็น PDF ให้แล้วน้า\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard เลยน้า`,
-      },
+      buildSummaryFlexMessage({
+        success: pages.length,
+        failed: 0,
+        files: [{ filename: name, url: `${config.WEB_URL}/dashboard` }],
+        dashboardUrl: `${config.WEB_URL}/dashboard`,
+        username: null,
+        merge: { count: pages.length },
+      }),
     ]);
   } catch (err) {
     console.error(`[upload.worker] finalize_scan confirm push failed for ${session.id}:`, err);

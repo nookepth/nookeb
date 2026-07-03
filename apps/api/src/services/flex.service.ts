@@ -124,11 +124,22 @@ export function buildSummaryFlexMessage(params: {
   files: { filename: string; url: string }[];
   dashboardUrl: string;
   username: string | null;
+  /**
+   * When set, render the "ระบบรวมไฟล์" (merge-to-PDF) completion variant instead
+   * of the upload summary: brand-red header titled "ระบบรวมไฟล์" and a single
+   * "หนูรวม N ไฟล์เป็น PDF ให้แล้วน้า" status line. Everything else (file list,
+   * timestamp, dashboard button) is shared with the upload card.
+   */
+  merge?: { count: number };
 }): FlexMessage {
-  const { success, failed, files, dashboardUrl } = params;
+  const { success, failed, files, dashboardUrl, merge } = params;
   const total = success + failed;
   const who = params.username ?? 'คุณ';
-  const title = failed === 0 ? 'เก็บไฟล์แย้วน้า' : 'ทำเสร็จแล้วน้า แต่มีนิดนึงที่ไม่ผ่าน';
+  const title = merge
+    ? 'ระบบรวมไฟล์'
+    : failed === 0
+      ? 'เก็บไฟล์แย้วน้า'
+      : 'ทำเสร็จแล้วน้า แต่มีนิดนึงที่ไม่ผ่าน';
   const time = new Date().toLocaleTimeString('th-TH', {
     hour: '2-digit',
     minute: '2-digit',
@@ -136,12 +147,14 @@ export function buildSummaryFlexMessage(params: {
     timeZone: 'Asia/Bangkok',
   });
 
-  const body: Record<string, unknown>[] = [
-    iconRow(LINE_GREEN, `หนูเก็บให้แล้วน้า พี่ ${who}`),
-    { type: 'text', text: `ทั้งหมด ${total} ชิ้นเลยน้า`, size: 'sm', color: '#333333' },
-  ];
-  if (success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} ชิ้นแย้ว`));
-  if (failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} ชิ้นที่ยังไม่ได้น้า`, ERROR_RED));
+  const body: Record<string, unknown>[] = merge
+    ? [iconRow(LINE_GREEN, `หนูรวม ${merge.count} ไฟล์เป็น PDF ให้แล้วน้า`)]
+    : [
+        iconRow(LINE_GREEN, `หนูเก็บให้แล้วน้า พี่ ${who}`),
+        { type: 'text', text: `ทั้งหมด ${total} ชิ้นเลยน้า`, size: 'sm', color: '#333333' },
+      ];
+  if (!merge && success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} ชิ้นแย้ว`));
+  if (!merge && failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} ชิ้นที่ยังไม่ได้น้า`, ERROR_RED));
 
   // Short list of stored file names (max 5) — uses the `files` param
   const named = files.slice(0, 5);
@@ -169,12 +182,15 @@ export function buildSummaryFlexMessage(params: {
       }
     : { type: 'text', text: `ไปดูคลังสมบัติได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
 
+  const altText = merge
+    ? `หนูรวม ${merge.count} ไฟล์เป็น PDF ให้แล้วน้า`
+    : failed === 0
+      ? `เก็บไฟล์แย้วน้า ${success} ชิ้น`
+      : `ทำเสร็จแล้วน้า เก็บได้ ${success} ชิ้น มี ${failed} ชิ้นที่ยังไม่ได้`;
+
   return {
     type: 'flex',
-    altText:
-      failed === 0
-        ? `เก็บไฟล์แย้วน้า ${success} ชิ้น`
-        : `ทำเสร็จแล้วน้า เก็บได้ ${success} ชิ้น มี ${failed} ชิ้นที่ยังไม่ได้`,
+    altText,
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -194,7 +210,7 @@ export function buildSummaryFlexMessage(params: {
 /** Which "ระบบรวมไฟล์" (merge-to-PDF) card to build. */
 export type MergeCardVariant =
   | { kind: 'opened' }
-  | { kind: 'page'; pageNo: number };
+  | { kind: 'page'; count: number };
 
 /**
  * "ระบบรวมไฟล์" session cards — same kilo-bubble structure as the upload cards
@@ -210,10 +226,10 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
       { type: 'text', text: 'ระบบรวมไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
     ],
   };
-  const styles = { header: { backgroundColor: LINE_GREEN }, body: { backgroundColor: '#FFFFFF' } };
+  const styles = { header: { backgroundColor: BRAND_RED }, body: { backgroundColor: '#FFFFFF' } };
 
   if (variant.kind === 'page') {
-    const headline = `เพิ่มไฟล์ที่ ${variant.pageNo} แล้วน้า`;
+    const headline = `เพิ่มไฟล์ ${variant.count} รายการแล้วน้า`;
     return {
       type: 'flex',
       altText: headline,
