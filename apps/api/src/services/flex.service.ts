@@ -11,7 +11,7 @@
  */
 
 const LINE_GREEN = '#06C755';
-const ERROR_RED = '#FF3B30';
+const ERROR_RED = '#FF334B';
 const MUTED = '#8C8C8C';
 const INK = '#111111';
 
