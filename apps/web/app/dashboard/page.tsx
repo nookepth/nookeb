@@ -198,7 +198,7 @@ export default function DashboardPage() {
   if (needsLogin) {
     return (
       <div className="center-page">
-        <h1>หนูเก็บ 🐭</h1>
+        <h1>หนูเก็บ</h1>
         <p>เข้าสู่ระบบด้วย LINE เพื่อเปิดคลังไฟล์ของคุณ</p>
         <button className="btn" onClick={startLineLogin}>
           เข้าสู่ระบบด้วย LINE
@@ -214,7 +214,7 @@ export default function DashboardPage() {
   return (
     <>
       <header className="topbar">
-        <h1>🐭 หนูเก็บ</h1>
+        <h1>หนูเก็บ</h1>
         <div className="topbar-actions">
           {spaces.length > 0 && (
             <select
@@ -225,7 +225,7 @@ export default function DashboardPage() {
             >
               {spaces.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.type === 'personal' ? '👤' : '👥'} {s.name}
+                  {s.type === 'personal' ? 'ส่วนตัว' : 'ทีม'} · {s.name}
                 </option>
               ))}
             </select>
@@ -243,7 +243,21 @@ export default function DashboardPage() {
               เชื่อม Google Drive
             </button>
           )}
-          {drive?.connected && <span className="drive-badge">✓ Drive: {drive.email}</span>}
+          {drive?.connected && (
+            <span className="drive-badge">
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: '50%',
+                  backgroundColor: '#16a34a',
+                  display: 'inline-block',
+                  marginRight: 4,
+                }}
+              />
+              Drive: {drive.email}
+            </span>
+          )}
           {isAdmin && (
             <a className="btn secondary" href="/admin">
               ผู้ดูแล
@@ -295,9 +309,9 @@ export default function DashboardPage() {
 
         <div className="breadcrumb">
           <button className="crumb" onClick={() => setCurrentFolder(null)}>
-            🏠 ทั้งหมด
+            ทั้งหมด
           </button>
-          {currentFolder && <span className="crumb current">/ 📁 {currentFolder.name}</span>}
+          {currentFolder && <span className="crumb current">/ {currentFolder.name}</span>}
         </div>
 
         {visibleFolders.length > 0 && (
@@ -305,14 +319,14 @@ export default function DashboardPage() {
             {visibleFolders.map((f) => (
               <div key={f.id} className="folder-chip">
                 <button className="folder-open" onClick={() => setCurrentFolder(f)}>
-                  📁 {f.name}
+                  {f.name}
                 </button>
                 <button
                   className="icon-btn"
                   aria-label={`ลบโฟลเดอร์ ${f.name}`}
                   onClick={() => void handleDeleteFolder(f)}
                 >
-                  ✕
+                  ลบ
                 </button>
               </div>
             ))}

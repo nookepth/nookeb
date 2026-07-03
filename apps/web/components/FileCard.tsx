@@ -27,11 +27,11 @@ function formatSize(bytes: number): string {
 }
 
 function fileIcon(mimeType: string): string {
-  if (mimeType.startsWith('image/')) return '🖼️';
-  if (mimeType === 'application/pdf') return '📄';
-  if (mimeType.startsWith('video/')) return '🎬';
-  if (mimeType.startsWith('audio/')) return '🎵';
-  return '📎';
+  if (mimeType.startsWith('image/')) return 'รูปภาพ';
+  if (mimeType === 'application/pdf') return 'PDF';
+  if (mimeType.startsWith('video/')) return 'วิดีโอ';
+  if (mimeType.startsWith('audio/')) return 'เสียง';
+  return 'ไฟล์';
 }
 
 export interface FileCardProps {
@@ -40,9 +40,22 @@ export interface FileCardProps {
   tags: TagDto[];
   driveConnected?: boolean;
   onChanged: () => void;
+  /** When true, the card acts as a selection toggle instead of opening the file. */
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: string) => void;
 }
 
-export function FileCard({ file, folders, tags, driveConnected, onChanged }: FileCardProps) {
+export function FileCard({
+  file,
+  folders,
+  tags,
+  driveConnected,
+  onChanged,
+  selectMode = false,
+  selected = false,
+  onToggleSelect,
+}: FileCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileTags = tags.filter((t) => (file.tagIds ?? []).includes(t.id));
@@ -93,6 +106,29 @@ export function FileCard({ file, folders, tags, driveConnected, onChanged }: Fil
     }
   }
 
+  if (selectMode) {
+    return (
+      <div
+        className={`file-card selectable ${selected ? 'selected' : ''}`}
+        role="button"
+        aria-pressed={selected}
+        onClick={() => onToggleSelect?.(file.id)}
+      >
+        <span className={`select-checkbox ${selected ? 'checked' : ''}`} aria-hidden="true" />
+        {file.thumbnailUrl && (
+          <img className="thumb" src={file.thumbnailUrl} alt={file.name} loading="lazy" />
+        )}
+        <div className="name">
+          {!file.thumbnailUrl && `${fileIcon(file.mimeType)} `}
+          {file.name}
+        </div>
+        <div className="meta">
+          {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleString('th-TH')}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="file-card">
       {file.thumbnailUrl && (
@@ -140,10 +176,10 @@ export function FileCard({ file, folders, tags, driveConnected, onChanged }: Fil
             value={file.folderId ?? ''}
             onChange={(e) => handleMove(e.target.value)}
           >
-            <option value="">📁 ไม่มีโฟลเดอร์</option>
+            <option value="">ไม่มีโฟลเดอร์</option>
             {folders.map((f) => (
               <option key={f.id} value={f.id}>
-                📁 {f.name}
+                {f.name}
               </option>
             ))}
           </select>
@@ -167,7 +203,7 @@ export function FileCard({ file, folders, tags, driveConnected, onChanged }: Fil
           )}
           {driveConnected && file.status === 'ready' && (
             <button className="btn secondary" disabled={busy} onClick={handleExportDrive}>
-              ⬆️ ส่งออก Google Drive
+              ส่งออก Google Drive
             </button>
           )}
           <button className="btn danger" disabled={busy} onClick={handleDelete}>

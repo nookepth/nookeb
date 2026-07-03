@@ -57,7 +57,7 @@ export default function AdminPage() {
   return (
     <>
       <header className="topbar">
-        <h1>🐭 หนูเก็บ — ผู้ดูแล</h1>
+        <h1>หนูเก็บ — ผู้ดูแล</h1>
         <a className="btn secondary" href="/dashboard">
           กลับคลังไฟล์
         </a>
@@ -117,7 +117,7 @@ export default function AdminPage() {
                   {(spaces ?? []).map((s) => (
                     <tr key={s.id}>
                       <td>{s.name}</td>
-                      <td>{s.type === 'personal' ? '👤 ส่วนตัว' : '👥 ทีม'}</td>
+                      <td>{s.type === 'personal' ? 'ส่วนตัว' : 'ทีม'}</td>
                       <td>{s.memberCount}</td>
                       <td>{s.fileCount}</td>
                       <td>{formatBytes(s.bytes)}</td>

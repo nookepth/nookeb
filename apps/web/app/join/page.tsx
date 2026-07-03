@@ -39,7 +39,7 @@ function JoinInner() {
 
   return (
     <div className="center-page">
-      <h1>หนูเก็บ 🐭</h1>
+      <h1>หนูเก็บ</h1>
       {status === 'working' && <p>กำลังเข้าร่วมพื้นที่...</p>}
       {status === 'need-login' && (
         <>
@@ -49,8 +49,8 @@ function JoinInner() {
           </button>
         </>
       )}
-      {status === 'done' && <p>เข้าร่วม “{spaceName}” แล้ว ✓ กำลังพาไปที่คลังไฟล์...</p>}
-      {status === 'error' && <p>ลิงก์เชิญไม่ถูกต้องหรือหมดอายุแล้ว 😢</p>}
+      {status === 'done' && <p>เข้าร่วม “{spaceName}” แล้ว กำลังพาไปที่คลังไฟล์...</p>}
+      {status === 'error' && <p>ลิงก์เชิญไม่ถูกต้องหรือหมดอายุแล้ว</p>}
     </div>
   );
 }
