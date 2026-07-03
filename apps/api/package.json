@@ -9,7 +9,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/index.js",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "setup:rich-menu": "tsx --env-file=../../.env scripts/setup-rich-menu-large.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
