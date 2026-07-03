@@ -28,23 +28,23 @@ const VIEW_HTML = `<!DOCTYPE html>
   }
   .card { text-align: center; padding: 24px; width: 100%; max-width: 360px; }
   h1 { font-size: 18px; font-weight: 600; margin: 0 0 24px; }
-  .counter { font-size: 48px; font-weight: 700; color: #06C755; margin: 0 0 24px; }
+  .counter { font-size: 48px; font-weight: 700; color: #b53a32; margin: 0 0 24px; }
   .bar-track {
     width: 100%;
     height: 12px;
-    background: #EEEEEE;
+    background: #f5e6e5;
     border-radius: 6px;
     overflow: hidden;
   }
   .bar-fill {
     height: 100%;
     width: 0%;
-    background: #06C755;
+    background: #b53a32;
     border-radius: 6px;
     transition: width 0.4s ease;
   }
   .status { font-size: 14px; color: #8C8C8C; margin-top: 24px; }
-  .done .status { color: #06C755; font-weight: 600; }
+  .done .status { color: #b53a32; font-weight: 600; }
 </style>
 </head>
 <body>

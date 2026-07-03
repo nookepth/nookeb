@@ -11,6 +11,7 @@
  */
 
 const LINE_GREEN = '#06C755';
+const BRAND_RED = '#b53a32'; // nookeb brand — CTA buttons/links
 const ERROR_RED = '#FF334B';
 const MUTED = '#8C8C8C';
 const INK = '#111111';
@@ -72,11 +73,11 @@ export function buildProgressFlexMessage(params: {
       ? {
           type: 'button',
           style: 'primary',
-          color: LINE_GREEN,
+          color: BRAND_RED,
           margin: 'md',
           action: { type: 'uri', label: 'ดูหนูทำงานได้เลย', uri: progressViewUrl },
         }
-      : { type: 'text', text: `ดูหนูทำงานได้เลย: ${progressViewUrl}`, size: 'xs', color: LINE_GREEN, wrap: true, margin: 'md' },
+      : { type: 'text', text: `ดูหนูทำงานได้เลย: ${progressViewUrl}`, size: 'xs', color: BRAND_RED, wrap: true, margin: 'md' },
   );
   return {
     type: 'flex',
@@ -162,11 +163,11 @@ export function buildSummaryFlexMessage(params: {
     ? {
         type: 'button',
         style: 'primary',
-        color: LINE_GREEN,
+        color: BRAND_RED,
         height: 'sm',
         action: { type: 'uri', label: 'ไปดูรูปได้เลยน้า', uri: dashboardUrl },
       }
-    : { type: 'text', text: `ไปดูรูปได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: LINE_GREEN, wrap: true };
+    : { type: 'text', text: `ไปดูรูปได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
 
   return {
     type: 'flex',

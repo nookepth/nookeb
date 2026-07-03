@@ -96,9 +96,6 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
           </button>
         ) : (
           <>
-            <button className="btn secondary" onClick={exitSelectMode}>
-              ยกเลิก
-            </button>
             <button
               className="btn secondary"
               onClick={selectAll}
@@ -118,14 +115,13 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
             disabled={busy || count === 0}
             onClick={() => void handleBulkDelete()}
           >
-            ลบ
+            ลบ {count} ไฟล์
           </button>
-          <button
-            className="btn secondary"
-            disabled={busy || count === 0}
-            onClick={handleBulkDownload}
-          >
+          <button className="btn" disabled={busy || count === 0} onClick={handleBulkDownload}>
             ดาวน์โหลด
+          </button>
+          <button className="btn ghost-muted" onClick={exitSelectMode}>
+            ยกเลิก
           </button>
           {actionError && <span className="select-error">{actionError}</span>}
         </div>
@@ -134,7 +130,7 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
       {visibleFiles.length === 0 ? (
         <p className="empty-state">ยังไม่มีไฟล์เลย</p>
       ) : (
-        <div className="file-grid">
+        <div className={`file-grid ${selectMode ? 'with-actionbar' : ''}`}>
           {visibleFiles.map((file) => (
             <FileCard
               key={file.id}

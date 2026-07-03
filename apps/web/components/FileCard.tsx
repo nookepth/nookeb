@@ -26,12 +26,24 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
-function fileIcon(mimeType: string): string {
+function fileTypeLabel(mimeType: string): string {
   if (mimeType.startsWith('image/')) return 'รูปภาพ';
   if (mimeType === 'application/pdf') return 'PDF';
   if (mimeType.startsWith('video/')) return 'วิดีโอ';
   if (mimeType.startsWith('audio/')) return 'เสียง';
   return 'ไฟล์';
+}
+
+function ThumbArea({ file }: { file: FileDto }) {
+  return (
+    <div className="thumb-area">
+      {file.thumbnailUrl ? (
+        <img className="thumb" src={file.thumbnailUrl} alt={file.name} loading="lazy" />
+      ) : (
+        <span className="thumb-placeholder">{fileTypeLabel(file.mimeType)}</span>
+      )}
+    </div>
+  );
 }
 
 export interface FileCardProps {
@@ -115,15 +127,12 @@ export function FileCard({
         onClick={() => onToggleSelect?.(file.id)}
       >
         <span className={`select-checkbox ${selected ? 'checked' : ''}`} aria-hidden="true" />
-        {file.thumbnailUrl && (
-          <img className="thumb" src={file.thumbnailUrl} alt={file.name} loading="lazy" />
-        )}
-        <div className="name">
-          {!file.thumbnailUrl && `${fileIcon(file.mimeType)} `}
-          {file.name}
-        </div>
-        <div className="meta">
-          {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleString('th-TH')}
+        <ThumbArea file={file} />
+        <div className="card-body">
+          <div className="name">{file.name}</div>
+          <div className="meta">
+            {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleString('th-TH')}
+          </div>
         </div>
       </div>
     );
@@ -131,42 +140,38 @@ export function FileCard({
 
   return (
     <div className="file-card">
-      {file.thumbnailUrl && (
-        <img className="thumb" src={file.thumbnailUrl} alt={file.name} loading="lazy" />
-      )}
-      <div className="card-head">
-        <span className={`status-badge ${file.status}`}>{STATUS_LABEL[file.status]}</span>
-        <button
-          className="icon-btn"
-          aria-label="เมนูจัดการไฟล์"
-          onClick={() => setMenuOpen((v) => !v)}
-        >
-          ⋯
-        </button>
-      </div>
-      <div className="name">
-        {!file.thumbnailUrl && `${fileIcon(file.mimeType)} `}
-        {file.name}
-      </div>
-      {fileTags.length > 0 && (
-        <div className="tag-row">
-          {fileTags.map((t) => (
-            <span key={t.id} className="tag-chip" style={{ background: t.color }}>
-              {t.name}
-            </span>
-          ))}
+      <ThumbArea file={file} />
+      <div className="card-body">
+        <div className="card-head">
+          <span className={`status-badge ${file.status}`}>{STATUS_LABEL[file.status]}</span>
+          <button
+            className="icon-btn"
+            aria-label="เมนูจัดการไฟล์"
+            onClick={() => setMenuOpen((v) => !v)}
+          >
+            ⋯
+          </button>
         </div>
-      )}
-      <div className="meta">
-        {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleString('th-TH')}
-      </div>
-      {file.status === 'ready' && !menuOpen && (
-        <a className="btn" href={downloadUrl(file.id)} target="_blank" rel="noreferrer">
-          ดาวน์โหลด
-        </a>
-      )}
-      {menuOpen && (
-        <div className="card-menu">
+        <div className="name">{file.name}</div>
+        {fileTags.length > 0 && (
+          <div className="tag-row">
+            {fileTags.map((t) => (
+              <span key={t.id} className="tag-chip" style={{ background: t.color }}>
+                {t.name}
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="meta">
+          {formatSize(file.fileSize)} · {new Date(file.createdAt).toLocaleString('th-TH')}
+        </div>
+        {file.status === 'ready' && !menuOpen && (
+          <a className="btn download" href={downloadUrl(file.id)} target="_blank" rel="noreferrer">
+            ดาวน์โหลด
+          </a>
+        )}
+        {menuOpen && (
+          <div className="card-menu">
           <button className="btn secondary" disabled={busy} onClick={handleRename}>
             เปลี่ยนชื่อ
           </button>
@@ -209,8 +214,9 @@ export function FileCard({
           <button className="btn danger" disabled={busy} onClick={handleDelete}>
             ลบไฟล์
           </button>
-        </div>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

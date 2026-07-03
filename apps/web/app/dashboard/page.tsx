@@ -245,16 +245,7 @@ export default function DashboardPage() {
           )}
           {drive?.connected && (
             <span className="drive-badge">
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  backgroundColor: '#16a34a',
-                  display: 'inline-block',
-                  marginRight: 4,
-                }}
-              />
+              <span className="drive-dot" />
               Drive: {drive.email}
             </span>
           )}
@@ -334,7 +325,17 @@ export default function DashboardPage() {
         )}
 
         {error && <p className="empty-state">{error}</p>}
-        {!error && files === null && <p className="empty-state">กำลังโหลด...</p>}
+        {!error && files === null && (
+          <div className="file-grid" aria-label="กำลังโหลด" aria-busy="true">
+            {Array.from({ length: 8 }, (_, i) => (
+              <div key={i} className="skeleton-card">
+                <div className="skeleton skeleton-thumb" />
+                <div className="skeleton skeleton-line" />
+                <div className="skeleton skeleton-line short" />
+              </div>
+            ))}
+          </div>
+        )}
         {!error && files !== null && (
           <FileGrid
             files={files}
