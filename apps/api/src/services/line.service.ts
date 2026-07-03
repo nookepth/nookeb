@@ -1,5 +1,6 @@
 import { Readable } from 'node:stream';
 import { config } from '../config';
+import type { FlexMessage } from './flex.service';
 
 const LINE_API = 'https://api.line.me/v2/bot';
 const LINE_DATA_API = 'https://api-data.line.me/v2/bot';
@@ -33,12 +34,15 @@ export async function getMessageContent(messageId: string): Promise<LineContent>
   };
 }
 
-interface TextMessage {
+export interface TextMessage {
   type: 'text';
   text: string;
 }
 
-export async function replyMessage(replyToken: string, messages: TextMessage[]): Promise<void> {
+/** Any LINE message we send (text or Flex). */
+export type LineMessage = TextMessage | FlexMessage;
+
+export async function replyMessage(replyToken: string, messages: LineMessage[]): Promise<void> {
   const res = await fetch(`${LINE_API}/message/reply`, {
     method: 'POST',
     headers: { ...authHeaders, 'Content-Type': 'application/json' },
@@ -49,7 +53,7 @@ export async function replyMessage(replyToken: string, messages: TextMessage[]):
   }
 }
 
-export async function pushMessage(to: string, messages: TextMessage[]): Promise<void> {
+export async function pushMessage(to: string, messages: LineMessage[]): Promise<void> {
   const res = await fetch(`${LINE_API}/message/push`, {
     method: 'POST',
     headers: { ...authHeaders, 'Content-Type': 'application/json' },

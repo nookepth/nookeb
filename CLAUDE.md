@@ -44,6 +44,13 @@ quota + analytics, an admin panel, and Google Drive export.
    never throw and trigger a duplicating retry).
 
 ## File Processing Flow (upload)
+0. Normal uploads are BATCHED per user to avoid message spam: the webhook adds each
+   image/file event to an in-memory per-user debounce queue (`services/upload-queue.ts`,
+   sliding 1500ms window). When the window closes it sends ONE "progress" Flex card (via the
+   first event's replyToken, falling back to push) and enqueues ONE `upload_batch` job. The
+   worker processes the batch sequentially and sends ONE "summary" Flex card (Flex builders in
+   `services/flex.service.ts` — NO emoji; status icons are native colored boxes because LINE
+   Flex can't render SVG/data-URIs). Scan-mode images bypass the batch (see below).
 1. LINE sends webhook (image/file message); API replies 200 immediately.
 2. Worker resolves user + space. Files sent in a LINE GROUP go to that group's shared team
    space (`ensureGroupSpace`); otherwise the sender's personal space.
@@ -65,10 +72,13 @@ quota + analytics, an admin panel, and Google Drive export.
   so rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu.ts`).
 
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
-`upload_file` · `generate_thumbnail` · `ocr_image` · `add_scan_page` · `finalize_scan` ·
+`upload_batch` (normal uploads — see flow step 0) · `upload_file` (legacy single upload, kept
+for compatibility) · `generate_thumbnail` · `ocr_image` · `add_scan_page` · `finalize_scan` ·
 `purge_deleted` (daily repeatable, scheduled on worker startup via `scheduleRepeatableJobs`).
-Retries: the three file-bearing jobs get `attempts: 3` + exponential backoff (set at enqueue
-in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort. See
+Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
+enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
+`upload_batch` does NOT use BullMQ attempts — it retries each file INTERNALLY (3 attempts,
+backoff 1s→2s→4s) and never throws, so the batch is never re-run / double-stored. See
 engineering rule 9 for the idempotency guarantees each retried handler must uphold.
 
 ## Database
@@ -89,7 +99,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 - `apps/api` — Fastify API + LINE webhook + BullMQ workers
   - `src/routes/` — `webhook/line`, `auth`, `files`, `folders`, `tags`, `spaces`,
     `analytics`, `admin`, `integrations` (Google Drive)
-  - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `google`
+  - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `google`, `flex`
+    (Flex Message builders), `upload-queue` (per-user debounce batching)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT), `line-verify` (signature)
   - `scripts/` — `setup-rich-menu`, `backfill-quota`, `purge-deleted` (dry-run by default)

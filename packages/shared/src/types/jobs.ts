@@ -48,8 +48,32 @@ export interface PurgeDeletedJob {
   type: 'purge_deleted';
 }
 
+/** One upload collected during a user's debounce window. */
+export interface BatchItem {
+  lineMessageId: string;
+  /** file name from LINE (file messages) or a generated name (image/video/audio) */
+  originalName: string;
+  /** LINE message type: 'image' | 'file' | 'video' | 'audio' */
+  kind: string;
+}
+
+/**
+ * Job: process a debounced batch of uploads sequentially (per-file retry inside
+ * the handler, NOT via BullMQ attempts) → send ONE summary Flex push. The handler
+ * must never throw, so a batch is never re-run and files are never double-stored.
+ */
+export interface UploadBatchJob {
+  type: 'upload_batch';
+  lineUserId: string;
+  lineSource: LineSource;
+  lineGroupId: string | null;
+  username: string | null;
+  items: BatchItem[];
+}
+
 export type FileJob =
   | UploadFileJob
+  | UploadBatchJob
   | GenerateThumbnailJob
   | OcrImageJob
   | AddScanPageJob

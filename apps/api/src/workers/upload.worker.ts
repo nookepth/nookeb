@@ -9,13 +9,17 @@ import { createWorker as createTesseractWorker } from 'tesseract.js';
 import {
   FILE_QUEUE,
   type AddScanPageJob,
+  type BatchItem,
   type FileJob,
   type FileRecord,
   type FinalizeScanJob,
   type GenerateThumbnailJob,
   type OcrImageJob,
   type PurgeDeletedJob,
+  type SpaceRecord,
+  type UploadBatchJob,
   type UploadFileJob,
+  type UserRecord,
 } from '@nookeb/shared';
 import { config } from '../config';
 import { createRedis } from '../plugins/redis';
@@ -29,6 +33,7 @@ import {
   uploadStream,
 } from '../services/r2.service';
 import { getMessageContent, getProfile, pushMessage } from '../services/line.service';
+import { buildSummaryFlexMessage } from '../services/flex.service';
 import {
   ensureUserAndSpace,
   createFileRecord,
@@ -161,6 +166,165 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
     ]);
   } catch (err) {
     console.error(`[upload.worker] confirm push failed for ${record.id}:`, err);
+  }
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** Retry `fn` up to `attempts` times with exponential backoff (1s → 2s → 4s). */
+async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (i < attempts - 1) await sleep(1000 * 2 ** i);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * Store a single file: LINE CDN → R2 → DB row ready → charge quota → enqueue
+ * thumbnail/OCR for images. Throws on failure so `withRetry` can retry it.
+ */
+async function storeUpload(
+  user: UserRecord,
+  space: SpaceRecord,
+  item: BatchItem,
+  lineSource: UploadBatchJob['lineSource'],
+  lineGroupId: string | null,
+): Promise<{ filename: string; url: string; size: number }> {
+  const content = await getMessageContent(item.lineMessageId);
+  const mimeType = content.contentType;
+
+  const fileId = randomUUID();
+  const r2Key = buildFileKey(space.id, fileId, item.originalName);
+  const record = await createFileRecord(supabase, {
+    id: fileId,
+    spaceId: space.id,
+    uploadedBy: user.id,
+    originalName: item.originalName,
+    mimeType,
+    fileSize: content.contentLength ?? 0,
+    extension: extensionOf(item.originalName),
+    r2Key,
+    lineMessageId: item.lineMessageId,
+    lineSource,
+    lineGroupId,
+  });
+
+  try {
+    const { size } = await uploadStream(r2, r2Key, content.stream, mimeType);
+    await markFileReady(supabase, record.id, size);
+    await addStorageUsed(supabase, user.id, size);
+
+    if (mimeType.startsWith('image/')) {
+      try {
+        await fileQueue.add(
+          'generate_thumbnail',
+          { type: 'generate_thumbnail', fileId: record.id },
+          { jobId: jobId('thumb', record.id), attempts: 3, backoff: { type: 'exponential', delay: 3000 } },
+        );
+        await fileQueue.add(
+          'ocr_image',
+          { type: 'ocr_image', fileId: record.id },
+          { jobId: jobId('ocr', record.id), attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
+        );
+      } catch (err) {
+        console.error(`[upload.worker] failed to enqueue thumbnail/ocr for ${record.id}:`, err);
+      }
+    }
+    return { filename: item.originalName, url: `${config.WEB_URL}/dashboard`, size };
+  } catch (err) {
+    await markFileError(supabase, record.id).catch(() => undefined);
+    throw err;
+  }
+}
+
+/**
+ * upload_batch job: process a debounced batch sequentially. Each file gets up to
+ * 3 attempts; a file that still fails is counted and the batch continues. The
+ * handler NEVER throws (a batch retry would re-store everything) and always ends
+ * with ONE summary Flex push — to the group when in a group, else the user.
+ */
+async function processUploadBatch(job: UploadBatchJob): Promise<void> {
+  const target = job.lineGroupId ?? job.lineUserId;
+  try {
+    let profile: { displayName: string; pictureUrl?: string } | undefined;
+    try {
+      profile = await getProfile(job.lineUserId);
+    } catch {
+      // optional
+    }
+    const username = job.username ?? profile?.displayName ?? null;
+
+    const { user, space: personalSpace } = await ensureUserAndSpace(
+      supabase,
+      job.lineUserId,
+      profile?.displayName,
+      profile?.pictureUrl,
+    );
+    const space =
+      job.lineSource === 'group' && job.lineGroupId
+        ? await ensureGroupSpace(supabase, job.lineGroupId, user)
+        : personalSpace;
+
+    // Enforce quota across the batch with a locally tracked running total
+    // (avoids a DB re-read per file; storage_used itself is updated atomically).
+    let used = user.storage_used;
+    const limit = user.storage_limit;
+
+    const files: { filename: string; url: string }[] = [];
+    let failed = 0;
+
+    for (const item of job.items) {
+      if (used >= limit) {
+        failed += 1;
+        continue;
+      }
+      try {
+        const res = await withRetry(
+          () => storeUpload(user, space, item, job.lineSource, job.lineGroupId),
+          3,
+        );
+        used += res.size;
+        files.push({ filename: res.filename, url: res.url });
+      } catch (err) {
+        failed += 1;
+        console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
+      }
+    }
+
+    const summary = buildSummaryFlexMessage({
+      success: files.length,
+      failed,
+      files,
+      dashboardUrl: `${config.WEB_URL}/dashboard`,
+      username,
+    });
+    try {
+      await pushMessage(target, [summary]);
+    } catch (err) {
+      console.error('[upload.worker] summary push failed:', err);
+    }
+  } catch (err) {
+    // Setup failed (profile/space resolution) — report a full-failure card, don't throw
+    console.error('[upload.worker] upload_batch fatal:', err);
+    try {
+      await pushMessage(target, [
+        buildSummaryFlexMessage({
+          success: 0,
+          failed: job.items.length,
+          files: [],
+          dashboardUrl: `${config.WEB_URL}/dashboard`,
+          username: job.username,
+        }),
+      ]);
+    } catch {
+      /* ignore — nothing else we can do */
+    }
   }
 }
 
@@ -375,6 +539,9 @@ export function createUploadWorker(): Worker<FileJob> {
       switch (job.data.type) {
         case 'upload_file':
           await processUploadFile(job.data);
+          break;
+        case 'upload_batch':
+          await processUploadBatch(job.data);
           break;
         case 'generate_thumbnail':
           await processGenerateThumbnail(job.data);

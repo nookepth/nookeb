@@ -1,10 +1,11 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
-import type { AddScanPageJob, LineSource, UploadFileJob } from '@nookeb/shared';
+import type { AddScanPageJob, LineSource } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage } from '../../services/line.service';
 import { ensureUserAndSpace } from '../../services/file.service';
 import { ensureGroupSpace } from '../../services/space.service';
+import { enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
 import {
   cancelSession,
   countPages,
@@ -207,30 +208,30 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     }
   }
 
-  // Normal upload (worker routes group uploads to the shared group space)
+  // Normal upload → per-user debounce batch. No per-file reply here: the queue
+  // sends ONE progress card when the window closes, and the worker sends ONE
+  // summary card when the batch finishes (worker routes group uploads to the
+  // shared group space).
   const originalName =
     message.type === 'file' && message.fileName
       ? message.fileName
       : timestampName(EXT_BY_MESSAGE_TYPE[message.type] ?? 'bin');
 
-  const job: UploadFileJob = {
-    type: 'upload_file',
-    lineMessageId: message.id,
+  // Resolve the display name once per batch (only when starting a new one)
+  let username: string | null = null;
+  if (!hasPendingBatch(lineUserId)) {
+    const profile = await getProfile(lineUserId).catch(() => undefined);
+    username = profile?.displayName ?? null;
+  }
+
+  enqueueUpload(app, {
     lineUserId,
+    item: { lineMessageId: message.id, originalName, kind: message.type },
+    replyToken: event.replyToken ?? null,
     lineSource: source.type as LineSource,
     lineGroupId: source.groupId ?? null,
-    originalName,
-    mimeType: null,
-    replyToken: null,
-  };
-
-  await app.fileQueue.add('upload_file', job, {
-    jobId: sanitizeJobId('upload', message.id),
-    ...RETRY_OPTS,
+    username,
   });
-
-  const label = message.type === 'file' ? `ไฟล์ "${originalName}"` : 'รูป';
-  await reply(event, `รับ${label}แล้ว กำลังเก็บ...`);
 }
 
 const lineWebhookRoutes: FastifyPluginAsync = async (app) => {
