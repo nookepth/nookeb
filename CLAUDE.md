@@ -28,12 +28,20 @@ quota + analytics, an admin panel, and Google Drive export.
    membership explicitly.
 5. File downloads MUST use presigned URLs (expire 1 hour) — never proxy binary through the API.
 6. Soft-delete only (set `deleted_at`) — never hard DELETE files rows. A daily purge job
-   removes the R2 OBJECTS of files soft-deleted past the retention window, keeping the row
-   as a tombstone.
+   removes the R2 OBJECTS of files soft-deleted past the retention window, then stamps
+   `files.purged_at` so later runs skip them; the row is kept as a tombstone.
 7. BullMQ custom `jobId` must NOT contain `:` — sanitize with
    `` `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}` `` (LINE message ids contain `:`).
-8. Storage accounting: add to `users.storage_used` on upload, subtract on soft-delete
-   (`adjustStorageUsed`). New users get `DEFAULT_STORAGE_LIMIT` (10 GB free tier).
+8. Storage accounting: adjust `users.storage_used` ONLY via `adjustStorageUsed`, which calls
+   the atomic `increment_storage_used(p_user_id, p_delta)` RPC (migration 003) — never do a
+   read-modify-write (worker concurrency would race it). New users get `DEFAULT_STORAGE_LIMIT`
+   (10 GB free tier).
+9. File-bearing jobs (`upload_file`, `add_scan_page`, `finalize_scan`) run with retry
+   (`attempts: 3`, exponential backoff) because LINE CDN content has a ~1h TTL and the user
+   was already told "received". Their handlers MUST stay safe to re-run: `finalize_scan`
+   skips sessions not in `processing`, `add_scan_page` dedups by `line_message_id`, and any
+   post-store step (thumbnail/OCR enqueue, confirm push) is best-effort (wrapped so it can
+   never throw and trigger a duplicating retry).
 
 ## File Processing Flow (upload)
 1. LINE sends webhook (image/file message); API replies 200 immediately.
@@ -44,7 +52,8 @@ quota + analytics, an admin panel, and Google Drive export.
    key `spaces/{space_id}/files/{file_id}/{name}`, sets `files.status = 'ready'`.
 5. For images, enqueues `generate_thumbnail` (→ `spaces/{sid}/thumbnails/{fid}/thumb.webp`)
    and `ocr_image` (→ `files.ocr_text`) as separate best-effort jobs.
-6. Worker sends a LINE push message to confirm.
+6. Worker sends a LINE push message to confirm. Steps 5–6 are wrapped best-effort — once the
+   file is stored + charged the job is "done", so a failure there can't retry and re-store it.
 
 ## LINE Bot Commands (text or rich-menu message actions)
 - `สแกน` / `scan` — start scan mode (creates a `scan_sessions` row, status `collecting`)
@@ -58,6 +67,9 @@ quota + analytics, an admin panel, and Google Drive export.
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_file` · `generate_thumbnail` · `ocr_image` · `add_scan_page` · `finalize_scan` ·
 `purge_deleted` (daily repeatable, scheduled on worker startup via `scheduleRepeatableJobs`).
+Retries: the three file-bearing jobs get `attempts: 3` + exponential backoff (set at enqueue
+in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort. See
+engineering rule 9 for the idempotency guarantees each retried handler must uphold.
 
 ## Database
 - Always use the Supabase client with the service role key in API/workers.
@@ -67,6 +79,9 @@ quota + analytics, an admin panel, and Google Drive export.
     scan_sessions, scan_pages (+ indexes, RLS on files).
   - `002_google_accounts.sql` — per-user Google refresh token for Drive export.
     NOT auto-applied; run via `supabase db push` or the Supabase SQL editor.
+  - `003_reliability.sql` — atomic `increment_storage_used` RPC (see rule 8), `files.purged_at`
+    tombstone marker + partial index (rule 6), and `users.storage_limit` default → 10 GB.
+    NOT auto-applied; MUST be applied before deploying code that uses the RPC / `purged_at`.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
