@@ -139,7 +139,7 @@ function buildAreas(dashboardUri: string): RichMenuArea[] {
     // Row 0
     {
       bounds: { x: x0, y: y0, width: COL_W, height: ROW_H },
-      action: { type: 'uri', uri: dashboardUri, label: 'คลังสมบัติ' },
+      action: { type: 'uri', uri: 'https://nookeb-web.vercel.app', label: 'คลังสมบัติ' },
     },
     {
       bounds: { x: x1, y: y0, width: CENTER_W, height: ROW_H },

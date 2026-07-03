@@ -75,24 +75,23 @@ async function findUserId(app: FastifyInstance, lineUserId: string): Promise<str
   return (data?.id as string | undefined) ?? null;
 }
 
-const HELP_TEXT = `วิธีใช้หนูเก็บน้า
+const HELP_TEXT = `วิธีใช้หนูเก็บน้า 🦈
+
 • ส่งรูป/ไฟล์มาในแชท หนูจะเก็บให้เองเลยน้า
 • พิมพ์ "สแกน" ถ้าอยากรวมรูปหลายหน้าเป็น PDF (ส่งรูปทีละหน้า แล้วพิมพ์ "เสร็จ" น้า)
-• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ ${config.WEB_URL}/dashboard เลยน้า`;
+• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ https://nookeb-web.vercel.app/dashboard เลยน้า`;
 
 // Rich-menu "แนะนำตัว" cell → the bot's self-introduction (message action, since the
 // webhook has no postback handler — rich-menu buttons send these trigger words as text).
 const INTRO_TEXT = `สวัสดีกั้บบ พี่ๆ ทุกคน~ 🦈✨
 หนูชื่อ "หนูเก็บ" หนูเป็นน้องฉลามตัวน้อยที่ชอบเก็บของที่สุดเลย! หน้าที่ของหนูคือคอยเก็บไฟล์ เก็บรูป ให้พี่เป็นระเบียบเรียบร้อย ไม่ให้หล่นหาย ไม่ให้กระจัดกระจาย 📁💎
+
 ถ้าวันไหนหนูเผลอทำอะไรผิดพลาดไป อย่าเพิ่งดุหนูน้า🥺 หนูสัญญาว่าจะตั้งใจปรับปรุงให้เก่งขึ้นเรื่อยๆ เลยกั้บบ
+
 อยากให้เก็บ อยากให้ค้น หรืออยากรวมรูปเป็น PDF สวยๆ เรียกหนูได้ตลอดเลยน้า~ หนูพร้อมช่วยพี่เสมอเยยย💙`;
 
-// Rich-menu "ช่วยเหลือ" cell → support/troubleshooting (distinct from "วิธีใช้งาน" → HELP_TEXT).
-const SUPPORT_TEXT = `หนูอยู่ตรงนี้น้า ถ้าต้องการความช่วยเหลือ 💙
-• ส่งรูป/ไฟล์แล้วหนูยังไม่ตอบ ลองส่งใหม่อีกครั้งน้า
-• อยากรวม/สแกนรูปเป็น PDF พิมพ์ "สแกน" แล้วส่งรูปทีละหน้า ครบแล้วพิมพ์ "เสร็จ" น้า
-• อยากดูวิธีใช้ทั้งหมด กดปุ่ม "วิธีใช้งาน" หรือพิมพ์ "วิธีใช้" ได้เลยน้า
-• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ที่ ${config.WEB_URL}/dashboard น้า`;
+// Rich-menu "ช่วยเหลือ" cell → under construction.
+const SUPPORT_TEXT = 'กำลังอัพเดต 🔧';
 
 function isCmd(text: string, ...matches: string[]): boolean {
   const t = text.trim().toLowerCase();
@@ -107,8 +106,8 @@ async function handleTextCommand(
   const source = event.source;
   const lineUserId = source.userId!;
 
-  // Start scan mode (also triggered by the rich-menu "รวมรูปเป็น PDF" / "สแกนรูปเป็น PDF" cells)
-  if (isCmd(text, 'สแกน', 'scan', '/scan', 'รวมรูปเป็น pdf', 'สแกนรูปเป็น pdf')) {
+  // Start scan mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell)
+  if (isCmd(text, 'สแกน', 'scan', '/scan', 'รวมรูปเป็น pdf')) {
     const profile = await getProfile(lineUserId).catch(() => undefined);
     const { user, space } = await ensureUserAndSpace(
       app.supabase,
@@ -123,7 +122,7 @@ async function handleTextCommand(
     await startSession(app.supabase, user.id, target.id);
     await reply(
       event,
-      'เปิดโหมดสแกนแล้วน้า\nส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้\n(พิมพ์ "ยกเลิก" ถ้าไม่เอาแล้วน้า)',
+      'ระบบสแกน เปิดโหมดสแกนแล้วน้า 📄\nส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้\n(พิมพ์ "ยกเลิก" ถ้าไม่เอาแล้วน้า)',
     );
     return;
   }
@@ -173,6 +172,12 @@ async function handleTextCommand(
   // Support (rich-menu "ช่วยเหลือ" cell)
   if (isCmd(text, 'ช่วยเหลือ', 'support')) {
     await reply(event, SUPPORT_TEXT);
+    return;
+  }
+
+  // Scan-to-PDF (rich-menu "สแกนรูปเป็น PDF" cell) — under construction
+  if (isCmd(text, 'สแกนรูปเป็น pdf')) {
+    await reply(event, 'กำลังอัพเดต 🔧');
     return;
   }
 
