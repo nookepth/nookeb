@@ -5,6 +5,15 @@
 [build]
 builder = "nixpacks"
 buildCommand = "npm run build --workspace @nookeb/shared --workspace @nookeb/api"
+# Redeploy the worker on the same API/shared paths (the summary flex card is built
+# and sent here). Pinned in config-as-code so worker code changes reliably rebuild.
+watchPatterns = [
+  "apps/api/**",
+  "packages/shared/**",
+  "package.json",
+  "package-lock.json",
+  "railway.worker.toml",
+]
 
 [deploy]
 startCommand = "npm run start:worker --workspace @nookeb/api"

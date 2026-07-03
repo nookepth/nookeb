@@ -42,6 +42,8 @@ async function main(): Promise<void> {
   app.get('/health', async () => ({
     status: 'ok',
     service: 'nookeb-api',
+    // Railway injects the deployed commit SHA — surfaced here to verify which build is live.
+    commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? 'unknown',
     timestamp: new Date().toISOString(),
   }));
 

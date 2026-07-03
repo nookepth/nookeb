@@ -4,6 +4,16 @@
 builder = "nixpacks"
 # Build @nookeb/shared first (api depends on its dist), then the api.
 buildCommand = "npm run build --workspace @nookeb/shared --workspace @nookeb/api"
+# Only these paths trigger a redeploy. Pinned in config-as-code (overrides any UI
+# root-directory/watch filter) so API-only commits reliably rebuild — a missing
+# watch filter is why the July 2026 รูป→ชิ้น flex/progress copy went undeployed.
+watchPatterns = [
+  "apps/api/**",
+  "packages/shared/**",
+  "package.json",
+  "package-lock.json",
+  "railway.toml",
+]
 
 [deploy]
 # Start the API process only (worker runs as a separate Railway service).
