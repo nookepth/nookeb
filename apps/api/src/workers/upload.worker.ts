@@ -103,7 +103,7 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
   // 2. Quota check
   if (user.storage_used >= user.storage_limit) {
     await pushMessage(job.lineUserId, [
-      { type: 'text', text: 'พื้นที่เก็บไฟล์เต็มแล้ว 😢 ลบไฟล์เก่าหรืออัปเกรดแผนก่อนนะ' },
+      { type: 'text', text: 'พื้นที่เก็บไฟล์เต็มแล้วน้า ลบไฟล์เก่าหรืออัปเกรดแผนก่อนหน่อยน้า' },
     ]);
     return;
   }
@@ -163,7 +163,7 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
   // 7. Confirm to the user (best-effort — a failed push must not re-store the file)
   try {
     await pushMessage(job.lineUserId, [
-      { type: 'text', text: `เก็บ "${job.originalName}" แล้ว ✓\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard` },
+      { type: 'text', text: `หนูเก็บ "${job.originalName}" ให้แล้วน้า\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard เลยน้า` },
     ]);
   } catch (err) {
     console.error(`[upload.worker] confirm push failed for ${record.id}:`, err);
@@ -439,7 +439,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
   const pages = await listPages(supabase, session.id);
   if (pages.length === 0) {
     await setSessionStatus(supabase, session.id, 'cancelled');
-    await pushMessage(job.lineUserId, [{ type: 'text', text: 'ไม่มีหน้าให้รวมเป็น PDF เลยนะ 🐭' }]);
+    await pushMessage(job.lineUserId, [{ type: 'text', text: 'ยังไม่มีหน้าให้รวมเป็น PDF เลยน้า' }]);
     return;
   }
 
@@ -494,7 +494,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     await pushMessage(job.lineUserId, [
       {
         type: 'text',
-        text: `รวม ${pages.length} หน้าเป็น PDF แล้ว ✓\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard`,
+        text: `หนูรวม ${pages.length} หน้าเป็น PDF ให้แล้วน้า\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard เลยน้า`,
       },
     ]);
   } catch (err) {

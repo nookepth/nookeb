@@ -75,10 +75,10 @@ async function findUserId(app: FastifyInstance, lineUserId: string): Promise<str
   return (data?.id as string | undefined) ?? null;
 }
 
-const HELP_TEXT = `วิธีใช้หนูเก็บ 🐭
-• ส่งรูป/ไฟล์มาในแชท หนูจะเก็บให้อัตโนมัติ
-• พิมพ์ "สแกน" เพื่อรวมรูปหลายหน้าเป็น PDF (ส่งรูปทีละหน้า แล้วพิมพ์ "เสร็จ")
-• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ ${config.WEB_URL}/dashboard`;
+const HELP_TEXT = `วิธีใช้หนูเก็บน้า
+• ส่งรูป/ไฟล์มาในแชท หนูจะเก็บให้เองเลยน้า
+• พิมพ์ "สแกน" ถ้าอยากรวมรูปหลายหน้าเป็น PDF (ส่งรูปทีละหน้า แล้วพิมพ์ "เสร็จ" น้า)
+• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ ${config.WEB_URL}/dashboard เลยน้า`;
 
 function isCmd(text: string, ...matches: string[]): boolean {
   const t = text.trim().toLowerCase();
@@ -109,7 +109,7 @@ async function handleTextCommand(
     await startSession(app.supabase, user.id, target.id);
     await reply(
       event,
-      '📸 โหมดสแกนเปิดแล้ว\nส่งรูปมาทีละหน้าได้เลย เมื่อครบแล้วพิมพ์ "เสร็จ" เพื่อรวมเป็น PDF\n(พิมพ์ "ยกเลิก" เพื่อออกจากโหมดสแกน)',
+      'เปิดโหมดสแกนแล้วน้า\nส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้\n(พิมพ์ "ยกเลิก" ถ้าไม่เอาแล้วน้า)',
     );
     return;
   }
@@ -120,13 +120,13 @@ async function handleTextCommand(
   // Finish scan → merge to PDF
   if (isCmd(text, 'เสร็จ', 'done', 'รวมไฟล์', 'finish')) {
     if (!session) {
-      await reply(event, 'ยังไม่ได้เปิดโหมดสแกนนะ พิมพ์ "สแกน" ก่อน แล้วค่อยส่งรูป 🐭');
+      await reply(event, 'ยังไม่ได้เปิดโหมดสแกนเลยน้า พิมพ์ "สแกน" ก่อน แล้วค่อยส่งรูปน้า');
       return;
     }
     const pages = await countPages(app.supabase, session.id);
     if (pages === 0) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยังไม่มีหน้าให้รวมเลย ยกเลิกโหมดสแกนให้แล้วนะ');
+      await reply(event, 'ยังไม่มีหน้าให้รวมเลยน้า หนูยกเลิกโหมดสแกนให้แล้วนะคะ');
       return;
     }
     await setSessionStatus(app.supabase, session.id, 'processing');
@@ -135,7 +135,7 @@ async function handleTextCommand(
       { type: 'finalize_scan', sessionId: session.id, lineUserId },
       { jobId: sanitizeJobId('scan-final', session.id), ...RETRY_OPTS },
     );
-    await reply(event, `กำลังรวม ${pages} หน้าเป็น PDF... เดี๋ยวส่งให้นะ 🐭`);
+    await reply(event, `หนูกำลังรวม ${pages} หน้าเป็น PDF อยู่น้า เดี๋ยวส่งให้เลยน้า`);
     return;
   }
 
@@ -143,9 +143,9 @@ async function handleTextCommand(
   if (isCmd(text, 'ยกเลิก', 'cancel')) {
     if (session) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยกเลิกโหมดสแกนแล้ว รูปที่ค้างไว้ไม่ถูกบันทึกนะ');
+      await reply(event, 'ยกเลิกโหมดสแกนให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะคะ');
     } else {
-      await reply(event, 'ตอนนี้ไม่ได้อยู่ในโหมดสแกนอยู่แล้ว 🐭');
+      await reply(event, 'ตอนนี้ไม่ได้อยู่ในโหมดสแกนอยู่แล้วน้า');
     }
     return;
   }
@@ -157,7 +157,7 @@ async function handleTextCommand(
   }
   // In a group, don't chatter on every message — only reply to commands
   if (source.type === 'user') {
-    await reply(event, `ส่งรูปหรือไฟล์มาได้เลย เดี๋ยวหนูเก็บให้ 🐭\nเปิดคลังไฟล์ได้ที่ ${config.WEB_URL}`);
+    await reply(event, `ส่งรูปหรือไฟล์มาได้เลยน้า เดี๋ยวหนูเก็บให้เอง\nเปิดคลังไฟล์ได้ที่ ${config.WEB_URL} น้า`);
   }
 }
 
@@ -166,7 +166,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   if (event.type === 'join' || event.type === 'follow') {
     await reply(
       event,
-      'สวัสดีค่ะ หนูเก็บเองงง 🐭\nส่งรูปหรือไฟล์เข้ามาได้เลย หนูจะเก็บให้อัตโนมัติ\nพิมพ์ "วิธีใช้" เพื่อดูคำสั่งทั้งหมด',
+      'สวัสดีค้าบ หนูเก็บเองน้า\nส่งรูปหรือไฟล์เข้ามาได้เลย หนูจะเก็บให้เองเลยน้า\nพิมพ์ "วิธีใช้" ถ้าอยากดูคำสั่งทั้งหมดน้า',
     );
     return;
   }
@@ -203,7 +203,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         ...RETRY_OPTS,
       });
       const pageNo = (await countPages(app.supabase, session.id)) + 1;
-      await reply(event, `เพิ่มหน้าที่ ${pageNo} แล้ว 📄 (พิมพ์ "เสร็จ" เมื่อครบทุกหน้า)`);
+      await reply(event, `เพิ่มหน้าที่ ${pageNo} แล้วน้า (ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า)`);
       return;
     }
   }

@@ -14,7 +14,7 @@ const VIEW_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ความคืบหน้าการเก็บไฟล์</title>
+<title>หนูกำลังเก็บรูปให้อยู่น้า</title>
 <style>
   body {
     margin: 0;
@@ -49,10 +49,10 @@ const VIEW_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <div class="card" id="card">
-  <h1>กำลังเก็บไฟล์</h1>
+  <h1>หนูกำลังเก็บรูปให้อยู่น้า</h1>
   <div class="counter" id="counter">- / -</div>
   <div class="bar-track"><div class="bar-fill" id="bar"></div></div>
-  <div class="status" id="status">กรุณารอสักครู่</div>
+  <div class="status" id="status">แป๊บนึงน้า...</div>
 </div>
 <script>
   var batchId = '__BATCH_ID__';
@@ -66,7 +66,7 @@ const VIEW_HTML = `<!DOCTYPE html>
     if (p.status === 'done') {
       clearInterval(timer);
       document.getElementById('card').className = 'card done';
-      document.getElementById('status').textContent = 'เก็บครบแล้ว';
+      document.getElementById('status').textContent = 'เสร็จแล้วน้า พาพี่ไปดูรูปเลย';
       setTimeout(function () { window.location.href = dashboardUrl; }, 3000);
     }
   }
@@ -80,7 +80,7 @@ const VIEW_HTML = `<!DOCTYPE html>
       .then(render)
       .catch(function () {
         clearInterval(timer);
-        document.getElementById('status').textContent = 'ไม่พบข้อมูลความคืบหน้า';
+        document.getElementById('status').textContent = 'หนูหาข้อมูลไม่เจอแล้วน้า ลองเปิดใหม่อีกทีน้า';
       });
   }
 

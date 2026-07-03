@@ -64,7 +64,7 @@ export function buildProgressFlexMessage(params: {
   const who = params.username ?? 'คุณ';
 
   const footerContents: Record<string, unknown>[] = [
-    { type: 'text', text: 'กรุณารอสักครู่', size: 'xs', color: MUTED, align: 'center' },
+    { type: 'text', text: 'แป๊บนึงน้าพี่', size: 'xs', color: MUTED, align: 'center' },
   ];
   // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
   footerContents.push(
@@ -74,13 +74,13 @@ export function buildProgressFlexMessage(params: {
           style: 'primary',
           color: LINE_GREEN,
           margin: 'md',
-          action: { type: 'uri', label: 'ดูความคืบหน้า', uri: progressViewUrl },
+          action: { type: 'uri', label: 'ดูหนูทำงานได้เลย', uri: progressViewUrl },
         }
-      : { type: 'text', text: `ดูความคืบหน้า: ${progressViewUrl}`, size: 'xs', color: LINE_GREEN, wrap: true, margin: 'md' },
+      : { type: 'text', text: `ดูหนูทำงานได้เลย: ${progressViewUrl}`, size: 'xs', color: LINE_GREEN, wrap: true, margin: 'md' },
   );
   return {
     type: 'flex',
-    altText: `กำลังเก็บ ${total} รูป...`,
+    altText: `หนูกำลังเก็บ ${total} รูปให้อยู่น้า`,
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -88,7 +88,9 @@ export function buildProgressFlexMessage(params: {
         type: 'box',
         layout: 'vertical',
         paddingAll: '16px',
-        contents: [{ type: 'text', text: 'กำลังประมวลผล', weight: 'bold', size: 'lg', color: INK }],
+        contents: [
+          { type: 'text', text: 'รอสักครู่น้า หนูกำลังทำงานอยู่เลย', weight: 'bold', size: 'lg', color: INK, wrap: true },
+        ],
       },
       body: {
         type: 'box',
@@ -96,8 +98,8 @@ export function buildProgressFlexMessage(params: {
         spacing: 'md',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: `รับรูปจาก ${who} แล้ว`, size: 'sm', color: '#333333', wrap: true },
-          iconRow(LINE_GREEN, `กำลังเก็บ 0/${total}...`),
+          { type: 'text', text: `รับรูปจากพี่ ${who} แล้วน้า`, size: 'sm', color: '#333333', wrap: true },
+          iconRow(LINE_GREEN, `หนูกำลังเก็บอยู่น้า 0/${total} รูป`),
         ],
       },
       footer: {
@@ -125,7 +127,7 @@ export function buildSummaryFlexMessage(params: {
   const { success, failed, files, dashboardUrl } = params;
   const total = success + failed;
   const who = params.username ?? 'คุณ';
-  const title = failed === 0 ? 'เก็บไฟล์สำเร็จ' : 'เก็บไฟล์เสร็จสิ้น';
+  const title = failed === 0 ? 'เก็บไฟล์แย้วน้า' : 'ทำเสร็จแล้วน้า แต่มีนิดนึงที่ไม่ผ่าน';
   const time = new Date().toLocaleTimeString('th-TH', {
     hour: '2-digit',
     minute: '2-digit',
@@ -134,11 +136,11 @@ export function buildSummaryFlexMessage(params: {
   });
 
   const body: Record<string, unknown>[] = [
-    iconRow(LINE_GREEN, `โดย ${who}`),
-    { type: 'text', text: `จำนวนไฟล์: ${total} รูป`, size: 'sm', color: '#333333' },
+    iconRow(LINE_GREEN, `หนูเก็บให้แล้วน้า พี่ ${who}`),
+    { type: 'text', text: `ทั้งหมด ${total} รูปเลยน้า`, size: 'sm', color: '#333333' },
   ];
-  if (success > 0) body.push(iconRow(LINE_GREEN, `สำเร็จ ${success} รูป`));
-  if (failed > 0) body.push(iconRow(ERROR_RED, `ล้มเหลว ${failed} รูป`, ERROR_RED));
+  if (success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} รูปแย้ว`));
+  if (failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} รูปที่ยังไม่ได้น้า`, ERROR_RED));
 
   // Short list of stored file names (max 5) — uses the `files` param
   const named = files.slice(0, 5);
@@ -148,12 +150,12 @@ export function buildSummaryFlexMessage(params: {
       body.push({ type: 'text', text: f.filename, size: 'xs', color: MUTED, wrap: true });
     }
     if (files.length > named.length) {
-      body.push({ type: 'text', text: `และอีก ${files.length - named.length} ไฟล์`, size: 'xs', color: MUTED });
+      body.push({ type: 'text', text: `และอีก ${files.length - named.length} ไฟล์น้า`, size: 'xs', color: MUTED });
     }
   }
 
   body.push({ type: 'separator', margin: 'md' });
-  body.push({ type: 'text', text: `เวลา: ${time} น.`, size: 'xs', color: MUTED });
+  body.push({ type: 'text', text: `เวลา ${time} น้า`, size: 'xs', color: MUTED });
 
   // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
   const footer = dashboardUrl.startsWith('https://')
@@ -162,16 +164,16 @@ export function buildSummaryFlexMessage(params: {
         style: 'primary',
         color: LINE_GREEN,
         height: 'sm',
-        action: { type: 'uri', label: 'ดูไฟล์ในคลัง', uri: dashboardUrl },
+        action: { type: 'uri', label: 'ไปดูรูปได้เลยน้า', uri: dashboardUrl },
       }
-    : { type: 'text', text: `ดูไฟล์ในคลัง: ${dashboardUrl}`, size: 'xs', color: LINE_GREEN, wrap: true };
+    : { type: 'text', text: `ไปดูรูปได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: LINE_GREEN, wrap: true };
 
   return {
     type: 'flex',
     altText:
       failed === 0
-        ? `เก็บไฟล์สำเร็จ ${success} รูป`
-        : `เก็บไฟล์เสร็จสิ้น สำเร็จ ${success} ล้มเหลว ${failed}`,
+        ? `เก็บไฟล์แย้วน้า ${success} รูป`
+        : `ทำเสร็จแล้วน้า เก็บได้ ${success} รูป มี ${failed} รูปที่ยังไม่ได้`,
     contents: {
       type: 'bubble',
       size: 'kilo',
