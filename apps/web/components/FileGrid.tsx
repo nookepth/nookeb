@@ -2,8 +2,9 @@
 
 import { useEffect, useState } from 'react';
 import type { FileDto, FolderDto, TagDto } from '@nookeb/shared';
-import { deleteFile, downloadUrl } from '@/lib/api';
+import { deleteFile, moveFile } from '@/lib/api';
 import { FileCard } from './FileCard';
+import { FilePreviewModal } from './FilePreviewModal';
 
 export interface FileGridProps {
   files: FileDto[];
@@ -20,6 +21,16 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
   const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [moveOpen, setMoveOpen] = useState(false);
+  // Snapshot of the selection taken when preview opens, so a list refresh doesn't close it.
+  const [previewFiles, setPreviewFiles] = useState<FileDto[] | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 3000);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   // A fresh list from the server clears optimistic removals + stale selections.
   useEffect(() => {
@@ -66,16 +77,25 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
     onChanged();
   }
 
-  function handleBulkDownload(): void {
-    for (const id of selectedIds) {
-      const a = document.createElement('a');
-      a.href = downloadUrl(id);
-      a.target = '_blank';
-      a.rel = 'noreferrer';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }
+  async function handleBulkMove(folderId: string | null): Promise<void> {
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+    setBusy(true);
+    setActionError(null);
+    const results = await Promise.allSettled(ids.map((id) => moveFile(id, folderId)));
+    const failed = results.filter((r) => r.status === 'rejected').length;
+    setBusy(false);
+    setMoveOpen(false);
+    if (failed > 0) setActionError(`ย้าย ${failed} ไฟล์ไม่สำเร็จ`);
+    else setToast(`ย้าย ${ids.length} ไฟล์เรียบร้อยแล้ว`);
+    setSelectedIds(new Set());
+    onChanged();
+  }
+
+  function openPreview(): void {
+    const selected = visibleFiles.filter((f) => selectedIds.has(f.id));
+    if (selected.length === 0) return;
+    setPreviewFiles(selected);
   }
 
   if (visibleFiles.length === 0 && !selectMode) {
@@ -117,8 +137,15 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
           >
             ลบ {count} ไฟล์
           </button>
-          <button className="btn" disabled={busy || count === 0} onClick={handleBulkDownload}>
-            ดาวน์โหลด
+          <button
+            className="btn secondary"
+            disabled={busy || count === 0}
+            onClick={() => setMoveOpen(true)}
+          >
+            ย้าย
+          </button>
+          <button className="btn secondary" disabled={busy || count === 0} onClick={openPreview}>
+            ดูไฟล์
           </button>
           <button className="btn ghost-muted" onClick={exitSelectMode}>
             ยกเลิก
@@ -126,6 +153,42 @@ export function FileGrid({ files, folders, tags, driveConnected, onChanged }: Fi
           {actionError && <span className="select-error">{actionError}</span>}
         </div>
       )}
+
+      {moveOpen && (
+        <div className="modal-overlay" onClick={() => setMoveOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">ย้าย {count} ไฟล์ไปที่...</h3>
+            <div className="folder-list">
+              <button
+                className="folder-option"
+                disabled={busy}
+                onClick={() => void handleBulkMove(null)}
+              >
+                คลังหลัก (ไม่มีโฟลเดอร์)
+              </button>
+              {folders.map((f) => (
+                <button
+                  key={f.id}
+                  className="folder-option"
+                  disabled={busy}
+                  onClick={() => void handleBulkMove(f.id)}
+                >
+                  {f.name}
+                </button>
+              ))}
+            </div>
+            <button className="btn ghost-muted" onClick={() => setMoveOpen(false)}>
+              ยกเลิก
+            </button>
+          </div>
+        </div>
+      )}
+
+      {previewFiles && (
+        <FilePreviewModal files={previewFiles} onClose={() => setPreviewFiles(null)} />
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
 
       {visibleFiles.length === 0 ? (
         <p className="empty-state">ยังไม่มีไฟล์เลย</p>

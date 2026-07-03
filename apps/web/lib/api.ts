@@ -78,6 +78,11 @@ export function listFiles(spaceId: string, opts: ListFilesOptions = {}): Promise
   return apiFetch<FileListResponse>(`/files?${params.toString()}`);
 }
 
+/** File detail incl. presigned inline `url` (expires 1 hour) — used for preview. */
+export function getFile(fileId: string): Promise<FileDto & { url: string | null }> {
+  return apiFetch(`/files/${fileId}`);
+}
+
 export function renameFile(fileId: string, displayName: string): Promise<FileDto> {
   return apiFetch<FileDto>(`/files/${fileId}`, {
     method: 'PATCH',
