@@ -5,7 +5,7 @@
  *   ┌───────────────┬───────────────┬───────────────┐
  *   │ คลังสมบัติ     │ แนะนำตัว       │ รวมรูปเป็น PDF  │   row 0 (y 0..843)
  *   ├───────────────┼───────────────┼───────────────┤
- *   │ วิธีใช้งาน      │ ช่วยเหลือ       │ สแกนรูปเป็น PDF │   row 1 (y 843..1686)
+ *   │ วิธีใช้งาน      │ สแกนรูปเป็น PDF │ ช่วยเหลือ       │   row 1 (y 843..1686)
  *   └───────────────┴───────────────┴───────────────┘
  *
  * The bot has NO postback handler (see apps/api/src/routes/webhook/line.ts), so the
@@ -156,11 +156,11 @@ function buildAreas(dashboardUri: string): RichMenuArea[] {
     },
     {
       bounds: { x: x1, y: y1, width: CENTER_W, height: ROW_H },
-      action: { type: 'message', text: 'ช่วยเหลือ', label: 'ช่วยเหลือ' },
+      action: { type: 'message', text: 'สแกนรูปเป็น PDF', label: 'สแกนรูปเป็น PDF' },
     },
     {
       bounds: { x: x2, y: y1, width: COL_W, height: ROW_H },
-      action: { type: 'message', text: 'สแกนรูปเป็น PDF', label: 'สแกนรูปเป็น PDF' },
+      action: { type: 'message', text: 'ช่วยเหลือ', label: 'ช่วยเหลือ' },
     },
   ];
 }
