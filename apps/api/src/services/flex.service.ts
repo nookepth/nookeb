@@ -51,15 +51,33 @@ function iconRow(color: string, text: string, textColor: string = INK): Record<s
 
 /**
  * Initial "processing" card. Sent once via the first event's replyToken.
- * @param params.total    number of files in the batch
- * @param params.username display name (null → "คุณ")
+ * @param params.total           number of files in the batch
+ * @param params.username        display name (null → "คุณ")
+ * @param params.progressViewUrl real-time progress page (API-served)
  */
 export function buildProgressFlexMessage(params: {
   total: number;
   username: string | null;
+  progressViewUrl: string;
 }): FlexMessage {
-  const { total } = params;
+  const { total, progressViewUrl } = params;
   const who = params.username ?? 'คุณ';
+
+  const footerContents: Record<string, unknown>[] = [
+    { type: 'text', text: 'กรุณารอสักครู่', size: 'xs', color: MUTED, align: 'center' },
+  ];
+  // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
+  footerContents.push(
+    progressViewUrl.startsWith('https://')
+      ? {
+          type: 'button',
+          style: 'primary',
+          color: LINE_GREEN,
+          margin: 'md',
+          action: { type: 'uri', label: 'ดูความคืบหน้า', uri: progressViewUrl },
+        }
+      : { type: 'text', text: `ดูความคืบหน้า: ${progressViewUrl}`, size: 'xs', color: LINE_GREEN, wrap: true, margin: 'md' },
+  );
   return {
     type: 'flex',
     altText: `กำลังเก็บ ${total} รูป...`,
@@ -86,7 +104,7 @@ export function buildProgressFlexMessage(params: {
         type: 'box',
         layout: 'vertical',
         paddingAll: '12px',
-        contents: [{ type: 'text', text: 'กรุณารอสักครู่', size: 'xs', color: MUTED, align: 'center' }],
+        contents: footerContents,
       },
       styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
     },

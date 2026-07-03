@@ -64,6 +64,8 @@ export interface BatchItem {
  */
 export interface UploadBatchJob {
   type: 'upload_batch';
+  /** UUID identifying this batch for real-time progress tracking */
+  batchId: string;
   lineUserId: string;
   lineSource: LineSource;
   lineGroupId: string | null;

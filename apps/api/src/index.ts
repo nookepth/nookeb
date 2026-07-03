@@ -14,6 +14,7 @@ import spacesRoutes from './routes/spaces';
 import analyticsRoutes from './routes/analytics';
 import adminRoutes from './routes/admin';
 import integrationsRoutes from './routes/integrations';
+import progressRoutes from './routes/progress';
 
 async function main(): Promise<void> {
   const app = Fastify({
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
   await app.register(analyticsRoutes);
   await app.register(adminRoutes);
   await app.register(integrationsRoutes);
+  await app.register(progressRoutes);
 
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
   app.log.info(`nookeb API listening on :${config.PORT}`);

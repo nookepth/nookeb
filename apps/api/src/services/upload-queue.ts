@@ -1,5 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, UploadBatchJob } from '@nookeb/shared';
+import { config } from '../config';
 import { buildProgressFlexMessage } from './flex.service';
 import { pushMessage, replyMessage } from './line.service';
 
@@ -74,7 +76,13 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   // 1. ONE progress card via the first replyToken. If it's expired/used (>60s or
   //    >1 use → 400), fall back to a push (to the group when in a group).
   const target = entry.lineGroupId ?? lineUserId;
-  const progress = buildProgressFlexMessage({ total: entry.items.length, username: entry.username });
+  const batchId = randomUUID();
+  const progress = buildProgressFlexMessage({
+    total: entry.items.length,
+    username: entry.username,
+    // The progress page is served by the API, not the web app — hence APP_URL
+    progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
+  });
   try {
     if (entry.replyToken) await replyMessage(entry.replyToken, [progress]);
     else await pushMessage(target, [progress]);
@@ -89,6 +97,7 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   // 2. Hand the batch to the worker (uploads run there — project rule 1)
   const job: UploadBatchJob = {
     type: 'upload_batch',
+    batchId,
     lineUserId,
     lineSource: entry.lineSource,
     lineGroupId: entry.lineGroupId,

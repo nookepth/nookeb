@@ -43,6 +43,7 @@ import {
 } from '../services/file.service';
 import { ensureGroupSpace } from '../services/space.service';
 import { purgeDeletedFiles } from '../services/purge.service';
+import * as progressStore from '../services/progress-store';
 import {
   countPages,
   finishSession,
@@ -251,6 +252,10 @@ async function storeUpload(
  */
 async function processUploadBatch(job: UploadBatchJob): Promise<void> {
   const target = job.lineGroupId ?? job.lineUserId;
+  // Progress store updates are best-effort — this handler must never throw
+  await progressStore.init(job.batchId, job.items.length).catch((err) => {
+    console.error('[upload.worker] progress init failed:', err);
+  });
   try {
     let profile: { displayName: string; pictureUrl?: string } | undefined;
     try {
@@ -291,6 +296,7 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         );
         used += res.size;
         files.push({ filename: res.filename, url: res.url });
+        await progressStore.increment(job.batchId).catch(() => undefined);
       } catch (err) {
         failed += 1;
         console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
@@ -325,6 +331,8 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     } catch {
       /* ignore — nothing else we can do */
     }
+  } finally {
+    await progressStore.complete(job.batchId).catch(() => undefined);
   }
 }
 
@@ -526,6 +534,7 @@ async function getTesseract() {
 
 export async function closeWorkerQueue(): Promise<void> {
   await fileQueue.close();
+  await progressStore.closeProgressStore();
   if (tesseractPromise) {
     const worker = await tesseractPromise;
     await worker.terminate();
