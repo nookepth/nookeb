@@ -75,13 +75,13 @@ export function buildProgressFlexMessage(params: {
           style: 'primary',
           color: BRAND_RED,
           margin: 'md',
-          action: { type: 'uri', label: 'ดูหนูทำงานได้เลย', uri: progressViewUrl },
+          action: { type: 'uri', label: 'ดูคลังสมบัติได้เลย', uri: progressViewUrl },
         }
-      : { type: 'text', text: `ดูหนูทำงานได้เลย: ${progressViewUrl}`, size: 'xs', color: BRAND_RED, wrap: true, margin: 'md' },
+      : { type: 'text', text: `ดูคลังสมบัติได้เลย: ${progressViewUrl}`, size: 'xs', color: BRAND_RED, wrap: true, margin: 'md' },
   );
   return {
     type: 'flex',
-    altText: `หนูกำลังเก็บ ${total} รูปให้อยู่น้า`,
+    altText: `หนูกำลังเก็บ ${total} ชิ้นให้อยู่น้า`,
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -99,8 +99,8 @@ export function buildProgressFlexMessage(params: {
         spacing: 'md',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: `รับรูปจากพี่ ${who} แล้วน้า`, size: 'sm', color: '#333333', wrap: true },
-          iconRow(LINE_GREEN, `หนูกำลังเก็บอยู่น้า 0/${total} รูป`),
+          { type: 'text', text: `รับของจากพี่ ${who} แล้วน้า`, size: 'sm', color: '#333333', wrap: true },
+          iconRow(LINE_GREEN, `หนูกำลังเก็บอยู่น้า 0/${total} ชิ้น`),
         ],
       },
       footer: {
@@ -138,10 +138,10 @@ export function buildSummaryFlexMessage(params: {
 
   const body: Record<string, unknown>[] = [
     iconRow(LINE_GREEN, `หนูเก็บให้แล้วน้า พี่ ${who}`),
-    { type: 'text', text: `ทั้งหมด ${total} รูปเลยน้า`, size: 'sm', color: '#333333' },
+    { type: 'text', text: `ทั้งหมด ${total} ชิ้นเลยน้า`, size: 'sm', color: '#333333' },
   ];
-  if (success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} รูปแย้ว`));
-  if (failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} รูปที่ยังไม่ได้น้า`, ERROR_RED));
+  if (success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} ชิ้นแย้ว`));
+  if (failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} ชิ้นที่ยังไม่ได้น้า`, ERROR_RED));
 
   // Short list of stored file names (max 5) — uses the `files` param
   const named = files.slice(0, 5);
@@ -165,16 +165,16 @@ export function buildSummaryFlexMessage(params: {
         style: 'primary',
         color: BRAND_RED,
         height: 'sm',
-        action: { type: 'uri', label: 'ไปดูรูปได้เลยน้า', uri: dashboardUrl },
+        action: { type: 'uri', label: 'ไปดูคลังสมบัติได้เลยน้า', uri: dashboardUrl },
       }
-    : { type: 'text', text: `ไปดูรูปได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
+    : { type: 'text', text: `ไปดูคลังสมบัติได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
 
   return {
     type: 'flex',
     altText:
       failed === 0
-        ? `เก็บไฟล์แย้วน้า ${success} รูป`
-        : `ทำเสร็จแล้วน้า เก็บได้ ${success} รูป มี ${failed} รูปที่ยังไม่ได้`,
+        ? `เก็บไฟล์แย้วน้า ${success} ชิ้น`
+        : `ทำเสร็จแล้วน้า เก็บได้ ${success} ชิ้น มี ${failed} ชิ้นที่ยังไม่ได้`,
     contents: {
       type: 'bubble',
       size: 'kilo',

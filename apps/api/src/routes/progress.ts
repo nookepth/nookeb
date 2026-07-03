@@ -14,7 +14,7 @@ const VIEW_HTML = `<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>หนูกำลังเก็บรูปให้อยู่น้า</title>
+<title>หนูกำลังเก็บของให้อยู่น้า</title>
 <style>
   body {
     margin: 0;
@@ -49,7 +49,7 @@ const VIEW_HTML = `<!DOCTYPE html>
 </head>
 <body>
 <div class="card" id="card">
-  <h1>หนูกำลังเก็บรูปให้อยู่น้า</h1>
+  <h1>หนูกำลังเก็บของให้อยู่น้า</h1>
   <div class="counter" id="counter">- / -</div>
   <div class="bar-track"><div class="bar-fill" id="bar"></div></div>
   <div class="status" id="status">แป๊บนึงน้า...</div>
@@ -66,7 +66,7 @@ const VIEW_HTML = `<!DOCTYPE html>
     if (p.status === 'done') {
       clearInterval(timer);
       document.getElementById('card').className = 'card done';
-      document.getElementById('status').textContent = 'เสร็จแล้วน้า พาพี่ไปดูรูปเลย';
+      document.getElementById('status').textContent = 'เสร็จแล้วน้า พาพี่ไปดูคลังสมบัติเลย';
       setTimeout(function () { window.location.href = dashboardUrl; }, 3000);
     }
   }
