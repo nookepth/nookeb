@@ -91,6 +91,21 @@ export async function countPages(supabase: SupabaseClient, sessionId: string): P
   return count ?? 0;
 }
 
+/** Has this LINE message already been stored as a page? Guards job retries. */
+export async function pageExists(
+  supabase: SupabaseClient,
+  sessionId: string,
+  lineMessageId: string,
+): Promise<boolean> {
+  const { count, error } = await supabase
+    .from('scan_pages')
+    .select('id', { count: 'exact', head: true })
+    .eq('session_id', sessionId)
+    .eq('line_message_id', lineMessageId);
+  if (error) throw error;
+  return (count ?? 0) > 0;
+}
+
 export async function insertPage(
   supabase: SupabaseClient,
   sessionId: string,

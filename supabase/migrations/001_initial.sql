@@ -10,8 +10,8 @@ CREATE TABLE users (
   picture_url   TEXT,
   email         TEXT,
   plan          TEXT DEFAULT 'free' CHECK (plan IN ('free', 'pro', 'team')),
-  storage_used  BIGINT DEFAULT 0,          -- bytes
-  storage_limit BIGINT DEFAULT 1073741824, -- 1 GB free tier
+  storage_used  BIGINT DEFAULT 0,           -- bytes
+  storage_limit BIGINT DEFAULT 10737418240, -- 10 GB free tier
   created_at    TIMESTAMPTZ DEFAULT NOW(),
   updated_at    TIMESTAMPTZ DEFAULT NOW()
 );

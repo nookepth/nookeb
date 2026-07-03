@@ -120,21 +120,22 @@ export async function markFileError(supabase: SupabaseClient, fileId: string): P
   if (error) throw error;
 }
 
-/** Adjust a user's storage counter by `delta` bytes (positive to add, negative to free). */
+/**
+ * Adjust a user's storage counter by `delta` bytes (positive to add, negative to
+ * free) atomically. Backed by the `increment_storage_used` Postgres function
+ * (migration 003) — a single UPDATE, so concurrent uploads can't clobber each
+ * other's writes. Clamps at 0 server-side.
+ */
 export async function adjustStorageUsed(
   supabase: SupabaseClient,
   userId: string,
   delta: number,
 ): Promise<void> {
-  // Read-modify-write is fine at MVP volume; move to an RPC for atomicity later.
-  const { data, error } = await supabase.from('users').select('storage_used').eq('id', userId).single();
+  const { error } = await supabase.rpc('increment_storage_used', {
+    p_user_id: userId,
+    p_delta: delta,
+  });
   if (error) throw error;
-  const next = Math.max(0, (data.storage_used as number) + delta);
-  const { error: updateErr } = await supabase
-    .from('users')
-    .update({ storage_used: next, updated_at: new Date().toISOString() })
-    .eq('id', userId);
-  if (updateErr) throw updateErr;
 }
 
 export function addStorageUsed(

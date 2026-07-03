@@ -30,6 +30,7 @@ export async function purgeDeletedFiles(
     .from('files')
     .select('id, r2_key, thumbnail_key, deleted_at')
     .not('deleted_at', 'is', null)
+    .is('purged_at', null) // skip rows whose R2 objects are already gone
     .lt('deleted_at', cutoff);
   if (error) throw error;
 
@@ -66,6 +67,15 @@ export async function purgeDeletedFiles(
       }
     }
     if (ok) result.purgedFileIds.push(row.id);
+  }
+
+  // Mark tombstones as purged so the next daily run skips them entirely.
+  if (opts.apply && result.purgedFileIds.length > 0) {
+    const { error: markErr } = await supabase
+      .from('files')
+      .update({ purged_at: new Date().toISOString() })
+      .in('id', result.purgedFileIds);
+    if (markErr) throw markErr;
   }
 
   return result;

@@ -1,7 +1,7 @@
 import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import type { Readable } from 'node:stream';
+import { PassThrough, type Readable } from 'node:stream';
 import { config } from '../config';
 
 const PRESIGNED_URL_TTL_SECONDS = 3600; // 1 hour per engineering rules
@@ -43,17 +43,23 @@ export async function uploadStream(
   body: Readable,
   contentType: string,
 ): Promise<{ size: number }> {
+  // Count bytes through a PassThrough that is the *only* consumer of `body`, so
+  // there's no risk of racing lib-storage for the source stream's data.
   let size = 0;
-  body.on('data', (chunk: Buffer) => {
+  const counter = new PassThrough();
+  counter.on('data', (chunk: Buffer) => {
     size += chunk.length;
   });
+  // Surface source-stream errors to the counter so `upload.done()` rejects.
+  body.on('error', (err) => counter.destroy(err));
+  body.pipe(counter);
 
   const upload = new Upload({
     client: r2,
     params: {
       Bucket: config.R2_BUCKET_NAME,
       Key: key,
-      Body: body,
+      Body: counter,
       ContentType: contentType,
     },
   });

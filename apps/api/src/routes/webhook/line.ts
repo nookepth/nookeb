@@ -54,6 +54,11 @@ function sanitizeJobId(prefix: string, id: string): string {
   return `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}`;
 }
 
+// LINE CDN content has a ~1h TTL and the user has already been told "รับแล้ว",
+// so the file-bearing jobs MUST survive transient failures. Retry with backoff.
+// (The worker's handlers are written to be safe to re-run — see upload.worker.ts.)
+const RETRY_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 5000 } } as const;
+
 async function reply(event: LineMessageEvent, text: string): Promise<void> {
   if (event.replyToken) await replyMessage(event.replyToken, [{ type: 'text', text }]);
 }
@@ -127,7 +132,7 @@ async function handleTextCommand(
     await app.fileQueue.add(
       'finalize_scan',
       { type: 'finalize_scan', sessionId: session.id, lineUserId },
-      { jobId: sanitizeJobId('scan-final', session.id) },
+      { jobId: sanitizeJobId('scan-final', session.id), ...RETRY_OPTS },
     );
     await reply(event, `กำลังรวม ${pages} หน้าเป็น PDF... เดี๋ยวส่งให้นะ 🐭`);
     return;
@@ -194,6 +199,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
       };
       await app.fileQueue.add('add_scan_page', job, {
         jobId: sanitizeJobId('scan-page', message.id),
+        ...RETRY_OPTS,
       });
       const pageNo = (await countPages(app.supabase, session.id)) + 1;
       await reply(event, `เพิ่มหน้าที่ ${pageNo} แล้ว 📄 (พิมพ์ "เสร็จ" เมื่อครบทุกหน้า)`);
@@ -218,7 +224,10 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     replyToken: null,
   };
 
-  await app.fileQueue.add('upload_file', job, { jobId: sanitizeJobId('upload', message.id) });
+  await app.fileQueue.add('upload_file', job, {
+    jobId: sanitizeJobId('upload', message.id),
+    ...RETRY_OPTS,
+  });
 
   const label = message.type === 'file' ? `ไฟล์ "${originalName}"` : 'รูป';
   await reply(event, `รับ${label}แล้ว กำลังเก็บ...`);

@@ -24,6 +24,8 @@ export interface FileRecord {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  /** set by the daily purge job once the R2 objects are removed (row kept as tombstone) */
+  purged_at: string | null;
 }
 
 /** File shape returned to the web dashboard (no internal storage keys). */

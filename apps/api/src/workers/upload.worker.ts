@@ -44,6 +44,7 @@ import {
   getSession,
   insertPage,
   listPages,
+  pageExists,
   setSessionStatus,
 } from '../services/scan.service';
 
@@ -132,24 +133,35 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
     throw err;
   }
 
+  // The file is now durably stored + charged. Everything below is secondary —
+  // it must NOT throw, or the whole job would retry and store a *second* copy.
+
   // 6. Images get a thumbnail + OCR — separate jobs so their failure never fails the upload
   if (mimeType.startsWith('image/')) {
-    await fileQueue.add(
-      'generate_thumbnail',
-      { type: 'generate_thumbnail', fileId: record.id },
-      { jobId: jobId('thumb', record.id), attempts: 3, backoff: { type: 'exponential', delay: 3000 } },
-    );
-    await fileQueue.add(
-      'ocr_image',
-      { type: 'ocr_image', fileId: record.id },
-      { jobId: jobId('ocr', record.id), attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
-    );
+    try {
+      await fileQueue.add(
+        'generate_thumbnail',
+        { type: 'generate_thumbnail', fileId: record.id },
+        { jobId: jobId('thumb', record.id), attempts: 3, backoff: { type: 'exponential', delay: 3000 } },
+      );
+      await fileQueue.add(
+        'ocr_image',
+        { type: 'ocr_image', fileId: record.id },
+        { jobId: jobId('ocr', record.id), attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
+      );
+    } catch (err) {
+      console.error(`[upload.worker] failed to enqueue thumbnail/ocr for ${record.id}:`, err);
+    }
   }
 
-  // 7. Confirm to the user
-  await pushMessage(job.lineUserId, [
-    { type: 'text', text: `เก็บ "${job.originalName}" แล้ว ✓\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard` },
-  ]);
+  // 7. Confirm to the user (best-effort — a failed push must not re-store the file)
+  try {
+    await pushMessage(job.lineUserId, [
+      { type: 'text', text: `เก็บ "${job.originalName}" แล้ว ✓\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard` },
+    ]);
+  } catch (err) {
+    console.error(`[upload.worker] confirm push failed for ${record.id}:`, err);
+  }
 }
 
 /**
@@ -223,6 +235,9 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
   if (!session || session.status !== 'collecting' || !session.space_id) return;
 
+  // Retry-safe: if a previous attempt already stored this message, don't add it twice
+  if (await pageExists(supabase, session.id, job.lineMessageId)) return;
+
   const content = await getMessageContent(job.lineMessageId);
   const jpeg = await sharp(await readAll(content.stream))
     .rotate()
@@ -245,6 +260,9 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
 async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
   if (!session || !session.space_id) return;
+  // Retry-safe: the webhook flips the session to 'processing' before enqueuing.
+  // If a prior attempt already finished it ('done'), don't build a second PDF.
+  if (session.status !== 'processing') return;
 
   const pages = await listPages(supabase, session.id);
   if (pages.length === 0) {
@@ -299,12 +317,17 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     }
   }
 
-  await pushMessage(job.lineUserId, [
-    {
-      type: 'text',
-      text: `รวม ${pages.length} หน้าเป็น PDF แล้ว ✓\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard`,
-    },
-  ]);
+  // Best-effort — the PDF is already stored; a failed push must not rebuild it
+  try {
+    await pushMessage(job.lineUserId, [
+      {
+        type: 'text',
+        text: `รวม ${pages.length} หน้าเป็น PDF แล้ว ✓\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard`,
+      },
+    ]);
+  } catch (err) {
+    console.error(`[upload.worker] finalize_scan confirm push failed for ${session.id}:`, err);
+  }
 }
 
 /**
