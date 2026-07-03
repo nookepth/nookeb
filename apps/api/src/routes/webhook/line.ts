@@ -3,6 +3,7 @@ import rateLimit from '@fastify/rate-limit';
 import type { AddScanPageJob, LineSource } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage } from '../../services/line.service';
+import { buildMergeFlexMessage, type FlexMessage } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
 import { ensureGroupSpace } from '../../services/space.service';
 import { enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
@@ -66,6 +67,10 @@ async function reply(event: LineMessageEvent, text: string): Promise<void> {
   if (event.replyToken) await replyMessage(event.replyToken, [{ type: 'text', text }]);
 }
 
+async function replyFlex(event: LineMessageEvent, message: FlexMessage): Promise<void> {
+  if (event.replyToken) await replyMessage(event.replyToken, [message]);
+}
+
 /** Lightweight lookup — does not create a user (used before we know we need one). */
 async function findUserId(app: FastifyInstance, lineUserId: string): Promise<string | null> {
   const { data, error } = await app.supabase
@@ -80,7 +85,7 @@ async function findUserId(app: FastifyInstance, lineUserId: string): Promise<str
 const HELP_TEXT = `วิธีใช้หนูเก็บน้า 🦈
 
 • ส่งรูป/ไฟล์มาในแชท หนูจะเก็บให้เองเลยน้า
-• พิมพ์ "สแกน" ถ้าอยากรวมรูปหลายหน้าเป็น PDF (ส่งรูปทีละหน้า แล้วพิมพ์ "เสร็จ" น้า)
+• พิมพ์ "รวมไฟล์" ถ้าอยากรวมรูปหลายหน้าเป็น PDF (ส่งรูปทีละหน้า แล้วพิมพ์ "เสร็จ" น้า)
 • เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ https://nookeb-web.vercel.app/dashboard เลยน้า`;
 
 // Rich-menu "แนะนำตัว" cell → the bot's self-introduction (message action, since the
@@ -108,8 +113,9 @@ async function handleTextCommand(
   const source = event.source;
   const lineUserId = source.userId!;
 
-  // Start scan mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell)
-  if (isCmd(text, 'สแกน', 'scan', '/scan', 'รวมรูปเป็น pdf')) {
+  // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell;
+  // "สแกน"/"scan" kept as legacy aliases — the old rich menu still sends them)
+  if (isCmd(text, 'รวมไฟล์', 'สแกน', 'scan', '/scan', 'รวมรูปเป็น pdf')) {
     const profile = await getProfile(lineUserId).catch(() => undefined);
     const { user, space } = await ensureUserAndSpace(
       app.supabase,
@@ -122,26 +128,23 @@ async function handleTextCommand(
         ? await ensureGroupSpace(app.supabase, source.groupId, user)
         : space;
     await startSession(app.supabase, user.id, target.id);
-    await reply(
-      event,
-      'ระบบสแกน เปิดโหมดสแกนแล้วน้า 📄\nส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้\n(พิมพ์ "ยกเลิก" ถ้าไม่เอาแล้วน้า)',
-    );
+    await replyFlex(event, buildMergeFlexMessage({ kind: 'opened' }));
     return;
   }
 
   const userId = await findUserId(app, lineUserId);
   const session = userId ? await getActiveSession(app.supabase, userId) : null;
 
-  // Finish scan → merge to PDF
-  if (isCmd(text, 'เสร็จ', 'done', 'รวมไฟล์', 'finish')) {
+  // Finish merge → build the PDF ("รวมไฟล์" moved to the start triggers above)
+  if (isCmd(text, 'เสร็จ', 'done', 'finish')) {
     if (!session) {
-      await reply(event, 'ยังไม่ได้เปิดโหมดสแกนเลยน้า พิมพ์ "สแกน" ก่อน แล้วค่อยส่งรูปน้า');
+      await reply(event, 'ยังไม่ได้เปิดโหมดรวมไฟล์เลยน้า พิมพ์ "รวมไฟล์" ก่อน แล้วค่อยส่งรูปน้า');
       return;
     }
     const pages = await countPages(app.supabase, session.id);
     if (pages === 0) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยังไม่มีหน้าให้รวมเลยน้า หนูยกเลิกโหมดสแกนให้แล้วนะคะ');
+      await reply(event, 'ยังไม่มีไฟล์ให้รวมเลยน้า หนูยกเลิกโหมดรวมไฟล์ให้แล้วนะคะ');
       return;
     }
     await setSessionStatus(app.supabase, session.id, 'processing');
@@ -150,17 +153,17 @@ async function handleTextCommand(
       { type: 'finalize_scan', sessionId: session.id, lineUserId },
       { jobId: sanitizeJobId('scan-final', session.id), ...RETRY_OPTS },
     );
-    await reply(event, `หนูกำลังรวม ${pages} หน้าเป็น PDF อยู่น้า เดี๋ยวส่งให้เลยน้า`);
+    await reply(event, `หนูกำลังรวม ${pages} ไฟล์เป็น PDF อยู่น้า เดี๋ยวส่งให้เลยน้า`);
     return;
   }
 
-  // Cancel scan
+  // Cancel merge session
   if (isCmd(text, 'ยกเลิก', 'cancel')) {
     if (session) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยกเลิกโหมดสแกนให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะคะ');
+      await reply(event, 'ยกเลิกโหมดรวมไฟล์ให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะคะ');
     } else {
-      await reply(event, 'ตอนนี้ไม่ได้อยู่ในโหมดสแกนอยู่แล้วน้า');
+      await reply(event, 'ตอนนี้ไม่ได้อยู่ในโหมดรวมไฟล์อยู่แล้วน้า');
     }
     return;
   }
@@ -236,7 +239,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         ...RETRY_OPTS,
       });
       const pageNo = (await countPages(app.supabase, session.id)) + 1;
-      await reply(event, `เพิ่มหน้าที่ ${pageNo} แล้วน้า (ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า)`);
+      await replyFlex(event, buildMergeFlexMessage({ kind: 'page', pageNo }));
       return;
     }
   }

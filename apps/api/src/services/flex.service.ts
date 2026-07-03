@@ -190,3 +190,93 @@ export function buildSummaryFlexMessage(params: {
     },
   };
 }
+
+/** Which "ระบบรวมไฟล์" (merge-to-PDF) card to build. */
+export type MergeCardVariant =
+  | { kind: 'opened' }
+  | { kind: 'page'; pageNo: number };
+
+/**
+ * "ระบบรวมไฟล์" session cards — same kilo-bubble structure as the upload cards
+ * above (green header title bar, dot-row status, muted footer). One builder,
+ * two variants: 'opened' (session start) and 'page' (per-page confirmation).
+ */
+export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
+  const header = {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '16px',
+    contents: [
+      { type: 'text', text: 'ระบบรวมไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+    ],
+  };
+  const styles = { header: { backgroundColor: LINE_GREEN }, body: { backgroundColor: '#FFFFFF' } };
+
+  if (variant.kind === 'page') {
+    const headline = `เพิ่มไฟล์ที่ ${variant.pageNo} แล้วน้า`;
+    return {
+      type: 'flex',
+      altText: headline,
+      contents: {
+        type: 'bubble',
+        size: 'kilo',
+        header,
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          paddingAll: '16px',
+          contents: [
+            {
+              type: 'box',
+              layout: 'horizontal',
+              spacing: 'md',
+              alignItems: 'center',
+              contents: [
+                statusDot(LINE_GREEN),
+                { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
+              ],
+            },
+            { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
+          ],
+        },
+        styles,
+      },
+    };
+  }
+
+  return {
+    type: 'flex',
+    altText: 'เปิดโหมดรวมไฟล์แล้วน้า',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header,
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'เปิดโหมดรวมไฟล์แล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
+          {
+            type: 'text',
+            text: 'ส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้',
+            size: 'sm',
+            color: '#333333',
+            wrap: true,
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          { type: 'text', text: '(พิมพ์ "ยกเลิก" ถ้าไม่เอาแล้วน้า)', size: 'xs', color: MUTED, wrap: true },
+        ],
+      },
+      styles,
+    },
+  };
+}

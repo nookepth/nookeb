@@ -560,7 +560,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
   const pages = await listPages(supabase, session.id);
   if (pages.length === 0) {
     await setSessionStatus(supabase, session.id, 'cancelled');
-    await pushMessage(job.lineUserId, [{ type: 'text', text: 'ยังไม่มีหน้าให้รวมเป็น PDF เลยน้า' }]);
+    await pushMessage(job.lineUserId, [{ type: 'text', text: 'ยังไม่มีไฟล์ให้รวมเป็น PDF เลยน้า' }]);
     return;
   }
 
@@ -578,7 +578,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
 
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
-  const name = `สแกน_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
+  const name = `รวมไฟล์_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
 
   const fileId = randomUUID();
   const r2Key = buildFileKey(session.space_id, fileId, name);
@@ -615,7 +615,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     await pushMessage(job.lineUserId, [
       {
         type: 'text',
-        text: `หนูรวม ${pages.length} หน้าเป็น PDF ให้แล้วน้า\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard เลยน้า`,
+        text: `หนูรวม ${pages.length} ไฟล์เป็น PDF ให้แล้วน้า\n"${name}"\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard เลยน้า`,
       },
     ]);
   } catch (err) {
