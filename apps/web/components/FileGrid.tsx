@@ -103,7 +103,7 @@ export function FileGrid({ files, folders, tags, driveConnected, view = 'grid', 
   if (visibleFiles.length === 0 && !selectMode) {
     return (
       <div className="empty-state">
-        <Image src="/logo.png" alt="" width={96} height={96} className="empty-art" />
+        <Image src="/logo.png" alt="หนูเก็บ" width={96} height={96} className="empty-art" />
         <p className="empty-title">ยังไม่มีไฟล์</p>
         <p>ส่งรูปหรือไฟล์หา LINE OA แล้วหนูจะเก็บให้เอง</p>
       </div>
