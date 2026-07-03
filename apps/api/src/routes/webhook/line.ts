@@ -30,6 +30,8 @@ interface LineMessageEvent {
     id: string;
     type: string; // 'image' | 'file' | 'video' | 'audio' | 'text' | ...
     fileName?: string;
+    /** declared size in bytes — LINE sends this for 'file' messages only */
+    fileSize?: number;
     text?: string;
   };
 }
@@ -257,7 +259,12 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
 
   enqueueUpload(app, {
     lineUserId,
-    item: { lineMessageId: message.id, originalName, kind: message.type },
+    item: {
+      lineMessageId: message.id,
+      originalName,
+      kind: message.type,
+      fileSize: message.fileSize ?? null,
+    },
     replyToken: event.replyToken ?? null,
     lineSource: source.type as LineSource,
     lineGroupId: source.groupId ?? null,

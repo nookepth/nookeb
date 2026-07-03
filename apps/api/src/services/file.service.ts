@@ -1,6 +1,27 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { FileRecord, LineSource, SpaceRecord, UserRecord } from '@nookeb/shared';
+import type { FileRecord, FileScanStatus, LineSource, SpaceRecord, UserRecord } from '@nookeb/shared';
 import { config } from '../config';
+import { checkStorageAlert } from './storage-monitor.service';
+
+/**
+ * A file the pipeline refused to store (size cap, malware). Carries the exact
+ * LINE message to show the sender. Handlers must NOT retry this error — the
+ * rejection is deterministic.
+ */
+export class FileRejectedError extends Error {
+  constructor(
+    message: string,
+    public readonly userMessage: string,
+  ) {
+    super(message);
+    this.name = 'FileRejectedError';
+  }
+}
+
+/** True if `bytes` is within the per-file hard cap (MAX_FILE_SIZE_BYTES, default 1 GB). */
+export function checkFileSizeLimit(bytes: number, _filename?: string): boolean {
+  return bytes <= config.MAX_FILE_SIZE_BYTES;
+}
 
 /** Find or create the user + personal space for a LINE user. */
 export async function ensureUserAndSpace(
@@ -72,6 +93,8 @@ export interface CreateFileInput {
   lineMessageId: string | null;
   lineSource: LineSource | null;
   lineGroupId: string | null;
+  /** virus-scan outcome (null when scanning is disabled or N/A, e.g. scan PDFs) */
+  scanStatus?: FileScanStatus | null;
 }
 
 export async function createFileRecord(
@@ -92,6 +115,7 @@ export async function createFileRecord(
       line_message_id: input.lineMessageId,
       line_source: input.lineSource,
       line_group_id: input.lineGroupId,
+      scan_status: input.scanStatus ?? null,
       status: 'processing',
     })
     .select('*')
@@ -125,25 +149,32 @@ export async function markFileError(supabase: SupabaseClient, fileId: string): P
  * free) atomically. Backed by the `increment_storage_used` Postgres function
  * (migration 003) — a single UPDATE, so concurrent uploads can't clobber each
  * other's writes. Clamps at 0 server-side.
+ *
+ * When `spaceId` is provided, the storage monitor runs after the adjustment
+ * (80%/95% owner alerts, and re-arming when usage falls back under 70%).
+ * The monitor never throws, so the quota update itself can't be failed by it.
  */
 export async function adjustStorageUsed(
   supabase: SupabaseClient,
   userId: string,
   delta: number,
+  spaceId?: string,
 ): Promise<void> {
   const { error } = await supabase.rpc('increment_storage_used', {
     p_user_id: userId,
     p_delta: delta,
   });
   if (error) throw error;
+  if (spaceId) await checkStorageAlert(supabase, userId, spaceId);
 }
 
 export function addStorageUsed(
   supabase: SupabaseClient,
   userId: string,
   bytes: number,
+  spaceId?: string,
 ): Promise<void> {
-  return adjustStorageUsed(supabase, userId, bytes);
+  return adjustStorageUsed(supabase, userId, bytes, spaceId);
 }
 
 export async function isSpaceMember(

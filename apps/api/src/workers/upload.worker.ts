@@ -15,6 +15,7 @@ import {
   type FinalizeScanJob,
   type GenerateThumbnailJob,
   type OcrImageJob,
+  type FileScanStatus,
   type PurgeDeletedJob,
   type SpaceRecord,
   type UploadBatchJob,
@@ -31,6 +32,7 @@ import {
   deleteObject,
   getObjectStream,
   uploadStream,
+  SizeLimitExceededError,
 } from '../services/r2.service';
 import { getMessageContent, getProfile, pushMessage } from '../services/line.service';
 import { buildSummaryFlexMessage } from '../services/flex.service';
@@ -40,7 +42,10 @@ import {
   markFileReady,
   markFileError,
   addStorageUsed,
+  checkFileSizeLimit,
+  FileRejectedError,
 } from '../services/file.service';
+import { isVirusScanEnabled, scanBuffer, type ScanVerdict } from '../services/virusTotal.service';
 import { ensureGroupSpace } from '../services/space.service';
 import { purgeDeletedFiles } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
@@ -133,7 +138,7 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
   try {
     const { size } = await uploadStream(r2, r2Key, content.stream, mimeType);
     await markFileReady(supabase, record.id, size);
-    await addStorageUsed(supabase, user.id, size);
+    await addStorageUsed(supabase, user.id, size, space.id);
   } catch (err) {
     await markFileError(supabase, record.id);
     throw err;
@@ -172,13 +177,18 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
-/** Retry `fn` up to `attempts` times with exponential backoff (1s → 2s → 4s). */
+/**
+ * Retry `fn` up to `attempts` times with exponential backoff (1s → 2s → 4s).
+ * FileRejectedError is deterministic (size cap, malware) — rethrown immediately,
+ * never retried.
+ */
 async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
     try {
       return await fn();
     } catch (err) {
+      if (err instanceof FileRejectedError) throw err;
       lastErr = err;
       if (i < attempts - 1) await sleep(1000 * 2 ** i);
     }
@@ -186,9 +196,35 @@ async function withRetry<T>(fn: () => Promise<T>, attempts = 3): Promise<T> {
   throw lastErr;
 }
 
+const MB = 1024 * 1024;
+const GB = 1024 * MB;
+
+/** User-facing rejection text for a file over the hard size cap. */
+function sizeLimitMessage(filename: string, bytes: number | null): string {
+  const sizeText = bytes !== null ? `${Math.round(bytes / MB)} MB` : 'ใหญ่';
+  const limitGb = (config.MAX_FILE_SIZE_BYTES / GB).toFixed(config.MAX_FILE_SIZE_BYTES % GB === 0 ? 0 : 1);
+  return `❌ ไฟล์ "${filename}" มีขนาด ${sizeText} เกินขีดจำกัด ${limitGb} GB\nระบบไม่สามารถรับไฟล์นี้ได้`;
+}
+
+/** User-facing alert for a file VirusTotal flagged as malicious. */
+function malwareAlertMessage(filename: string, verdict: Extract<ScanVerdict, { outcome: 'malicious' }>): string {
+  const shown = verdict.engines.slice(0, 3).join(', ');
+  const more = Math.max(0, verdict.detections - Math.min(3, verdict.engines.length));
+  const detectedBy = more > 0 ? `${shown} และอีก ${more} รายการ` : shown;
+  return (
+    `🚨 ระบบตรวจพบไฟล์อันตราย\n` +
+    `ไฟล์ "${filename}" ถูกบล็อกโดยอัตโนมัติ\n` +
+    `ตรวจพบโดย: ${detectedBy}\n` +
+    `ไฟล์นี้ไม่ถูกบันทึกในระบบ`
+  );
+}
+
 /**
- * Store a single file: LINE CDN → R2 → DB row ready → charge quota → enqueue
- * thumbnail/OCR for images. Throws on failure so `withRetry` can retry it.
+ * Store a single file: size check → LINE CDN → virus scan → R2 → DB row ready →
+ * charge quota (which runs the storage-alert check) → enqueue thumbnail/OCR for
+ * images. Throws on failure so `withRetry` can retry it; deterministic
+ * rejections (size cap, malware) throw FileRejectedError, which is never
+ * retried and carries the LINE message for the sender.
  */
 async function storeUpload(
   user: UserRecord,
@@ -197,8 +233,57 @@ async function storeUpload(
   lineSource: UploadBatchJob['lineSource'],
   lineGroupId: string | null,
 ): Promise<{ filename: string; url: string; size: number }> {
+  // Open the LINE CDN response — at this point only headers have been read;
+  // the body isn't consumed until something pulls from the stream, so a size
+  // rejection here aborts before any transfer (and before any DB row exists).
   const content = await getMessageContent(item.lineMessageId);
   const mimeType = content.contentType;
+
+  // [1] Hard per-file size cap. Prefer the size LINE declared in the webhook
+  // event, falling back to the CDN Content-Length header.
+  const declaredSize = item.fileSize ?? content.contentLength;
+  if (declaredSize !== null && !checkFileSizeLimit(declaredSize, item.originalName)) {
+    content.stream.destroy();
+    console.warn(
+      `[upload.worker] size limit rejected: user=${user.id} file="${item.originalName}" ` +
+        `size=${declaredSize} limit=${config.MAX_FILE_SIZE_BYTES} at=${new Date().toISOString()}`,
+    );
+    throw new FileRejectedError(
+      `file "${item.originalName}" (${declaredSize} bytes) exceeds size limit`,
+      sizeLimitMessage(item.originalName, declaredSize),
+    );
+  }
+
+  // [2] Virus scan — small files only (VT free tier caps uploads at 32 MB).
+  // Failures never block the upload; only a confirmed malicious verdict does.
+  let scanStatus: FileScanStatus | null = null;
+  let bodyStream: Readable = content.stream;
+  if (isVirusScanEnabled()) {
+    if (content.contentLength !== null && content.contentLength <= config.VIRUSTOTAL_MAX_SCAN_SIZE_BYTES) {
+      const buffer = await readAll(content.stream);
+      const verdict = await scanBuffer(buffer, item.originalName);
+      if (verdict.outcome === 'malicious') {
+        console.error(
+          `[upload.worker] malicious file blocked: user=${user.id} file="${item.originalName}" ` +
+            `detections=${verdict.detections} engines=[${verdict.engines.join(', ')}] at=${new Date().toISOString()}`,
+        );
+        throw new FileRejectedError(
+          `file "${item.originalName}" flagged malicious by ${verdict.detections} engine(s)`,
+          malwareAlertMessage(item.originalName, verdict),
+        );
+      }
+      if (verdict.outcome === 'scan_failed') {
+        console.warn(`[upload.worker] virus scan failed for "${item.originalName}" — proceeding: ${verdict.reason}`);
+        scanStatus = 'scan_failed';
+      } else {
+        scanStatus = 'clean';
+      }
+      bodyStream = Readable.from(buffer);
+    } else {
+      // >32 MB, or size unknown so we can't buffer it safely within the VT cap
+      scanStatus = 'skipped_size';
+    }
+  }
 
   const fileId = randomUUID();
   const r2Key = buildFileKey(space.id, fileId, item.originalName);
@@ -214,12 +299,16 @@ async function storeUpload(
     lineMessageId: item.lineMessageId,
     lineSource,
     lineGroupId,
+    scanStatus,
   });
 
   try {
-    const { size } = await uploadStream(r2, r2Key, content.stream, mimeType);
+    // [3] Stream to R2 with a hard abort at the cap — covers uploads whose real
+    // size wasn't known up front (no Content-Length) or was under-declared.
+    const { size } = await uploadStream(r2, r2Key, bodyStream, mimeType, config.MAX_FILE_SIZE_BYTES);
     await markFileReady(supabase, record.id, size);
-    await addStorageUsed(supabase, user.id, size);
+    // [4] Charge quota; adjustStorageUsed also runs the storage-alert check
+    await addStorageUsed(supabase, user.id, size, space.id);
 
     if (mimeType.startsWith('image/')) {
       try {
@@ -239,7 +328,28 @@ async function storeUpload(
     }
     return { filename: item.originalName, url: `${config.WEB_URL}/dashboard`, size };
   } catch (err) {
-    await markFileError(supabase, record.id).catch(() => undefined);
+    if (err instanceof SizeLimitExceededError) {
+      // The stream blew past the cap mid-transfer (size wasn't known up front).
+      // uploadStream already aborted the download and deleted the partial R2
+      // object; remove the never-ready row too — rejected files must not leave
+      // a files row. (Hard delete is safe here: nothing was stored in R2, so
+      // the soft-delete/tombstone rule for purge tracking doesn't apply.)
+      const { error: delErr } = await supabase.from('files').delete().eq('id', record.id);
+      if (delErr) {
+        console.error(`[upload.worker] failed to remove rejected file row ${record.id}:`, delErr);
+      }
+      console.warn(
+        `[upload.worker] size limit rejected mid-stream: user=${user.id} file="${item.originalName}" ` +
+          `limit=${config.MAX_FILE_SIZE_BYTES} at=${new Date().toISOString()}`,
+      );
+      throw new FileRejectedError(
+        `file "${item.originalName}" exceeded size limit mid-stream`,
+        sizeLimitMessage(item.originalName, null),
+      );
+    }
+    await markFileError(supabase, record.id).catch((markErr) => {
+      console.error(`[upload.worker] failed to mark file ${record.id} as error:`, markErr);
+    });
     throw err;
   }
 }
@@ -299,7 +409,18 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         await progressStore.increment(job.batchId).catch(() => undefined);
       } catch (err) {
         failed += 1;
-        console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
+        if (err instanceof FileRejectedError) {
+          // Deterministic rejection (size cap / malware) — withRetry threw it
+          // straight through, so this runs exactly once per rejected file.
+          console.warn(`[upload.worker] batch item rejected (${item.lineMessageId}): ${err.message}`);
+          try {
+            await pushMessage(target, [{ type: 'text', text: err.userMessage }]);
+          } catch (pushErr) {
+            console.error(`[upload.worker] rejection notice push failed (${item.lineMessageId}):`, pushErr);
+          }
+        } else {
+          console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
+        }
       }
     }
 
@@ -477,7 +598,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
 
   const { size } = await uploadStream(r2, r2Key, Readable.from(Buffer.from(pdfBytes)), 'application/pdf');
   await markFileReady(supabase, record.id, size);
-  await addStorageUsed(supabase, session.user_id, size);
+  await addStorageUsed(supabase, session.user_id, size, session.space_id);
   await finishSession(supabase, session.id, record.id, pages.length);
 
   // Clean up temporary page images (best-effort)

@@ -36,12 +36,26 @@ export async function getObjectStream(r2: S3Client, key: string): Promise<Readab
   return res.Body as Readable;
 }
 
-/** Stream upload — never buffers the whole file in memory or on disk. */
+/** Thrown when a capped upload stream exceeds `maxBytes` mid-transfer. */
+export class SizeLimitExceededError extends Error {
+  constructor(public readonly limitBytes: number) {
+    super(`upload stream exceeded the ${limitBytes}-byte size limit`);
+    this.name = 'SizeLimitExceededError';
+  }
+}
+
+/**
+ * Stream upload — never buffers the whole file in memory or on disk.
+ * With `maxBytes` set, the transfer hard-aborts as soon as the byte count
+ * passes the cap (throws SizeLimitExceededError); any partial R2 object is
+ * cleaned up before rethrowing.
+ */
 export async function uploadStream(
   r2: S3Client,
   key: string,
   body: Readable,
   contentType: string,
+  maxBytes?: number,
 ): Promise<{ size: number }> {
   // Count bytes through a PassThrough that is the *only* consumer of `body`, so
   // there's no risk of racing lib-storage for the source stream's data.
@@ -49,6 +63,9 @@ export async function uploadStream(
   const counter = new PassThrough();
   counter.on('data', (chunk: Buffer) => {
     size += chunk.length;
+    if (maxBytes !== undefined && size > maxBytes) {
+      counter.destroy(new SizeLimitExceededError(maxBytes));
+    }
   });
   // Surface source-stream errors to the counter so `upload.done()` rejects.
   body.on('error', (err) => counter.destroy(err));
@@ -63,7 +80,20 @@ export async function uploadStream(
       ContentType: contentType,
     },
   });
-  await upload.done();
+  try {
+    await upload.done();
+  } catch (err) {
+    // Stop pulling from the source (aborts the LINE CDN download) and remove
+    // whatever partial object may have landed. DeleteObject on a key that was
+    // never written is a successful no-op, so this is safe on any failure.
+    body.destroy();
+    try {
+      await r2.send(new DeleteObjectCommand({ Bucket: config.R2_BUCKET_NAME, Key: key }));
+    } catch (cleanupErr) {
+      console.error(`[r2] partial-object cleanup failed for ${key}:`, cleanupErr);
+    }
+    throw err;
+  }
   return { size };
 }
 

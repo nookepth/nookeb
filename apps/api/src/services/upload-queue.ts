@@ -38,6 +38,103 @@ export function hasPendingBatch(lineUserId: string): boolean {
   return queues.has(lineUserId);
 }
 
+// ── Per-user upload rate limiting (rolling 1-hour window) ────────────────────
+//
+// In-memory, per API instance (same caveat as the debounce queue above).
+// Byte counts come from the size LINE declares in the webhook event — only
+// `file` messages carry one, so image/video/audio count toward the file limit
+// but contribute 0 bytes. The file-count limit is exact.
+
+const HOUR_MS = 60 * 60 * 1000;
+
+interface RateWindowEntry {
+  timestamp: number;
+  bytes: number;
+}
+
+interface RateWindow {
+  entries: RateWindowEntry[];
+  /** true once the "over limit" notice was sent for the current limit event */
+  limitNotified: boolean;
+}
+
+const rateWindows = new Map<string, RateWindow>();
+
+const RATE_LIMIT_TEXT =
+  '⏳ คุณส่งไฟล์เกินขีดจำกัดชั่วโมงนี้แล้ว\n' +
+  `อัพโหลดได้สูงสุด ${config.RATE_LIMIT_FILES_PER_HOUR} ไฟล์ หรือ ${Math.round(config.RATE_LIMIT_BYTES_PER_HOUR / (1024 * 1024 * 1024))} GB ต่อชั่วโมง\n` +
+  'กรุณารอและลองใหม่อีกครั้ง';
+
+function getWindow(lineUserId: string): RateWindow {
+  let w = rateWindows.get(lineUserId);
+  if (!w) {
+    w = { entries: [], limitNotified: false };
+    rateWindows.set(lineUserId, w);
+  }
+  // Drop entries older than 60 minutes (entries are appended in time order)
+  const cutoff = Date.now() - HOUR_MS;
+  while (w.entries.length > 0 && w.entries[0]!.timestamp < cutoff) w.entries.shift();
+  return w;
+}
+
+export interface RateLimitStats {
+  filesThisHour: number;
+  bytesThisHour: number;
+  filesRemaining: number;
+  bytesRemaining: number;
+}
+
+/** Current rolling-window usage for a user (for dashboards/alerts). */
+export function getRateLimitStats(lineUserId: string): RateLimitStats {
+  const w = getWindow(lineUserId);
+  const filesThisHour = w.entries.length;
+  const bytesThisHour = w.entries.reduce((sum, e) => sum + e.bytes, 0);
+  return {
+    filesThisHour,
+    bytesThisHour,
+    filesRemaining: Math.max(0, config.RATE_LIMIT_FILES_PER_HOUR - filesThisHour),
+    bytesRemaining: Math.max(0, config.RATE_LIMIT_BYTES_PER_HOUR - bytesThisHour),
+  };
+}
+
+/**
+ * Check-and-record: returns true (and records nothing) if accepting this file
+ * would exceed either hourly limit; otherwise records it and re-arms the notice.
+ */
+function isRateLimited(lineUserId: string, incomingBytes: number): boolean {
+  const w = getWindow(lineUserId);
+  const files = w.entries.length;
+  const bytes = w.entries.reduce((sum, e) => sum + e.bytes, 0);
+  if (files >= config.RATE_LIMIT_FILES_PER_HOUR || bytes + incomingBytes > config.RATE_LIMIT_BYTES_PER_HOUR) {
+    return true;
+  }
+  w.entries.push({ timestamp: Date.now(), bytes: incomingBytes });
+  w.limitNotified = false; // back under the limit → future limit events notify again
+  return false;
+}
+
+/** Send the over-limit notice at most once per user per rate-limit event. */
+function notifyRateLimited(app: FastifyInstance, p: EnqueueParams): void {
+  const w = rateWindows.get(p.lineUserId);
+  if (!w || w.limitNotified) return;
+  w.limitNotified = true;
+
+  const message = { type: 'text' as const, text: RATE_LIMIT_TEXT };
+  const target = p.lineGroupId ?? p.lineUserId;
+  void (async () => {
+    try {
+      if (p.replyToken) await replyMessage(p.replyToken, [message]);
+      else await pushMessage(target, [message]);
+    } catch (err) {
+      try {
+        await pushMessage(target, [message]);
+      } catch (pushErr) {
+        app.log.error({ err, pushErr, lineUserId: p.lineUserId }, 'rate-limit notice send failed');
+      }
+    }
+  })();
+}
+
 export interface EnqueueParams {
   lineUserId: string;
   item: BatchItem;
@@ -49,6 +146,18 @@ export interface EnqueueParams {
 
 /** Add one upload to the user's batch, (re)starting the sliding debounce timer. */
 export function enqueueUpload(app: FastifyInstance, p: EnqueueParams): void {
+  // Rate limit gate — runs before anything is queued (and therefore before any
+  // LINE CDN download). Over-limit files are skipped silently except for ONE
+  // notice per limit event.
+  if (isRateLimited(p.lineUserId, p.item.fileSize ?? 0)) {
+    app.log.warn(
+      { lineUserId: p.lineUserId, file: p.item.originalName },
+      'upload rate limit exceeded — file skipped',
+    );
+    notifyRateLimited(app, p);
+    return;
+  }
+
   const existing = queues.get(p.lineUserId);
   if (existing) {
     existing.items.push(p.item);

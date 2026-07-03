@@ -236,9 +236,10 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
       .eq('id', file.id);
     if (error) throw error;
 
-    // Return the freed space to the uploader's quota
+    // Return the freed space to the uploader's quota (also re-arms the storage
+    // alert once usage drops back under the reset line)
     if (file.uploaded_by && file.file_size > 0) {
-      await adjustStorageUsed(app.supabase, file.uploaded_by, -file.file_size);
+      await adjustStorageUsed(app.supabase, file.uploaded_by, -file.file_size, file.space_id);
     }
     return reply.code(204).send();
   });

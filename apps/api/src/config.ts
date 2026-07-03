@@ -46,6 +46,21 @@ const envSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
   GOOGLE_REDIRECT_URI: z.string().url().optional(),
+
+  // Upload hard cap per file (bytes). Default 1 GB.
+  MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(1_073_741_824),
+
+  // Per-user upload rate limits (rolling 1-hour window, in-memory per API instance)
+  RATE_LIMIT_FILES_PER_HOUR: z.coerce.number().int().positive().default(50),
+  RATE_LIMIT_BYTES_PER_HOUR: z.coerce.number().int().positive().default(5_368_709_120),
+
+  // VirusTotal scanning (optional — scanning is disabled until the key is set)
+  VIRUSTOTAL_API_KEY: z.string().optional(),
+  VIRUSTOTAL_MAX_SCAN_SIZE_BYTES: z.coerce.number().int().positive().default(33_554_432),
+
+  // Storage warning thresholds (% of the uploader's storage_limit)
+  STORAGE_WARN_THRESHOLD_LOW: z.coerce.number().int().min(1).max(100).default(80),
+  STORAGE_WARN_THRESHOLD_HIGH: z.coerce.number().int().min(1).max(100).default(95),
 });
 
 export type Config = z.infer<typeof envSchema>;

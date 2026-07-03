@@ -55,6 +55,12 @@ export interface BatchItem {
   originalName: string;
   /** LINE message type: 'image' | 'file' | 'video' | 'audio' */
   kind: string;
+  /**
+   * Size declared by LINE in the webhook event (file messages only — image/
+   * video/audio events carry no size). Used for rate limiting and the pre-download
+   * size cap; the worker still verifies against the CDN Content-Length.
+   */
+  fileSize?: number | null;
 }
 
 /**

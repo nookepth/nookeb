@@ -1,5 +1,12 @@
 export type FileStatus = 'pending' | 'processing' | 'ready' | 'error';
 
+/**
+ * Virus-scan outcome recorded per file (null = uploaded before scanning
+ * existed / feature disabled). Named FileScanStatus because ScanStatus is
+ * already taken by the scan-session (scan-to-PDF) status in scan.ts.
+ */
+export type FileScanStatus = 'clean' | 'skipped_size' | 'scan_failed' | 'malicious';
+
 export type LineSource = 'user' | 'group' | 'room';
 
 export interface FileRecord {
@@ -19,6 +26,7 @@ export interface FileRecord {
   line_source: LineSource | null;
   line_group_id: string | null;
   status: FileStatus;
+  scan_status: FileScanStatus | null;
   ocr_text: string | null;
   captured_at: string | null;
   created_at: string;
