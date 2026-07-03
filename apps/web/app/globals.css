@@ -362,20 +362,45 @@ button {
     height: 30px;
   }
 
-  .navbar-search {
-    display: none;
-  }
-
-  .navbar .search-toggle {
-    display: inline-flex;
-  }
-
   .navbar-user .user-name {
     display: none;
   }
 
   .navbar .logout-btn {
     display: none;
+  }
+}
+
+/* Mobile + tablet (≤1024px): the search icon/overlay is replaced by an
+   always-visible full-width pill, and the avatar group is pinned to the far
+   right. Desktop (>1024px) keeps the centred fixed-width pill unchanged. */
+@media (max-width: 1024px) {
+  .navbar-search {
+    display: flex;
+    justify-content: stretch;
+  }
+
+  .navbar-search .search-pill {
+    min-width: 0;
+    max-width: none;
+  }
+
+  .navbar-search .search-pill input {
+    height: 44px; /* WCAG 2.5.5 touch target */
+    font-size: 16px; /* 16px keeps iOS from zooming on focus */
+  }
+
+  /* subtle brand-tinted glow on focus instead of an outline ring */
+  .navbar-search .search-pill input:focus {
+    box-shadow: 0 0 0 3px var(--color-primary-soft);
+  }
+
+  .navbar .search-toggle {
+    display: none;
+  }
+
+  .navbar-right {
+    margin-left: auto;
   }
 }
 
