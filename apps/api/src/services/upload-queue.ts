@@ -247,24 +247,28 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   if (!entry) return;
   queues.delete(lineUserId);
 
-  // 1. ONE progress card via the first replyToken. If it's expired/used (>60s or
-  //    >1 use → 400), fall back to a push (to the group when in a group).
+  // 1. ONE progress ("รอสักครู่น้า") card via the first replyToken. If it's
+  //    expired/used (>60s or >1 use → 400), fall back to a push. In a GROUP/ROOM
+  //    this card is noisy — skip it entirely; the worker already sends a short
+  //    "บันทึกแล้วน้า ✓" when the batch finishes. 1-on-1 chats keep the card.
   const target = entry.lineGroupId ?? lineUserId;
   const batchId = randomUUID();
-  const progress = buildProgressFlexMessage({
-    total: entry.items.length,
-    username: entry.username,
-    // The progress page is served by the API, not the web app — hence APP_URL
-    progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
-  });
-  try {
-    if (entry.replyToken) await replyMessage(entry.replyToken, [progress]);
-    else await pushMessage(target, [progress]);
-  } catch (err) {
+  if (entry.lineSource !== 'group' && entry.lineSource !== 'room') {
+    const progress = buildProgressFlexMessage({
+      total: entry.items.length,
+      username: entry.username,
+      // The progress page is served by the API, not the web app — hence APP_URL
+      progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
+    });
     try {
-      await pushMessage(target, [progress]);
-    } catch (pushErr) {
-      app.log.error({ err, pushErr }, 'progress card send failed');
+      if (entry.replyToken) await replyMessage(entry.replyToken, [progress]);
+      else await pushMessage(target, [progress]);
+    } catch (err) {
+      try {
+        await pushMessage(target, [progress]);
+      } catch (pushErr) {
+        app.log.error({ err, pushErr }, 'progress card send failed');
+      }
     }
   }
 

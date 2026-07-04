@@ -5,7 +5,6 @@ import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
 import { buildMergeFlexMessage, type FlexMessage } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
-import { ensureGroupSpace } from '../../services/space.service';
 import { bindLineGroup, getTeamByLineGroup, listUserTeams } from '../../services/team.service';
 import { enqueueScanPageReply, enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
 import {
@@ -72,10 +71,14 @@ async function replyFlex(event: LineMessageEvent, message: FlexMessage): Promise
   if (event.replyToken) await replyMessage(event.replyToken, [message]);
 }
 
-/** A LINE quick-reply button that sends `text` back as a message when tapped. */
+/**
+ * A LINE quick-reply button. A `uri` button opens a link; otherwise it sends
+ * `text` (falling back to the label) back as a message when tapped.
+ */
 interface QuickReplyButton {
   label: string;
-  text: string;
+  text?: string;
+  uri?: string;
 }
 
 /**
@@ -95,7 +98,9 @@ async function replyWithQuickReply(
     quickReply: {
       items: buttons.map((b) => ({
         type: 'action',
-        action: { type: 'message', label: b.label, text: b.text },
+        action: b.uri
+          ? { type: 'uri', label: b.label, uri: b.uri }
+          : { type: 'message', label: b.label, text: b.text ?? b.label },
       })),
     },
   } as unknown as LineMessage;
@@ -159,19 +164,41 @@ async function handleTextCommand(
     ];
     if (source.type === 'group') {
       buttons.push({ label: 'ไอดีกลุ่ม', text: 'ไอดีกลุ่ม' });
+      buttons.push({ label: 'ผูกทีม', text: 'ผูกทีม' });
     }
     await replyWithQuickReply(event, 'เลือกได้เลยน้า ', buttons);
     return;
   }
 
+  // "ล็อคเกอร์" in a group → quick-reply shortcuts (buttons only, no Flex card).
+  // In 1-on-1 we let it fall through to the default dashboard-link fallback below.
+  if (isCmd(text, 'ล็อคเกอร์', 'locker') && source.type === 'group') {
+    await replyWithQuickReply(event, 'ล็อคเกอร์ทีมน้า เลือกได้เลย', [
+      { label: 'ดูล็อคเกอร์', uri: `${config.WEB_URL}/dashboard` },
+      { label: 'อัพโหลดไฟล์', text: 'อัพโหลดไฟล์' },
+    ]);
+    return;
+  }
+
+  // Upload helper (the "อัพโหลดไฟล์" quick-reply button) — uploads happen by
+  // sending files straight into the chat, so just nudge the user to do that.
+  if (isCmd(text, 'อัพโหลดไฟล์', 'upload')) {
+    await reply(event, 'ส่งรูปหรือไฟล์เข้ามาในแชทนี้ได้เลยน้า เดี๋ยวหนูเก็บให้เองน้า');
+    return;
+  }
+
   // Bind this LINE group to the sender's team (group context only). Auto-binds
-  // only when it's unambiguous — the user belongs to exactly one team.
-  if (isCmd(text, 'ผูกทีม', 'bind team')) {
+  // when unambiguous (one team); with several teams the user picks by number
+  // ("ผูกทีม 2"). Match the "ผูกทีม"/"bind team" prefix, then parse the rest as
+  // an optional 1-based index.
+  const bindMatch = /^(?:ผูกทีม|bind team)\s*(\d+)?$/i.exec(text.trim());
+  if (bindMatch) {
     if (source.type !== 'group' || !source.groupId) {
       await reply(event, 'ใช้คำสั่งนี้ในกลุ่มเท่านั้นน้า');
       return;
     }
     const groupId = source.groupId;
+    const pick = bindMatch[1] ? Number(bindMatch[1]) : null; // 1-based, or null
 
     const existing = await getTeamByLineGroup(app.supabase, groupId);
     if (existing) {
@@ -182,12 +209,25 @@ async function handleTextCommand(
     const userId = await findUserId(app, lineUserId);
     const teams = userId ? await listUserTeams(app.supabase, userId) : [];
 
-    if (teams.length === 0) {
+    if (teams.length === 0 || !userId) {
       await reply(event, 'ยังไม่มีทีมน้า ไปสร้างทีมที่แดชบอร์ดก่อนน้า');
       return;
     }
-    if (teams.length === 1 && teams[0] && userId) {
-      // Unambiguous → auto-bind. userId is non-null (we found the teams via it).
+
+    // Explicit pick ("ผูกทีม 2") — bind that team regardless of team count.
+    if (pick !== null) {
+      const chosen = teams[pick - 1];
+      if (!chosen) {
+        await reply(event, `ไม่มีทีมที่ ${pick} น้า ลองใหม่อีกทีน้า`);
+        return;
+      }
+      await bindLineGroup(app.supabase, chosen.team.id, groupId, userId);
+      await reply(event, `ผูกกลุ่มกับทีม ${chosen.team.name} เรียบร้อยแล้วน้า ✓`);
+      return;
+    }
+
+    if (teams.length === 1 && teams[0]) {
+      // Unambiguous → auto-bind.
       const only = teams[0];
       await bindLineGroup(app.supabase, only.team.id, groupId, userId);
       await reply(
@@ -196,12 +236,9 @@ async function handleTextCommand(
       );
       return;
     }
-    // More than one team → can't guess which. Point them to the dashboard.
+    // More than one team → list them numbered; the user re-sends "ผูกทีม [เลข]".
     const teamList = teams.map((t, i) => `${i + 1}. ${t.team.name}`).join('\n');
-    await reply(
-      event,
-      `มีหลายทีมน้า เลือกได้จากแดชบอร์ด:\n${teamList}\nไปที่ แดชบอร์ด → ทีม → จัดการ → ผูกกลุ่ม น้า`,
-    );
+    await reply(event, `มีหลายทีมน้า พิมพ์ ผูกทีม [เลข] เพื่อเลือกได้เลย:\n${teamList}`);
     return;
   }
 
@@ -227,6 +264,12 @@ async function handleTextCommand(
   // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell;
   // "สแกน"/"scan" kept as legacy aliases — the old rich menu still sends them)
   if (isCmd(text, 'รวมรูป', 'สแกน', 'scan', '/scan', 'รวมรูปเป็น pdf')) {
+    // Merge-to-PDF is a personal-chat feature only — group scan sessions would
+    // collide across members sharing one group space.
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ระบบรวมรูปใช้ได้เฉพาะแชทส่วนตัวน้า');
+      return;
+    }
     const profile = await getProfile(lineUserId).catch(() => undefined);
     const { user, space } = await ensureUserAndSpace(
       app.supabase,
@@ -234,11 +277,8 @@ async function handleTextCommand(
       profile?.displayName,
       profile?.pictureUrl,
     );
-    const target =
-      source.type === 'group' && source.groupId
-        ? await ensureGroupSpace(app.supabase, source.groupId, user)
-        : space;
-    await startSession(app.supabase, user.id, target.id);
+    // Merge is personal-only (group/room returned above), so always the personal space.
+    await startSession(app.supabase, user.id, space.id);
     await replyFlex(event, buildMergeFlexMessage({ kind: 'opened' }));
     return;
   }

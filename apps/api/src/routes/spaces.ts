@@ -28,34 +28,60 @@ const spacesRoutes: FastifyPluginAsync = async (app) => {
 
     const rows = data as unknown as { role: SpaceRole; spaces: SpaceRecord }[];
 
-    // Resolve names for team spaces directly from their team_id link.
+    // Team-bound spaces must reference a LIVE team the user still belongs to, or
+    // they're stale (deleteTeam only soft-deletes the team row and removeMember
+    // only drops team_members — neither touches space_members, so the switcher
+    // would otherwise keep showing deleted/left teams). Validate the referenced
+    // team ids in bulk: (a) team not soft-deleted, (b) user still a team_member.
+    // (The `spaces` table has no deleted_at column, so there's no space-level
+    // soft-delete to filter here.)
     const teamIds = Array.from(
       new Set(
         rows
+          .filter((r) => r.spaces.type === 'team')
           .map((r) => r.spaces.team_id)
           .filter((id): id is string => typeof id === 'string' && id.length > 0),
       ),
     );
     const teamNameById = new Map<string, string>();
+    const activeTeamIds = new Set<string>();
     if (teamIds.length > 0) {
       const { data: teams, error: teamErr } = await app.supabase
         .from('teams')
-        .select('id, name, deleted_at')
+        .select('id, name')
         .in('id', teamIds)
         .is('deleted_at', null);
       if (teamErr) throw teamErr;
       for (const t of teams as { id: string; name: string }[]) {
         teamNameById.set(t.id, t.name);
       }
+
+      const { data: memberships, error: memErr } = await app.supabase
+        .from('team_members')
+        .select('team_id')
+        .eq('user_id', userId)
+        .in('team_id', teamIds);
+      if (memErr) throw memErr;
+      for (const m of memberships as { team_id: string }[]) {
+        activeTeamIds.add(m.team_id);
+      }
     }
 
-    const spaces: SpaceDto[] = rows.map((row) => {
-      const teamName =
-        row.spaces.type === 'team' && row.spaces.team_id
-          ? teamNameById.get(row.spaces.team_id) ?? null
-          : null;
-      return toSpaceDto(row.spaces, row.role, teamName);
-    });
+    const spaces: SpaceDto[] = rows
+      .filter((row) => {
+        if (row.spaces.type !== 'team') return true; // personal spaces are unaffected
+        const tid = row.spaces.team_id;
+        if (!tid) return true; // group space not bound to a team — no team to check
+        // team-bound space: keep only if the team is live AND the user is a member
+        return teamNameById.has(tid) && activeTeamIds.has(tid);
+      })
+      .map((row) => {
+        const teamName =
+          row.spaces.type === 'team' && row.spaces.team_id
+            ? teamNameById.get(row.spaces.team_id) ?? null
+            : null;
+        return toSpaceDto(row.spaces, row.role, teamName);
+      });
     // personal first, then teams by name
     spaces.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'personal' ? -1 : 1));
     return { spaces };
