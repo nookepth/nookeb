@@ -10,7 +10,6 @@ import { enqueueScanPageReply, enqueueUpload, hasPendingBatch } from '../../serv
 import {
   cancelSession,
   countPages,
-  deletePageAt,
   getActiveSession,
   setSessionStatus,
   startSession,
@@ -140,29 +139,6 @@ async function handleTextCommand(
 
   const userId = await findUserId(app, lineUserId);
   const session = userId ? await getActiveSession(app.supabase, userId) : null;
-
-  // Cancel one collected page while in merge mode: "ยกเลิกรูปที่ N" (1-based).
-  // Method A (typed command) only — no button. Checked before เสร็จ / ยกเลิก.
-  const cancelPageMatch = text.trim().match(/^ยกเลิกรูปที่\s*(\d+)$/);
-  if (cancelPageMatch) {
-    if (!session) {
-      await reply(event, 'ยังไม่ได้เปิดโหมดรวมรูปเลยน้า พิมพ์ "รวมรูป" ก่อน แล้วค่อยส่งรูปน้า');
-      return;
-    }
-    const n = parseInt(cancelPageMatch[1]!, 10);
-    const idx = n - 1;
-    const result = await deletePageAt(app.supabase, session.id, idx);
-    if (!result.deleted) {
-      await reply(event, `ไม่มีรูปที่ ${n} น้า ตอนนี้มีทั้งหมด ${result.total} รูปในคิว`);
-      return;
-    }
-    if (result.remaining === 0) {
-      await reply(event, `ลบรูปที่ ${n} ออกแล้วน้า คิวว่างเปล่าแล้ว ส่งรูปใหม่ได้เลย หรือพิมพ์ "ยกเลิก" เพื่อออก`);
-    } else {
-      await reply(event, `ลบรูปที่ ${n} ออกแล้วน้า เหลือ ${result.remaining} รูปในคิว\nครบแล้วพิมพ์ "เสร็จ" ได้เลยน้า`);
-    }
-    return;
-  }
 
   // Finish merge → build the PDF ("รวมรูป" moved to the start triggers above)
   if (isCmd(text, 'เสร็จ', 'done', 'finish')) {

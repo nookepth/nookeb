@@ -1,12 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ScanPageRecord, ScanSessionRecord } from '@nookeb/shared';
-import { createR2Client, deleteObject } from './r2.service';
 
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours, matches the schema default
-
-// Reused for best-effort cleanup of a removed page's scan-temp object (same
-// client style as the worker; page cancellation is an infrequent user command).
-const r2 = createR2Client();
 
 /** The user's active (still-collecting, unexpired) scan session, if any. */
 export async function getActiveSession(
@@ -139,49 +134,6 @@ export async function listPages(
     .order('created_at', { ascending: true });
   if (error) throw error;
   return (data as ScanPageRecord[]) ?? [];
-}
-
-/**
- * Remove the collected page at 0-based `idx` (arrival order — the same order
- * `finalize_scan` uses to build the PDF, so it matches the "รูปที่ N" the user
- * counts). Returns `total` (pages present BEFORE the delete, for index
- * validation / messaging) and `remaining` (after). `deleted` is false when the
- * index is out of range — nothing is touched. The page's scan-temp R2 object is
- * dropped best-effort, mirroring the finalize cleanup; a failed object delete
- * never fails the command (it just leaves an orphan for later session cleanup).
- */
-export async function deletePageAt(
-  supabase: SupabaseClient,
-  sessionId: string,
-  idx: number,
-): Promise<{ deleted: boolean; total: number; remaining: number }> {
-  // Explicit ASC-by-created_at ordering, kept LOCAL to this function rather than
-  // relying on the shared listPages() default — index 0 = first image sent =
-  // "รูปที่ 1". finalize_scan keeps its own (also-ASC) ordering, untouched.
-  const { data, error: listErr } = await supabase
-    .from('scan_pages')
-    .select('*')
-    .eq('session_id', sessionId)
-    .order('created_at', { ascending: true });
-  if (listErr) throw listErr;
-  const pages = (data as ScanPageRecord[]) ?? [];
-  const total = pages.length;
-  if (idx < 0 || idx >= total) {
-    return { deleted: false, total, remaining: total };
-  }
-  const page = pages[idx]!;
-  console.log(
-    `[deletePageAt] n=${idx + 1} idx=${idx} total=${pages.length} ` +
-      `deleting page_id=${page.id} created_at=${page.created_at}`,
-  );
-  const { error } = await supabase.from('scan_pages').delete().eq('id', page.id);
-  if (error) throw error;
-  try {
-    await deleteObject(r2, page.r2_key);
-  } catch {
-    // best-effort — an orphaned temp object must not fail the user's command
-  }
-  return { deleted: true, total, remaining: total - 1 };
 }
 
 export async function finishSession(

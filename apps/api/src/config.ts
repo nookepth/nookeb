@@ -55,6 +55,12 @@ const envSchema = z.object({
   RATE_LIMIT_BYTES_PER_HOUR: z.coerce.number().int().positive().default(5_368_709_120),
 
   // VirusTotal scanning (optional — scanning is disabled until the key is set)
+  // Master on/off switch: even with a key set, scanning stays OFF unless this is
+  // exactly 'true' (VT adds ~5-60s per file). Default: off.
+  ENABLE_VIRUS_SCAN: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
   VIRUSTOTAL_API_KEY: z.string().optional(),
   VIRUSTOTAL_MAX_SCAN_SIZE_BYTES: z.coerce.number().int().positive().default(33_554_432),
 

@@ -48,9 +48,12 @@ export type ScanVerdict =
   | { outcome: 'malicious'; detections: number; engines: string[] }
   | { outcome: 'scan_failed'; reason: string };
 
-/** Scanning is opt-in: without an API key the pipeline skips it entirely. */
+/**
+ * Scanning is opt-in and requires BOTH switches: the `ENABLE_VIRUS_SCAN=true`
+ * flag AND a configured API key. Either one missing skips scanning entirely.
+ */
 export function isVirusScanEnabled(): boolean {
-  return Boolean(config.VIRUSTOTAL_API_KEY);
+  return config.ENABLE_VIRUS_SCAN && Boolean(config.VIRUSTOTAL_API_KEY);
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

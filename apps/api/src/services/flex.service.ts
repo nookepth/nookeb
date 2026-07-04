@@ -266,7 +266,7 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
                 { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
               ],
             },
-            { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า\nหากต้องการยกเลิกรูปไหน พิมพ์ "ยกเลิกรูปที่ …" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
+            { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
           ],
         },
         footer: {
