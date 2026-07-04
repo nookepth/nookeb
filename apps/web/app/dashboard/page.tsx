@@ -289,7 +289,7 @@ export default function DashboardPage() {
       <div className="center-page">
         <Image src="/logo.png" alt="หนูเก็บ" width={120} height={120} className="login-logo" priority />
         <h1>หนูเก็บ</h1>
-        <p>เข้าสู่ระบบด้วย LINE เพื่อเปิดคลังสมบัติของคุณ</p>
+        <p>เข้าสู่ระบบด้วย LINE เพื่อเปิดล็อคเกอร์ของคุณ</p>
         <button className="btn" onClick={startLineLogin}>
           เข้าสู่ระบบด้วย LINE
         </button>

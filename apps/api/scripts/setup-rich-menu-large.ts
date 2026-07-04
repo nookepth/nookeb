@@ -3,13 +3,13 @@
  *
  * Layout (3 columns x 2 rows, each cell 833/834 x 843):
  *   ┌───────────────┬───────────────┬───────────────┐
- *   │ คลังสมบัติ     │ แนะนำตัว       │ รวมรูปเป็น PDF  │   row 0 (y 0..843)
+ *   │ ล็อคเกอร์     │ แนะนำตัว       │ รวมรูปเป็น PDF  │   row 0 (y 0..843)
  *   ├───────────────┼───────────────┼───────────────┤
  *   │ วิธีใช้งาน      │ สแกนรูปเป็น PDF │ ช่วยเหลือ       │   row 1 (y 843..1686)
  *   └───────────────┴───────────────┴───────────────┘
  *
  * The bot has NO postback handler (see apps/api/src/routes/webhook/line.ts), so the
- * cells use `uri` (คลังสมบัติ → dashboard) and `message` actions whose trigger words
+ * cells use `uri` (ล็อคเกอร์ → dashboard) and `message` actions whose trigger words
  * the webhook's text-command handler understands. Keep these in sync with that handler.
  *
  * What it does: validates the image against LINE's spec → creates the rich menu →
@@ -17,7 +17,7 @@
  *
  * Env (read directly from process.env):
  *   LINE_CHANNEL_ACCESS_TOKEN   (required) — Messaging API channel access token
- *   WEB_URL                     (optional) — dashboard base URL for the คลังสมบัติ cell
+ *   WEB_URL                     (optional) — dashboard base URL for the ล็อคเกอร์ cell
  *                                            (default http://localhost:3000; localhost is
  *                                            refused unless RICH_MENU_ALLOW_LOCALHOST=1)
  *   RICH_MENU_IMAGE             (optional) — path to the menu image (default ./rich_menu.png)
@@ -115,13 +115,13 @@ async function loadAndValidateImage(imagePath: string): Promise<{ buffer: Buffer
   return { buffer, contentType: format === 'png' ? 'image/png' : 'image/jpeg' };
 }
 
-/** Resolve the dashboard URL for the คลังสมบัติ cell, guarding against baking in localhost. */
+/** Resolve the dashboard URL for the ล็อคเกอร์ cell, guarding against baking in localhost. */
 function resolveDashboardUri(): string {
   const webUrl = process.env.WEB_URL ?? 'http://localhost:3000';
   const uri = `${webUrl.replace(/\/+$/, '')}/dashboard`;
   if (uri.includes('localhost') && process.env.RICH_MENU_ALLOW_LOCALHOST !== '1') {
     throw new Error(
-      `WEB_URL = "${webUrl}" → คลังสมบัติ จะลิงก์ไป localhost ซึ่งใช้ไม่ได้กับผู้ใช้จริง\n` +
+      `WEB_URL = "${webUrl}" → ล็อคเกอร์ จะลิงก์ไป localhost ซึ่งใช้ไม่ได้กับผู้ใช้จริง\n` +
         `ตั้ง WEB_URL เป็น URL production (หรือ RICH_MENU_ALLOW_LOCALHOST=1 ถ้าตั้งใจทดสอบ localhost)`,
     );
   }
@@ -139,7 +139,7 @@ function buildAreas(dashboardUri: string): RichMenuArea[] {
     // Row 0
     {
       bounds: { x: x0, y: y0, width: COL_W, height: ROW_H },
-      action: { type: 'uri', uri: 'https://nookeb-web.vercel.app', label: 'คลังสมบัติ' },
+      action: { type: 'uri', uri: 'https://nookeb-web.vercel.app', label: 'ล็อคเกอร์' },
     },
     {
       bounds: { x: x1, y: y0, width: CENTER_W, height: ROW_H },
@@ -178,7 +178,7 @@ async function main(): Promise<void> {
 
   // 2. Resolve the dashboard link + build the 6 tap areas
   const dashboardUri = resolveDashboardUri();
-  log(`→ คลังสมบัติ ลิงก์ไป: ${dashboardUri}`);
+  log(`→ ล็อคเกอร์ ลิงก์ไป: ${dashboardUri}`);
   const areas = buildAreas(dashboardUri);
 
   // 3. List existing menus (removed after the new one is live)

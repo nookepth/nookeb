@@ -51,6 +51,19 @@ function iconRow(color: string, text: string, textColor: string = INK): Record<s
 }
 
 /**
+ * Gray secondary "cancel" button — lets the user leave merge mode at any step
+ * without having to type "ยกเลิก" (sends that same trigger word as a message).
+ */
+function cancelButton(): Record<string, unknown> {
+  return {
+    type: 'button',
+    style: 'secondary',
+    height: 'sm',
+    action: { type: 'message', label: 'ยกเลิก ✖', text: 'ยกเลิก' },
+  };
+}
+
+/**
  * Initial "processing" card. Sent once via the first event's replyToken.
  * @param params.total           number of files in the batch
  * @param params.username        display name (null → "คุณ")
@@ -75,9 +88,9 @@ export function buildProgressFlexMessage(params: {
           style: 'primary',
           color: BRAND_RED,
           margin: 'md',
-          action: { type: 'uri', label: 'ดูคลังสมบัติได้เลย', uri: progressViewUrl },
+          action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: progressViewUrl },
         }
-      : { type: 'text', text: `ดูคลังสมบัติได้เลย: ${progressViewUrl}`, size: 'xs', color: BRAND_RED, wrap: true, margin: 'md' },
+      : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${progressViewUrl}`, size: 'xs', color: BRAND_RED, wrap: true, margin: 'md' },
   );
   return {
     type: 'flex',
@@ -125,8 +138,8 @@ export function buildSummaryFlexMessage(params: {
   dashboardUrl: string;
   username: string | null;
   /**
-   * When set, render the "ระบบรวมไฟล์" (merge-to-PDF) completion variant instead
-   * of the upload summary: brand-red header titled "ระบบรวมไฟล์" and a single
+   * When set, render the "ระบบรวมรูป" (merge-to-PDF) completion variant instead
+   * of the upload summary: brand-red header titled "ระบบรวมรูป" and a single
    * "หนูรวม N ไฟล์เป็น PDF ให้แล้วน้า" status line. Everything else (file list,
    * timestamp, dashboard button) is shared with the upload card.
    */
@@ -136,7 +149,7 @@ export function buildSummaryFlexMessage(params: {
   const total = success + failed;
   const who = params.username ?? 'คุณ';
   const title = merge
-    ? 'ระบบรวมไฟล์'
+    ? 'ระบบรวมรูป'
     : failed === 0
       ? 'เก็บไฟล์แย้วน้า'
       : 'ทำเสร็จแล้วน้า แต่มีนิดนึงที่ไม่ผ่าน';
@@ -178,9 +191,9 @@ export function buildSummaryFlexMessage(params: {
         style: 'primary',
         color: BRAND_RED,
         height: 'sm',
-        action: { type: 'uri', label: 'ไปดูคลังสมบัติได้เลยน้า', uri: dashboardUrl },
+        action: { type: 'uri', label: 'ไปดูล็อคเกอร์ได้เลยน้า', uri: dashboardUrl },
       }
-    : { type: 'text', text: `ไปดูคลังสมบัติได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
+    : { type: 'text', text: `ไปดูล็อคเกอร์ได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
 
   const altText = merge
     ? `หนูรวม ${merge.count} ไฟล์เป็น PDF ให้แล้วน้า`
@@ -207,13 +220,13 @@ export function buildSummaryFlexMessage(params: {
   };
 }
 
-/** Which "ระบบรวมไฟล์" (merge-to-PDF) card to build. */
+/** Which "ระบบรวมรูป" (merge-to-PDF) card to build. */
 export type MergeCardVariant =
   | { kind: 'opened' }
   | { kind: 'page'; count: number };
 
 /**
- * "ระบบรวมไฟล์" session cards — same kilo-bubble structure as the upload cards
+ * "ระบบรวมรูป" session cards — same kilo-bubble structure as the upload cards
  * above (green header title bar, dot-row status, muted footer). One builder,
  * two variants: 'opened' (session start) and 'page' (per-page confirmation).
  */
@@ -223,13 +236,13 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
     layout: 'vertical',
     paddingAll: '16px',
     contents: [
-      { type: 'text', text: 'ระบบรวมไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+      { type: 'text', text: 'ระบบรวมรูป', weight: 'bold', size: 'lg', color: '#FFFFFF' },
     ],
   };
   const styles = { header: { backgroundColor: BRAND_RED }, body: { backgroundColor: '#FFFFFF' } };
 
   if (variant.kind === 'page') {
-    const headline = `เพิ่มไฟล์ ${variant.count} รายการแล้วน้า`;
+    const headline = `เพิ่มรูป ${variant.count} รายการแล้วน้า`;
     return {
       type: 'flex',
       altText: headline,
@@ -256,6 +269,12 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
             { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
           ],
         },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          paddingAll: '12px',
+          contents: [cancelButton()],
+        },
         styles,
       },
     };
@@ -263,7 +282,7 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
 
   return {
     type: 'flex',
-    altText: 'เปิดโหมดรวมไฟล์แล้วน้า',
+    altText: 'เปิดโหมดรวมรูปแล้วน้า',
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -274,7 +293,7 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
         spacing: 'md',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'เปิดโหมดรวมไฟล์แล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
+          { type: 'text', text: 'เปิดโหมดรวมรูปแล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
           {
             type: 'text',
             text: 'ส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้',
@@ -288,9 +307,7 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
         type: 'box',
         layout: 'vertical',
         paddingAll: '12px',
-        contents: [
-          { type: 'text', text: '(พิมพ์ "ยกเลิก" ถ้าไม่เอาแล้วน้า)', size: 'xs', color: MUTED, wrap: true },
-        ],
+        contents: [cancelButton()],
       },
       styles,
     },

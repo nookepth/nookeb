@@ -179,7 +179,7 @@ export function enqueueUpload(app: FastifyInstance, p: EnqueueParams): void {
 
 // ── Per-user scan-page reply debounce ────────────────────────────────────────
 //
-// Images sent during a merge (ระบบรวมไฟล์) session each enqueue their own
+// Images sent during a merge (ระบบรวมรูป) session each enqueue their own
 // `add_scan_page` job, but we must NOT reply per image — that floods the chat
 // with duplicate "เพิ่มไฟล์ …" cards. Instead we debounce the confirmation on
 // the same sliding 1500ms window as uploads and send ONE card showing the total

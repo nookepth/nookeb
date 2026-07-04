@@ -578,7 +578,7 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
 
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
-  const name = `รวมไฟล์_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
+  const name = `รวมรูป_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
 
   const fileId = randomUUID();
   const r2Key = buildFileKey(session.space_id, fileId, name);

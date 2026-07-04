@@ -66,7 +66,7 @@ const VIEW_HTML = `<!DOCTYPE html>
     if (p.status === 'done') {
       clearInterval(timer);
       document.getElementById('card').className = 'card done';
-      document.getElementById('status').textContent = 'เสร็จแล้วน้า พาพี่ไปดูคลังสมบัติเลย';
+      document.getElementById('status').textContent = 'เสร็จแล้วน้า พาพี่ไปดูล็อคเกอร์เลย';
       setTimeout(function () { window.location.href = dashboardUrl; }, 3000);
     }
   }
