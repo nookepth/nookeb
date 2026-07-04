@@ -5,7 +5,13 @@ import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
 import { buildMergeFlexMessage, type FlexMessage } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
-import { bindLineGroup, getTeamByLineGroup, listUserTeams } from '../../services/team.service';
+import {
+  bindLineGroup,
+  getTeamByLineGroup,
+  getTeamRole,
+  listUserTeams,
+  unbindLineGroup,
+} from '../../services/team.service';
 import { enqueueScanPageReply, enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
 import {
   cancelSession,
@@ -164,6 +170,7 @@ async function handleTextCommand(
       'หนูเก็บวิธีใช้',                // quick reply button
       'หนูเก็บไอดีกลุ่ม',             // quick reply button
       'หนูเก็บผูกทีม',                // quick reply button
+      'หนูเก็บยกเลิกผูกทีม',          // quick reply button
       'หนูเก็บดูล็อคเกอร์',           // ล็อคเกอร์ sub-menu button
       'หนูเก็บอัพโหลดไฟล์',           // ล็อคเกอร์ sub-menu button
     ];
@@ -197,6 +204,7 @@ async function handleTextCommand(
     if (source.type === 'group') {
       buttons.push({ label: 'หนูเก็บไอดีกลุ่ม', text: 'หนูเก็บไอดีกลุ่ม' });
       buttons.push({ label: 'หนูเก็บผูกทีม', text: 'หนูเก็บผูกทีม' });
+      buttons.push({ label: 'หนูเก็บยกเลิกผูกทีม', text: 'หนูเก็บยกเลิกผูกทีม' });
     }
     await replyWithQuickReply(event, 'เลือกได้เลยน้า ', buttons);
     return;
@@ -222,6 +230,31 @@ async function handleTextCommand(
   // sending files straight into the chat, so just nudge the user to do that.
   if (isCmd(text, 'อัพโหลดไฟล์', 'upload', 'หนูเก็บอัพโหลดไฟล์')) {
     await reply(event, 'ส่งรูปหรือไฟล์เข้ามาในแชทนี้ได้เลยน้า เดี๋ยวหนูเก็บให้เองน้า');
+    return;
+  }
+
+  // Unbind this LINE group from its team (group context only; owner/admin only).
+  if (isCmd(text, 'หนูเก็บยกเลิกผูกทีม')) {
+    if (source.type !== 'group' || !source.groupId) {
+      await reply(event, 'ใช้ได้เฉพาะในกลุ่มน้า');
+      return;
+    }
+    const groupId = source.groupId;
+    const team = await getTeamByLineGroup(app.supabase, groupId);
+    if (!team) {
+      await reply(event, 'กลุ่มนี้ยังไม่ได้ผูกกับทีมไหนเลยน้า');
+      return;
+    }
+    // Permission: only owner/admin can unbind (unbindLineGroup enforces this too,
+    // but check first so we can reply with a friendly message instead of throwing).
+    const userId = await findUserId(app, lineUserId);
+    const role = userId ? await getTeamRole(app.supabase, team.id, userId) : null;
+    if (!userId || !role || !['owner', 'admin'].includes(role)) {
+      await reply(event, 'เฉพาะเจ้าของทีมหรือแอดมินเท่านั้นที่ยกเลิกผูกได้น้า');
+      return;
+    }
+    await unbindLineGroup(app.supabase, team.id, groupId, userId);
+    await reply(event, `ยกเลิกการผูกกลุ่มกับทีม ${team.name} เรียบร้อยแล้วน้า`);
     return;
   }
 
