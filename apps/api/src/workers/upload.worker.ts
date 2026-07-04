@@ -386,43 +386,50 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         ? await ensureGroupSpace(supabase, job.lineGroupId, user)
         : personalSpace;
 
-    // Enforce quota across the batch with a locally tracked running total
-    // (avoids a DB re-read per file; storage_used itself is updated atomically).
-    let used = user.storage_used;
+    // Quota gate. Files are now processed in PARALLEL (see below), so instead of
+    // threading a running total through a sequential loop we check the
+    // batch-start snapshot. The authoritative accounting (increment_storage_used
+    // RPC inside addStorageUsed) is still atomic and per-file; only the
+    // intra-batch soft cutoff is relaxed — a batch may overshoot by at most its
+    // own item count.
     const limit = user.storage_limit;
+    const overLimit = user.storage_used >= limit;
 
-    const files: { filename: string; url: string }[] = [];
-    let failed = 0;
-
-    for (const item of job.items) {
-      if (used >= limit) {
-        failed += 1;
-        continue;
-      }
-      try {
-        const res = await withRetry(
-          () => storeUpload(user, space, item, job.lineSource, job.lineGroupId),
-          3,
-        );
-        used += res.size;
-        files.push({ filename: res.filename, url: res.url });
-        await progressStore.increment(job.batchId).catch(() => undefined);
-      } catch (err) {
-        failed += 1;
-        if (err instanceof FileRejectedError) {
-          // Deterministic rejection (size cap / malware) — withRetry threw it
-          // straight through, so this runs exactly once per rejected file.
-          console.warn(`[upload.worker] batch item rejected (${item.lineMessageId}): ${err.message}`);
-          try {
-            await pushMessage(target, [{ type: 'text', text: err.userMessage }]);
-          } catch (pushErr) {
-            console.error(`[upload.worker] rejection notice push failed (${item.lineMessageId}):`, pushErr);
+    // Process the batch in PARALLEL: the dominant cost per file is the VirusTotal
+    // poll (up to ~60s). Run sequentially this made a batch stall at 0/N for
+    // minutes; overlapping the scans makes the batch finish in ~one scan's time.
+    // progressStore.increment is an atomic Redis HINCRBY, so concurrent ticks are
+    // safe, and each storeUpload still charges storage atomically on its own.
+    const results = await Promise.all(
+      job.items.map(async (item): Promise<{ filename: string; url: string } | null> => {
+        if (overLimit) return null;
+        try {
+          const res = await withRetry(
+            () => storeUpload(user, space, item, job.lineSource, job.lineGroupId),
+            3,
+          );
+          await progressStore.increment(job.batchId).catch(() => undefined);
+          return { filename: res.filename, url: res.url };
+        } catch (err) {
+          if (err instanceof FileRejectedError) {
+            // Deterministic rejection (size cap / malware) — withRetry threw it
+            // straight through, so this runs exactly once per rejected file.
+            console.warn(`[upload.worker] batch item rejected (${item.lineMessageId}): ${err.message}`);
+            try {
+              await pushMessage(target, [{ type: 'text', text: err.userMessage }]);
+            } catch (pushErr) {
+              console.error(`[upload.worker] rejection notice push failed (${item.lineMessageId}):`, pushErr);
+            }
+          } else {
+            console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
           }
-        } else {
-          console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
+          return null;
         }
-      }
-    }
+      }),
+    );
+
+    const files = results.filter((r): r is { filename: string; url: string } => r !== null);
+    const failed = job.items.length - files.length;
 
     const summary = buildSummaryFlexMessage({
       success: files.length,

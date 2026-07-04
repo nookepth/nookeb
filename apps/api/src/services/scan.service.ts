@@ -155,12 +155,25 @@ export async function deletePageAt(
   sessionId: string,
   idx: number,
 ): Promise<{ deleted: boolean; total: number; remaining: number }> {
-  const pages = await listPages(supabase, sessionId);
+  // Explicit ASC-by-created_at ordering, kept LOCAL to this function rather than
+  // relying on the shared listPages() default — index 0 = first image sent =
+  // "รูปที่ 1". finalize_scan keeps its own (also-ASC) ordering, untouched.
+  const { data, error: listErr } = await supabase
+    .from('scan_pages')
+    .select('*')
+    .eq('session_id', sessionId)
+    .order('created_at', { ascending: true });
+  if (listErr) throw listErr;
+  const pages = (data as ScanPageRecord[]) ?? [];
   const total = pages.length;
   if (idx < 0 || idx >= total) {
     return { deleted: false, total, remaining: total };
   }
   const page = pages[idx]!;
+  console.log(
+    `[deletePageAt] n=${idx + 1} idx=${idx} total=${pages.length} ` +
+      `deleting page_id=${page.id} created_at=${page.created_at}`,
+  );
   const { error } = await supabase.from('scan_pages').delete().eq('id', page.id);
   if (error) throw error;
   try {
