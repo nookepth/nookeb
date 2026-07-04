@@ -8,6 +8,8 @@ export interface SpaceRecord {
   owner_id: string | null;
   type: SpaceType;
   line_group_id: string | null;
+  /** Direct link to the owning team (migration 007); null for personal / unbound spaces. */
+  team_id: string | null;
   created_at: string;
 }
 

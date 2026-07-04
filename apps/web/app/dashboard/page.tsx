@@ -42,7 +42,7 @@ function spaceLabel(s: SpaceDto, username?: string | null): string {
     const who = username?.trim() || 'ของฉัน';
     return `ส่วนตัว · คลัง${who}`;
   }
-  return `${s.teamName?.trim() || s.name} · คลังทีม`;
+  return `${s.teamName?.trim() || 'ทีม (ไม่มีชื่อ)'} · คลังทีม`;
 }
 
 const TYPE_TABS: { id: TypeFilter; label: string }[] = [

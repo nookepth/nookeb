@@ -15,9 +15,9 @@ const spacesRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
   // GET /spaces — every space the user belongs to, with their role.
-  // Team spaces are enriched with the linked team's name (spaces.line_group_id
-  // → team_line_groups → teams) so the dashboard switcher can show the real
-  // team name instead of the generic group-space name.
+  // Team spaces are enriched with the linked team's name via the direct
+  // spaces.team_id → teams FK (migration 007) so the dashboard switcher shows the
+  // real team name instead of the generic group-space name.
   app.get('/spaces', async (request) => {
     const userId = request.authUser!.userId;
     const { data, error } = await app.supabase
@@ -28,34 +28,32 @@ const spacesRoutes: FastifyPluginAsync = async (app) => {
 
     const rows = data as unknown as { role: SpaceRole; spaces: SpaceRecord }[];
 
-    // Resolve team names for team spaces that are bound to a LINE group.
-    const lineGroupIds = Array.from(
+    // Resolve names for team spaces directly from their team_id link.
+    const teamIds = Array.from(
       new Set(
         rows
-          .map((r) => r.spaces.line_group_id)
+          .map((r) => r.spaces.team_id)
           .filter((id): id is string => typeof id === 'string' && id.length > 0),
       ),
     );
-    const teamNameByGroup = new Map<string, string>();
-    if (lineGroupIds.length > 0) {
-      const { data: bindings, error: bindErr } = await app.supabase
-        .from('team_line_groups')
-        .select('line_group_id, teams!inner(name, deleted_at)')
-        .in('line_group_id', lineGroupIds)
-        .is('teams.deleted_at', null);
-      if (bindErr) throw bindErr;
-      for (const b of bindings as unknown as {
-        line_group_id: string;
-        teams: { name: string };
-      }[]) {
-        teamNameByGroup.set(b.line_group_id, b.teams.name);
+    const teamNameById = new Map<string, string>();
+    if (teamIds.length > 0) {
+      const { data: teams, error: teamErr } = await app.supabase
+        .from('teams')
+        .select('id, name, deleted_at')
+        .in('id', teamIds)
+        .is('deleted_at', null);
+      if (teamErr) throw teamErr;
+      for (const t of teams as { id: string; name: string }[]) {
+        teamNameById.set(t.id, t.name);
       }
     }
 
     const spaces: SpaceDto[] = rows.map((row) => {
-      const teamName = row.spaces.line_group_id
-        ? teamNameByGroup.get(row.spaces.line_group_id) ?? null
-        : null;
+      const teamName =
+        row.spaces.type === 'team' && row.spaces.team_id
+          ? teamNameById.get(row.spaces.team_id) ?? null
+          : null;
       return toSpaceDto(row.spaces, row.role, teamName);
     });
     // personal first, then teams by name

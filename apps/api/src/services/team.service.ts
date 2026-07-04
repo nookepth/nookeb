@@ -408,6 +408,9 @@ export async function bindLineGroup(
         .maybeSingle();
       const spaceId = (space as { id: string } | null)?.id;
       if (spaceId) {
+        // Stamp the direct team_id link (migration 007) so /spaces can resolve
+        // the team name by a simple join instead of the line_group_id path.
+        await supabase.from('spaces').update({ team_id: teamId }).eq('id', spaceId);
         for (const m of (teamMembers as { user_id: string }[] | null) ?? []) {
           await addMember(supabase, spaceId, m.user_id, 'member');
         }

@@ -29,6 +29,37 @@ function buildInviteUrl(token: string): string {
   return `${origin}/join?team_invite=${token}`;
 }
 
+/**
+ * Copy text to the clipboard, returning whether it actually succeeded. Tries the
+ * modern async Clipboard API first, then falls back to a hidden <textarea> +
+ * execCommand('copy') for LINE WebView / older Safari where the async API is
+ * blocked. Never throws; a false return means "tell the user to copy manually".
+ */
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      /* fall through to the legacy path */
+    }
+  }
+  try {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    const ok = document.execCommand('copy');
+    document.body.removeChild(textarea);
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('th-TH', { day: 'numeric', month: 'short', year: 'numeric' });
 }
@@ -49,6 +80,7 @@ export default function TeamDetailPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null);
+  const [lastInviteUrl, setLastInviteUrl] = useState<string | null>(null);
   const [myUserId, setMyUserId] = useState<string | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [leaveBusy, setLeaveBusy] = useState(false);
@@ -86,8 +118,12 @@ export default function TeamDetailPage() {
     setInviteBusy(true);
     try {
       const invite = await createTeamInvite(teamId);
-      await navigator.clipboard.writeText(buildInviteUrl(invite.token)).catch(() => {});
-      flash('คัดลอกลิงก์แล้วน้า ส่งให้เพื่อนได้เลย ✓');
+      const url = buildInviteUrl(invite.token);
+      setLastInviteUrl(url);
+      const copied = await copyToClipboard(url);
+      // Only claim success when the copy really happened — otherwise the URL
+      // field below lets the user select + copy it by hand.
+      if (copied) flash('คัดลอกลิงก์แล้วน้า ส่งให้เพื่อนได้เลย ✓');
       await load();
     } catch (err) {
       flash(err instanceof ApiError ? `เชิญไม่สำเร็จน้า: ${err.message}` : 'เชิญไม่สำเร็จน้า ลองใหม่อีกทีน้า');
@@ -97,7 +133,8 @@ export default function TeamDetailPage() {
   }
 
   async function handleCopyInvite(inviteId: string, token: string) {
-    await navigator.clipboard.writeText(buildInviteUrl(token)).catch(() => {});
+    const copied = await copyToClipboard(buildInviteUrl(token));
+    if (!copied) return; // no "copied" badge if it didn't actually copy
     setCopiedInviteId(inviteId);
     setTimeout(() => setCopiedInviteId((cur) => (cur === inviteId ? null : cur)), 2000);
   }
@@ -278,8 +315,19 @@ export default function TeamDetailPage() {
         <section className="team-section">
           <div className="team-section-title">เชิญสมาชิก</div>
           <button className="btn" disabled={inviteBusy} onClick={handleInvite}>
-            {inviteBusy ? 'กำลังสร้างลิงก์...' : 'เชิญสมาชิก (สร้างลิงก์ + คัดลอก)'}
+            {inviteBusy ? 'กำลังสร้างลิงก์...' : 'เชิญสมาชิก'}
           </button>
+          {lastInviteUrl && (
+            <div className="invite-manual">
+              <div className="team-card-meta">แตะเพื่อเลือก แล้วคัดลอกเองได้เลยน้า</div>
+              <input
+                readOnly
+                value={lastInviteUrl}
+                onClick={(e) => e.currentTarget.select()}
+                style={{ width: '100%', fontSize: '12px' }}
+              />
+            </div>
+          )}
           {invites.length > 0 && (
             <>
               <div className="team-card-meta">ลิงก์เชิญที่ยังใช้ได้:</div>
