@@ -545,15 +545,29 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     const files = results.filter((r): r is { filename: string; url: string } => r !== null);
     const failed = job.items.length - files.length;
 
-    const summary = buildSummaryFlexMessage({
-      success: files.length,
-      failed,
-      files,
-      dashboardUrl: `${config.WEB_URL}/dashboard`,
-      username,
-    });
+    // In a GROUP chat keep it quiet — one short text line, no Flex card (the card
+    // is chatty and noisy in a shared group). 1-on-1 chats keep the full summary.
     try {
-      await pushMessage(target, [summary]);
+      if (job.lineSource === 'group') {
+        let text: string;
+        if (files.length === 0) {
+          text = 'ยังเก็บไม่สำเร็จน้า ลองส่งใหม่อีกทีนะคะ';
+        } else if (failed > 0) {
+          text = `บันทึกแล้วน้า ✓ (สำเร็จ ${files.length}, พลาด ${failed})`;
+        } else {
+          text = 'บันทึกแล้วน้า ✓';
+        }
+        await pushMessage(target, [{ type: 'text', text }]);
+      } else {
+        const summary = buildSummaryFlexMessage({
+          success: files.length,
+          failed,
+          files,
+          dashboardUrl: `${config.WEB_URL}/dashboard`,
+          username,
+        });
+        await pushMessage(target, [summary]);
+      }
     } catch (err) {
       console.error('[upload.worker] summary push failed:', err);
     }
@@ -561,15 +575,21 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // Setup failed (profile/space resolution) — report a full-failure card, don't throw
     console.error('[upload.worker] upload_batch fatal:', err);
     try {
-      await pushMessage(target, [
-        buildSummaryFlexMessage({
-          success: 0,
-          failed: job.items.length,
-          files: [],
-          dashboardUrl: `${config.WEB_URL}/dashboard`,
-          username: job.username,
-        }),
-      ]);
+      if (job.lineSource === 'group') {
+        await pushMessage(target, [
+          { type: 'text', text: 'ยังเก็บไม่สำเร็จน้า ลองส่งใหม่อีกทีนะคะ' },
+        ]);
+      } else {
+        await pushMessage(target, [
+          buildSummaryFlexMessage({
+            success: 0,
+            failed: job.items.length,
+            files: [],
+            dashboardUrl: `${config.WEB_URL}/dashboard`,
+            username: job.username,
+          }),
+        ]);
+      }
     } catch {
       /* ignore — nothing else we can do */
     }
