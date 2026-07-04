@@ -1726,6 +1726,7 @@ button:active,
 }
 
 .invite-token,
+.invite-url,
 .group-id {
   font-family: ui-monospace, monospace;
   font-size: var(--font-size-xs);
@@ -1734,6 +1735,25 @@ button:active,
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+.invite-url {
+  flex: 1;
+}
+
+.invite-row-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.invite-copy {
+  white-space: nowrap;
+}
+
+.leave-team-btn {
+  margin-top: 12px;
 }
 
 .bind-form {

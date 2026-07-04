@@ -5,7 +5,9 @@ import type {
   TeamMemberDto,
   TeamRecord,
   TeamRole,
+  UserRecord,
 } from '@nookeb/shared';
+import { addMember, ensureGroupSpace } from './space.service';
 
 /**
  * Error with a stable machine code + HTTP status. team.router.ts maps these to
@@ -35,6 +37,40 @@ export class StorageQuotaError extends TeamError {
 
 const notFound = (what: string) => new TeamError('NOT_FOUND', `${what} not found`, 404);
 const forbidden = (msg: string) => new TeamError('FORBIDDEN', msg, 403);
+
+/**
+ * Best-effort: make `userId` a member of every group space bound to the team,
+ * so the team's storage shows up in the dashboard switcher immediately (the
+ * switcher lists SPACES, and a fresh team_members row alone isn't enough).
+ * Never throws — a failure here must not block the join/bind it accompanies.
+ */
+async function joinTeamGroupSpaces(
+  supabase: SupabaseClient,
+  teamId: string,
+  userId: string,
+): Promise<void> {
+  try {
+    const { data: bindings } = await supabase
+      .from('team_line_groups')
+      .select('line_group_id')
+      .eq('team_id', teamId);
+    const groupIds = ((bindings as { line_group_id: string }[] | null) ?? []).map(
+      (g) => g.line_group_id,
+    );
+    if (groupIds.length === 0) return;
+
+    const { data: spaces } = await supabase
+      .from('spaces')
+      .select('id')
+      .in('line_group_id', groupIds)
+      .eq('type', 'team');
+    for (const s of (spaces as { id: string }[] | null) ?? []) {
+      await addMember(supabase, s.id, userId, 'member');
+    }
+  } catch {
+    // best-effort — the team_members row is the source of truth
+  }
+}
 
 /** Role lookup; null when not a member (or the team is soft-deleted). */
 export async function getTeamRole(
@@ -256,6 +292,9 @@ export async function acceptInvite(
     if (joinErr) throw joinErr;
   }
 
+  // Surface the team in the dashboard switcher right away (see helper).
+  await joinTeamGroupSpaces(supabase, invite.team_id, userId);
+
   const { error: markErr } = await supabase
     .from('team_invites')
     .update({ status: 'accepted' })
@@ -343,6 +382,41 @@ export async function bindLineGroup(
     .select('*')
     .single();
   if (error) throw error;
+
+  // Materialize the group space now (best-effort) so every current team member
+  // gets a space membership immediately — otherwise the space wouldn't exist
+  // until the first file arrives, and members couldn't see it in the switcher.
+  try {
+    const { data: binder } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+    if (binder) {
+      await ensureGroupSpace(supabase, lineGroupId, binder as UserRecord);
+      await joinTeamGroupSpaces(supabase, teamId, userId);
+      // add all existing team members to the freshly created group space
+      const { data: teamMembers } = await supabase
+        .from('team_members')
+        .select('user_id')
+        .eq('team_id', teamId);
+      const { data: space } = await supabase
+        .from('spaces')
+        .select('id')
+        .eq('line_group_id', lineGroupId)
+        .eq('type', 'team')
+        .maybeSingle();
+      const spaceId = (space as { id: string } | null)?.id;
+      if (spaceId) {
+        for (const m of (teamMembers as { user_id: string }[] | null) ?? []) {
+          await addMember(supabase, spaceId, m.user_id, 'member');
+        }
+      }
+    }
+  } catch {
+    // best-effort — the binding is the source of truth
+  }
+
   return data as TeamLineGroupRecord;
 }
 

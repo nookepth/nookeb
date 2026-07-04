@@ -36,6 +36,15 @@ import { BoxIcon, DatabaseIcon, DocIcon, FolderIcon, GridIcon, ImageIcon, ListIc
 type TypeFilter = 'all' | FileGroup;
 type SortKey = 'newest' | 'oldest' | 'name' | 'size';
 
+/** Switcher label: personal → "ส่วนตัว · คลัง{username}", team → "{teamName} · คลังทีม". */
+function spaceLabel(s: SpaceDto, username?: string | null): string {
+  if (s.type === 'personal') {
+    const who = username?.trim() || 'ของฉัน';
+    return `ส่วนตัว · คลัง${who}`;
+  }
+  return `${s.teamName?.trim() || s.name} · คลังทีม`;
+}
+
 const TYPE_TABS: { id: TypeFilter; label: string }[] = [
   { id: 'all', label: 'ทั้งหมด' },
   { id: 'image', label: 'รูปภาพ' },
@@ -354,7 +363,7 @@ export default function DashboardPage() {
             >
               {spaces.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.type === 'personal' ? 'ส่วนตัว' : 'ทีม'} · {s.name}
+                  {spaceLabel(s, user?.displayName)}
                 </option>
               ))}
             </select>

@@ -7,6 +7,7 @@ import {
   bindTeamGroup,
   createTeamInvite,
   deleteTeam,
+  getMe,
   getTeamDetail,
   getToken,
   removeTeamMember,
@@ -20,6 +21,12 @@ function roleLabel(role: string): string {
   if (role === 'owner') return 'เจ้าของทีม';
   if (role === 'admin') return 'แอดมิน';
   return 'สมาชิก';
+}
+
+/** Full, shareable invite URL — same shape the /join page reads. */
+function buildInviteUrl(token: string): string {
+  const origin = typeof window !== 'undefined' ? window.location.origin : '';
+  return `${origin}/join?team_invite=${token}`;
 }
 
 function formatDate(iso: string): string {
@@ -41,6 +48,10 @@ export default function TeamDetailPage() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [copiedInviteId, setCopiedInviteId] = useState<string | null>(null);
+  const [myUserId, setMyUserId] = useState<string | null>(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+  const [leaveBusy, setLeaveBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +71,9 @@ export default function TeamDetailPage() {
       return;
     }
     void load();
+    getMe()
+      .then((me) => setMyUserId(me.id))
+      .catch(() => {});
   }, [load]);
 
   const flash = (msg: string) => {
@@ -72,13 +86,32 @@ export default function TeamDetailPage() {
     setInviteBusy(true);
     try {
       const invite = await createTeamInvite(teamId);
-      await navigator.clipboard.writeText(invite.url).catch(() => {});
-      flash('สร้างลิงก์เชิญแล้ว คัดลอกให้เรียบร้อยเลยน้า ส่งให้เพื่อนได้เลย');
+      await navigator.clipboard.writeText(buildInviteUrl(invite.token)).catch(() => {});
+      flash('คัดลอกลิงก์แล้วน้า ส่งให้เพื่อนได้เลย ✓');
       await load();
     } catch (err) {
       flash(err instanceof ApiError ? `เชิญไม่สำเร็จน้า: ${err.message}` : 'เชิญไม่สำเร็จน้า ลองใหม่อีกทีน้า');
     } finally {
       setInviteBusy(false);
+    }
+  }
+
+  async function handleCopyInvite(inviteId: string, token: string) {
+    await navigator.clipboard.writeText(buildInviteUrl(token)).catch(() => {});
+    setCopiedInviteId(inviteId);
+    setTimeout(() => setCopiedInviteId((cur) => (cur === inviteId ? null : cur)), 2000);
+  }
+
+  async function handleLeaveTeam() {
+    if (leaveBusy || !myUserId) return;
+    setLeaveBusy(true);
+    try {
+      await removeTeamMember(teamId, myUserId);
+      router.push('/dashboard/teams');
+    } catch (err) {
+      setConfirmLeave(false);
+      setLeaveBusy(false);
+      flash(err instanceof ApiError ? `ออกจากทีมไม่สำเร็จน้า: ${err.message}` : 'ออกจากทีมไม่สำเร็จน้า');
     }
   }
 
@@ -233,6 +266,11 @@ export default function TeamDetailPage() {
             ))}
           </tbody>
         </table>
+        {!isOwner && (
+          <button className="btn secondary small leave-team-btn" onClick={() => setConfirmLeave(true)}>
+            ออกจากทีม
+          </button>
+        )}
       </section>
 
       {/* Invites */}
@@ -247,8 +285,19 @@ export default function TeamDetailPage() {
               <div className="team-card-meta">ลิงก์เชิญที่ยังใช้ได้:</div>
               {invites.map((inv) => (
                 <div key={inv.id} className="invite-row">
-                  <span className="invite-token">{inv.token}</span>
-                  <span className="team-card-meta">หมดอายุ {formatDate(inv.expiresAt)}</span>
+                  <span className="invite-url" title={buildInviteUrl(inv.token)}>
+                    {buildInviteUrl(inv.token)}
+                  </span>
+                  <div className="invite-row-right">
+                    <button
+                      className="btn ghost small invite-copy"
+                      onClick={() => handleCopyInvite(inv.id, inv.token)}
+                      aria-label="คัดลอกลิงก์เชิญ"
+                    >
+                      {copiedInviteId === inv.id ? 'คัดลอกแล้ว ✓' : '📋 คัดลอก'}
+                    </button>
+                    <span className="team-card-meta">หมดอายุ {formatDate(inv.expiresAt)}</span>
+                  </div>
                 </div>
               ))}
             </>
@@ -298,6 +347,21 @@ export default function TeamDetailPage() {
             ลบทีม
           </button>
         </section>
+      )}
+
+      {confirmLeave && (
+        <div className="modal-overlay" onClick={() => !leaveBusy && setConfirmLeave(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">ออกจากทีม “{team.name}” ใช่ไหมน้า?</div>
+            <p className="team-card-meta">ไฟล์ของทีมจะยังอยู่ในทีม ไม่ถูกลบน้า</p>
+            <button className="btn danger" disabled={leaveBusy} onClick={handleLeaveTeam}>
+              {leaveBusy ? 'กำลังออกจากทีม...' : 'ยืนยันออกจากทีม'}
+            </button>
+            <button className="btn ghost" disabled={leaveBusy} onClick={() => setConfirmLeave(false)}>
+              ยกเลิก
+            </button>
+          </div>
+        </div>
       )}
 
       {confirmDelete && (

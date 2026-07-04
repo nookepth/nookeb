@@ -14,7 +14,10 @@ import { getMemberRole } from '../services/space.service';
 const spacesRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
-  // GET /spaces — every space the user belongs to, with their role
+  // GET /spaces — every space the user belongs to, with their role.
+  // Team spaces are enriched with the linked team's name (spaces.line_group_id
+  // → team_line_groups → teams) so the dashboard switcher can show the real
+  // team name instead of the generic group-space name.
   app.get('/spaces', async (request) => {
     const userId = request.authUser!.userId;
     const { data, error } = await app.supabase
@@ -23,9 +26,38 @@ const spacesRoutes: FastifyPluginAsync = async (app) => {
       .eq('user_id', userId);
     if (error) throw error;
 
-    const spaces: SpaceDto[] = (data as unknown as { role: SpaceRole; spaces: SpaceRecord }[]).map(
-      (row) => toSpaceDto(row.spaces, row.role),
+    const rows = data as unknown as { role: SpaceRole; spaces: SpaceRecord }[];
+
+    // Resolve team names for team spaces that are bound to a LINE group.
+    const lineGroupIds = Array.from(
+      new Set(
+        rows
+          .map((r) => r.spaces.line_group_id)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0),
+      ),
     );
+    const teamNameByGroup = new Map<string, string>();
+    if (lineGroupIds.length > 0) {
+      const { data: bindings, error: bindErr } = await app.supabase
+        .from('team_line_groups')
+        .select('line_group_id, teams!inner(name, deleted_at)')
+        .in('line_group_id', lineGroupIds)
+        .is('teams.deleted_at', null);
+      if (bindErr) throw bindErr;
+      for (const b of bindings as unknown as {
+        line_group_id: string;
+        teams: { name: string };
+      }[]) {
+        teamNameByGroup.set(b.line_group_id, b.teams.name);
+      }
+    }
+
+    const spaces: SpaceDto[] = rows.map((row) => {
+      const teamName = row.spaces.line_group_id
+        ? teamNameByGroup.get(row.spaces.line_group_id) ?? null
+        : null;
+      return toSpaceDto(row.spaces, row.role, teamName);
+    });
     // personal first, then teams by name
     spaces.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'personal' ? -1 : 1));
     return { spaces };

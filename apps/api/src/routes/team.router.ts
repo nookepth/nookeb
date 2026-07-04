@@ -8,6 +8,7 @@ import {
   createTeam,
   deleteTeam,
   getTeam,
+  getTeamRole,
   inviteMember,
   listLineGroups,
   listPendingInvites,
@@ -121,16 +122,31 @@ const teamRoutes: FastifyPluginAsync = async (app) => {
     return ok(reply, toTeamDto(team, { role: 'member' }));
   });
 
-  // DELETE /api/teams/:teamId/members/:userId — owner/admin removes a member
+  // DELETE /api/teams/:teamId/members/:userId — remove a member.
+  // Owner/admin can remove others; any member can remove THEMSELVES (leave the
+  // team). The owner can't leave — they must delete the team instead.
   app.delete<{ Params: { teamId: string; userId: string } }>(
     '/:teamId/members/:userId',
     async (request, reply) => {
-      await removeMember(
-        app.supabase,
-        request.params.teamId,
-        request.params.userId,
-        request.authUser!.userId,
-      );
+      const requesterId = request.authUser!.userId;
+      const { teamId, userId } = request.params;
+
+      if (userId === requesterId) {
+        const role = await getTeamRole(app.supabase, teamId, requesterId);
+        if (!role) return fail(reply, 404, 'NOT_FOUND', 'Member not found');
+        if (role === 'owner') {
+          return fail(reply, 400, 'OWNER_CANNOT_LEAVE', 'The owner must delete the team instead of leaving');
+        }
+        const { error } = await app.supabase
+          .from('team_members')
+          .delete()
+          .eq('team_id', teamId)
+          .eq('user_id', requesterId);
+        if (error) throw error;
+        return ok(reply, { removed: true });
+      }
+
+      await removeMember(app.supabase, teamId, userId, requesterId);
       return ok(reply, { removed: true });
     },
   );
