@@ -154,10 +154,21 @@ async function handleTextCommand(
   const source = event.source;
   const lineUserId = source.userId!;
 
-  // In group/room chats, stay silent for everything except "หนูเก็บ" (the menu),
-  // which falls through to its handler below. 1-on-1 chats are unaffected.
+  // In group/room chats, stay silent for everything except the menu trigger and
+  // the quick-reply button texts, which fall through to their handlers below.
+  // 1-on-1 chats are unaffected.
   if (source.type === 'group' || source.type === 'room') {
-    if (!isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) return;
+    const allowed = [
+      'หนูเก็บ', 'menu', 'เมนู',   // menu trigger
+      'ล็อคเกอร์',                  // quick reply button
+      'วิธีใช้',                    // quick reply button
+      'ไอดีกลุ่ม',                  // quick reply button
+      'ผูกทีม',                     // quick reply button
+    ];
+    // "ผูกทีม"/"bind team" may carry a 1-based index ("ผูกทีม 2") for the
+    // numbered team-pick re-send, so allow that form too.
+    const isBindTeam = /^(?:ผูกทีม|bind team)\s*\d*$/i.test(text.trim());
+    if (!isBindTeam && !allowed.some((cmd) => isCmd(text, cmd))) return;
   }
 
   // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
