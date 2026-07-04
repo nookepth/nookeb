@@ -171,9 +171,9 @@ async function handleTextCommand(
     return;
   }
 
-  // "ล็อคเกอร์" in a group → quick-reply shortcuts (buttons only, no Flex card).
-  // In 1-on-1 we let it fall through to the default dashboard-link fallback below.
-  if (isCmd(text, 'ล็อคเกอร์', 'locker') && source.type === 'group') {
+  // "ล็อคเกอร์" → quick-reply shortcuts (buttons only, no Flex card) in ALL
+  // sources (group AND 1-on-1).
+  if (isCmd(text, 'ล็อคเกอร์', 'locker')) {
     await replyWithQuickReply(event, 'ล็อคเกอร์ทีมน้า เลือกได้เลย', [
       { label: 'ดูล็อคเกอร์', uri: `${config.WEB_URL}/dashboard` },
       { label: 'อัพโหลดไฟล์', text: 'อัพโหลดไฟล์' },
