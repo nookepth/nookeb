@@ -2,11 +2,11 @@ import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import type { AddScanPageJob, LineSource } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
-import { getProfile, replyMessage } from '../../services/line.service';
+import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
 import { buildMergeFlexMessage, type FlexMessage } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
 import { ensureGroupSpace } from '../../services/space.service';
-import { getTeamByLineGroup } from '../../services/team.service';
+import { bindLineGroup, getTeamByLineGroup, listUserTeams } from '../../services/team.service';
 import { enqueueScanPageReply, enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
 import {
   cancelSession,
@@ -72,6 +72,36 @@ async function replyFlex(event: LineMessageEvent, message: FlexMessage): Promise
   if (event.replyToken) await replyMessage(event.replyToken, [message]);
 }
 
+/** A LINE quick-reply button that sends `text` back as a message when tapped. */
+interface QuickReplyButton {
+  label: string;
+  text: string;
+}
+
+/**
+ * Reply with a text message carrying LINE quick-reply buttons. The `TextMessage`
+ * type doesn't model `quickReply`, so we build the payload here and cast — the
+ * shape matches the LINE Messaging API.
+ */
+async function replyWithQuickReply(
+  event: LineMessageEvent,
+  text: string,
+  buttons: QuickReplyButton[],
+): Promise<void> {
+  if (!event.replyToken) return;
+  const message = {
+    type: 'text',
+    text,
+    quickReply: {
+      items: buttons.map((b) => ({
+        type: 'action',
+        action: { type: 'message', label: b.label, text: b.text },
+      })),
+    },
+  } as unknown as LineMessage;
+  await replyMessage(event.replyToken, [message]);
+}
+
 /** Lightweight lookup — does not create a user (used before we know we need one). */
 async function findUserId(app: FastifyInstance, lineUserId: string): Promise<string | null> {
   const { data, error } = await app.supabase
@@ -118,6 +148,62 @@ async function handleTextCommand(
 ): Promise<void> {
   const source = event.source;
   const lineUserId = source.userId!;
+
+  // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
+  // LINE quick-reply buttons — the last one only makes sense inside a group.
+  if (isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) {
+    const buttons: QuickReplyButton[] = [
+      { label: 'ล็อคเกอร์', text: 'ล็อคเกอร์' },
+      { label: 'รวมรูป', text: 'รวมรูป' },
+      { label: 'วิธีใช้', text: 'วิธีใช้' },
+    ];
+    if (source.type === 'group') {
+      buttons.push({ label: 'ไอดีกลุ่ม', text: 'ไอดีกลุ่ม' });
+    }
+    await replyWithQuickReply(event, 'เลือกได้เลยน้า ', buttons);
+    return;
+  }
+
+  // Bind this LINE group to the sender's team (group context only). Auto-binds
+  // only when it's unambiguous — the user belongs to exactly one team.
+  if (isCmd(text, 'ผูกทีม', 'bind team')) {
+    if (source.type !== 'group' || !source.groupId) {
+      await reply(event, 'ใช้คำสั่งนี้ในกลุ่มเท่านั้นน้า');
+      return;
+    }
+    const groupId = source.groupId;
+
+    const existing = await getTeamByLineGroup(app.supabase, groupId);
+    if (existing) {
+      await reply(event, `กลุ่มนี้ผูกกับทีม ${existing.name} อยู่แล้วน้า`);
+      return;
+    }
+
+    const userId = await findUserId(app, lineUserId);
+    const teams = userId ? await listUserTeams(app.supabase, userId) : [];
+
+    if (teams.length === 0) {
+      await reply(event, 'ยังไม่มีทีมน้า ไปสร้างทีมที่แดชบอร์ดก่อนน้า');
+      return;
+    }
+    if (teams.length === 1 && teams[0] && userId) {
+      // Unambiguous → auto-bind. userId is non-null (we found the teams via it).
+      const only = teams[0];
+      await bindLineGroup(app.supabase, only.team.id, groupId, userId);
+      await reply(
+        event,
+        `ผูกกลุ่มกับทีม ${only.team.name} แล้วน้า\nส่งไฟล์ในกลุ่มนี้จะเข้าพื้นที่ทีมเลย ✓`,
+      );
+      return;
+    }
+    // More than one team → can't guess which. Point them to the dashboard.
+    const teamList = teams.map((t, i) => `${i + 1}. ${t.team.name}`).join('\n');
+    await reply(
+      event,
+      `มีหลายทีมน้า เลือกได้จากแดชบอร์ด:\n${teamList}\nไปที่ แดชบอร์ด → ทีม → จัดการ → ผูกกลุ่ม น้า`,
+    );
+    return;
+  }
 
   // Show this group's LINE Group ID (for binding it to a team in the dashboard)
   if (isCmd(text, 'ไอดีกลุ่ม', 'group id', 'groupid')) {
@@ -193,8 +279,8 @@ async function handleTextCommand(
     return;
   }
 
-  // Self-introduction (rich-menu "แนะนำตัว" cell)
-  if (isCmd(text, 'แนะนำตัว', 'หนูเก็บ')) {
+  // Self-introduction (rich-menu "แนะนำตัว" cell; "หนูเก็บ" now opens the menu)
+  if (isCmd(text, 'แนะนำตัว')) {
     await reply(event, INTRO_TEXT);
     return;
   }
@@ -211,8 +297,8 @@ async function handleTextCommand(
     return;
   }
 
-  // How-to / usage guide (rich-menu "วิธีใช้งาน" cell)
-  if (isCmd(text, 'วิธีใช้', 'วิธีใช้งาน', 'help', 'เมนู')) {
+  // How-to / usage guide (rich-menu "วิธีใช้งาน" cell; "เมนู" now opens the menu)
+  if (isCmd(text, 'วิธีใช้', 'วิธีใช้งาน', 'help')) {
     await reply(event, HELP_TEXT);
     return;
   }
