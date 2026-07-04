@@ -157,11 +157,12 @@ async function handleTextCommand(
   // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
   // LINE quick-reply buttons — the last one only makes sense inside a group.
   if (isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) {
-    const buttons: QuickReplyButton[] = [
-      { label: 'ล็อคเกอร์', text: 'ล็อคเกอร์' },
-      { label: 'รวมรูป', text: 'รวมรูป' },
-      { label: 'วิธีใช้', text: 'วิธีใช้' },
-    ];
+    const buttons: QuickReplyButton[] = [{ label: 'ล็อคเกอร์', text: 'ล็อคเกอร์' }];
+    // รวมรูป is personal-chat only, so it's not offered in a group menu.
+    if (source.type !== 'group') {
+      buttons.push({ label: 'รวมรูป', text: 'รวมรูป' });
+    }
+    buttons.push({ label: 'วิธีใช้', text: 'วิธีใช้' });
     if (source.type === 'group') {
       buttons.push({ label: 'ไอดีกลุ่ม', text: 'ไอดีกลุ่ม' });
       buttons.push({ label: 'ผูกทีม', text: 'ผูกทีม' });
