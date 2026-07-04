@@ -256,7 +256,7 @@ async function handleTextCommand(
     if (pick !== null) {
       const chosen = teams[pick - 1];
       if (!chosen) {
-        await reply(event, `ไม่มีทีมที่ ${pick} น้า ลองใหม่อีกทีน้า`);
+        await reply(event, `ไม่มีทีมที่ ${pick} น้า ลองใหม่ด้วย หนูเก็บผูกทีม [เลข] น้า`);
         return;
       }
       await bindLineGroup(app.supabase, chosen.team.id, groupId, userId);
@@ -276,7 +276,7 @@ async function handleTextCommand(
     }
     // More than one team → list them numbered; the user re-sends "ผูกทีม [เลข]".
     const teamList = teams.map((t, i) => `${i + 1}. ${t.team.name}`).join('\n');
-    await reply(event, `มีหลายทีมน้า พิมพ์ ผูกทีม [เลข] เพื่อเลือกได้เลย:\n${teamList}`);
+    await reply(event, `มีหลายทีมน้า พิมพ์ หนูเก็บผูกทีม [เลข] เพื่อเลือกได้เลยน้า:\n${teamList}`);
     return;
   }
 
