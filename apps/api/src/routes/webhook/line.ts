@@ -154,6 +154,12 @@ async function handleTextCommand(
   const source = event.source;
   const lineUserId = source.userId!;
 
+  // In group/room chats, stay silent for everything except "หนูเก็บ" (the menu),
+  // which falls through to its handler below. 1-on-1 chats are unaffected.
+  if (source.type === 'group' || source.type === 'room') {
+    if (!isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) return;
+  }
+
   // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
   // LINE quick-reply buttons — the last one only makes sense inside a group.
   if (isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) {
