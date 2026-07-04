@@ -159,30 +159,44 @@ async function handleTextCommand(
   // 1-on-1 chats are unaffected.
   if (source.type === 'group' || source.type === 'room') {
     const allowed = [
-      'หนูเก็บ', 'menu', 'เมนู',   // menu trigger
-      'ล็อคเกอร์',                  // quick reply button
-      'วิธีใช้',                    // quick reply button
-      'ไอดีกลุ่ม',                  // quick reply button
-      'ผูกทีม',                     // quick reply button
+      'หนูเก็บ', 'menu', 'เมนู',       // menu trigger
+      'หนูเก็บล็อคเกอร์',              // quick reply button
+      'หนูเก็บวิธีใช้',                // quick reply button
+      'หนูเก็บไอดีกลุ่ม',             // quick reply button
+      'หนูเก็บผูกทีม',                // quick reply button
+      'หนูเก็บดูล็อคเกอร์',           // ล็อคเกอร์ sub-menu button
+      'หนูเก็บอัพโหลดไฟล์',           // ล็อคเกอร์ sub-menu button
     ];
-    // "ผูกทีม"/"bind team" may carry a 1-based index ("ผูกทีม 2") for the
-    // numbered team-pick re-send, so allow that form too.
-    const isBindTeam = /^(?:ผูกทีม|bind team)\s*\d*$/i.test(text.trim());
+    // The numbered team-pick re-send ("หนูเก็บผูกทีม 2" / "ผูกทีม 2") carries a
+    // 1-based index after a space, so allow that form too.
+    const isBindTeam = /^(?:หนูเก็บผูกทีม|ผูกทีม|bind team)\s+\d+$/i.test(text.trim());
     if (!isBindTeam && !allowed.some((cmd) => isCmd(text, cmd))) return;
   }
 
   // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
   // LINE quick-reply buttons — the last one only makes sense inside a group.
   if (isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) {
-    const buttons: QuickReplyButton[] = [{ label: 'ล็อคเกอร์', text: 'ล็อคเกอร์' }];
+    // In group/room the button texts carry a "หนูเก็บ" prefix so their tapped
+    // text is unique and passes the group guard without clashing with normal
+    // human typing. In 1-on-1 the buttons stay bare (no guard there).
+    const inGroup = source.type === 'group' || source.type === 'room';
+    const buttons: QuickReplyButton[] = [
+      inGroup
+        ? { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' }
+        : { label: 'ล็อคเกอร์', text: 'ล็อคเกอร์' },
+    ];
     // รวมรูป is personal-chat only, so it's not offered in a group menu.
-    if (source.type !== 'group') {
+    if (!inGroup) {
       buttons.push({ label: 'รวมรูป', text: 'รวมรูป' });
     }
-    buttons.push({ label: 'วิธีใช้', text: 'วิธีใช้' });
+    buttons.push(
+      inGroup
+        ? { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' }
+        : { label: 'วิธีใช้', text: 'วิธีใช้' },
+    );
     if (source.type === 'group') {
-      buttons.push({ label: 'ไอดีกลุ่ม', text: 'ไอดีกลุ่ม' });
-      buttons.push({ label: 'ผูกทีม', text: 'ผูกทีม' });
+      buttons.push({ label: 'หนูเก็บไอดีกลุ่ม', text: 'หนูเก็บไอดีกลุ่ม' });
+      buttons.push({ label: 'หนูเก็บผูกทีม', text: 'หนูเก็บผูกทีม' });
     }
     await replyWithQuickReply(event, 'เลือกได้เลยน้า ', buttons);
     return;
@@ -190,17 +204,23 @@ async function handleTextCommand(
 
   // "ล็อคเกอร์" → quick-reply shortcuts (buttons only, no Flex card) in ALL
   // sources (group AND 1-on-1).
-  if (isCmd(text, 'ล็อคเกอร์', 'locker')) {
+  if (isCmd(text, 'ล็อคเกอร์', 'locker', 'หนูเก็บล็อคเกอร์')) {
+    const inGroup = source.type === 'group' || source.type === 'room';
     await replyWithQuickReply(event, 'ล็อคเกอร์น้า เลือกได้เลย', [
-      { label: 'ดูล็อคเกอร์', uri: `${config.WEB_URL}/dashboard` },
-      { label: 'อัพโหลดไฟล์', text: 'อัพโหลดไฟล์' },
+      {
+        label: inGroup ? 'หนูเก็บดูล็อคเกอร์' : 'ดูล็อคเกอร์',
+        uri: `${config.WEB_URL}/dashboard`,
+      },
+      inGroup
+        ? { label: 'หนูเก็บอัพโหลดไฟล์', text: 'หนูเก็บอัพโหลดไฟล์' }
+        : { label: 'อัพโหลดไฟล์', text: 'อัพโหลดไฟล์' },
     ]);
     return;
   }
 
   // Upload helper (the "อัพโหลดไฟล์" quick-reply button) — uploads happen by
   // sending files straight into the chat, so just nudge the user to do that.
-  if (isCmd(text, 'อัพโหลดไฟล์', 'upload')) {
+  if (isCmd(text, 'อัพโหลดไฟล์', 'upload', 'หนูเก็บอัพโหลดไฟล์')) {
     await reply(event, 'ส่งรูปหรือไฟล์เข้ามาในแชทนี้ได้เลยน้า เดี๋ยวหนูเก็บให้เองน้า');
     return;
   }
@@ -209,7 +229,7 @@ async function handleTextCommand(
   // when unambiguous (one team); with several teams the user picks by number
   // ("ผูกทีม 2"). Match the "ผูกทีม"/"bind team" prefix, then parse the rest as
   // an optional 1-based index.
-  const bindMatch = /^(?:ผูกทีม|bind team)\s*(\d+)?$/i.exec(text.trim());
+  const bindMatch = /^(?:หนูเก็บผูกทีม|ผูกทีม|bind team)\s*(\d+)?$/i.exec(text.trim());
   if (bindMatch) {
     if (source.type !== 'group' || !source.groupId) {
       await reply(event, 'ใช้คำสั่งนี้ในกลุ่มเท่านั้นน้า');
@@ -261,7 +281,7 @@ async function handleTextCommand(
   }
 
   // Show this group's LINE Group ID (for binding it to a team in the dashboard)
-  if (isCmd(text, 'ไอดีกลุ่ม', 'group id', 'groupid')) {
+  if (isCmd(text, 'ไอดีกลุ่ม', 'group id', 'groupid', 'หนูเก็บไอดีกลุ่ม')) {
     if (source.type !== 'group' || !source.groupId) {
       await reply(event, 'คำสั่งนี้ใช้ได้ในกลุ่มเท่านั้นน้า');
       return;
@@ -356,7 +376,7 @@ async function handleTextCommand(
   }
 
   // How-to / usage guide (rich-menu "วิธีใช้งาน" cell; "เมนู" now opens the menu)
-  if (isCmd(text, 'วิธีใช้', 'วิธีใช้งาน', 'help')) {
+  if (isCmd(text, 'วิธีใช้', 'วิธีใช้งาน', 'help', 'หนูเก็บวิธีใช้')) {
     await reply(event, HELP_TEXT);
     return;
   }
