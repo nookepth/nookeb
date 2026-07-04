@@ -395,9 +395,12 @@ export async function listJoinRequests(
 ): Promise<TeamJoinRequestDto[]> {
   await requireRole(supabase, teamId, requesterId, ['owner', 'admin'], 'view join requests');
 
+  // Disambiguate the embed: team_join_requests has TWO FKs to users (user_id and
+  // reviewed_by), so a bare users!inner(...) is ambiguous (PostgREST PGRST201).
+  // The !user_id hint pins it to the requester.
   const { data, error } = await supabase
     .from('team_join_requests')
-    .select('id, requested_at, users!inner(id, display_name, picture_url)')
+    .select('id, requested_at, users!user_id(id, display_name, picture_url)')
     .eq('team_id', teamId)
     .eq('status', 'pending')
     .order('requested_at', { ascending: true });
