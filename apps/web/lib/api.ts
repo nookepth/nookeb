@@ -2,11 +2,13 @@ import type {
   FileDto,
   FileListResponse,
   FolderDto,
+  JoinRequestResult,
   SpaceDto,
   SpaceMemberDto,
   TagDto,
   TeamDto,
   TeamInviteDto,
+  TeamJoinRequestDto,
   TeamLineGroupDto,
   TeamMemberDto,
   UserDto,
@@ -309,8 +311,29 @@ export function createTeamInvite(
   return teamFetch(`/${teamId}/invite`, { method: 'POST' });
 }
 
-export function acceptTeamInvite(token: string): Promise<TeamDto> {
-  return teamFetch<TeamDto>(`/invite/${encodeURIComponent(token)}/accept`, { method: 'POST' });
+/** Raises a join request; an owner/admin must approve before the user is added. */
+export function acceptTeamInvite(token: string): Promise<JoinRequestResult> {
+  return teamFetch<JoinRequestResult>(`/invite/${encodeURIComponent(token)}/accept`, {
+    method: 'POST',
+  });
+}
+
+export function listTeamJoinRequests(teamId: string): Promise<TeamJoinRequestDto[]> {
+  return teamFetch<TeamJoinRequestDto[]>(`/${teamId}/requests`);
+}
+
+export function approveTeamJoinRequest(
+  teamId: string,
+  requestId: string,
+): Promise<{ approved: boolean }> {
+  return teamFetch(`/${teamId}/requests/${requestId}/approve`, { method: 'POST' });
+}
+
+export function rejectTeamJoinRequest(
+  teamId: string,
+  requestId: string,
+): Promise<{ rejected: boolean }> {
+  return teamFetch(`/${teamId}/requests/${requestId}/reject`, { method: 'POST' });
 }
 
 export function removeTeamMember(teamId: string, userId: string): Promise<{ removed: boolean }> {

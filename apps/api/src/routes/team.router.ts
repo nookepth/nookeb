@@ -3,17 +3,20 @@ import { z } from 'zod';
 import { toTeamDto, type TeamInviteDto, type TeamLineGroupDto } from '@nookeb/shared';
 import { config } from '../config';
 import {
-  acceptInvite,
+  approveJoinRequest,
   bindLineGroup,
   createTeam,
   deleteTeam,
   getTeam,
   getTeamRole,
   inviteMember,
+  listJoinRequests,
   listLineGroups,
   listPendingInvites,
   listUserTeams,
+  rejectJoinRequest,
   removeMember,
+  requestToJoin,
   TeamError,
   unbindLineGroup,
 } from '../services/team.service';
@@ -116,11 +119,39 @@ const teamRoutes: FastifyPluginAsync = async (app) => {
     );
   });
 
-  // POST /api/teams/invite/:token/accept — join via invite link
+  // POST /api/teams/invite/:token/accept — raise a join request (owner approves)
   app.post<{ Params: { token: string } }>('/invite/:token/accept', async (request, reply) => {
-    const team = await acceptInvite(app.supabase, request.params.token, request.authUser!.userId);
-    return ok(reply, toTeamDto(team, { role: 'member' }));
+    const result = await requestToJoin(app.supabase, request.params.token, request.authUser!.userId);
+    return ok(reply, result);
   });
+
+  // GET /api/teams/:teamId/requests — owner/admin lists pending join requests
+  app.get<{ Params: { teamId: string } }>('/:teamId/requests', async (request, reply) => {
+    const requests = await listJoinRequests(
+      app.supabase,
+      request.params.teamId,
+      request.authUser!.userId,
+    );
+    return ok(reply, requests);
+  });
+
+  // POST /api/teams/:teamId/requests/:id/approve — owner/admin approves → adds member
+  app.post<{ Params: { teamId: string; id: string } }>(
+    '/:teamId/requests/:id/approve',
+    async (request, reply) => {
+      await approveJoinRequest(app.supabase, request.params.id, request.authUser!.userId);
+      return ok(reply, { approved: true });
+    },
+  );
+
+  // POST /api/teams/:teamId/requests/:id/reject — owner/admin rejects
+  app.post<{ Params: { teamId: string; id: string } }>(
+    '/:teamId/requests/:id/reject',
+    async (request, reply) => {
+      await rejectJoinRequest(app.supabase, request.params.id, request.authUser!.userId);
+      return ok(reply, { rejected: true });
+    },
+  );
 
   // DELETE /api/teams/:teamId/members/:userId — remove a member.
   // Owner/admin can remove others; any member can remove THEMSELVES (leave the

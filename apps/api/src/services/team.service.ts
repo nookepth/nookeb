@@ -1,6 +1,9 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type {
+  JoinRequestResult,
   TeamInviteRecord,
+  TeamJoinRequestDto,
+  TeamJoinRequestRecord,
   TeamLineGroupRecord,
   TeamMemberDto,
   TeamRecord,
@@ -262,12 +265,17 @@ export async function listPendingInvites(
   return data as TeamInviteRecord[];
 }
 
-/** Validate token (pending + unexpired), add the user, mark invite accepted. */
-export async function acceptInvite(
+/**
+ * Validate an invite token and raise a join REQUEST (owner/admin must approve).
+ * Does NOT add the user to team_members. The invite row stays 'pending' so one
+ * link can gather requests from multiple people. Idempotent: an existing pending
+ * request for the same (user, team) is reused — no duplicate row.
+ */
+export async function requestToJoin(
   supabase: SupabaseClient,
   token: string,
   userId: string,
-): Promise<TeamRecord> {
+): Promise<JoinRequestResult> {
   const { data, error } = await supabase
     .from('team_invites')
     .select('*, teams!inner(*)')
@@ -283,26 +291,131 @@ export async function acceptInvite(
     throw new TeamError('INVITE_EXPIRED', 'Invite link has expired or was already used', 400);
   }
 
-  // Idempotent join: already a member → just mark the invite consumed
+  // Already a member → nothing to request.
   const existingRole = await getTeamRole(supabase, invite.team_id, userId);
+  if (existingRole) {
+    throw new TeamError('ALREADY_MEMBER', 'You are already a member of this team', 409);
+  }
+
+  // Reuse an open request instead of inserting a duplicate.
+  const { data: existingReq, error: existErr } = await supabase
+    .from('team_join_requests')
+    .select('id')
+    .eq('team_id', invite.team_id)
+    .eq('user_id', userId)
+    .eq('status', 'pending')
+    .maybeSingle();
+  if (existErr) throw existErr;
+
+  if (!existingReq) {
+    const { error: insErr } = await supabase
+      .from('team_join_requests')
+      .insert({ team_id: invite.team_id, user_id: userId, invite_id: invite.id, status: 'pending' });
+    if (insErr) throw insErr;
+  }
+
+  return { status: 'pending_approval', teamName: invite.teams.name };
+}
+
+/** Owner/admin approves a pending request → the user becomes a member. */
+export async function approveJoinRequest(
+  supabase: SupabaseClient,
+  requestId: string,
+  reviewerId: string,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('team_join_requests')
+    .select('*')
+    .eq('id', requestId)
+    .maybeSingle();
+  if (error) throw error;
+  const req = data as TeamJoinRequestRecord | null;
+  if (!req) throw notFound('Join request');
+
+  await requireRole(supabase, req.team_id, reviewerId, ['owner', 'admin'], 'approve join requests');
+
+  if (req.status !== 'pending') {
+    throw new TeamError('REQUEST_NOT_PENDING', 'This request was already reviewed', 409);
+  }
+
+  // Add the member (idempotent if they somehow already joined).
+  const existingRole = await getTeamRole(supabase, req.team_id, req.user_id);
   if (!existingRole) {
     const { error: joinErr } = await supabase
       .from('team_members')
-      .insert({ team_id: invite.team_id, user_id: userId, role: 'member' });
+      .insert({ team_id: req.team_id, user_id: req.user_id, role: 'member' });
     if (joinErr) throw joinErr;
   }
 
-  // Surface the team in the dashboard switcher right away (see helper).
-  await joinTeamGroupSpaces(supabase, invite.team_id, userId);
+  // Surface the team in the new member's dashboard switcher right away.
+  await joinTeamGroupSpaces(supabase, req.team_id, req.user_id);
 
   const { error: markErr } = await supabase
-    .from('team_invites')
-    .update({ status: 'accepted' })
-    .eq('id', invite.id)
+    .from('team_join_requests')
+    .update({ status: 'approved', reviewed_by: reviewerId, reviewed_at: new Date().toISOString() })
+    .eq('id', requestId)
     .eq('status', 'pending');
   if (markErr) throw markErr;
+}
 
-  return invite.teams;
+/** Owner/admin rejects a pending request (no member is added). */
+export async function rejectJoinRequest(
+  supabase: SupabaseClient,
+  requestId: string,
+  reviewerId: string,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from('team_join_requests')
+    .select('team_id, status')
+    .eq('id', requestId)
+    .maybeSingle();
+  if (error) throw error;
+  const req = data as { team_id: string; status: TeamJoinRequestRecord['status'] } | null;
+  if (!req) throw notFound('Join request');
+
+  await requireRole(supabase, req.team_id, reviewerId, ['owner', 'admin'], 'reject join requests');
+
+  if (req.status !== 'pending') {
+    throw new TeamError('REQUEST_NOT_PENDING', 'This request was already reviewed', 409);
+  }
+
+  const { error: markErr } = await supabase
+    .from('team_join_requests')
+    .update({ status: 'rejected', reviewed_by: reviewerId, reviewed_at: new Date().toISOString() })
+    .eq('id', requestId)
+    .eq('status', 'pending');
+  if (markErr) throw markErr;
+}
+
+/** Owner/admin lists the team's pending join requests with requester info. */
+export async function listJoinRequests(
+  supabase: SupabaseClient,
+  teamId: string,
+  requesterId: string,
+): Promise<TeamJoinRequestDto[]> {
+  await requireRole(supabase, teamId, requesterId, ['owner', 'admin'], 'view join requests');
+
+  const { data, error } = await supabase
+    .from('team_join_requests')
+    .select('id, requested_at, users!inner(id, display_name, picture_url)')
+    .eq('team_id', teamId)
+    .eq('status', 'pending')
+    .order('requested_at', { ascending: true });
+  if (error) throw error;
+
+  return (
+    data as unknown as {
+      id: string;
+      requested_at: string;
+      users: { id: string; display_name: string | null; picture_url: string | null };
+    }[]
+  ).map((r) => ({
+    id: r.id,
+    userId: r.users.id,
+    displayName: r.users.display_name,
+    pictureUrl: r.users.picture_url,
+    requestedAt: r.requested_at,
+  }));
 }
 
 /** Owner/admin removes a member. The owner can never be removed. */

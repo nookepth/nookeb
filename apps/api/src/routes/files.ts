@@ -228,8 +228,18 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
 
   // DELETE /files/:id — soft delete only (never hard DELETE), and free the quota
   app.delete<{ Params: { id: string } }>('/files/:id', async (request, reply) => {
-    const file = await getAuthorizedFile(request.params.id, request.authUser!.userId);
+    const requesterId = request.authUser!.userId;
+    const file = await getAuthorizedFile(request.params.id, requesterId);
     if (!file) return reply.code(404).send({ error: 'File not found' });
+
+    // Team files can only be deleted by whoever uploaded them (a NULL uploaded_by
+    // — e.g. legacy rows — carries no restriction). Personal files keep the
+    // existing space-membership guard from getAuthorizedFile.
+    if (file.team_id && file.uploaded_by && file.uploaded_by !== requesterId) {
+      return reply
+        .code(403)
+        .send({ error: 'เฉพาะคนที่อัพโหลดไฟล์นี้เท่านั้นที่ลบได้น้า' });
+    }
 
     const { error } = await app.supabase
       .from('files')

@@ -1,6 +1,8 @@
 export type TeamRole = 'owner' | 'admin' | 'member';
 
-export type TeamInviteStatus = 'pending' | 'accepted' | 'expired';
+export type TeamInviteStatus = 'pending' | 'accepted' | 'expired' | 'pending_approval';
+
+export type TeamJoinRequestStatus = 'pending' | 'approved' | 'rejected';
 
 export interface TeamRecord {
   id: string;
@@ -28,6 +30,17 @@ export interface TeamInviteRecord {
   status: TeamInviteStatus;
   expires_at: string;
   created_at: string;
+}
+
+export interface TeamJoinRequestRecord {
+  id: string;
+  team_id: string;
+  user_id: string;
+  invite_id: string;
+  status: TeamJoinRequestStatus;
+  requested_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
 }
 
 export interface TeamLineGroupRecord {
@@ -65,6 +78,21 @@ export interface TeamInviteDto {
   expiresAt: string;
   createdAt: string;
   invitedBy: string | null;
+}
+
+/** A pending request to join a team, shown to owners/admins for review. */
+export interface TeamJoinRequestDto {
+  id: string;
+  userId: string;
+  displayName: string | null;
+  pictureUrl: string | null;
+  requestedAt: string;
+}
+
+/** Response of POST /invite/:token/accept — a request was raised, not a join. */
+export interface JoinRequestResult {
+  status: 'pending_approval';
+  teamName: string;
 }
 
 export interface TeamLineGroupDto {

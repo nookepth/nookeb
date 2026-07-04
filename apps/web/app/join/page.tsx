@@ -1,16 +1,15 @@
 'use client';
 
 import { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import { acceptTeamInvite, ApiError, getToken } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 
 function JoinInner() {
-  const router = useRouter();
   const params = useSearchParams();
   const teamInviteToken = params.get('team_invite');
-  const [status, setStatus] = useState<'working' | 'need-login' | 'error' | 'done'>('working');
-  const [spaceName, setSpaceName] = useState('');
+  const [status, setStatus] = useState<'working' | 'need-login' | 'error' | 'pending'>('working');
+  const [teamName, setTeamName] = useState('');
 
   useEffect(() => {
     if (!teamInviteToken) {
@@ -26,16 +25,16 @@ function JoinInner() {
       return;
     }
     acceptTeamInvite(teamInviteToken)
-      .then((team) => {
-        setSpaceName(team.name);
-        setStatus('done');
-        setTimeout(() => router.push(`/dashboard/teams/${team.id}`), 1200);
+      .then((res) => {
+        // Joining now needs owner/admin approval — the user waits, no redirect.
+        setTeamName(res.teamName);
+        setStatus('pending');
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) setStatus('need-login');
         else setStatus('error');
       });
-  }, [teamInviteToken, router]);
+  }, [teamInviteToken]);
 
   return (
     <div className="center-page">
@@ -49,7 +48,12 @@ function JoinInner() {
           </button>
         </>
       )}
-      {status === 'done' && <p>เข้าร่วม “{spaceName}” แล้ว กำลังพาไปที่คลังไฟล์...</p>}
+      {status === 'pending' && (
+        <>
+          <p>ส่งคำขอเข้าทีมแล้วน้า รอเจ้าของทีมอนุมัติก่อนน้า</p>
+          {teamName && <p className="team-card-meta">ทีม: {teamName}</p>}
+        </>
+      )}
       {status === 'error' && <p>ลิงก์เชิญไม่ถูกต้องหรือหมดอายุแล้ว</p>}
     </div>
   );

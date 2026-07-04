@@ -4,16 +4,20 @@ import { useCallback, useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import {
   ApiError,
+  approveTeamJoinRequest,
   bindTeamGroup,
   createTeamInvite,
   deleteTeam,
   getMe,
   getTeamDetail,
   getToken,
+  listTeamJoinRequests,
+  rejectTeamJoinRequest,
   removeTeamMember,
   unbindTeamGroup,
   type TeamDetailResponse,
 } from '@/lib/api';
+import type { TeamJoinRequestDto } from '@nookeb/shared';
 import { startLineLogin } from '@/lib/auth';
 import { TeamStorageBar } from '@/components/TeamStorageBar';
 
@@ -84,11 +88,23 @@ export default function TeamDetailPage() {
   const [myUserId, setMyUserId] = useState<string | null>(null);
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [leaveBusy, setLeaveBusy] = useState(false);
+  const [joinRequests, setJoinRequests] = useState<TeamJoinRequestDto[]>([]);
+  const [reviewingId, setReviewingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      setDetail(await getTeamDetail(teamId));
+      const d = await getTeamDetail(teamId);
+      setDetail(d);
       setError(null);
+      // Pending join requests are owner/admin-only; fetch them best-effort.
+      const role = d.team.role ?? 'member';
+      if (role === 'owner' || role === 'admin') {
+        try {
+          setJoinRequests(await listTeamJoinRequests(teamId));
+        } catch {
+          /* non-fatal — the rest of the page still renders */
+        }
+      }
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
       else if (err instanceof ApiError && (err.status === 403 || err.status === 404)) {
@@ -163,6 +179,34 @@ export default function TeamDetailPage() {
       flash(err instanceof ApiError ? `ลบไม่สำเร็จน้า: ${err.message}` : 'ลบไม่สำเร็จน้า');
     } finally {
       setRemovingUserId(null);
+    }
+  }
+
+  async function handleApproveRequest(id: string) {
+    if (reviewingId) return;
+    setReviewingId(id);
+    try {
+      await approveTeamJoinRequest(teamId, id);
+      flash('อนุมัติเข้าทีมแล้วน้า');
+      await load();
+    } catch (err) {
+      flash(err instanceof ApiError ? `อนุมัติไม่สำเร็จน้า: ${err.message}` : 'อนุมัติไม่สำเร็จน้า');
+    } finally {
+      setReviewingId(null);
+    }
+  }
+
+  async function handleRejectRequest(id: string) {
+    if (reviewingId) return;
+    setReviewingId(id);
+    try {
+      await rejectTeamJoinRequest(teamId, id);
+      flash('ปฏิเสธคำขอแล้วน้า');
+      await load();
+    } catch (err) {
+      flash(err instanceof ApiError ? `ปฏิเสธไม่สำเร็จน้า: ${err.message}` : 'ปฏิเสธไม่สำเร็จน้า');
+    } finally {
+      setReviewingId(null);
     }
   }
 
@@ -309,6 +353,59 @@ export default function TeamDetailPage() {
           </button>
         )}
       </section>
+
+      {/* Join requests (owner/admin only) */}
+      {canManage && (
+        <section className="team-section">
+          <div className="team-section-title">คำขอเข้าร่วม ({joinRequests.length})</div>
+          {joinRequests.length === 0 ? (
+            <div className="team-card-meta">ยังไม่มีคำขอเข้าร่วมน้า</div>
+          ) : (
+            <table className="team-table">
+              <thead>
+                <tr>
+                  <th></th>
+                  <th>ชื่อ</th>
+                  <th>ขอเมื่อ</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {joinRequests.map((r) => (
+                  <tr key={r.id}>
+                    <td>
+                      {r.pictureUrl ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- LINE CDN avatar, remote domain not configured
+                        <img className="avatar" src={r.pictureUrl} alt="" />
+                      ) : (
+                        <span className="avatar-fallback">{(r.displayName ?? 'ห').charAt(0)}</span>
+                      )}
+                    </td>
+                    <td>{r.displayName ?? 'ผู้ใช้'}</td>
+                    <td>{formatDate(r.requestedAt)}</td>
+                    <td>
+                      <button
+                        className="btn small"
+                        disabled={reviewingId === r.id}
+                        onClick={() => handleApproveRequest(r.id)}
+                      >
+                        อนุมัติ ✓
+                      </button>{' '}
+                      <button
+                        className="btn danger small"
+                        disabled={reviewingId === r.id}
+                        onClick={() => handleRejectRequest(r.id)}
+                      >
+                        ปฏิเสธ ✗
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
 
       {/* Invites */}
       {canManage && (
