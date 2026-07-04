@@ -34,6 +34,8 @@ export interface FileRecord {
   deleted_at: string | null;
   /** set by the daily purge job once the R2 objects are removed (row kept as tombstone) */
   purged_at: string | null;
+  /** owning team when uploaded via a team-bound LINE group (migration 005); charged to team quota */
+  team_id?: string | null;
 }
 
 /** File shape returned to the web dashboard (no internal storage keys). */

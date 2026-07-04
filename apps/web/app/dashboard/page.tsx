@@ -7,8 +7,6 @@ import {
   ApiError,
   clearSession,
   createFolder,
-  createInvite,
-  createSpace,
   createTag,
   deleteFolder,
   getGoogleAuthUrl,
@@ -72,8 +70,6 @@ export default function DashboardPage() {
   const [profileOpen, setProfileOpen] = useState(false);
   const [previewFile, setPreviewFile] = useState<FileDto | null>(null);
 
-  const currentSpace = spaces.find((s) => s.id === spaceId) ?? null;
-  const canInvite = currentSpace?.type === 'team' && (currentSpace.role === 'owner' || currentSpace.role === 'admin');
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
@@ -162,40 +158,12 @@ export default function DashboardPage() {
     setNeedsLogin(true);
   }
 
-  async function handleCreateTeam(): Promise<void> {
-    const name = window.prompt('ตั้งชื่อพื้นที่ทีมใหม่');
-    if (!name?.trim()) return;
-    try {
-      const space = await createSpace(name.trim());
-      const refreshed = await listSpaces();
-      setSpaces(refreshed.spaces);
-      switchSpace(space.id);
-    } catch {
-      alert('สร้างพื้นที่ทีมไม่สำเร็จ');
-    }
-  }
-
   async function handleConnectDrive(): Promise<void> {
     try {
       const { url } = await getGoogleAuthUrl();
       window.location.href = url;
     } catch {
       alert('เริ่มการเชื่อม Google Drive ไม่สำเร็จ');
-    }
-  }
-
-  async function handleInvite(): Promise<void> {
-    if (!spaceId) return;
-    try {
-      const { url } = await createInvite(spaceId);
-      try {
-        await navigator.clipboard.writeText(url);
-        alert(`คัดลอกลิงก์เชิญแล้ว (อายุ 7 วัน)\n\n${url}`);
-      } catch {
-        window.prompt('คัดลอกลิงก์เชิญนี้ (อายุ 7 วัน):', url);
-      }
-    } catch {
-      alert('สร้างลิงก์เชิญไม่สำเร็จ');
     }
   }
 
@@ -390,14 +358,6 @@ export default function DashboardPage() {
                 </option>
               ))}
             </select>
-          )}
-          <button className="btn secondary small" onClick={() => void handleCreateTeam()}>
-            + ทีม
-          </button>
-          {canInvite && (
-            <button className="btn secondary small" onClick={() => void handleInvite()}>
-              เชิญสมาชิก
-            </button>
           )}
           <button className="btn secondary small" onClick={() => void handleCreateFolder()}>
             + โฟลเดอร์

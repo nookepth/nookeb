@@ -2,18 +2,18 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { ApiError, getToken, joinSpace } from '@/lib/api';
+import { acceptTeamInvite, ApiError, getToken } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 
 function JoinInner() {
   const router = useRouter();
   const params = useSearchParams();
-  const token = params.get('token');
+  const teamInviteToken = params.get('team_invite');
   const [status, setStatus] = useState<'working' | 'need-login' | 'error' | 'done'>('working');
   const [spaceName, setSpaceName] = useState('');
 
   useEffect(() => {
-    if (!token) {
+    if (!teamInviteToken) {
       setStatus('error');
       return;
     }
@@ -25,17 +25,17 @@ function JoinInner() {
       setStatus('need-login');
       return;
     }
-    joinSpace(token)
-      .then((space) => {
-        setSpaceName(space.name);
+    acceptTeamInvite(teamInviteToken)
+      .then((team) => {
+        setSpaceName(team.name);
         setStatus('done');
-        setTimeout(() => router.push('/dashboard'), 1200);
+        setTimeout(() => router.push(`/dashboard/teams/${team.id}`), 1200);
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) setStatus('need-login');
         else setStatus('error');
       });
-  }, [token, router]);
+  }, [teamInviteToken, router]);
 
   return (
     <div className="center-page">

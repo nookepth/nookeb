@@ -18,6 +18,7 @@ import {
   type FileScanStatus,
   type PurgeDeletedJob,
   type SpaceRecord,
+  type TeamRecord,
   type UploadBatchJob,
   type UploadFileJob,
   type UserRecord,
@@ -47,6 +48,11 @@ import {
 } from '../services/file.service';
 import { isVirusScanEnabled, scanBuffer, type ScanVerdict } from '../services/virusTotal.service';
 import { ensureGroupSpace } from '../services/space.service';
+import {
+  getTeamByLineGroup,
+  incrementTeamStorage,
+  StorageQuotaError,
+} from '../services/team.service';
 import { purgeDeletedFiles } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
 import {
@@ -78,6 +84,31 @@ function jobId(prefix: string, id: string): string {
   return `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}`;
 }
 
+// GB is declared below with the size-cap helpers; toGb is only called at runtime
+const toGb = (bytes: number): string => (bytes / GB).toFixed(2);
+
+function teamFullMessage(team: TeamRecord): string {
+  return `พื้นที่ทีมเต็มแล้วน้า (${toGb(team.storage_used)}GB / ${toGb(team.storage_limit)}GB) ติดต่อเจ้าของทีมเพื่อขยายพื้นที่น้า`;
+}
+
+/**
+ * Team bound to the source LINE group, if any. Best-effort: a lookup failure
+ * (e.g. migration 005 not applied yet) falls back to the personal-quota flow
+ * rather than failing the upload.
+ */
+async function resolveTeamForUpload(
+  lineSource: string | null,
+  lineGroupId: string | null,
+): Promise<TeamRecord | null> {
+  if (lineSource !== 'group' || !lineGroupId) return null;
+  try {
+    return await getTeamByLineGroup(supabase, lineGroupId);
+  } catch (err) {
+    console.error('[upload.worker] team lookup failed — falling back to personal quota:', err);
+    return null;
+  }
+}
+
 /**
  * upload_file job:
  *   download LINE CDN → stream to R2 → files.status = 'ready' → LINE push confirm
@@ -105,8 +136,16 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
       ? await ensureGroupSpace(supabase, job.lineGroupId, user)
       : personalSpace;
 
-  // 2. Quota check
-  if (user.storage_used >= user.storage_limit) {
+  // 1c. Group bound to a team → the file belongs to the team + team quota
+  const team = await resolveTeamForUpload(job.lineSource ?? null, job.lineGroupId ?? null);
+
+  // 2. Quota check (team quota when the group is team-bound)
+  if (team) {
+    if (team.storage_used >= team.storage_limit) {
+      await pushMessage(job.lineUserId, [{ type: 'text', text: teamFullMessage(team) }]);
+      return;
+    }
+  } else if (user.storage_used >= user.storage_limit) {
     await pushMessage(job.lineUserId, [
       { type: 'text', text: 'พื้นที่เก็บไฟล์เต็มแล้วน้า ลบไฟล์เก่าหรืออัปเกรดแผนก่อนหน่อยน้า' },
     ]);
@@ -132,13 +171,20 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
     lineMessageId: job.lineMessageId,
     lineSource: job.lineSource,
     lineGroupId: job.lineGroupId,
+    teamId: team?.id ?? null,
   });
 
   // 5. Stream upload to R2
   try {
     const { size } = await uploadStream(r2, r2Key, content.stream, mimeType);
     await markFileReady(supabase, record.id, size);
-    await addStorageUsed(supabase, user.id, size, space.id);
+    // Team-bound files charge the TEAM quota (unenforced post-store — the soft
+    // check above already gated); otherwise the uploader's personal quota.
+    if (team) {
+      await incrementTeamStorage(supabase, team.id, size, { enforce: false });
+    } else {
+      await addStorageUsed(supabase, user.id, size, space.id);
+    }
   } catch (err) {
     await markFileError(supabase, record.id);
     throw err;
@@ -232,6 +278,7 @@ async function storeUpload(
   item: BatchItem,
   lineSource: UploadBatchJob['lineSource'],
   lineGroupId: string | null,
+  team: TeamRecord | null = null,
 ): Promise<{ filename: string; url: string; size: number }> {
   // Open the LINE CDN response — at this point only headers have been read;
   // the body isn't consumed until something pulls from the stream, so a size
@@ -254,61 +301,115 @@ async function storeUpload(
     );
   }
 
+  // [1b] Team quota — RESERVE the declared size atomically BEFORE any transfer
+  // (increment_team_storage RPC refuses an increment past storage_limit). The
+  // actual size is settled after upload; every failure path below releases the
+  // reservation so a rejected/failed file never eats team quota.
+  let reservedOutstanding = 0;
+  const releaseReservation = async (): Promise<void> => {
+    if (team && reservedOutstanding > 0) {
+      const toRelease = reservedOutstanding;
+      reservedOutstanding = 0;
+      await incrementTeamStorage(supabase, team.id, -toRelease, { enforce: false }).catch((err) => {
+        console.error(`[upload.worker] failed to release team reservation (${team.id}):`, err);
+      });
+    }
+  };
+  if (team) {
+    try {
+      await incrementTeamStorage(supabase, team.id, declaredSize ?? 0);
+      reservedOutstanding = declaredSize ?? 0;
+    } catch (err) {
+      content.stream.destroy();
+      if (err instanceof StorageQuotaError) {
+        console.warn(
+          `[upload.worker] team quota rejected: team=${team.id} file="${item.originalName}" size=${declaredSize}`,
+        );
+        throw new FileRejectedError(
+          `team ${team.id} quota exceeded for "${item.originalName}"`,
+          teamFullMessage(team),
+        );
+      }
+      throw err;
+    }
+  }
+
   // [2] Virus scan — small files only (VT free tier caps uploads at 32 MB).
   // Failures never block the upload; only a confirmed malicious verdict does.
   let scanStatus: FileScanStatus | null = null;
   let bodyStream: Readable = content.stream;
-  if (isVirusScanEnabled()) {
-    if (content.contentLength !== null && content.contentLength <= config.VIRUSTOTAL_MAX_SCAN_SIZE_BYTES) {
-      const buffer = await readAll(content.stream);
-      const verdict = await scanBuffer(buffer, item.originalName);
-      if (verdict.outcome === 'malicious') {
-        console.error(
-          `[upload.worker] malicious file blocked: user=${user.id} file="${item.originalName}" ` +
-            `detections=${verdict.detections} engines=[${verdict.engines.join(', ')}] at=${new Date().toISOString()}`,
-        );
-        throw new FileRejectedError(
-          `file "${item.originalName}" flagged malicious by ${verdict.detections} engine(s)`,
-          malwareAlertMessage(item.originalName, verdict),
-        );
-      }
-      if (verdict.outcome === 'scan_failed') {
-        console.warn(`[upload.worker] virus scan failed for "${item.originalName}" — proceeding: ${verdict.reason}`);
-        scanStatus = 'scan_failed';
-      } else {
-        scanStatus = 'clean';
-      }
-      bodyStream = Readable.from(buffer);
-    } else {
-      // >32 MB, or size unknown so we can't buffer it safely within the VT cap
-      scanStatus = 'skipped_size';
-    }
-  }
-
   const fileId = randomUUID();
   const r2Key = buildFileKey(space.id, fileId, item.originalName);
-  const record = await createFileRecord(supabase, {
-    id: fileId,
-    spaceId: space.id,
-    uploadedBy: user.id,
-    originalName: item.originalName,
-    mimeType,
-    fileSize: content.contentLength ?? 0,
-    extension: extensionOf(item.originalName),
-    r2Key,
-    lineMessageId: item.lineMessageId,
-    lineSource,
-    lineGroupId,
-    scanStatus,
-  });
+  let record: FileRecord;
+  try {
+    if (isVirusScanEnabled()) {
+      if (content.contentLength !== null && content.contentLength <= config.VIRUSTOTAL_MAX_SCAN_SIZE_BYTES) {
+        const buffer = await readAll(content.stream);
+        const verdict = await scanBuffer(buffer, item.originalName);
+        if (verdict.outcome === 'malicious') {
+          console.error(
+            `[upload.worker] malicious file blocked: user=${user.id} file="${item.originalName}" ` +
+              `detections=${verdict.detections} engines=[${verdict.engines.join(', ')}] at=${new Date().toISOString()}`,
+          );
+          throw new FileRejectedError(
+            `file "${item.originalName}" flagged malicious by ${verdict.detections} engine(s)`,
+            malwareAlertMessage(item.originalName, verdict),
+          );
+        }
+        if (verdict.outcome === 'scan_failed') {
+          console.warn(`[upload.worker] virus scan failed for "${item.originalName}" — proceeding: ${verdict.reason}`);
+          scanStatus = 'scan_failed';
+        } else {
+          scanStatus = 'clean';
+        }
+        bodyStream = Readable.from(buffer);
+      } else {
+        // >32 MB, or size unknown so we can't buffer it safely within the VT cap
+        scanStatus = 'skipped_size';
+      }
+    }
+
+    record = await createFileRecord(supabase, {
+      id: fileId,
+      spaceId: space.id,
+      uploadedBy: user.id,
+      originalName: item.originalName,
+      mimeType,
+      fileSize: content.contentLength ?? 0,
+      extension: extensionOf(item.originalName),
+      r2Key,
+      lineMessageId: item.lineMessageId,
+      lineSource,
+      lineGroupId,
+      scanStatus,
+      teamId: team?.id ?? null,
+    });
+  } catch (err) {
+    await releaseReservation();
+    throw err;
+  }
 
   try {
     // [3] Stream to R2 with a hard abort at the cap — covers uploads whose real
     // size wasn't known up front (no Content-Length) or was under-declared.
     const { size } = await uploadStream(r2, r2Key, bodyStream, mimeType, config.MAX_FILE_SIZE_BYTES);
     await markFileReady(supabase, record.id, size);
-    // [4] Charge quota; adjustStorageUsed also runs the storage-alert check
-    await addStorageUsed(supabase, user.id, size, space.id);
+    // [4] Charge quota. Team-bound uploads consume TEAM quota: the declared
+    // size was reserved up front, so only the declared-vs-actual drift is
+    // settled here (unenforced — the file is already stored). The uploader's
+    // personal quota is NOT touched for team files. Personal / unbound-group
+    // uploads keep the per-user accounting + storage-alert check.
+    if (team) {
+      const drift = size - reservedOutstanding;
+      reservedOutstanding = 0;
+      if (drift !== 0) {
+        await incrementTeamStorage(supabase, team.id, drift, { enforce: false }).catch((err) => {
+          console.error(`[upload.worker] team storage settle failed (${team.id}):`, err);
+        });
+      }
+    } else {
+      await addStorageUsed(supabase, user.id, size, space.id);
+    }
 
     if (mimeType.startsWith('image/')) {
       try {
@@ -328,6 +429,7 @@ async function storeUpload(
     }
     return { filename: item.originalName, url: `${config.WEB_URL}/dashboard`, size };
   } catch (err) {
+    await releaseReservation();
     if (err instanceof SizeLimitExceededError) {
       // The stream blew past the cap mid-transfer (size wasn't known up front).
       // uploadStream already aborted the download and deleted the partial R2
@@ -386,14 +488,26 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         ? await ensureGroupSpace(supabase, job.lineGroupId, user)
         : personalSpace;
 
+    // Group bound to a team → files belong to the team and consume TEAM quota
+    const team = await resolveTeamForUpload(job.lineSource, job.lineGroupId);
+
     // Quota gate. Files are now processed in PARALLEL (see below), so instead of
     // threading a running total through a sequential loop we check the
     // batch-start snapshot. The authoritative accounting (increment_storage_used
-    // RPC inside addStorageUsed) is still atomic and per-file; only the
+    // / increment_team_storage RPC) is still atomic and per-file; only the
     // intra-batch soft cutoff is relaxed — a batch may overshoot by at most its
-    // own item count.
-    const limit = user.storage_limit;
-    const overLimit = user.storage_used >= limit;
+    // own item count. (Team uploads additionally reserve quota per file inside
+    // storeUpload, so a team can never actually exceed its limit.)
+    const limit = team ? team.storage_limit : user.storage_limit;
+    const usedAtStart = team ? team.storage_used : user.storage_used;
+    const overLimit = usedAtStart >= limit;
+    if (overLimit && team) {
+      try {
+        await pushMessage(target, [{ type: 'text', text: teamFullMessage(team) }]);
+      } catch (err) {
+        console.error('[upload.worker] team-full notice push failed:', err);
+      }
+    }
 
     // Process the batch in PARALLEL: the dominant cost per file is the VirusTotal
     // poll (up to ~60s). Run sequentially this made a batch stall at 0/N for
@@ -405,7 +519,7 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         if (overLimit) return null;
         try {
           const res = await withRetry(
-            () => storeUpload(user, space, item, job.lineSource, job.lineGroupId),
+            () => storeUpload(user, space, item, job.lineSource, job.lineGroupId, team),
             3,
           );
           await progressStore.increment(job.batchId).catch(() => undefined);
@@ -583,6 +697,40 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
   }
   const pdfBytes = await pdf.save();
 
+  // Team-bound group scans charge the TEAM quota (like normal group uploads),
+  // not the uploader's personal quota. The scan session's space is the group's
+  // shared space; its line_group_id tells us which LINE group this came from.
+  let team: TeamRecord | null = null;
+  const { data: spaceRow } = await supabase
+    .from('spaces')
+    .select('line_group_id')
+    .eq('id', session.space_id)
+    .maybeSingle();
+  const lineGroupId = (spaceRow as { line_group_id: string | null } | null)?.line_group_id ?? null;
+  if (lineGroupId) {
+    team = await getTeamByLineGroup(supabase, lineGroupId).catch((err) => {
+      console.error('[upload.worker] finalize_scan team lookup failed — personal quota:', err);
+      return null;
+    });
+  }
+
+  // Reserve the team quota BEFORE storing so an over-quota team never stores the
+  // PDF. The merged size is known exactly (pdfBytes.length), so there's no drift.
+  if (team) {
+    try {
+      await incrementTeamStorage(supabase, team.id, pdfBytes.length);
+    } catch (err) {
+      if (err instanceof StorageQuotaError) {
+        await setSessionStatus(supabase, session.id, 'cancelled');
+        await pushMessage(job.lineUserId, [
+          { type: 'text', text: 'พื้นที่ทีมเต็มแล้วน้า ไม่สามารถบันทึกไฟล์รวมรูปได้' },
+        ]);
+        return;
+      }
+      throw err;
+    }
+  }
+
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   const name = `รวมรูป_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
@@ -601,11 +749,33 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     lineMessageId: null,
     lineSource: null,
     lineGroupId: null,
+    teamId: team?.id ?? null,
   });
 
-  const { size } = await uploadStream(r2, r2Key, Readable.from(Buffer.from(pdfBytes)), 'application/pdf');
-  await markFileReady(supabase, record.id, size);
-  await addStorageUsed(supabase, session.user_id, size, session.space_id);
+  try {
+    const { size } = await uploadStream(r2, r2Key, Readable.from(Buffer.from(pdfBytes)), 'application/pdf');
+    await markFileReady(supabase, record.id, size);
+    if (team) {
+      // Settle any (normally zero) difference from the reserved size; never
+      // charge the uploader's personal quota for a team file.
+      const drift = size - pdfBytes.length;
+      if (drift !== 0) {
+        await incrementTeamStorage(supabase, team.id, drift, { enforce: false }).catch((err) => {
+          console.error(`[upload.worker] finalize_scan team settle failed (${team!.id}):`, err);
+        });
+      }
+    } else {
+      await addStorageUsed(supabase, session.user_id, size, session.space_id);
+    }
+  } catch (err) {
+    // Release the team reservation so a failed store (which will retry) never
+    // leaks team quota. Personal accounting happens after a successful upload,
+    // so it needs no release here.
+    if (team) {
+      await incrementTeamStorage(supabase, team.id, -pdfBytes.length, { enforce: false }).catch(() => undefined);
+    }
+    throw err;
+  }
   await finishSession(supabase, session.id, record.id, pages.length);
 
   // Clean up temporary page images (best-effort)

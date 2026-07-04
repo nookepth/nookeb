@@ -95,6 +95,8 @@ export interface CreateFileInput {
   lineGroupId: string | null;
   /** virus-scan outcome (null when scanning is disabled or N/A, e.g. scan PDFs) */
   scanStatus?: FileScanStatus | null;
+  /** owning team (LINE group bound to a team) — file is charged to the TEAM quota */
+  teamId?: string | null;
 }
 
 export async function createFileRecord(
@@ -116,6 +118,8 @@ export async function createFileRecord(
       line_source: input.lineSource,
       line_group_id: input.lineGroupId,
       scan_status: input.scanStatus ?? null,
+      // Only sent when set — keeps inserts working if migration 005 isn't applied yet
+      ...(input.teamId ? { team_id: input.teamId } : {}),
       status: 'processing',
     })
     .select('*')

@@ -1,0 +1,426 @@
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type {
+  TeamInviteRecord,
+  TeamLineGroupRecord,
+  TeamMemberDto,
+  TeamRecord,
+  TeamRole,
+} from '@nookeb/shared';
+
+/**
+ * Error with a stable machine code + HTTP status. team.router.ts maps these to
+ * `{ success: false, error, code }` responses.
+ */
+export class TeamError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly statusCode = 400,
+  ) {
+    super(message);
+    this.name = 'TeamError';
+  }
+}
+
+/** Thrown when an increment would push the team past its storage_limit. */
+export class StorageQuotaError extends TeamError {
+  constructor(
+    public readonly teamId: string,
+    message = 'Team storage quota exceeded',
+  ) {
+    super('TEAM_QUOTA_EXCEEDED', message, 413);
+    this.name = 'StorageQuotaError';
+  }
+}
+
+const notFound = (what: string) => new TeamError('NOT_FOUND', `${what} not found`, 404);
+const forbidden = (msg: string) => new TeamError('FORBIDDEN', msg, 403);
+
+/** Role lookup; null when not a member (or the team is soft-deleted). */
+export async function getTeamRole(
+  supabase: SupabaseClient,
+  teamId: string,
+  userId: string,
+): Promise<TeamRole | null> {
+  const { data, error } = await supabase
+    .from('team_members')
+    .select('role, teams!inner(deleted_at)')
+    .eq('team_id', teamId)
+    .eq('user_id', userId)
+    .is('teams.deleted_at', null)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as { role: TeamRole } | null)?.role) ?? null;
+}
+
+async function requireRole(
+  supabase: SupabaseClient,
+  teamId: string,
+  userId: string,
+  allowed: TeamRole[],
+  action: string,
+): Promise<TeamRole> {
+  const role = await getTeamRole(supabase, teamId, userId);
+  if (!role) throw forbidden('Not a member of this team');
+  if (!allowed.includes(role)) throw forbidden(`Only ${allowed.join('/')} can ${action}`);
+  return role;
+}
+
+/** Create a team; creator becomes the owner member. */
+export async function createTeam(
+  supabase: SupabaseClient,
+  userId: string,
+  name: string,
+): Promise<TeamRecord> {
+  const { data, error } = await supabase
+    .from('teams')
+    .insert({ name, owner_id: userId })
+    .select('*')
+    .single();
+  if (error) throw error;
+  const team = data as TeamRecord;
+
+  const { error: memberErr } = await supabase
+    .from('team_members')
+    .insert({ team_id: team.id, user_id: userId, role: 'owner' });
+  if (memberErr) throw memberErr;
+
+  return team;
+}
+
+export interface TeamDetail {
+  team: TeamRecord;
+  role: TeamRole;
+  members: TeamMemberDto[];
+  storage: { used: number; limit: number; percent: number };
+}
+
+/** Team + members + storage stats. Throws 403 if requester is not a member. */
+export async function getTeam(
+  supabase: SupabaseClient,
+  teamId: string,
+  requesterId: string,
+): Promise<TeamDetail> {
+  const role = await getTeamRole(supabase, teamId, requesterId);
+  if (!role) throw forbidden('Not a member of this team');
+
+  const { data: teamData, error: teamErr } = await supabase
+    .from('teams')
+    .select('*')
+    .eq('id', teamId)
+    .is('deleted_at', null)
+    .maybeSingle();
+  if (teamErr) throw teamErr;
+  if (!teamData) throw notFound('Team');
+  const team = teamData as TeamRecord;
+
+  const { data: memberData, error: memberErr } = await supabase
+    .from('team_members')
+    .select('role, joined_at, users!inner(id, display_name, picture_url)')
+    .eq('team_id', teamId)
+    .order('joined_at', { ascending: true });
+  if (memberErr) throw memberErr;
+
+  const members: TeamMemberDto[] = (
+    memberData as unknown as {
+      role: TeamRole;
+      joined_at: string;
+      users: { id: string; display_name: string | null; picture_url: string | null };
+    }[]
+  ).map((m) => ({
+    userId: m.users.id,
+    role: m.role,
+    displayName: m.users.display_name,
+    pictureUrl: m.users.picture_url,
+    joinedAt: m.joined_at,
+  }));
+
+  return {
+    team,
+    role,
+    members,
+    storage: {
+      used: team.storage_used,
+      limit: team.storage_limit,
+      percent: team.storage_limit > 0 ? (team.storage_used / team.storage_limit) * 100 : 0,
+    },
+  };
+}
+
+export interface UserTeamSummary {
+  team: TeamRecord;
+  role: TeamRole;
+  memberCount: number;
+}
+
+/** All (non-deleted) teams the user belongs to, with member counts. */
+export async function listUserTeams(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<UserTeamSummary[]> {
+  const { data, error } = await supabase
+    .from('team_members')
+    .select('role, teams!inner(*)')
+    .eq('user_id', userId)
+    .is('teams.deleted_at', null);
+  if (error) throw error;
+
+  const rows = data as unknown as { role: TeamRole; teams: TeamRecord }[];
+  if (rows.length === 0) return [];
+
+  const teamIds = rows.map((r) => r.teams.id);
+  const { data: counts, error: countErr } = await supabase
+    .from('team_members')
+    .select('team_id')
+    .in('team_id', teamIds);
+  if (countErr) throw countErr;
+
+  const countByTeam = new Map<string, number>();
+  for (const row of counts as { team_id: string }[]) {
+    countByTeam.set(row.team_id, (countByTeam.get(row.team_id) ?? 0) + 1);
+  }
+
+  return rows
+    .map((r) => ({
+      team: r.teams,
+      role: r.role,
+      memberCount: countByTeam.get(r.teams.id) ?? 1,
+    }))
+    .sort((a, b) => a.team.name.localeCompare(b.team.name));
+}
+
+/** Owner/admin mints a stateful 7-day invite (row in team_invites). */
+export async function inviteMember(
+  supabase: SupabaseClient,
+  teamId: string,
+  invitedBy: string,
+): Promise<TeamInviteRecord> {
+  await requireRole(supabase, teamId, invitedBy, ['owner', 'admin'], 'invite members');
+
+  const { data, error } = await supabase
+    .from('team_invites')
+    .insert({ team_id: teamId, invited_by: invitedBy })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as TeamInviteRecord;
+}
+
+/** Pending invites for the team management page. */
+export async function listPendingInvites(
+  supabase: SupabaseClient,
+  teamId: string,
+  requesterId: string,
+): Promise<TeamInviteRecord[]> {
+  const role = await getTeamRole(supabase, teamId, requesterId);
+  if (!role) throw forbidden('Not a member of this team');
+
+  const { data, error } = await supabase
+    .from('team_invites')
+    .select('*')
+    .eq('team_id', teamId)
+    .eq('status', 'pending')
+    .gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return data as TeamInviteRecord[];
+}
+
+/** Validate token (pending + unexpired), add the user, mark invite accepted. */
+export async function acceptInvite(
+  supabase: SupabaseClient,
+  token: string,
+  userId: string,
+): Promise<TeamRecord> {
+  const { data, error } = await supabase
+    .from('team_invites')
+    .select('*, teams!inner(*)')
+    .eq('token', token)
+    .maybeSingle();
+  if (error) throw error;
+  const invite = data as (TeamInviteRecord & { teams: TeamRecord }) | null;
+
+  if (!invite || invite.teams.deleted_at) {
+    throw new TeamError('INVITE_INVALID', 'Invite link is invalid', 400);
+  }
+  if (invite.status !== 'pending' || new Date(invite.expires_at).getTime() < Date.now()) {
+    throw new TeamError('INVITE_EXPIRED', 'Invite link has expired or was already used', 400);
+  }
+
+  // Idempotent join: already a member → just mark the invite consumed
+  const existingRole = await getTeamRole(supabase, invite.team_id, userId);
+  if (!existingRole) {
+    const { error: joinErr } = await supabase
+      .from('team_members')
+      .insert({ team_id: invite.team_id, user_id: userId, role: 'member' });
+    if (joinErr) throw joinErr;
+  }
+
+  const { error: markErr } = await supabase
+    .from('team_invites')
+    .update({ status: 'accepted' })
+    .eq('id', invite.id)
+    .eq('status', 'pending');
+  if (markErr) throw markErr;
+
+  return invite.teams;
+}
+
+/** Owner/admin removes a member. The owner can never be removed. */
+export async function removeMember(
+  supabase: SupabaseClient,
+  teamId: string,
+  targetUserId: string,
+  requesterId: string,
+): Promise<void> {
+  await requireRole(supabase, teamId, requesterId, ['owner', 'admin'], 'remove members');
+
+  const targetRole = await getTeamRole(supabase, teamId, targetUserId);
+  if (!targetRole) throw notFound('Member');
+  if (targetRole === 'owner') {
+    throw new TeamError('CANNOT_REMOVE_OWNER', 'The team owner cannot be removed', 400);
+  }
+
+  const { error } = await supabase
+    .from('team_members')
+    .delete()
+    .eq('team_id', teamId)
+    .eq('user_id', targetUserId);
+  if (error) throw error;
+}
+
+/** Owner-only soft delete; detaches all team files (rows keep their space_id). */
+export async function deleteTeam(
+  supabase: SupabaseClient,
+  teamId: string,
+  requesterId: string,
+): Promise<void> {
+  await requireRole(supabase, teamId, requesterId, ['owner'], 'delete the team');
+
+  const { error: fileErr } = await supabase
+    .from('files')
+    .update({ team_id: null })
+    .eq('team_id', teamId);
+  if (fileErr) throw fileErr;
+
+  const { error } = await supabase
+    .from('teams')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', teamId)
+    .is('deleted_at', null);
+  if (error) throw error;
+}
+
+/** Any team member can bind a LINE group to the team (a group binds to ONE team). */
+export async function bindLineGroup(
+  supabase: SupabaseClient,
+  teamId: string,
+  lineGroupId: string,
+  userId: string,
+): Promise<TeamLineGroupRecord> {
+  const role = await getTeamRole(supabase, teamId, userId);
+  if (!role) throw forbidden('Not a member of this team');
+
+  // line_group_id is UNIQUE — a group already bound elsewhere must be unbound first
+  const { data: existing, error: findErr } = await supabase
+    .from('team_line_groups')
+    .select('*')
+    .eq('line_group_id', lineGroupId)
+    .maybeSingle();
+  if (findErr) throw findErr;
+  if (existing) {
+    const bound = existing as TeamLineGroupRecord;
+    if (bound.team_id === teamId) return bound; // idempotent re-bind
+    throw new TeamError('GROUP_ALREADY_BOUND', 'This LINE group is already bound to another team', 409);
+  }
+
+  const { data, error } = await supabase
+    .from('team_line_groups')
+    .upsert(
+      { team_id: teamId, line_group_id: lineGroupId, bound_by: userId },
+      { onConflict: 'line_group_id' },
+    )
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as TeamLineGroupRecord;
+}
+
+/** Owner/admin unbinds a LINE group from the team. */
+export async function unbindLineGroup(
+  supabase: SupabaseClient,
+  teamId: string,
+  lineGroupId: string,
+  userId: string,
+): Promise<void> {
+  await requireRole(supabase, teamId, userId, ['owner', 'admin'], 'unbind LINE groups');
+
+  const { error } = await supabase
+    .from('team_line_groups')
+    .delete()
+    .eq('team_id', teamId)
+    .eq('line_group_id', lineGroupId);
+  if (error) throw error;
+}
+
+/** LINE groups bound to the team (for the management page). */
+export async function listLineGroups(
+  supabase: SupabaseClient,
+  teamId: string,
+  requesterId: string,
+): Promise<TeamLineGroupRecord[]> {
+  const role = await getTeamRole(supabase, teamId, requesterId);
+  if (!role) throw forbidden('Not a member of this team');
+
+  const { data, error } = await supabase
+    .from('team_line_groups')
+    .select('*')
+    .eq('team_id', teamId)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return data as TeamLineGroupRecord[];
+}
+
+/**
+ * Atomically adjust team storage via the increment_team_storage RPC (migration
+ * 005) — never read-modify-write (rule 8 applies to teams too).
+ *
+ * enforce=true (default): the RPC refuses an increment that would exceed
+ * storage_limit and this throws StorageQuotaError — use it to RESERVE quota
+ * BEFORE storing. enforce=false: unconditional (clamped at 0) — use it to
+ * settle size drift after upload or to free space on delete.
+ */
+export async function incrementTeamStorage(
+  supabase: SupabaseClient,
+  teamId: string,
+  bytes: number,
+  opts: { enforce?: boolean } = {},
+): Promise<number> {
+  const { data, error } = await supabase.rpc('increment_team_storage', {
+    p_team_id: teamId,
+    p_delta: Math.round(bytes),
+    p_enforce: opts.enforce ?? true,
+  });
+  if (error) {
+    if (error.message?.includes('team_quota_exceeded')) {
+      throw new StorageQuotaError(teamId);
+    }
+    throw error;
+  }
+  return data as number;
+}
+
+/** Team bound to a LINE group, or null. Used by the upload worker. */
+export async function getTeamByLineGroup(
+  supabase: SupabaseClient,
+  lineGroupId: string,
+): Promise<TeamRecord | null> {
+  const { data, error } = await supabase
+    .from('team_line_groups')
+    .select('teams!inner(*)')
+    .eq('line_group_id', lineGroupId)
+    .is('teams.deleted_at', null)
+    .maybeSingle();
+  if (error) throw error;
+  return ((data as unknown as { teams: TeamRecord } | null)?.teams) ?? null;
+}

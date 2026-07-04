@@ -4,4 +4,5 @@ export * from './types/tag';
 export * from './types/scan';
 export * from './types/user';
 export * from './types/space';
+export * from './types/team';
 export * from './types/jobs';

@@ -80,6 +80,9 @@ export function Navbar({
         </div>
 
         <div className="navbar-right">
+          <a className="btn ghost" href="/dashboard/teams">
+            ทีม
+          </a>
           <button
             className="icon-btn search-toggle"
             aria-label="ค้นหาไฟล์"

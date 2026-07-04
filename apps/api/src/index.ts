@@ -11,6 +11,7 @@ import filesRoutes from './routes/files';
 import foldersRoutes from './routes/folders';
 import tagsRoutes from './routes/tags';
 import spacesRoutes from './routes/spaces';
+import teamRoutes from './routes/team.router';
 import analyticsRoutes from './routes/analytics';
 import adminRoutes from './routes/admin';
 import integrationsRoutes from './routes/integrations';
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
   await app.register(foldersRoutes);
   await app.register(tagsRoutes);
   await app.register(spacesRoutes);
+  await app.register(teamRoutes, { prefix: '/api/teams' });
   await app.register(analyticsRoutes);
   await app.register(adminRoutes);
   await app.register(integrationsRoutes);

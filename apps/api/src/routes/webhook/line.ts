@@ -6,6 +6,7 @@ import { getProfile, replyMessage } from '../../services/line.service';
 import { buildMergeFlexMessage, type FlexMessage } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
 import { ensureGroupSpace } from '../../services/space.service';
+import { getTeamByLineGroup } from '../../services/team.service';
 import { enqueueScanPageReply, enqueueUpload, hasPendingBatch } from '../../services/upload-queue';
 import {
   cancelSession,
@@ -117,6 +118,25 @@ async function handleTextCommand(
 ): Promise<void> {
   const source = event.source;
   const lineUserId = source.userId!;
+
+  // Show this group's LINE Group ID (for binding it to a team in the dashboard)
+  if (isCmd(text, 'ไอดีกลุ่ม', 'group id', 'groupid')) {
+    if (source.type !== 'group' || !source.groupId) {
+      await reply(event, 'คำสั่งนี้ใช้ได้ในกลุ่มเท่านั้นน้า');
+      return;
+    }
+    const groupId = source.groupId;
+    const team = await getTeamByLineGroup(app.supabase, groupId);
+    if (team) {
+      await reply(event, `ไอดีกลุ่มนี้คือ:\n${groupId}\n\nผูกกับทีม: ${team.name} แล้วน้า`);
+    } else {
+      await reply(
+        event,
+        `ไอดีกลุ่มนี้คือ:\n${groupId}\n\nยังไม่ได้ผูกกับทีมไหนน้า เอาไอดีนี้ไปใส่ในแดชบอร์ด → ทีม → ผูกกลุ่ม ได้เลยน้า`,
+      );
+    }
+    return;
+  }
 
   // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell;
   // "สแกน"/"scan" kept as legacy aliases — the old rich menu still sends them)

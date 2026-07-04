@@ -5,6 +5,10 @@ import type {
   SpaceDto,
   SpaceMemberDto,
   TagDto,
+  TeamDto,
+  TeamInviteDto,
+  TeamLineGroupDto,
+  TeamMemberDto,
   UserDto,
 } from '@nookeb/shared';
 
@@ -151,28 +155,8 @@ export function listSpaces(): Promise<{ spaces: SpaceDto[] }> {
   return apiFetch(`/spaces`);
 }
 
-export function createSpace(name: string): Promise<SpaceDto> {
-  return apiFetch<SpaceDto>(`/spaces`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name }),
-  });
-}
-
 export function listMembers(spaceId: string): Promise<{ members: SpaceMemberDto[] }> {
   return apiFetch(`/spaces/${spaceId}/members`);
-}
-
-export function createInvite(spaceId: string): Promise<{ token: string; url: string; expiresInDays: number }> {
-  return apiFetch(`/spaces/${spaceId}/invites`, { method: 'POST' });
-}
-
-export function joinSpace(token: string): Promise<SpaceDto> {
-  return apiFetch<SpaceDto>(`/spaces/join`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token }),
-  });
 }
 
 export interface UsageResponse {
@@ -261,6 +245,88 @@ export function loginWithLineCode(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code, redirectUri }),
   });
+}
+
+/* ============================================================
+   Teams API (/api/teams) — envelope { success, data } / { success, error, code }
+   ============================================================ */
+
+async function teamFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const token = getToken();
+  const res = await fetch(`${API_URL}/api/teams${path}`, {
+    ...init,
+    headers: {
+      ...(init?.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (res.status === 401) {
+    clearSession();
+    throw new ApiError(401, 'Unauthorized');
+  }
+  const body = (await res.json().catch(() => null)) as
+    | { success: true; data: T }
+    | { success: false; error: string; code: string }
+    | null;
+  if (!res.ok || !body || body.success !== true) {
+    const message = body && 'error' in body ? body.error : `API error ${res.status}`;
+    throw new ApiError(res.status, message);
+  }
+  return body.data;
+}
+
+export interface TeamDetailResponse {
+  team: TeamDto;
+  members: TeamMemberDto[];
+  storage: { used: number; limit: number; percent: number };
+  invites: TeamInviteDto[];
+  lineGroups: TeamLineGroupDto[];
+}
+
+export function listTeams(): Promise<TeamDto[]> {
+  return teamFetch<TeamDto[]>(`/`);
+}
+
+export function createTeam(name: string): Promise<TeamDto> {
+  return teamFetch<TeamDto>(`/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export function getTeamDetail(teamId: string): Promise<TeamDetailResponse> {
+  return teamFetch<TeamDetailResponse>(`/${teamId}`);
+}
+
+export function deleteTeam(teamId: string): Promise<{ deleted: boolean }> {
+  return teamFetch(`/${teamId}`, { method: 'DELETE' });
+}
+
+export function createTeamInvite(
+  teamId: string,
+): Promise<{ token: string; url: string; expiresAt: string }> {
+  return teamFetch(`/${teamId}/invite`, { method: 'POST' });
+}
+
+export function acceptTeamInvite(token: string): Promise<TeamDto> {
+  return teamFetch<TeamDto>(`/invite/${encodeURIComponent(token)}/accept`, { method: 'POST' });
+}
+
+export function removeTeamMember(teamId: string, userId: string): Promise<{ removed: boolean }> {
+  return teamFetch(`/${teamId}/members/${userId}`, { method: 'DELETE' });
+}
+
+export function bindTeamGroup(teamId: string, lineGroupId: string): Promise<TeamLineGroupDto> {
+  return teamFetch<TeamLineGroupDto>(`/${teamId}/groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lineGroupId }),
+  });
+}
+
+export function unbindTeamGroup(teamId: string, lineGroupId: string): Promise<{ unbound: boolean }> {
+  return teamFetch(`/${teamId}/groups/${encodeURIComponent(lineGroupId)}`, { method: 'DELETE' });
 }
 
 /** Download opens a new tab; the API 302-redirects to a presigned R2 URL. */
