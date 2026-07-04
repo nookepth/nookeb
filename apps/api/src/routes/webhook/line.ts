@@ -69,6 +69,13 @@ function sanitizeJobId(prefix: string, id: string): string {
 // (The worker's handlers are written to be safe to re-run — see upload.worker.ts.)
 const RETRY_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 5000 } } as const;
 
+// Greeting image sent on the `follow` event (1-1 chat). Served as a public,
+// unauthenticated static asset from the API (routes/static.ts → R2 static/welcome.jpg)
+// because LINE fetches originalContentUrl directly, so it must be a permanent
+// public HTTPS URL — not a 1h-presigned R2 URL. Derived from APP_URL so it
+// resolves to the deployed API domain per environment.
+const GREETING_IMAGE_URL = `${config.APP_URL}/static/welcome.jpg`;
+
 async function reply(event: LineMessageEvent, text: string): Promise<void> {
   if (event.replyToken) await replyMessage(event.replyToken, [{ type: 'text', text }]);
 }
@@ -420,8 +427,22 @@ async function handleTextCommand(
 }
 
 async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promise<void> {
+  // User adds the bot (1-1 chat) → greet with the welcome image only
+  if (event.type === 'follow') {
+    if (event.replyToken) {
+      await replyMessage(event.replyToken, [
+        {
+          type: 'image',
+          originalContentUrl: GREETING_IMAGE_URL,
+          previewImageUrl: GREETING_IMAGE_URL,
+        },
+      ] as unknown as LineMessage[]);
+    }
+    return;
+  }
+
   // Bot added to a group → greet
-  if (event.type === 'join' || event.type === 'follow') {
+  if (event.type === 'join') {
     await reply(
       event,
       'สวัสดีค้าบ หนูเก็บเองน้า\nส่งรูปหรือไฟล์เข้ามาได้เลย หนูจะเก็บให้เองเลยน้า\nพิมพ์ "วิธีใช้" ถ้าอยากดูคำสั่งทั้งหมดน้า',
