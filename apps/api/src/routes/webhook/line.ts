@@ -180,7 +180,7 @@ async function handleTextCommand(
   // "ล็อคเกอร์" → quick-reply shortcuts (buttons only, no Flex card) in ALL
   // sources (group AND 1-on-1).
   if (isCmd(text, 'ล็อคเกอร์', 'locker')) {
-    await replyWithQuickReply(event, 'ล็อคเกอร์ทีมน้า เลือกได้เลย', [
+    await replyWithQuickReply(event, 'ล็อคเกอร์น้า เลือกได้เลย', [
       { label: 'ดูล็อคเกอร์', uri: `${config.WEB_URL}/dashboard` },
       { label: 'อัพโหลดไฟล์', text: 'อัพโหลดไฟล์' },
     ]);
