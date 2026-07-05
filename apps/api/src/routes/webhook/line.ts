@@ -367,41 +367,48 @@ async function handleTextCommand(
   // instead of the API's JSON reason. Checked before the "เชิญ" contains-match
   // so "/redeem" text can never be swallowed by another branch.
   if (/^\/redeem\b/i.test(text.trim())) {
-    const code = text.trim().split(/\s+/)[1];
-    if (!code) {
-      await reply(event, 'หนูเก็บ: พิมพ์โค้ดต่อท้ายด้วยนะ 📁\nเช่น /redeem ABC12345');
-      return;
-    }
-    if (!/^[a-zA-Z0-9]{1,8}$/.test(code)) {
-      await reply(event, 'หนูเก็บ: หาโค้ดนี้ไม่เจอเลยนะ 📋\nลองเช็คตัวพิมพ์อีกทีได้เลย!');
-      return;
-    }
-    const profile = await getProfile(lineUserId).catch(() => undefined);
-    const { user } = await ensureUserAndSpace(
-      app.supabase,
-      lineUserId,
-      profile?.displayName,
-      profile?.pictureUrl,
-    );
-    if (!(await checkRedeemRateLimit(app.redis, user.id))) {
-      await reply(event, 'หนูเก็บ: พักก่อนนะ 😴\nลองใหม่ได้ในอีก 1 ชั่วโมงนะคะ!');
-      return;
-    }
-    const result = await redeemCode(app.supabase, app.redis, code, user.id);
-    if (!result.ok) {
-      await reply(event, REDEEM_FAIL_TEXT[result.reasonCode ?? 'not_found']);
-      return;
-    }
-    // Pushes are best-effort — the redemption is already committed.
+    // A thrown error here would otherwise bubble to handleEvent's catch, which
+    // only logs — the user would get pure silence after being told to redeem.
     try {
-      await sendRedeemSuccessToReferee(app.supabase, user.id, result.newStorageBytes!);
+      const code = text.trim().split(/\s+/)[1];
+      if (!code) {
+        await reply(event, 'หนูเก็บ: พิมพ์โค้ดต่อท้ายด้วยนะ 📁\nเช่น /redeem ABC12345');
+        return;
+      }
+      if (!/^[a-zA-Z0-9]{1,8}$/.test(code)) {
+        await reply(event, 'หนูเก็บ: หาโค้ดนี้ไม่เจอเลยนะ 📋\nลองเช็คตัวพิมพ์อีกทีได้เลย!');
+        return;
+      }
+      const profile = await getProfile(lineUserId).catch(() => undefined);
+      const { user } = await ensureUserAndSpace(
+        app.supabase,
+        lineUserId,
+        profile?.displayName,
+        profile?.pictureUrl,
+      );
+      if (!(await checkRedeemRateLimit(app.redis, user.id))) {
+        await reply(event, 'หนูเก็บ: พักก่อนนะ 😴\nลองใหม่ได้ในอีก 1 ชั่วโมงนะคะ!');
+        return;
+      }
+      const result = await redeemCode(app.supabase, app.redis, code, user.id);
+      if (!result.ok) {
+        await reply(event, REDEEM_FAIL_TEXT[result.reasonCode ?? 'not_found']);
+        return;
+      }
+      // Pushes are best-effort — the redemption is already committed.
+      try {
+        await sendRedeemSuccessToReferee(app.supabase, user.id, result.newStorageBytes!);
+      } catch (err) {
+        app.log.error({ err, userId: user.id }, 'referral: redeem-success push failed');
+      }
+      try {
+        await sendReferralProgressToReferrer(app.supabase, app.redis, result.referrerId!);
+      } catch (err) {
+        app.log.error({ err, referrerId: result.referrerId }, 'referral: referrer progress push failed');
+      }
     } catch (err) {
-      app.log.error({ err, userId: user.id }, 'referral: redeem-success push failed');
-    }
-    try {
-      await sendReferralProgressToReferrer(app.supabase, app.redis, result.referrerId!);
-    } catch (err) {
-      app.log.error({ err, referrerId: result.referrerId }, 'referral: referrer progress push failed');
+      app.log.error({ err, lineUserId }, 'referral: redeem handler error');
+      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
     }
     return;
   }
@@ -409,15 +416,22 @@ async function handleTextCommand(
   // Show my invite code — "/invite" or any message containing "เชิญ".
   // (Group chats never reach here: the allowlist guard above returns first.)
   if (/^\/invite\b/i.test(text.trim()) || text.includes('เชิญ')) {
-    const profile = await getProfile(lineUserId).catch(() => undefined);
-    const { user } = await ensureUserAndSpace(
-      app.supabase,
-      lineUserId,
-      profile?.displayName,
-      profile?.pictureUrl,
-    );
-    const status = await getReferralStatus(app.supabase, app.redis, user.id);
-    await replyFlex(event, buildInviteFlexMessage(status));
+    // Same silent-fail guard as /redeem: a DB/Redis error must produce an
+    // apology reply, never nothing.
+    try {
+      const profile = await getProfile(lineUserId).catch(() => undefined);
+      const { user } = await ensureUserAndSpace(
+        app.supabase,
+        lineUserId,
+        profile?.displayName,
+        profile?.pictureUrl,
+      );
+      const status = await getReferralStatus(app.supabase, app.redis, user.id);
+      await replyFlex(event, buildInviteFlexMessage(status));
+    } catch (err) {
+      app.log.error({ err, lineUserId }, 'referral: invite handler error');
+      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+    }
     return;
   }
 

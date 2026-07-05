@@ -35,7 +35,10 @@ export function ReferralCard() {
           requestAnimationFrame(() => setBarPct(Math.min(100, (s.referralCount / 10) * 100))),
         );
       })
-      .catch(() => setError(true));
+      .catch((err) => {
+        console.error('referral status error:', err);
+        setError(true);
+      });
     return () => {
       if (copyTimer.current) clearTimeout(copyTimer.current);
     };
