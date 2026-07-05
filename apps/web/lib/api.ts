@@ -393,10 +393,10 @@ export async function startDownload(fileId: string, mimeType?: string): Promise<
   const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/'); // FIX: download - scope the iOS direct-open path to images only
 
   if (isIOS && isImage) {
-    // FIX: download - navigator.share()/blob fetch broke on iOS+LINE because the awaits severed the user-gesture chain (silent NotAllowedError → button did nothing). Skip share/blob entirely and just open the inline image URL so the user long-presses → "บันทึกรูปภาพ".
+    // FIX: download - iOS/LINE blocks window.open (popup blocker) and navigator.share (gesture lost after await). The one reliable method: navigate THIS tab to the inline image so it renders fullscreen → user long-presses → Save to Photos → Back returns to the app.
     const detail = await getFile(fileId); // FIX: download - inline presigned URL (no attachment disposition) so the image renders instead of downloading
     if (detail.url) {
-      window.open(detail.url, '_blank'); // FIX: download - open a REAL url (never an empty tab), the only method that shows the image across iOS Safari AND LINE without a blank screen
+      window.location.href = detail.url; // FIX: download - navigate the current tab (works in Safari AND LINE); never window.open
       return;
     }
     // FIX: download - inline url missing (file not ready): fall through to the token download below
@@ -406,10 +406,6 @@ export async function startDownload(fileId: string, mimeType?: string): Promise<
     method: 'POST',
   });
   const downloadUrl = `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`;
-  // FIX: download - iOS non-image keeps opening in a new tab; Android + desktop navigate in place to trigger the attachment download
-  if (isIOS) {
-    window.open(downloadUrl, '_blank');
-  } else {
-    window.location.assign(downloadUrl);
-  }
+  // FIX: download - navigate in place to trigger the attachment download (302 → attachment keeps the page). No window.open — LINE's popup blocker kills it on iOS.
+  window.location.assign(downloadUrl);
 }

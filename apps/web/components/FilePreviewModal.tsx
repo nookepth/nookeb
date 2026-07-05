@@ -96,7 +96,7 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
                     zIndex: 10,
                   }}
                 >
-                  📥 กดค้างที่รูปภาพเพื่อบันทึก
+                  กดค้างที่รูปภาพ แล้วเลือก บันทึกรูปภาพ เพื่อบันทึกลงเครื่อง
                 </div>
               )}
             </div>
