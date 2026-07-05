@@ -22,6 +22,8 @@
   --color-text-muted: #a0a0a0;
   --color-border: #e8e4df;
   --color-success: #27ae60;
+  --color-teal: #0d9488; /* referral accents — matches the LINE Flex TEAL */
+  --color-teal-soft: #e6f5f3;
   --color-error: #dc2626;
   --color-error-soft: #fbe9e9;
   --color-warning-soft: #fdf3e0;
@@ -1416,6 +1418,134 @@ button:active,
   margin-top: 10px;
   font-size: var(--font-size-xs);
   color: var(--color-text-muted);
+}
+
+/* ============================================================
+   Referral card (below usage bar)
+   ============================================================ */
+
+.referral {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.referral-title {
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.referral-code-label {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  margin-bottom: 6px;
+}
+
+.referral-code-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.referral-code {
+  font-family: ui-monospace, monospace;
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  letter-spacing: 2px;
+  color: var(--color-teal);
+  background: var(--color-teal-soft);
+  border: 1.5px solid var(--color-teal);
+  border-radius: var(--radius-md);
+  padding: 8px 16px;
+}
+
+.referral-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.referral-track {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  background: var(--color-surface-3);
+  border-radius: var(--radius-full);
+}
+
+.referral-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-teal);
+  transition: width 0.6s ease;
+}
+
+/* milestone dots at 1/4/7/10 referrals (10%/40%/70%/100%) */
+.referral-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 12px;
+  height: 12px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  border: 2px solid var(--color-border);
+}
+
+.referral-marker.passed {
+  background: var(--color-teal);
+  border-color: var(--color-teal);
+}
+
+.referral-count {
+  flex-shrink: 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.referral-milestone {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 4px;
+}
+
+.referral-next {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.referral-max {
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-teal);
+}
+
+.referral-error {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.referral-skeleton-code {
+  height: 44px;
+  width: 200px;
+  max-width: 100%;
+  border-radius: var(--radius-md);
+  margin-bottom: 10px;
+}
+
+.referral-skeleton-line {
+  height: 12px;
+  width: 70%;
+  border-radius: 6px;
 }
 
 /* ============================================================

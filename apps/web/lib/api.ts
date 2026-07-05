@@ -173,6 +173,19 @@ export function getUsage(): Promise<UsageResponse> {
   return apiFetch(`/me/usage`);
 }
 
+export interface ReferralStatusResponse {
+  code: string;
+  referralCount: number;
+  currentTierGB: number;
+  nextTierGB: number | null;
+  neededForNext: number;
+  progressPercent: number;
+}
+
+export function getReferralStatus(): Promise<ReferralStatusResponse> {
+  return apiFetch(`/referral/status`);
+}
+
 export interface GoogleStatus {
   enabled: boolean;
   connected: boolean;

@@ -30,6 +30,7 @@ import { FilePreviewModal } from '@/components/FilePreviewModal';
 import { Navbar, type NavbarUser } from '@/components/Navbar';
 import { BottomNav, type BottomTab } from '@/components/BottomNav';
 import { RecentStrip } from '@/components/RecentStrip';
+import { ReferralCard } from '@/components/ReferralCard';
 import { UsageBar } from '@/components/UsageBar';
 import { BoxIcon, DatabaseIcon, DocIcon, FolderIcon, GridIcon, ImageIcon, ListIcon } from '@/components/icons';
 
@@ -351,6 +352,8 @@ export default function DashboardPage() {
         )}
 
         {usage && <UsageBar usage={usage} />}
+
+        <ReferralCard />
 
         {/* ---------- space / tools row ---------- */}
         <div className="actions-row">
