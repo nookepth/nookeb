@@ -20,6 +20,8 @@ export interface FilePreviewModalProps {
 
 export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
   const [index, setIndex] = useState(0);
+  // FIX: 2 - iOS Safari needs a long-press to save images (no programmatic download)
+  const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
   // fileId → presigned url (null = fetch failed / file not ready → download fallback)
   const [urls, setUrls] = useState<Record<string, string | null>>({});
   const file = files[index];
@@ -74,7 +76,11 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
           {loading ? (
             <span className="preview-hint">กำลังโหลด...</span>
           ) : inline && url && file.mimeType.startsWith('image/') ? (
-            <img className="preview-media" src={url} alt={file.name} />
+            // FIX: 2 - iOS can't save via <a download>; tell the user to long-press the image
+            <div className="preview-image-wrap">
+              <img className="preview-media" src={url} alt={file.name} />
+              {isIOS && <span className="preview-hint ios-save-hint">กดค้างที่รูปเพื่อบันทึก</span>}
+            </div>
           ) : inline && url ? (
             <iframe className="preview-frame" src={url} title={file.name} />
           ) : (

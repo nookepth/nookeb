@@ -30,7 +30,11 @@ function CallbackInner() {
         sessionStorage.removeItem('nookeb_post_login');
         router.replace(next ?? '/dashboard');
       })
-      .catch(() => setError('เข้าสู่ระบบไม่สำเร็จ ลองใหม่อีกครั้ง'));
+      .catch((err) => {
+        // FIX: 1 - log the real cause so Safari/LINE in-app auth failures are diagnosable
+        console.error('LINE login exchange failed', err);
+        setError('เข้าสู่ระบบไม่สำเร็จ ลองใหม่อีกครั้ง');
+      });
   }, [params, router]);
 
   return (

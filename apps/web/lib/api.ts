@@ -392,7 +392,12 @@ export async function startDownload(fileId: string): Promise<void> {
   const { token } = await apiFetch<{ token: string }>(`/files/${fileId}/download-token`, {
     method: 'POST',
   });
-  window.location.assign(
-    `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`,
-  );
+  const downloadUrl = `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`;
+  // FIX: 2 - iOS Safari ignores in-place attachment navigation; open in a new tab so the native "save" flow works
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  if (isIOS) {
+    window.open(downloadUrl, '_blank');
+  } else {
+    window.location.assign(downloadUrl);
+  }
 }
