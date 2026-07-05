@@ -6,7 +6,7 @@
     "dev": "concurrently -n api,worker -c blue,magenta \"npm:dev:api\" \"npm:dev:worker\"",
     "dev:api": "tsx watch --env-file=../../.env src/index.ts",
     "dev:worker": "tsx watch --env-file=../../.env src/workers/index.ts",
-    "build": "tsc",
+    "build": "npx tsc",
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/index.js",
     "typecheck": "tsc --noEmit",
@@ -28,13 +28,13 @@
     "pdf-lib": "^1.17.1",
     "sharp": "^0.35.3",
     "tesseract.js": "^7.0.0",
+    "typescript": "^5.5.3",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.14.9",
     "concurrently": "^10.0.3",
-    "tsx": "^4.16.0",
-    "typescript": "^5.5.3"
+    "tsx": "^4.16.0"
   }
 }

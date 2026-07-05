@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 COPY apps/api/package.json apps/api/
 COPY packages/shared/package.json packages/shared/
-RUN npm ci --workspace @nookeb/api --workspace @nookeb/shared --include-workspace-root
+RUN npm ci --include=dev --workspace @nookeb/api --workspace @nookeb/shared --include-workspace-root
 
 # Build
 COPY tsconfig.base.json ./

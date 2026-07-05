@@ -1,0 +1,7 @@
+# Nixpacks build config for the Railway API service.
+# The build compiles TypeScript, so devDependencies (@types/*, and — as a
+# backstop — typescript itself) MUST be installed even though Railway builds
+# with NODE_ENV=production (which would otherwise make `npm ci` skip them).
+# `--include=dev` forces them in regardless of NODE_ENV.
+[phases.install]
+cmds = ["npm ci --include=dev"]
