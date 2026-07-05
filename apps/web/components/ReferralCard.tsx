@@ -161,6 +161,12 @@ export function ReferralCard() {
         </button>
       </div>
 
+      {process.env.NODE_ENV === 'development' && (
+        <p style={{ fontSize: '10px', color: '#999' }}>
+          debug: referredById={String(status.referredById)} count={status.referralCount}
+        </p>
+      )}
+
       {/* Fix 4B — redeem a friend's code (only if this user hasn't redeemed one) */}
       {alreadyRedeemed ? (
         <p className="referral-redeemed-note">✅ กรอกโค้ดเพื่อนไปแล้ว ได้ +0.5 GB</p>
@@ -204,28 +210,26 @@ export function ReferralCard() {
         <p className="referral-max">🏆 เต็มแล้ว! คุณได้พื้นที่สูงสุด 10 GB แล้ว!</p>
       ) : (
         <>
-          {/* Milestone labels ABOVE the dots */}
-          <div className="referral-labels">
-            {MILESTONES.map((m) => (
-              <span
-                key={m}
-                className={`referral-label ${status.referralCount >= m ? 'reached' : ''}`}
-                style={{ left: `${MILESTONE_POS[m]}%` }}
-              >
-                {MILESTONE_LABEL[m]}
-              </span>
-            ))}
-          </div>
-
           <div className="referral-bar-row">
             <div className="referral-track">
               <div className="referral-fill" style={{ width: `${barPct}%` }} />
+              {/* Each milestone: label + dot share ONE left:% anchor so the
+                  label centers exactly above its dot (both use translateX(-50%)). */}
               {MILESTONES.map((m) => (
-                <span
+                <div
                   key={m}
-                  className={`referral-marker ${status.referralCount >= m ? 'passed' : ''}`}
+                  className="referral-milestone"
                   style={{ left: `${MILESTONE_POS[m]}%` }}
-                />
+                >
+                  <span
+                    className={`referral-label ${status.referralCount >= m ? 'reached' : ''}`}
+                  >
+                    {MILESTONE_LABEL[m]}
+                  </span>
+                  <span
+                    className={`referral-marker ${status.referralCount >= m ? 'passed' : ''}`}
+                  />
+                </div>
               ))}
               {/* Current referral count marker */}
               <span className="referral-cursor" style={{ left: `${barPct}%` }} />

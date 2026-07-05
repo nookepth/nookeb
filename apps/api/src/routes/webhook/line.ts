@@ -436,7 +436,8 @@ async function handleTextCommand(
   // (Must NOT use includes('เชิญ'): "หนูเก็บเชิญ" contains "เชิญ", so the old
   // contains-match fired for bare "เชิญ" too. Group chats never reach here: the
   // allowlist guard above returns first.)
-  if (text === 'หนูเก็บเชิญ' || text.trim().toLowerCase() === '/invite') {
+  const t = text.trim().normalize('NFC');
+  if (t === 'หนูเก็บเชิญ' || t.toLowerCase() === '/invite') {
     // Same silent-fail guard as /redeem: a DB/Redis error must produce an
     // apology reply, never nothing.
     try {

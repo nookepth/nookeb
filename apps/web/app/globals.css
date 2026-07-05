@@ -1469,6 +1469,8 @@ button:active,
   display: flex;
   align-items: center;
   gap: 12px;
+  /* top room for the milestone labels that sit ABOVE the track */
+  margin-top: 48px;
   margin-bottom: 12px;
 }
 
@@ -1488,9 +1490,20 @@ button:active,
 }
 
 /* milestone dots at 3/5/7/10 referrals (30%/50%/70%/100%) */
+/* Milestone anchor: a zero-width point on the track at left:{pos}%.
+   Its label AND dot both center on this same point via translateX(-50%),
+   so the label always sits exactly above its dot. */
+.referral-milestone {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  width: 0;
+}
+
 .referral-marker {
   position: absolute;
   top: 50%;
+  left: 0;
   transform: translate(-50%, -50%);
   width: 12px;
   height: 12px;
@@ -1526,16 +1539,11 @@ button:active,
   white-space: nowrap;
 }
 
-/* milestone labels ABOVE the dots */
-.referral-labels {
-  position: relative;
-  height: 42px;
-  margin-bottom: 4px;
-}
-
+/* milestone label ABOVE its dot — shares the .referral-milestone anchor */
 .referral-label {
   position: absolute;
-  bottom: 0;
+  left: 0;
+  bottom: calc(100% + 10px);
   transform: translateX(-50%);
   width: 68px;
   text-align: center;
@@ -1543,11 +1551,12 @@ button:active,
   line-height: 1.4;
   font-size: 0.75rem;
   color: var(--color-text-muted);
+  pointer-events: none;
 }
 
 /* pull the last (100%) label in so it doesn't clip the card edge */
-.referral-label:last-child {
-  transform: translateX(-85%);
+.referral-milestone:last-child .referral-label {
+  transform: translateX(-72%);
 }
 
 .referral-label.reached {
