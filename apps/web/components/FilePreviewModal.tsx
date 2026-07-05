@@ -25,8 +25,6 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
   const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
   // fileId → presigned url (null = fetch failed / file not ready → download fallback)
   const [urls, setUrls] = useState<Record<string, string | null>>({});
-  // FIX: download - dynamic save hint shown when the iOS share sheet isn't available (falls back to the always-on long-press hint)
-  const [hint, setHint] = useState<string | null>(null);
   const file = files[index];
 
   useEffect(() => {
@@ -43,11 +41,6 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
       cancelled = true;
     };
   }, [file, urls]);
-
-  // FIX: download - clear a stale save hint when navigating to another image
-  useEffect(() => {
-    setHint(null);
-  }, [file?.id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
@@ -84,18 +77,27 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
           {loading ? (
             <span className="preview-hint">กำลังโหลด...</span>
           ) : inline && url && file.mimeType.startsWith('image/') ? (
-            // FIX: download - iOS Strategy 1: a real Save button opens the native share sheet (Save to Photos); the long-press hint below is the Strategy 2 fallback
+            // FIX: download - iOS: drop the navigator.share button (it silently fails in LINE after an await); show the image + a persistent long-press hint instead
             <div className="preview-image-wrap">
               <img className="preview-media" src={url} alt={file.name} />
               {isIOS && (
-                <>
-                  <button className="btn" onClick={() => void startDownload(file.id, file.mimeType, setHint)}>
-                    บันทึกรูปภาพ
-                  </button>
-                  <span className="preview-hint ios-save-hint">
-                    {hint ?? 'กดค้างที่รูปภาพเพื่อบันทึก'}
-                  </span>
-                </>
+                // FIX: download - sticky hint pinned to the bottom of the scroll container so it's never cut off below the viewport
+                <div
+                  style={{
+                    position: 'sticky',
+                    bottom: 0,
+                    width: '100%',
+                    backgroundColor: '#f9fafb',
+                    borderTop: '1px solid #e5e7eb',
+                    padding: '10px 16px',
+                    textAlign: 'center',
+                    fontSize: '14px',
+                    color: '#6b7280',
+                    zIndex: 10,
+                  }}
+                >
+                  📥 กดค้างที่รูปภาพเพื่อบันทึก
+                </div>
               )}
             </div>
           ) : inline && url ? (

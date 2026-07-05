@@ -210,9 +210,17 @@ export function FileCard({
       )}
       {file.status === 'ready' && (
         <button
+          type="button" // FIX: download - avoid accidental form submit swallowing the tap on iOS
           className="btn secondary small"
           disabled={busy}
-          onClick={() => void startDownload(file.id, file.mimeType)}
+          onClick={async (e) => {
+            e.stopPropagation(); // FIX: download - don't let a parent handler eat the gesture
+            try {
+              await startDownload(file.id, file.mimeType); // FIX: download - await so failures surface instead of silently vanishing
+            } catch (err) {
+              console.error('download failed', err); // FIX: download - was failing silently on iOS
+            }
+          }}
         >
           ดาวน์โหลด
         </button>
@@ -255,9 +263,17 @@ export function FileCard({
                 <EyeIcon />
               </button>
               <button
+                type="button" // FIX: download - avoid accidental form submit swallowing the tap on iOS
                 className="icon-btn"
                 aria-label="ดาวน์โหลด"
-                onClick={() => void startDownload(file.id, file.mimeType)}
+                onClick={async (e) => {
+                  e.stopPropagation(); // FIX: download - don't let a parent handler eat the gesture
+                  try {
+                    await startDownload(file.id, file.mimeType); // FIX: download - await so failures surface instead of silently vanishing
+                  } catch (err) {
+                    console.error('download failed', err); // FIX: download - was failing silently on iOS
+                  }
+                }}
               >
                 <DownloadIcon />
               </button>
