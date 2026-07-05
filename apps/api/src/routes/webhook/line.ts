@@ -103,6 +103,21 @@ async function replyFlex(event: LineMessageEvent, message: FlexMessage): Promise
  * doesn't model `quickReply`, so we attach it here and cast — the shape matches
  * the LINE Messaging API (same pattern as {@link replyWithQuickReply}).
  */
+/**
+ * Build a quick-reply action for a button. LINE rejects the WHOLE message (400)
+ * if a `uri` action isn't https — so a non-https uri (http localhost in dev, or a
+ * misconfigured WEB_URL) would make the entire card fail to render. Fall back to a
+ * `message` action carrying the URL so the reply always succeeds (mirrors the
+ * `startsWith('https://')` guard the Flex builders already use).
+ */
+function quickReplyAction(b: QuickReplyButton): Record<string, unknown> {
+  if (b.uri && b.uri.startsWith('https://')) {
+    return { type: 'action', action: { type: 'uri', label: b.label, uri: b.uri } };
+  }
+  const text = b.uri ?? b.text ?? b.label;
+  return { type: 'action', action: { type: 'message', label: b.label, text } };
+}
+
 async function replyFlexWithQuickReply(
   event: LineMessageEvent,
   message: FlexMessage,
@@ -111,14 +126,7 @@ async function replyFlexWithQuickReply(
   if (!event.replyToken) return;
   const withQr = {
     ...message,
-    quickReply: {
-      items: buttons.map((b) => ({
-        type: 'action',
-        action: b.uri
-          ? { type: 'uri', label: b.label, uri: b.uri }
-          : { type: 'message', label: b.label, text: b.text ?? b.label },
-      })),
-    },
+    quickReply: { items: buttons.map(quickReplyAction) },
   } as unknown as LineMessage;
   await replyMessage(event.replyToken, [withQr]);
 }
@@ -147,14 +155,7 @@ async function replyWithQuickReply(
   const message = {
     type: 'text',
     text,
-    quickReply: {
-      items: buttons.map((b) => ({
-        type: 'action',
-        action: b.uri
-          ? { type: 'uri', label: b.label, uri: b.uri }
-          : { type: 'message', label: b.label, text: b.text ?? b.label },
-      })),
-    },
+    quickReply: { items: buttons.map(quickReplyAction) },
   } as unknown as LineMessage;
   await replyMessage(event.replyToken, [message]);
 }
@@ -202,9 +203,23 @@ const REDEEM_FAIL_TEXT: Record<RedeemFailCode, string> = {
   chain: 'หนูเก็บ: อันนี้กรอกไม่ได้นะคะ 📄\nลองชวนเพื่อนคนอื่นดูนะ!',
 };
 
+/**
+ * Normalize command text for exact matching. LINE can deliver Thai text (rich-menu
+ * taps, quick-reply echoes, typed input) as non-NFC or with zero-width chars, which
+ * broke the old raw `===` compare (same class of bug the invite handler hit). Strip
+ * zero-width chars + NFC-normalize both sides so the menu/locker commands still match.
+ */
+function normalizeCmd(s: string): string {
+  return s
+    .trim()
+    .replace(/[​-‍﻿]/g, '') // remove zero-width chars
+    .normalize('NFC')
+    .toLowerCase();
+}
+
 function isCmd(text: string, ...matches: string[]): boolean {
-  const t = text.trim().toLowerCase();
-  return matches.some((m) => t === m.toLowerCase());
+  const t = normalizeCmd(text);
+  return matches.some((m) => t === normalizeCmd(m));
 }
 
 /**
