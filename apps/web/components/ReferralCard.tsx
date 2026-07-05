@@ -14,10 +14,10 @@ const MILESTONE_POS: Record<number, number> = { 3: 30, 5: 50, 7: 70, 10: 100 };
 
 /** Label rendered ABOVE each milestone dot (\n → line breaks via pre-line). */
 const MILESTONE_LABEL: Record<number, string> = {
-  3: 'ครบ 3 คน\nรับไปเลย 3 GB 🎉',
-  5: 'ครบ 5 คน\nได้ 5 GB เย้',
-  7: 'ครบ 7 คน\nรับไปเลย 7 GB',
-  10: 'เจ๋งที่สุด\nครบ 10 คน\nรับ 10 GB',
+  3: 'ครบ 3 คน\nรับ 3 GB',
+  5: 'ครบ 5 คน\nได้ 5 GB',
+  7: 'ครบ 7 คน\nรับ 7 GB',
+  10: 'เจ๋งที่สุด\nรับ 10 GB',
 };
 
 /** Dynamic motivational line keyed by the EXACT referral count (0–10+).
@@ -25,9 +25,9 @@ const MILESTONE_LABEL: Record<number, string> = {
 function getMotivationalText(count: number): string {
   switch (count) {
     case 0:
-      return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! 📁';
+      return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! ❤️';
     case 1:
-      return 'อีก 2 คน ได้ 3 GB เลยน้า 💛';
+      return 'อีก 2 คน ได้ 3 GB เลยน้า ❤️';
     case 2:
       return 'ขาดแค่คนเดียวจะได้ 3 GB แล้วววว 🔥';
     case 3:

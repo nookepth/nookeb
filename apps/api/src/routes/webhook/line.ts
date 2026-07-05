@@ -432,9 +432,11 @@ async function handleTextCommand(
     return;
   }
 
-  // Show my invite code — "/invite", "หนูเก็บเชิญ", or any message containing "เชิญ".
-  // (Group chats never reach here: the allowlist guard above returns first.)
-  if (/^\/invite\b/i.test(text.trim()) || text.includes('หนูเก็บเชิญ') || text.includes('เชิญ')) {
+  // Show my invite code — EXACT match "หนูเก็บเชิญ" or "/invite" only.
+  // (Must NOT use includes('เชิญ'): "หนูเก็บเชิญ" contains "เชิญ", so the old
+  // contains-match fired for bare "เชิญ" too. Group chats never reach here: the
+  // allowlist guard above returns first.)
+  if (text === 'หนูเก็บเชิญ' || text.trim().toLowerCase() === '/invite') {
     // Same silent-fail guard as /redeem: a DB/Redis error must produce an
     // apology reply, never nothing.
     try {

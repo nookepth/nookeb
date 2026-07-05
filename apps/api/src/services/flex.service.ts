@@ -18,6 +18,21 @@ const INK = '#111111';
 const TEAL = '#0D9488'; // referral accents — invite code + progress-bar fill
 const BAR_TRACK = '#EEEEEE'; // referral progress-bar background
 
+/**
+ * Strip emoji/pictographs from a string for LINE Flex text fields (Fix 5).
+ * Removes Extended_Pictographic glyphs plus the variation selector (FE0F),
+ * ZWJ (200D) and keycap combiner (20E3) that glue emoji sequences together.
+ * Deliberately NOT `\p{Emoji}` — that class also matches ASCII digits 0-9 and
+ * would corrupt text like "3 GB" / "+0.5 GB". Collapses the resulting double
+ * spaces so a stripped trailing emoji doesn't leave a dangling gap.
+ */
+export function stripEmoji(t: string): string {
+  return t
+    .replace(/[\p{Extended_Pictographic}\u{FE0F}\u{200D}\u{20E3}]/gu, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 /** A LINE Flex message. `contents` is a Flex bubble object. */
 export interface FlexMessage {
   type: 'flex';
@@ -351,9 +366,9 @@ function progressBar(percent: number): Record<string, unknown> {
 export function referralMotivationalText(count: number): string {
   switch (count) {
     case 0:
-      return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! 📁';
+      return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! ❤️';
     case 1:
-      return 'อีก 2 คน ได้ 3 GB เลยน้า 💛';
+      return 'อีก 2 คน ได้ 3 GB เลยน้า ❤️';
     case 2:
       return 'ขาดแค่คนเดียวจะได้ 3 GB แล้วววว 🔥';
     case 3:
@@ -395,13 +410,13 @@ export function buildRedeemSuccessFlexMessage(params: {
         style: 'primary',
         color: TEAL,
         height: 'sm',
-        action: { type: 'uri', label: 'อัปโหลดเลย! →', uri: dashboardUrl },
+        action: { type: 'uri', label: 'อัปโหลดเลย', uri: dashboardUrl },
       }
-    : { type: 'text', text: `อัปโหลดเลย! →: ${dashboardUrl}`, size: 'xs', color: TEAL, wrap: true };
+    : { type: 'text', text: `อัปโหลดเลย: ${dashboardUrl}`, size: 'xs', color: TEAL, wrap: true };
 
   return {
     type: 'flex',
-    altText: `หนูเก็บ: ได้พื้นที่เพิ่มแล้ว! 🎉 พื้นที่ทั้งหมดตอนนี้ ${totalGB} GB`,
+    altText: `หนูเก็บ: ได้พื้นที่เพิ่มแล้ว พื้นที่ทั้งหมดตอนนี้ ${totalGB} GB`,
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -411,7 +426,7 @@ export function buildRedeemSuccessFlexMessage(params: {
         backgroundColor: TEAL,
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: '📁 หนูเก็บ · ได้พื้นที่เพิ่มแล้ว!', weight: 'bold', size: 'sm', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: 'หนูเก็บ · ได้พื้นที่เพิ่มแล้ว', weight: 'bold', size: 'sm', color: '#FFFFFF', wrap: true },
         ],
       },
       body: {
@@ -420,9 +435,9 @@ export function buildRedeemSuccessFlexMessage(params: {
         spacing: 'sm',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: '🎉 ยินดีด้วยนะ!', weight: 'bold', size: 'lg', color: INK },
+          { type: 'text', text: 'ยินดีด้วยนะ!', weight: 'bold', size: 'lg', color: INK },
           { type: 'text', text: `+${bonusGB} GB เพิ่มเข้าบัญชีแล้ว`, size: 'sm', color: TEAL, weight: 'bold' },
-          { type: 'text', text: `พื้นที่ทั้งหมด ${totalGB} GB 📂`, size: 'sm', color: MUTED },
+          { type: 'text', text: `พื้นที่ทั้งหมด ${totalGB} GB`, size: 'sm', color: MUTED },
         ],
       },
       footer: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [footer] },
@@ -469,10 +484,14 @@ export function referralMilestoneText(p: ReferralProgressParams): { title: strin
 /** Pushed to the referrer each time someone redeems their code. */
 export function buildReferralProgressFlexMessage(params: ReferralProgressParams): FlexMessage {
   const milestone = referralMilestoneText(params);
+  // Fix 5 — strip emoji from every text field before it goes into the LINE card.
+  const title = stripEmoji(milestone.title);
+  const line = stripEmoji(milestone.line);
+  const tierLine = stripEmoji(`พื้นที่ตอนนี้ ${params.currentTierGB} GB`);
 
   return {
     type: 'flex',
-    altText: `${milestone.title} ${milestone.line}`,
+    altText: `${title} ${line}`,
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -481,7 +500,7 @@ export function buildReferralProgressFlexMessage(params: ReferralProgressParams)
         layout: 'vertical',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: milestone.title, weight: 'bold', size: 'lg', color: INK, wrap: true },
+          { type: 'text', text: title, weight: 'bold', size: 'lg', color: INK, wrap: true },
         ],
       },
       body: {
@@ -490,8 +509,8 @@ export function buildReferralProgressFlexMessage(params: ReferralProgressParams)
         spacing: 'sm',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: milestone.line, weight: 'bold', size: 'md', color: INK, wrap: true },
-          { type: 'text', text: `พื้นที่ตอนนี้ ${params.currentTierGB} GB 📂`, size: 'sm', color: '#333333' },
+          { type: 'text', text: line, weight: 'bold', size: 'md', color: INK, wrap: true },
+          { type: 'text', text: tierLine, size: 'sm', color: '#333333' },
           progressBar(params.progressPercent),
         ],
       },
@@ -506,11 +525,12 @@ export function buildReferralProgressFlexMessage(params: ReferralProgressParams)
  * NOTE: LINE Flex can't set font-family, so the code renders as bold xxl teal
  * instead of true monospace — real monospace only exists on the web ReferralCard. */
 export function buildInviteFlexMessage(params: ReferralProgressParams & { code: string }): FlexMessage {
-  const motivationalText = referralMotivationalText(params.referralCount);
+  // Fix 5 — strip emoji from the motivational line before it enters the card.
+  const motivationalText = stripEmoji(referralMotivationalText(params.referralCount));
 
   return {
     type: 'flex',
-    altText: `หนูเก็บ: โค้ดชวนเพื่อนของคุณ 📁 ${params.code}`,
+    altText: `หนูเก็บ: โค้ดชวนเพื่อนของคุณ ${params.code}`,
     contents: {
       type: 'bubble',
       size: 'kilo',
@@ -520,7 +540,7 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
         backgroundColor: TEAL,
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: '📁 หนูเก็บ · โค้ดชวนเพื่อน', color: '#FFFFFF', size: 'sm', weight: 'bold', wrap: true },
+          { type: 'text', text: 'หนูเก็บ · โค้ดชวนเพื่อน', color: '#FFFFFF', size: 'sm', weight: 'bold', wrap: true },
         ],
       },
       body: {
