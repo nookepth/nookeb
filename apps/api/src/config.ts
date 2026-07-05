@@ -32,6 +32,10 @@ const envSchema = z.object({
 
   // Security
   JWT_SECRET: z.string().min(32),
+  // Signs one-time download tokens (?dl_token=). Optional — falls back to a
+  // string derived from JWT_SECRET so download tokens can never be confused
+  // with session JWTs even if both secrets are the same base value.
+  DOWNLOAD_TOKEN_SECRET: z.string().min(32).optional(),
 
   // Quota — free tier default (bytes). 10 GB.
   DEFAULT_STORAGE_LIMIT: z.coerce.number().int().positive().default(10 * 1024 * 1024 * 1024),

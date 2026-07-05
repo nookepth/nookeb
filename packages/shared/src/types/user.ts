@@ -9,6 +9,9 @@ export interface UserRecord {
   plan: Plan;
   storage_used: number;
   storage_limit: number;
+  /** JWT revocation counter (migration 009). Optional so rows read before the
+   * migration is applied don't fail the type — treat missing as 1. */
+  session_version?: number;
   created_at: string;
   updated_at: string;
 }

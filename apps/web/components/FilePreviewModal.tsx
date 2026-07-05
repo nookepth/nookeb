@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import type { FileDto } from '@nookeb/shared';
-import { downloadUrl, getFile } from '@/lib/api';
+import { getFile, startDownload } from '@/lib/api';
 
 function canInline(mimeType: string): boolean {
   return (
@@ -80,9 +80,9 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
           ) : (
             <div className="preview-fallback">
               <span className="preview-hint">ดูไฟล์ชนิดนี้ในหน้านี้ไม่ได้</span>
-              <a className="btn" href={downloadUrl(file.id)} target="_blank" rel="noreferrer">
+              <button className="btn" onClick={() => void startDownload(file.id)}>
                 ดาวน์โหลดไฟล์
-              </a>
+              </button>
             </div>
           )}
         </div>

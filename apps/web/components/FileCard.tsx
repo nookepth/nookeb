@@ -6,10 +6,10 @@ import {
   attachTag,
   deleteFile,
   detachTag,
-  downloadUrl,
   exportToDrive,
   moveFile,
   renameFile,
+  startDownload,
 } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import { typeBadge } from '@/lib/filetype';
@@ -209,14 +209,13 @@ export function FileCard({
         </div>
       )}
       {file.status === 'ready' && (
-        <a
+        <button
           className="btn secondary small"
-          href={downloadUrl(file.id)}
-          target="_blank"
-          rel="noreferrer"
+          disabled={busy}
+          onClick={() => void startDownload(file.id)}
         >
           ดาวน์โหลด
-        </a>
+        </button>
       )}
       {driveConnected && file.status === 'ready' && (
         <button className="btn secondary small" disabled={busy} onClick={() => void handleExportDrive()}>
@@ -255,15 +254,13 @@ export function FileCard({
               <button className="icon-btn" aria-label="ดูไฟล์" onClick={() => onPreview?.(file)}>
                 <EyeIcon />
               </button>
-              <a
+              <button
                 className="icon-btn"
                 aria-label="ดาวน์โหลด"
-                href={downloadUrl(file.id)}
-                target="_blank"
-                rel="noreferrer"
+                onClick={() => void startDownload(file.id)}
               >
                 <DownloadIcon />
-              </a>
+              </button>
             </>
           )}
           <button className="icon-btn" aria-label="เมนูจัดการไฟล์" onClick={() => setMenuOpen((v) => !v)}>

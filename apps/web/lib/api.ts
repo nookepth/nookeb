@@ -352,8 +352,17 @@ export function unbindTeamGroup(teamId: string, lineGroupId: string): Promise<{ 
   return teamFetch(`/${teamId}/groups/${encodeURIComponent(lineGroupId)}`, { method: 'DELETE' });
 }
 
-/** Download opens a new tab; the API 302-redirects to a presigned R2 URL. */
-export function downloadUrl(fileId: string): string {
-  const token = getToken();
-  return `${API_URL}/files/${fileId}/download?token=${encodeURIComponent(token ?? '')}`;
+/**
+ * Two-step download: mint a one-time 60s token over an authenticated POST,
+ * then navigate to the download URL carrying only that token (never the
+ * session JWT). The API 302-redirects to a presigned R2 URL with
+ * Content-Disposition: attachment, so the page itself never navigates away.
+ */
+export async function startDownload(fileId: string): Promise<void> {
+  const { token } = await apiFetch<{ token: string }>(`/files/${fileId}/download-token`, {
+    method: 'POST',
+  });
+  window.location.assign(
+    `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`,
+  );
 }

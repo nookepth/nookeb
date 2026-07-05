@@ -162,6 +162,18 @@ const teamRoutes: FastifyPluginAsync = async (app) => {
       const requesterId = request.authUser!.userId;
       const { teamId, userId } = request.params;
 
+      // Removal revokes the removed user's outstanding JWTs: bump their
+      // session_version (atomic RPC, migration 009) and drop the middleware's
+      // 60s Redis cache so the revocation takes effect immediately on this
+      // instance and within 60s everywhere else.
+      const revokeSessions = async (targetUserId: string): Promise<void> => {
+        const { error } = await app.supabase.rpc('increment_session_version', {
+          p_user_id: targetUserId,
+        });
+        if (error) throw error;
+        await app.redis.del(`sv:${targetUserId}`);
+      };
+
       if (userId === requesterId) {
         const role = await getTeamRole(app.supabase, teamId, requesterId);
         if (!role) return fail(reply, 404, 'NOT_FOUND', 'Member not found');
@@ -174,10 +186,12 @@ const teamRoutes: FastifyPluginAsync = async (app) => {
           .eq('team_id', teamId)
           .eq('user_id', requesterId);
         if (error) throw error;
+        await revokeSessions(requesterId);
         return ok(reply, { removed: true });
       }
 
       await removeMember(app.supabase, teamId, userId, requesterId);
+      await revokeSessions(userId);
       return ok(reply, { removed: true });
     },
   );

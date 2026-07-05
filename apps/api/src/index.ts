@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import rateLimit from '@fastify/rate-limit';
 import { config } from './config';
 import supabasePlugin from './plugins/supabase';
 import r2Plugin from './plugins/r2';
@@ -39,6 +40,20 @@ async function main(): Promise<void> {
   await app.register(r2Plugin);
   await app.register(redisPlugin);
   await app.register(bullmqPlugin);
+
+  // Global rate limit: 100 req/min per IP, state in the shared Redis so all
+  // API instances count together. Exempt: /health (must stay instant for the
+  // platform probe) and the LINE webhook (guarded by its HMAC signature and
+  // required to answer within 1 second — a limiter stall would break it).
+  await app.register(rateLimit, {
+    global: true,
+    max: 100,
+    timeWindow: '1 minute',
+    redis: app.redis,
+    allowList: (request) =>
+      request.url === '/health' || request.url.startsWith('/webhook/line'),
+  });
+
   await app.register(authPlugin);
 
   app.get('/health', async () => ({

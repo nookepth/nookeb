@@ -17,8 +17,24 @@ interface LineProfileResponse {
 }
 
 const authRoutes: FastifyPluginAsync = async (app) => {
-  // POST /auth/line — exchange LINE Login authorization code → app JWT
-  app.post('/auth/line', async (request, reply) => {
+  // POST /auth/line — exchange LINE Login authorization code → app JWT.
+  // Stricter limit than the global 100/min: this endpoint can be used to
+  // hammer-probe LINE authorization codes, so 10/min per IP with a ban after
+  // 5 consecutive over-limit hits.
+  app.post('/auth/line', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+        ban: 5,
+        errorResponseBuilder: () => ({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: 'Rate limit exceeded',
+        }),
+      },
+    },
+  }, async (request, reply) => {
     const bodySchema = z.object({
       code: z.string().min(1),
       redirectUri: z.string().url(),
@@ -69,7 +85,11 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       profile.pictureUrl,
     );
 
-    const accessToken = signAppToken({ sub: user.id, lineUserId: user.line_user_id });
+    const accessToken = signAppToken({
+      sub: user.id,
+      lineUserId: user.line_user_id,
+      sessionVersion: user.session_version ?? 1,
+    });
     return {
       accessToken,
       user: toUserDto(user),

@@ -1,10 +1,49 @@
+import { createHash } from 'node:crypto';
 import type { FastifyPluginAsync } from 'fastify';
 import type { S3Client } from '@aws-sdk/client-s3';
+import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { toFileDto, type FileDto, type FileListResponse, type FileRecord } from '@nookeb/shared';
+import { config } from '../config';
 import { presignedGetUrl } from '../services/r2.service';
 import { adjustStorageUsed, isSpaceMember } from '../services/file.service';
 import { incrementTeamStorage } from '../services/team.service';
+
+// --- One-time download tokens ---------------------------------------------
+// Browser download navigation can't set an Authorization header, and putting
+// the 24h session JWT in the URL leaked it into history/proxy/server logs.
+// Instead the dashboard POSTs /files/:id/download-token (normal Bearer auth)
+// to mint a 60-second single-use token scoped to ONE file, then navigates to
+// /files/:id/download?dl_token=... . Single use is enforced via a Redis key
+// that is atomically consumed on first redemption.
+const DOWNLOAD_TOKEN_TTL_SECONDS = 60;
+// Separate secret so a download token can never be replayed as a session JWT
+// (different signing key) even though both are HS256.
+const downloadTokenSecret = config.DOWNLOAD_TOKEN_SECRET ?? `${config.JWT_SECRET}:download`;
+
+interface DownloadTokenPayload {
+  fileId: string;
+  userId: string;
+}
+
+function signDownloadToken(payload: DownloadTokenPayload): string {
+  return jwt.sign(payload, downloadTokenSecret, { expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS });
+}
+
+function verifyDownloadToken(token: string): DownloadTokenPayload | null {
+  try {
+    const decoded = jwt.verify(token, downloadTokenSecret) as jwt.JwtPayload;
+    if (typeof decoded['fileId'] !== 'string' || typeof decoded['userId'] !== 'string') return null;
+    return { fileId: decoded['fileId'], userId: decoded['userId'] };
+  } catch {
+    return null;
+  }
+}
+
+// Only the hash is stored in Redis, so the store never holds a usable token.
+function downloadTokenRedisKey(token: string): string {
+  return `dl:${createHash('sha256').update(token).digest('hex')}`;
+}
 
 const listQuerySchema = z.object({
   spaceId: z.string().uuid(),
@@ -30,7 +69,16 @@ async function toDtoWithExtras(
 }
 
 const filesRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook('preHandler', app.authenticate);
+  // Every file route requires the normal Bearer JWT, EXCEPT the download route
+  // when called with ?dl_token= — that one-time token is verified (signature,
+  // file scope, single-use Redis key) inside the route handler itself.
+  app.addHook('preHandler', async (request, reply) => {
+    const dlToken = (request.query as Record<string, unknown> | undefined)?.['dl_token'];
+    if (request.routeOptions.url === '/files/:id/download' && typeof dlToken === 'string') {
+      return;
+    }
+    return app.authenticate(request, reply);
+  });
 
   // GET /files — list files in a space
   app.get('/files', async (request, reply) => {
@@ -142,17 +190,58 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
     return { ...dto, url };
   });
 
-  // GET /files/:id/download — 302 redirect to presigned R2 URL
-  app.get<{ Params: { id: string } }>('/files/:id/download', async (request, reply) => {
-    const file = await getAuthorizedFile(request.params.id, request.authUser!.userId);
+  // POST /files/:id/download-token — mint a one-time 60s download token
+  // (Bearer-authenticated; membership re-checked at redemption too).
+  app.post<{ Params: { id: string } }>('/files/:id/download-token', async (request, reply) => {
+    const userId = request.authUser!.userId;
+    const file = await getAuthorizedFile(request.params.id, userId);
     if (!file) return reply.code(404).send({ error: 'File not found' });
     if (file.status !== 'ready') {
       return reply.code(409).send({ error: `File not ready (status: ${file.status})` });
     }
 
-    const url = await presignedGetUrl(app.r2, file.r2_key, file.display_name ?? file.original_name);
-    return reply.code(302).redirect(url);
+    const token = signDownloadToken({ fileId: file.id, userId });
+    await app.redis.set(downloadTokenRedisKey(token), '1', 'EX', DOWNLOAD_TOKEN_TTL_SECONDS);
+    return { token, expiresIn: DOWNLOAD_TOKEN_TTL_SECONDS };
   });
+
+  // GET /files/:id/download — 302 redirect to presigned R2 URL.
+  // Auth: either the normal Bearer JWT (dashboard fetch) or a one-time
+  // ?dl_token= minted by POST /files/:id/download-token (browser navigation).
+  app.get<{ Params: { id: string }; Querystring: { dl_token?: string } }>(
+    '/files/:id/download',
+    async (request, reply) => {
+      let userId: string;
+      if (request.authUser) {
+        userId = request.authUser.userId;
+      } else {
+        const dlToken = request.query.dl_token;
+        if (typeof dlToken !== 'string') {
+          return reply.code(401).send({ error: 'Unauthorized' });
+        }
+        const payload = verifyDownloadToken(dlToken);
+        if (!payload || payload.fileId !== request.params.id) {
+          return reply.code(401).send({ error: 'Invalid download token' });
+        }
+        // GETDEL atomically consumes the single-use key — a replayed or
+        // concurrent second redemption sees no key and gets 410 Gone.
+        const fresh = await app.redis.getdel(downloadTokenRedisKey(dlToken));
+        if (!fresh) {
+          return reply.code(410).send({ error: 'Download link already used or expired' });
+        }
+        userId = payload.userId;
+      }
+
+      const file = await getAuthorizedFile(request.params.id, userId);
+      if (!file) return reply.code(404).send({ error: 'File not found' });
+      if (file.status !== 'ready') {
+        return reply.code(409).send({ error: `File not ready (status: ${file.status})` });
+      }
+
+      const url = await presignedGetUrl(app.r2, file.r2_key, file.display_name ?? file.original_name);
+      return reply.code(302).redirect(url);
+    },
+  );
 
   // PATCH /files/:id — rename / move
   app.patch<{ Params: { id: string } }>('/files/:id', async (request, reply) => {

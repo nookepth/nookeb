@@ -69,11 +69,23 @@ export async function purgeDeletedFiles(
     if (ok) result.purgedFileIds.push(row.id);
   }
 
-  // Mark tombstones as purged so the next daily run skips them entirely.
+  // Mark tombstones as purged so the next daily run skips them entirely, and
+  // redact user content from the row at the same time. Only rows whose R2
+  // deletes ALL succeeded reach purgedFileIds — if an object delete failed we
+  // keep the metadata intact so the next run can retry against a consistent row.
+  // Names and OCR text ARE the file's content (OCR is literally the text inside
+  // the image), so "deleted" must cover them too; id/space_id/file_size/
+  // uploaded_by/deleted_at/purged_at are kept — they carry no content and are
+  // needed for quota accounting and the audit trail.
   if (opts.apply && result.purgedFileIds.length > 0) {
     const { error: markErr } = await supabase
       .from('files')
-      .update({ purged_at: new Date().toISOString() })
+      .update({
+        purged_at: new Date().toISOString(),
+        ocr_text: null,
+        original_name: '[deleted]',
+        display_name: '[deleted]',
+      })
       .in('id', result.purgedFileIds);
     if (markErr) throw markErr;
   }
