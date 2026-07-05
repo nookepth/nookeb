@@ -22,3 +22,5 @@ healthcheckPath = "/health"
 healthcheckTimeout = 100
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
+
+# deploy-trigger: 2026-07-05 referral release (see 994d91d)
