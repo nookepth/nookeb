@@ -12,6 +12,10 @@ export interface UserRecord {
   /** JWT revocation counter (migration 009). Optional so rows read before the
    * migration is applied don't fail the type — treat missing as 1. */
   session_version?: number;
+  /** Referral system (migration 010). Optional for pre-migration rows. */
+  referral_code?: string | null;
+  referred_by_id?: string | null;
+  referral_count?: number;
   created_at: string;
   updated_at: string;
 }

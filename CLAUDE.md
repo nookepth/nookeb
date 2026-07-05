@@ -35,7 +35,7 @@ quota + analytics, an admin panel, and Google Drive export.
 8. Storage accounting: adjust `users.storage_used` ONLY via `adjustStorageUsed`, which calls
    the atomic `increment_storage_used(p_user_id, p_delta)` RPC (migration 003) — never do a
    read-modify-write (worker concurrency would race it). New users get `DEFAULT_STORAGE_LIMIT`
-   (10 GB free tier).
+   (1 GB free tier — raised through referrals, see migration 010 / `referral.service`).
 9. File-bearing jobs (`upload_file`, `add_scan_page`, `finalize_scan`) run with retry
    (`attempts: 3`, exponential backoff) because LINE CDN content has a ~1h TTL and the user
    was already told "received". Their handlers MUST stay safe to re-run: `finalize_scan`
@@ -120,7 +120,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 
 ## Key Env Vars (see `.env.example`)
 - Core: `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`
-- `DEFAULT_STORAGE_LIMIT` — free-tier quota in bytes (default 10 GB)
+- `DEFAULT_STORAGE_LIMIT` — free-tier quota in bytes (default 1 GB; raised via referral tiers)
+- `REFERRAL_BONUS_BYTES` — one-time bonus for redeeming a referral code (default 0.5 GB)
 - `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5)
 - `ADMIN_LINE_USER_IDS` — comma-separated LINE user ids granted admin access (no DB column)
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` — Drive export;
@@ -130,7 +131,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.
 - Phase 2 — Organize: folders, tags, rename/move, name+OCR search, thumbnails, rich menu.
 - Phase 3 — Scan & Team: scan-to-PDF, LINE group shared spaces, team invites, image OCR.
-- Phase 4 — SaaS (minus billing): 10 GB quota + enforcement, analytics/usage, admin panel,
+- Phase 4 — SaaS (minus billing): storage quota + enforcement (1 GB free tier, referral
+  tiers up to 10 GB — migration 010, `referral.service`), analytics/usage, admin panel,
   Google Drive export, daily R2 purge of long-deleted files.
 
 ## Deferred / NOT built

@@ -37,8 +37,13 @@ const envSchema = z.object({
   // with session JWTs even if both secrets are the same base value.
   DOWNLOAD_TOKEN_SECRET: z.string().min(32).optional(),
 
-  // Quota — free tier default (bytes). 10 GB.
-  DEFAULT_STORAGE_LIMIT: z.coerce.number().int().positive().default(10 * 1024 * 1024 * 1024),
+  // Quota — free tier default (bytes). 1 GB (raise it by inviting friends —
+  // see referral_tiers / referral.service).
+  DEFAULT_STORAGE_LIMIT: z.coerce.number().int().positive().default(1 * 1024 * 1024 * 1024),
+
+  // One-time storage bonus (bytes) granted to a user who redeems someone
+  // else's referral code. 0.5 GB.
+  REFERRAL_BONUS_BYTES: z.coerce.number().int().positive().default(512 * 1024 * 1024),
 
   // Retention — R2 objects of soft-deleted files are purged after this many days
   PURGE_RETENTION_DAYS: z.coerce.number().int().positive().default(5),
