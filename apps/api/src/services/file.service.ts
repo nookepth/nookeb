@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FileRecord, FileScanStatus, LineSource, SpaceRecord, UserRecord } from '@nookeb/shared';
 import { config } from '../config';
+import { generateReferralCode } from './referral.service';
 import { checkStorageAlert } from './storage-monitor.service';
 
 /**
@@ -51,6 +52,18 @@ export async function ensureUserAndSpace(
       .single();
     if (createErr) throw createErr;
     user = created as UserRecord;
+  }
+
+  // Every user carries a referral code; assign one to new users AND backfill
+  // pre-migration-010 users. Idempotent (only fills a NULL column) and
+  // best-effort — a failure here (e.g. migration 010 not applied yet) must not
+  // break login/upload.
+  if (!user.referral_code) {
+    try {
+      user.referral_code = await generateReferralCode(supabase, user.id);
+    } catch {
+      // non-fatal — the code is assigned lazily by getReferralStatus later
+    }
   }
 
   const { data: memberRows, error: memberErr } = await supabase

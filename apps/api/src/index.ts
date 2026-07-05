@@ -14,6 +14,7 @@ import tagsRoutes from './routes/tags';
 import spacesRoutes from './routes/spaces';
 import teamRoutes from './routes/team.router';
 import analyticsRoutes from './routes/analytics';
+import referralRoutes from './routes/referral';
 import adminRoutes from './routes/admin';
 import integrationsRoutes from './routes/integrations';
 import progressRoutes from './routes/progress';
@@ -73,6 +74,7 @@ async function main(): Promise<void> {
   await app.register(spacesRoutes);
   await app.register(teamRoutes, { prefix: '/api/teams' });
   await app.register(analyticsRoutes);
+  await app.register(referralRoutes);
   await app.register(adminRoutes);
   await app.register(integrationsRoutes);
   await app.register(progressRoutes);

@@ -15,6 +15,8 @@ const BRAND_RED = '#b53a32'; // nookeb brand — CTA buttons/links
 const ERROR_RED = '#FF334B';
 const MUTED = '#8C8C8C';
 const INK = '#111111';
+const TEAL = '#0D9488'; // referral accents — invite code + progress-bar fill
+const BAR_TRACK = '#EEEEEE'; // referral progress-bar background
 
 /** A LINE Flex message. `contents` is a Flex bubble object. */
 export interface FlexMessage {
@@ -310,6 +312,206 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
         contents: [cancelButton()],
       },
       styles,
+    },
+  };
+}
+
+/** Teal-on-gray progress bar (referral tier progress). Percent is clamped 0–100. */
+function progressBar(percent: number): Record<string, unknown> {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  return {
+    type: 'box',
+    layout: 'vertical',
+    height: '8px',
+    cornerRadius: '4px',
+    backgroundColor: BAR_TRACK,
+    margin: 'md',
+    contents:
+      clamped > 0
+        ? [
+            {
+              type: 'box',
+              layout: 'vertical',
+              width: `${clamped}%`,
+              height: '8px',
+              cornerRadius: '4px',
+              backgroundColor: TEAL,
+              contents: [],
+            },
+          ]
+        : [],
+  };
+}
+
+/**
+ * Pushed to the referee right after they successfully redeem a referral code.
+ * @param params.totalGB new total storage after the bonus (already in GB)
+ * @param params.bonusGB the one-time bonus that was just granted (GB)
+ */
+export function buildRedeemSuccessFlexMessage(params: {
+  totalGB: number;
+  bonusGB: number;
+  dashboardUrl: string;
+}): FlexMessage {
+  const { totalGB, bonusGB, dashboardUrl } = params;
+
+  // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
+  const footer = dashboardUrl.startsWith('https://')
+    ? {
+        type: 'button',
+        style: 'primary',
+        color: BRAND_RED,
+        height: 'sm',
+        action: { type: 'uri', label: 'อัปโหลดเลย!', uri: dashboardUrl },
+      }
+    : { type: 'text', text: `อัปโหลดเลย!: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
+
+  return {
+    type: 'flex',
+    altText: `หนูเก็บ: ได้พื้นที่เพิ่มแล้ว! 🎉 พื้นที่ทั้งหมดตอนนี้ ${totalGB} GB`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'หนูเก็บ: ได้พื้นที่เพิ่มแล้ว! 🎉', weight: 'bold', size: 'lg', color: INK, wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'เก่งมากเลยน้า หนูขยายล็อคเกอร์ให้แล้วน้า ✨', size: 'sm', color: '#333333', wrap: true },
+          { type: 'text', text: `ได้รับโบนัส +${bonusGB} GB จากการกรอกโค้ด 📂`, size: 'sm', color: '#333333', wrap: true },
+          { type: 'text', text: `พื้นที่ทั้งหมดตอนนี้ ${totalGB} GB 🗂️`, size: 'sm', color: '#333333', wrap: true },
+        ],
+      },
+      footer: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [footer] },
+      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
+/** Referral progress snapshot the referrer cards render (matches getReferralStatus). */
+export interface ReferralProgressParams {
+  referralCount: number;
+  currentTierGB: number;
+  nextTierGB: number | null;
+  neededForNext: number;
+  progressPercent: number;
+}
+
+/**
+ * Milestone copy per referral count — title (with "หนูเก็บ: " prefix) + body line.
+ * The 1/4/7/10 texts are exact spec'd copy; everything else gets the generic
+ * progress line. Exported for the web ReferralCard teaser to reuse.
+ */
+export function referralMilestoneText(p: ReferralProgressParams): { title: string; line: string } {
+  switch (p.referralCount) {
+    case 1:
+      return { title: 'หนูเก็บ: มีคนกรอกโค้ดคุณแล้วน้า! 📁', line: '3 คนแย้วน้า 🥳 อีกหน่อยได้ 3 GB แน่ๆ!' };
+    case 4:
+      return { title: 'หนูเก็บ: เพื่อนเยอะมากเลย! 🔥', line: '5 คนแย้วสู้ๆ 💪 ใกล้ได้ 5 GB แล้ว!' };
+    case 7:
+      return { title: 'หนูเก็บ: เก่งมากๆ เลยนะ! ⭐', line: '7 คนแย้วเจ๋งมาก 🌟 อีกนิดเดียว!' };
+    case 10:
+      return { title: 'หนูเก็บ: ทำได้สุดยอดมากเลย! 👑', line: '10 คนแย้วสุดเจ๋ง 🏆 ได้ 10 GB เต็มๆ แล้ว!' };
+    default:
+      return {
+        title: `หนูเก็บ: ${p.referralCount} คนกรอกโค้ดของคุณแล้วนะ 💛`,
+        line:
+          p.nextTierGB !== null
+            ? `อีก ${p.neededForNext} คน ได้ ${p.nextTierGB} GB เพิ่มเลย!`
+            : 'สุดยอดไปเลยน้า ได้พื้นที่เต็มแล้ว 🏆',
+      };
+  }
+}
+
+/** Pushed to the referrer each time someone redeems their code. */
+export function buildReferralProgressFlexMessage(params: ReferralProgressParams): FlexMessage {
+  const milestone = referralMilestoneText(params);
+
+  return {
+    type: 'flex',
+    altText: `${milestone.title} ${milestone.line}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: milestone.title, weight: 'bold', size: 'lg', color: INK, wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: milestone.line, weight: 'bold', size: 'md', color: INK, wrap: true },
+          { type: 'text', text: `พื้นที่ตอนนี้ ${params.currentTierGB} GB 📂`, size: 'sm', color: '#333333' },
+          progressBar(params.progressPercent),
+        ],
+      },
+      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
+/** Invite-code card — replied when the user asks for their code ("เชิญ" / "/invite").
+ * NOTE: LINE Flex can't set font-family, so the "monospace" code renders as
+ * bold xxl teal instead — real monospace only exists on the web ReferralCard. */
+export function buildInviteFlexMessage(params: ReferralProgressParams & { code: string }): FlexMessage {
+  const nextLine =
+    params.nextTierGB !== null
+      ? `อีก ${params.neededForNext} คน ได้ ${params.nextTierGB} GB เพิ่ม`
+      : 'เต็มแล้ว!';
+
+  return {
+    type: 'flex',
+    altText: `หนูเก็บ: โค้ดชวนเพื่อนของคุณ 📁 ${params.code}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'หนูเก็บ: โค้ดชวนเพื่อนของคุณ 📁', weight: 'bold', size: 'lg', color: INK, wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'ชวนเพื่อนมาฝากไฟล์กับหนู แล้วได้พื้นที่เพิ่มเลยน้า', size: 'sm', color: '#333333', wrap: true },
+          { type: 'text', text: params.code, weight: 'bold', size: 'xxl', color: TEAL, align: 'center' },
+          { type: 'separator', margin: 'md' },
+          { type: 'text', text: `เชิญแล้ว ${params.referralCount} คน 🎉`, size: 'sm', color: '#333333' },
+          { type: 'text', text: `พื้นที่ตอนนี้ ${params.currentTierGB} GB · ${nextLine}`, size: 'sm', color: '#333333', wrap: true },
+          progressBar(params.progressPercent),
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          { type: 'text', text: 'แชร์ให้เพื่อนกรอก แล้วหนูเก็บจะเพิ่มพื้นที่ให้เอง! 📂', size: 'xs', color: MUTED, align: 'center', wrap: true },
+        ],
+      },
+      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
