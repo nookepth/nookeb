@@ -99,6 +99,31 @@ async function replyFlex(event: LineMessageEvent, message: FlexMessage): Promise
 }
 
 /**
+ * Reply with a Flex message carrying LINE quick-reply buttons. `FlexMessage`
+ * doesn't model `quickReply`, so we attach it here and cast — the shape matches
+ * the LINE Messaging API (same pattern as {@link replyWithQuickReply}).
+ */
+async function replyFlexWithQuickReply(
+  event: LineMessageEvent,
+  message: FlexMessage,
+  buttons: QuickReplyButton[],
+): Promise<void> {
+  if (!event.replyToken) return;
+  const withQr = {
+    ...message,
+    quickReply: {
+      items: buttons.map((b) => ({
+        type: 'action',
+        action: b.uri
+          ? { type: 'uri', label: b.label, uri: b.uri }
+          : { type: 'message', label: b.label, text: b.text ?? b.label },
+      })),
+    },
+  } as unknown as LineMessage;
+  await replyMessage(event.replyToken, [withQr]);
+}
+
+/**
  * A LINE quick-reply button. A `uri` button opens a link; otherwise it sends
  * `text` (falling back to the label) back as a message when tapped.
  */
@@ -432,12 +457,18 @@ async function handleTextCommand(
     return;
   }
 
-  // Show my invite code — EXACT match "หนูเก็บเชิญ" or "/invite" only.
-  // (Must NOT use includes('เชิญ'): "หนูเก็บเชิญ" contains "เชิญ", so the old
-  // contains-match fired for bare "เชิญ" too. Group chats never reach here: the
-  // allowlist guard above returns first.)
-  const t = text.trim().normalize('NFC');
-  if (t === 'หนูเก็บเชิญ' || t.toLowerCase() === '/invite') {
+  // Show my invite code — contains-match on "เชิญ" (or "/invite" prefix).
+  // Robust for Thai text from LINE, which may arrive with zero-width chars or a
+  // non-NFC composition that broke the old exact `===` match. Strip zero-width
+  // chars, normalize to NFC, then contains-match. Group chats never reach here:
+  // the allowlist guard at the top returns first, so bare "เชิญ" only fires 1-on-1.
+  const normalizedText = text
+    .trim()
+    .replace(/[\u200B-\u200D\uFEFF]/g, '') // remove zero-width chars
+    .normalize('NFC');
+  const isInviteCommand =
+    normalizedText.includes('เชิญ') || normalizedText.toLowerCase().startsWith('/invite');
+  if (isInviteCommand) {
     // Same silent-fail guard as /redeem: a DB/Redis error must produce an
     // apology reply, never nothing.
     try {
@@ -449,7 +480,12 @@ async function handleTextCommand(
         profile?.pictureUrl,
       );
       const status = await getReferralStatus(app.supabase, app.redis, user.id);
-      await replyFlex(event, buildInviteFlexMessage(status));
+      // Tap-again to re-show the code, or jump straight to the dashboard —
+      // saves the user from re-typing "เชิญ".
+      await replyFlexWithQuickReply(event, buildInviteFlexMessage(status), [
+        { label: '📁 ดูโค้ดอีกครั้ง', text: 'เชิญ' },
+        { label: '🌐 เปิดเว็บ', uri: config.WEB_URL },
+      ]);
     } catch (err) {
       app.log.error({ err, lineUserId }, 'referral: invite handler error');
       await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
@@ -545,7 +581,9 @@ async function handleTextCommand(
 }
 
 async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promise<void> {
-  // User adds the bot (1-1 chat) → greet with the welcome image only
+  // User adds the bot (1-1 chat) → greet with the welcome image, plus quick-reply
+  // buttons so a new user can tap to see their invite code or open the dashboard
+  // instead of having to type a command.
   if (event.type === 'follow') {
     if (event.replyToken) {
       await replyMessage(event.replyToken, [
@@ -553,6 +591,18 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
           type: 'image',
           originalContentUrl: GREETING_IMAGE_URL,
           previewImageUrl: GREETING_IMAGE_URL,
+          quickReply: {
+            items: [
+              {
+                type: 'action',
+                action: { type: 'message', label: '📁 ดูโค้ดเชิญ', text: 'เชิญ' },
+              },
+              {
+                type: 'action',
+                action: { type: 'uri', label: '📂 เปิดคลังไฟล์', uri: `${config.WEB_URL}/dashboard` },
+              },
+            ],
+          },
         },
       ] as unknown as LineMessage[]);
     }
