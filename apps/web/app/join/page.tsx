@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
-import { acceptTeamInvite, ApiError, getToken } from '@/lib/api';
+import { acceptTeamInvite, ApiError, hasSession } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 
 function JoinInner() {
@@ -16,7 +16,7 @@ function JoinInner() {
       setStatus('error');
       return;
     }
-    if (!getToken()) {
+    if (!hasSession()) {
       // Remember where to return after LINE login
       if (typeof window !== 'undefined') {
         sessionStorage.setItem('nookeb_post_login', window.location.pathname + window.location.search);

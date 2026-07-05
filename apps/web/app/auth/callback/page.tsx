@@ -25,7 +25,9 @@ function CallbackInner() {
 
     loginWithLineCode(code, lineLoginRedirectUri())
       .then((res) => {
-        setSession(res.accessToken, res.defaultSpaceId);
+        // The JWT arrived as an HttpOnly cookie on this response (FIX #7) —
+        // only the login hint + default space are kept client-side.
+        setSession(res.defaultSpaceId);
         const next = sessionStorage.getItem('nookeb_post_login');
         sessionStorage.removeItem('nookeb_post_login');
         router.replace(next ?? '/dashboard');

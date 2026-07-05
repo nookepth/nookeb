@@ -714,23 +714,6 @@ button:active,
   margin: 12px 0;
 }
 
-.drive-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--font-size-xs);
-  color: var(--color-success);
-  padding: 0 6px;
-}
-
-.drive-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: var(--radius-full);
-  background: var(--color-success);
-  display: inline-block;
-}
-
 /* ============================================================
    Recent files strip
    ============================================================ */

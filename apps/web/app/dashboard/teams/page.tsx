@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { TeamDto } from '@nookeb/shared';
-import { ApiError, createTeam, getToken, listTeams } from '@/lib/api';
+import { ApiError, createTeam, hasSession, listTeams } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { TeamStorageBar } from '@/components/TeamStorageBar';
 
@@ -27,7 +27,7 @@ export default function TeamsPage() {
   }, []);
 
   useEffect(() => {
-    if (!getToken()) {
+    if (!hasSession()) {
       setNeedsLogin(true);
       return;
     }

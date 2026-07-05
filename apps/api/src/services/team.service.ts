@@ -75,6 +75,65 @@ async function joinTeamGroupSpaces(
   }
 }
 
+/**
+ * All space ids that belong to a team: spaces stamped with team_id (migration
+ * 007 / bindLineGroup) UNION spaces reachable only through the LINE-group
+ * binding (spaces created lazily by ensureGroupSpace never get team_id set).
+ */
+async function findTeamSpaceIds(supabase: SupabaseClient, teamId: string): Promise<string[]> {
+  const ids = new Set<string>();
+
+  const { data: direct, error: directErr } = await supabase
+    .from('spaces')
+    .select('id')
+    .eq('team_id', teamId);
+  if (directErr) throw directErr;
+  for (const s of (direct as { id: string }[] | null) ?? []) ids.add(s.id);
+
+  const { data: bindings, error: bindErr } = await supabase
+    .from('team_line_groups')
+    .select('line_group_id')
+    .eq('team_id', teamId);
+  if (bindErr) throw bindErr;
+  const groupIds = ((bindings as { line_group_id: string }[] | null) ?? []).map(
+    (g) => g.line_group_id,
+  );
+  if (groupIds.length > 0) {
+    const { data: viaGroup, error: groupErr } = await supabase
+      .from('spaces')
+      .select('id')
+      .in('line_group_id', groupIds)
+      .eq('type', 'team');
+    if (groupErr) throw groupErr;
+    for (const s of (viaGroup as { id: string }[] | null) ?? []) ids.add(s.id);
+  }
+
+  return [...ids];
+}
+
+/**
+ * Revoke space_members rows for the team's spaces — the counterpart of
+ * joinTeamGroupSpaces / ensureGroupSpace. WITHOUT this, a user removed from a
+ * team keeps full file access forever: /files auth checks space membership
+ * only. Called on member removal / self-leave (one user) and on deleteTeam
+ * (all users, userId omitted). Throws on failure — callers run it BEFORE the
+ * team_members mutation so a failure leaves access fully intact (fail-closed)
+ * and the operation can simply be retried.
+ */
+export async function revokeTeamSpaceMemberships(
+  supabase: SupabaseClient,
+  teamId: string,
+  userId?: string,
+): Promise<void> {
+  const spaceIds = await findTeamSpaceIds(supabase, teamId);
+  if (spaceIds.length === 0) return;
+
+  let query = supabase.from('space_members').delete().in('space_id', spaceIds);
+  if (userId) query = query.eq('user_id', userId);
+  const { error } = await query;
+  if (error) throw error;
+}
+
 /** Role lookup; null when not a member (or the team is soft-deleted). */
 export async function getTeamRole(
   supabase: SupabaseClient,
@@ -436,6 +495,11 @@ export async function removeMember(
     throw new TeamError('CANNOT_REMOVE_OWNER', 'The team owner cannot be removed', 400);
   }
 
+  // Revoke space access FIRST (fail-closed): if this throws, the user is still
+  // a team member and the removal can be retried; the reverse order could leave
+  // an ex-member with permanent file access.
+  await revokeTeamSpaceMemberships(supabase, teamId, targetUserId);
+
   const { error } = await supabase
     .from('team_members')
     .delete()
@@ -457,6 +521,15 @@ export async function deleteTeam(
     .update({ team_id: null })
     .eq('team_id', teamId);
   if (fileErr) throw fileErr;
+
+  // Revoke EVERYONE's access to the team's spaces before the soft delete —
+  // otherwise ex-members keep file access via their space_members rows (the
+  // /spaces switcher only hides the space; /files authorizes by membership).
+  // Runs before the soft delete so a failure here leaves the team intact and
+  // the delete retryable. (files.charged_team_id is NOT touched: it is the
+  // quota-ledger record and must survive so later file deletes refund the
+  // team's counter, never the uploader's personal quota — see FIX #3.)
+  await revokeTeamSpaceMemberships(supabase, teamId);
 
   const { error } = await supabase
     .from('teams')

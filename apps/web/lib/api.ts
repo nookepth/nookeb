@@ -14,24 +14,40 @@ import type {
   UserDto,
 } from '@nookeb/shared';
 
-export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+// All API calls go through the same-origin /api-proxy rewrite (next.config.mjs
+// → the deployed API). Same-origin is what lets the HttpOnly SameSite=Lax
+// session cookie flow in Safari and the LINE in-app browser, which block
+// cross-site cookies.
+export const API_URL = '/api-proxy';
 
-const TOKEN_KEY = 'nookeb_token';
+// FIX #7: the JWT itself lives in an HttpOnly cookie set by POST /auth/line —
+// client-side JS can never read it. localStorage keeps only a non-sensitive
+// "probably logged in" hint (so pages can show the login screen without a
+// round trip) and the last-used space id. A stale hint costs one 401, which
+// clears it. LEGACY_TOKEN_KEY scrubs the pre-cookie JWT out of localStorage.
+const SESSION_HINT_KEY = 'nookeb_has_session';
+const LEGACY_TOKEN_KEY = 'nookeb_token';
 const SPACE_KEY = 'nookeb_space_id';
 
-export function getToken(): string | null {
-  if (typeof window === 'undefined') return null;
-  return localStorage.getItem(TOKEN_KEY);
+/** UX hint only — authorization is the HttpOnly cookie, never this flag. */
+export function hasSession(): boolean {
+  if (typeof window === 'undefined') return false;
+  return localStorage.getItem(SESSION_HINT_KEY) === '1';
 }
 
-export function setSession(token: string, defaultSpaceId: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
+export function setSession(defaultSpaceId: string): void {
+  localStorage.setItem(SESSION_HINT_KEY, '1');
   localStorage.setItem(SPACE_KEY, defaultSpaceId);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
 }
 
 export function clearSession(): void {
-  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(SESSION_HINT_KEY);
   localStorage.removeItem(SPACE_KEY);
+  localStorage.removeItem(LEGACY_TOKEN_KEY);
+  // Best-effort server-side logout: clears the HttpOnly session cookie (which
+  // JS cannot remove itself). Endpoint needs no auth, so this never loops.
+  void fetch(`${API_URL}/auth/logout`, { method: 'POST' }).catch(() => {});
 }
 
 export function getSpaceId(): string | null {
@@ -40,14 +56,9 @@ export function getSpaceId(): string | null {
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
-  const res = await fetch(`${API_URL}${path}`, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  // Same-origin request — the browser attaches the session cookie itself;
+  // no Authorization header, and nothing token-like for XSS to steal.
+  const res = await fetch(`${API_URL}${path}`, init);
   if (res.status === 401) {
     clearSession();
     throw new ApiError(401, 'Unauthorized');
@@ -203,28 +214,6 @@ export function redeemReferralCode(code: string): Promise<RedeemResponse> {
   });
 }
 
-export interface GoogleStatus {
-  enabled: boolean;
-  connected: boolean;
-  email: string | null;
-}
-
-export function getGoogleStatus(): Promise<GoogleStatus> {
-  return apiFetch(`/integrations/google/status`);
-}
-
-export function getGoogleAuthUrl(): Promise<{ url: string }> {
-  return apiFetch(`/integrations/google/auth-url`);
-}
-
-export function disconnectGoogle(): Promise<void> {
-  return apiFetch<void>(`/integrations/google`, { method: 'DELETE' });
-}
-
-export function exportToDrive(fileId: string): Promise<{ driveFileId: string; link: string }> {
-  return apiFetch(`/files/${fileId}/export/drive`, { method: 'POST' });
-}
-
 export interface AdminUser {
   id: string;
   lineUserId: string;
@@ -284,14 +273,8 @@ export function loginWithLineCode(
    ============================================================ */
 
 async function teamFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
-  const res = await fetch(`${API_URL}/api/teams${path}`, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
+  // Same-origin — session cookie attached by the browser (see apiFetch).
+  const res = await fetch(`${API_URL}/api/teams${path}`, init);
   if (res.status === 401) {
     clearSession();
     throw new ApiError(401, 'Unauthorized');

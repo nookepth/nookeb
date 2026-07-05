@@ -17,6 +17,7 @@ import {
   rejectJoinRequest,
   removeMember,
   requestToJoin,
+  revokeTeamSpaceMemberships,
   TeamError,
   unbindLineGroup,
 } from '../services/team.service';
@@ -180,6 +181,9 @@ const teamRoutes: FastifyPluginAsync = async (app) => {
         if (role === 'owner') {
           return fail(reply, 400, 'OWNER_CANNOT_LEAVE', 'The owner must delete the team instead of leaving');
         }
+        // Same order as removeMember: revoke space access first (fail-closed),
+        // then drop the team membership — leaving must not preserve file access.
+        await revokeTeamSpaceMemberships(app.supabase, teamId, requesterId);
         const { error } = await app.supabase
           .from('team_members')
           .delete()

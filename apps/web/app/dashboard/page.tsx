@@ -9,17 +9,14 @@ import {
   createFolder,
   createTag,
   deleteFolder,
-  getGoogleAuthUrl,
-  getGoogleStatus,
   getMe,
   getSpaceId,
-  getToken,
   getUsage,
+  hasSession,
   listFiles,
   listFolders,
   listSpaces,
   listTags,
-  type GoogleStatus,
   type UsageResponse,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
@@ -61,7 +58,6 @@ export default function DashboardPage() {
   const [spaces, setSpaces] = useState<SpaceDto[]>([]);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
-  const [drive, setDrive] = useState<GoogleStatus | null>(null);
   const [user, setUser] = useState<NavbarUser | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -88,8 +84,7 @@ export default function DashboardPage() {
 
   // Load the space list once, and pick a default space
   useEffect(() => {
-    const token = getToken();
-    if (!token) {
+    if (!hasSession()) {
       setNeedsLogin(true);
       return;
     }
@@ -107,23 +102,11 @@ export default function DashboardPage() {
         setUser({ displayName: me.displayName, pictureUrl: me.pictureUrl });
       })
       .catch(() => {});
-    getGoogleStatus().then(setDrive).catch(() => {});
-
-    // Returning from the Google OAuth flow
-    const params = new URLSearchParams(window.location.search);
-    if (params.get('drive') === 'connected') {
-      getGoogleStatus().then(setDrive).catch(() => {});
-      window.history.replaceState({}, '', '/dashboard');
-    } else if (params.get('drive') === 'error') {
-      alert('เชื่อม Google Drive ไม่สำเร็จ ลองใหม่อีกครั้ง');
-      window.history.replaceState({}, '', '/dashboard');
-    }
   }, []);
 
   const load = useCallback(async () => {
-    const token = getToken();
-    if (!token || !spaceId) {
-      if (!token) setNeedsLogin(true);
+    if (!hasSession() || !spaceId) {
+      if (!hasSession()) setNeedsLogin(true);
       return;
     }
     try {
@@ -166,15 +149,6 @@ export default function DashboardPage() {
   function handleLogout(): void {
     clearSession();
     setNeedsLogin(true);
-  }
-
-  async function handleConnectDrive(): Promise<void> {
-    try {
-      const { url } = await getGoogleAuthUrl();
-      window.location.href = url;
-    } catch {
-      alert('เริ่มการเชื่อม Google Drive ไม่สำเร็จ');
-    }
   }
 
   async function handleCreateFolder(): Promise<void> {
@@ -377,17 +351,6 @@ export default function DashboardPage() {
           <button className="btn secondary small" onClick={() => void handleCreateTag()}>
             + Tag
           </button>
-          {drive?.enabled && !drive.connected && (
-            <button className="btn secondary small" onClick={() => void handleConnectDrive()}>
-              เชื่อม Google Drive
-            </button>
-          )}
-          {drive?.connected && (
-            <span className="drive-badge">
-              <span className="drive-dot" />
-              Drive: {drive.email}
-            </span>
-          )}
           {isAdmin && (
             <a className="btn secondary small" href="/admin">
               ผู้ดูแล
@@ -516,7 +479,6 @@ export default function DashboardPage() {
             files={shownFiles}
             folders={folders}
             tags={tags}
-            driveConnected={drive?.connected}
             view={view}
             onChanged={() => void load()}
           />
@@ -551,17 +513,6 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="profile-sheet-actions">
-              {drive?.enabled && !drive.connected && (
-                <button className="btn secondary" onClick={() => void handleConnectDrive()}>
-                  เชื่อม Google Drive
-                </button>
-              )}
-              {drive?.connected && (
-                <span className="drive-badge">
-                  <span className="drive-dot" />
-                  Drive: {drive.email}
-                </span>
-              )}
               {isAdmin && (
                 <a className="btn secondary" href="/admin">
                   หน้าผู้ดูแล

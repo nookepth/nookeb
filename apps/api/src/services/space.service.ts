@@ -1,9 +1,17 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SpaceRecord, SpaceRole, UserRecord } from '@nookeb/shared';
 
+/** Postgres unique_violation — races on the unique indexes from migration 016. */
+const PG_UNIQUE_VIOLATION = '23505';
+
 /**
  * Find or create the shared team space for a LINE group.
  * The first member to interact becomes the owner; everyone else joins as member.
+ *
+ * Race-safe (FIX #4): webhook events fan out concurrently, so two first-messages
+ * can both pass the find and both INSERT. The unique index on line_group_id
+ * (migration 016) rejects the loser with 23505 — treated as "someone else just
+ * created it": re-select and join that space instead of failing the event.
  */
 export async function ensureGroupSpace(
   supabase: SupabaseClient,
@@ -30,7 +38,21 @@ export async function ensureGroupSpace(
       })
       .select('*')
       .single();
-    if (createErr) throw createErr;
+    if (createErr) {
+      if (createErr.code !== PG_UNIQUE_VIOLATION) throw createErr;
+      // Lost the creation race — use the space the winner just inserted.
+      const { data: raced, error: racedErr } = await supabase
+        .from('spaces')
+        .select('*')
+        .eq('line_group_id', lineGroupId)
+        .eq('type', 'team')
+        .maybeSingle();
+      if (racedErr) throw racedErr;
+      if (!raced) throw createErr; // 23505 but no row — genuinely unexpected
+      space = raced as SpaceRecord;
+      await addMember(supabase, space.id, creator.id, 'member');
+      return space;
+    }
     space = created as SpaceRecord;
     await addMember(supabase, space.id, creator.id, 'owner');
   } else {
@@ -60,7 +82,9 @@ export async function addMember(
   const { error } = await supabase
     .from('space_members')
     .insert({ space_id: spaceId, user_id: userId, role });
-  if (error) throw error;
+  // Concurrent addMember calls can both pass the existence check; the composite
+  // PK rejects the loser — already a member, which is exactly what we wanted.
+  if (error && error.code !== PG_UNIQUE_VIOLATION) throw error;
 }
 
 export async function getMemberRole(

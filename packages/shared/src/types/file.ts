@@ -36,6 +36,14 @@ export interface FileRecord {
   purged_at: string | null;
   /** owning team when uploaded via a team-bound LINE group (migration 005); charged to team quota */
   team_id?: string | null;
+  /**
+   * Which quota ledger paid for this file (migration 015). Unlike team_id —
+   * which deleteTeam nulls out — this is immutable, so delete refunds always
+   * go back to the ledger that was actually charged.
+   */
+  charged_to?: 'personal' | 'team' | null;
+  /** the team charged when charged_to = 'team'; survives team soft-delete */
+  charged_team_id?: string | null;
 }
 
 /** File shape returned to the web dashboard (no internal storage keys). */

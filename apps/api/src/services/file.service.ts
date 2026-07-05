@@ -2,7 +2,11 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { FileRecord, FileScanStatus, LineSource, SpaceRecord, UserRecord } from '@nookeb/shared';
 import { config } from '../config';
 import { generateReferralCode } from './referral.service';
+import { addMember } from './space.service';
 import { checkStorageAlert } from './storage-monitor.service';
+
+/** Postgres unique_violation — creation races resolved by re-selecting. */
+const PG_UNIQUE_VIOLATION = '23505';
 
 /**
  * A file the pipeline refused to store (size cap, malware). Carries the exact
@@ -50,8 +54,22 @@ export async function ensureUserAndSpace(
       })
       .select('*')
       .single();
-    if (createErr) throw createErr;
-    user = created as UserRecord;
+    if (createErr) {
+      // Concurrent webhook events for a brand-new user both pass the find and
+      // both INSERT; users.line_user_id is UNIQUE, so the loser re-selects the
+      // row the winner just created instead of failing the event (FIX #4).
+      if (createErr.code !== PG_UNIQUE_VIOLATION) throw createErr;
+      const { data: raced, error: racedErr } = await supabase
+        .from('users')
+        .select('*')
+        .eq('line_user_id', lineUserId)
+        .maybeSingle();
+      if (racedErr) throw racedErr;
+      if (!raced) throw createErr; // 23505 but no row — genuinely unexpected
+      user = raced as UserRecord;
+    } else {
+      user = created as UserRecord;
+    }
   }
 
   // Every user carries a referral code; assign one to new users AND backfill
@@ -84,12 +102,25 @@ export async function ensureUserAndSpace(
     .insert({ name: user.display_name ? `คลังของ ${user.display_name}` : 'My Space', owner_id: user.id, type: 'personal' })
     .select('*')
     .single();
-  if (spaceErr) throw spaceErr;
+  if (spaceErr) {
+    // Lost the personal-space creation race (uq_spaces_personal_owner,
+    // migration 016) — use the space the winner just inserted (FIX #4).
+    if (spaceErr.code !== PG_UNIQUE_VIOLATION) throw spaceErr;
+    const { data: raced, error: racedErr } = await supabase
+      .from('spaces')
+      .select('*')
+      .eq('owner_id', user.id)
+      .eq('type', 'personal')
+      .maybeSingle();
+    if (racedErr) throw racedErr;
+    if (!raced) throw spaceErr; // 23505 but no row — genuinely unexpected
+    await addMember(supabase, (raced as SpaceRecord).id, user.id, 'owner');
+    return { user, space: raced as SpaceRecord };
+  }
 
-  const { error: joinErr } = await supabase
-    .from('space_members')
-    .insert({ space_id: (space as SpaceRecord).id, user_id: user.id, role: 'owner' });
-  if (joinErr) throw joinErr;
+  // addMember tolerates the membership-insert race the same way (23505 = the
+  // concurrent loser already joined us to this space — fine).
+  await addMember(supabase, (space as SpaceRecord).id, user.id, 'owner');
 
   return { user, space: space as SpaceRecord };
 }
@@ -110,6 +141,14 @@ export interface CreateFileInput {
   scanStatus?: FileScanStatus | null;
   /** owning team (LINE group bound to a team) — file is charged to the TEAM quota */
   teamId?: string | null;
+  /**
+   * Quota ledger charged for this file (migration 015). The DB default is
+   * 'personal', so only 'team' needs to be sent explicitly — which also keeps
+   * personal inserts working if migration 015 isn't applied yet.
+   */
+  chargedTo?: 'personal' | 'team';
+  /** team whose quota was charged (required when chargedTo = 'team') */
+  chargedTeamId?: string | null;
 }
 
 export async function createFileRecord(
@@ -133,6 +172,10 @@ export async function createFileRecord(
       scan_status: input.scanStatus ?? null,
       // Only sent when set — keeps inserts working if migration 005 isn't applied yet
       ...(input.teamId ? { team_id: input.teamId } : {}),
+      // 'personal' is the column default (migration 015) — only 'team' is sent
+      ...(input.chargedTo === 'team'
+        ? { charged_to: 'team', charged_team_id: input.chargedTeamId ?? null }
+        : {}),
       status: 'processing',
     })
     .select('*')
@@ -192,6 +235,47 @@ export function addStorageUsed(
   spaceId?: string,
 ): Promise<void> {
   return adjustStorageUsed(supabase, userId, bytes, spaceId);
+}
+
+export interface PersonalStorageResult {
+  used: number;
+  limit: number;
+  overLimit: boolean;
+}
+
+/**
+ * Atomic personal-quota adjustment via the `increment_personal_storage` RPC
+ * (migration 014) — the per-user counterpart of `incrementTeamStorage`.
+ *
+ * enforce=true (default): the guarded UPDATE applies the increment ONLY if it
+ * stays within storage_limit; otherwise nothing changes and `overLimit` is
+ * true — use it to RESERVE quota BEFORE storing a file. enforce=false:
+ * unconditional (clamped at 0) — use it to settle declared-vs-actual drift
+ * after upload or to refund a failed/rejected file. Rule 8 applies: never
+ * read-modify-write this counter.
+ */
+export async function incrementPersonalStorage(
+  supabase: SupabaseClient,
+  userId: string,
+  bytes: number,
+  opts: { enforce?: boolean } = {},
+): Promise<PersonalStorageResult> {
+  const { data, error } = await supabase.rpc('increment_personal_storage', {
+    p_user_id: userId,
+    p_delta: Math.round(bytes),
+    p_enforce: opts.enforce ?? true,
+  });
+  if (error) throw error;
+  // RETURNS TABLE → PostgREST hands back an array with one row
+  const row = (Array.isArray(data) ? data[0] : data) as
+    | { storage_used: number | null; storage_limit: number | null; over_limit: boolean }
+    | undefined;
+  if (!row) throw new Error(`increment_personal_storage returned no row for user ${userId}`);
+  return {
+    used: Number(row.storage_used ?? 0),
+    limit: Number(row.storage_limit ?? 0),
+    overLimit: Boolean(row.over_limit),
+  };
 }
 
 export async function isSpaceMember(

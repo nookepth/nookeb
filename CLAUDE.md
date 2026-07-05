@@ -4,7 +4,8 @@
 LINE-integrated file archiving SaaS. Users send files via LINE OA → stored permanently
 in Cloudflare R2 → accessible via Next.js Web Dashboard. Supports folders/tags/search,
 multi-page scan-to-PDF, LINE group shared spaces, team invites, image OCR, storage
-quota + analytics, an admin panel, and Google Drive export.
+quota + analytics, and an admin panel. (Google Drive export was removed — see
+migration 017; rebuild securely later if ever needed.)
 
 ## Tech Stack (FIXED — do not change without asking)
 - API: Node.js + TypeScript + Fastify 4.x
@@ -14,7 +15,6 @@ quota + analytics, an admin panel, and Google Drive export.
 - Queue: BullMQ + Redis (Upstash) — REDIS_URL must be `rediss://` (TLS) for Upstash
 - Auth: LINE Login → app-signed JWT (HS256, `jsonwebtoken`)
 - Images: `sharp` (thumbnails, page normalization) · PDF: `pdf-lib` · OCR: `tesseract.js` (tha+eng)
-- Google Drive: raw `fetch` to Google OAuth + Drive API (no googleapis dep)
 
 ## Key Engineering Rules
 1. LINE Webhook MUST reply within 1 second → reply 200 immediately, process events in
@@ -88,7 +88,7 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `001_initial.sql` — users, spaces, space_members, folders, files, tags, file_tags,
     scan_sessions, scan_pages (+ indexes, RLS on files).
   - `002_google_accounts.sql` — per-user Google refresh token for Drive export.
-    NOT auto-applied; run via `supabase db push` or the Supabase SQL editor.
+    SUPERSEDED: the Drive feature was removed; migration 017 drops this table.
   - `003_reliability.sql` — atomic `increment_storage_used` RPC (see rule 8), `files.purged_at`
     tombstone marker + partial index (rule 6), and `users.storage_limit` default → 10 GB.
     NOT auto-applied; MUST be applied before deploying code that uses the RPC / `purged_at`.
@@ -98,8 +98,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 ## Project Structure
 - `apps/api` — Fastify API + LINE webhook + BullMQ workers
   - `src/routes/` — `webhook/line`, `auth`, `files`, `folders`, `tags`, `spaces`,
-    `analytics`, `admin`, `integrations` (Google Drive)
-  - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `google`, `flex`
+    `analytics`, `admin`
+  - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT), `line-verify` (signature)
@@ -124,8 +124,6 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 - `REFERRAL_BONUS_BYTES` — one-time bonus for redeeming a referral code (default 0.5 GB)
 - `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5)
 - `ADMIN_LINE_USER_IDS` — comma-separated LINE user ids granted admin access (no DB column)
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `GOOGLE_REDIRECT_URI` — Drive export;
-  the feature stays disabled until all three are set AND migration 002 is applied.
 
 ## Status (built)
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.
@@ -133,7 +131,7 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 - Phase 3 — Scan & Team: scan-to-PDF, LINE group shared spaces, team invites, image OCR.
 - Phase 4 — SaaS (minus billing): storage quota + enforcement (1 GB free tier, referral
   tiers up to 10 GB — migration 010, `referral.service`), analytics/usage, admin panel,
-  Google Drive export, daily R2 purge of long-deleted files.
+  daily R2 purge of long-deleted files. (Google Drive export removed — migration 017.)
 
 ## Deferred / NOT built
 - Plans / Billing / subscriptions (free tier only for now)

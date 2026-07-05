@@ -11,12 +11,11 @@ export interface FileGridProps {
   files: FileDto[];
   folders: FolderDto[];
   tags: TagDto[];
-  driveConnected?: boolean;
   view?: 'grid' | 'list';
   onChanged: () => void;
 }
 
-export function FileGrid({ files, folders, tags, driveConnected, view = 'grid', onChanged }: FileGridProps) {
+export function FileGrid({ files, folders, tags, view = 'grid', onChanged }: FileGridProps) {
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   // Ids hidden optimistically after a bulk delete, until the server list refreshes.
@@ -209,7 +208,6 @@ export function FileGrid({ files, folders, tags, driveConnected, view = 'grid', 
               file={file}
               folders={folders}
               tags={tags}
-              driveConnected={driveConnected}
               onChanged={onChanged}
               onPreview={(f) => setPreviewFiles([f])}
               view={view}

@@ -51,11 +51,6 @@ const envSchema = z.object({
   // Admin — comma-separated LINE user ids that get admin access (no DB column needed)
   ADMIN_LINE_USER_IDS: z.string().optional(),
 
-  // Google Drive export (optional — feature is disabled until these are set)
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  GOOGLE_REDIRECT_URI: z.string().url().optional(),
-
   // Upload hard cap per file (bytes). Default 1 GB.
   MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(1_073_741_824),
 
@@ -112,7 +107,3 @@ const adminLineUserIds = new Set(
 export function isAdminLineUser(lineUserId: string): boolean {
   return adminLineUserIds.has(lineUserId);
 }
-
-export const isDriveExportEnabled = Boolean(
-  config.GOOGLE_CLIENT_ID && config.GOOGLE_CLIENT_SECRET && config.GOOGLE_REDIRECT_URI,
-);

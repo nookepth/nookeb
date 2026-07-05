@@ -44,8 +44,10 @@ import {
   markFileError,
   addStorageUsed,
   checkFileSizeLimit,
+  incrementPersonalStorage,
   FileRejectedError,
 } from '../services/file.service';
+import { checkStorageAlert } from '../services/storage-monitor.service';
 import { isVirusScanEnabled, scanBuffer, type ScanVerdict } from '../services/virusTotal.service';
 import { ensureGroupSpace } from '../services/space.service';
 import {
@@ -90,6 +92,11 @@ const toGb = (bytes: number): string => (bytes / GB).toFixed(2);
 function teamFullMessage(team: TeamRecord): string {
   return `พื้นที่ทีมเต็มแล้วน้า (${toGb(team.storage_used)}GB / ${toGb(team.storage_limit)}GB) ติดต่อเจ้าของทีมเพื่อขยายพื้นที่น้า`;
 }
+
+// Same copy the legacy upload_file path used — now also sent when a per-file
+// personal-quota reservation is refused (FIX #2).
+const PERSONAL_FULL_TEXT =
+  'พื้นที่เก็บไฟล์เต็มแล้วน้า ลบไฟล์เก่าหรืออัปเกรดแผนก่อนหน่อยน้า';
 
 /**
  * Team bound to the source LINE group, if any. Best-effort: a lookup failure
@@ -172,6 +179,8 @@ async function processUploadFile(job: UploadFileJob): Promise<void> {
     lineSource: job.lineSource,
     lineGroupId: job.lineGroupId,
     teamId: team?.id ?? null,
+    chargedTo: team ? 'team' : 'personal',
+    chargedTeamId: team?.id ?? null,
   });
 
   // 5. Stream upload to R2
@@ -301,18 +310,27 @@ async function storeUpload(
     );
   }
 
-  // [1b] Team quota — RESERVE the declared size atomically BEFORE any transfer
-  // (increment_team_storage RPC refuses an increment past storage_limit). The
-  // actual size is settled after upload; every failure path below releases the
-  // reservation so a rejected/failed file never eats team quota.
+  // [1b] Quota — RESERVE the declared size atomically BEFORE any transfer, on
+  // whichever ledger owns this upload: the TEAM (increment_team_storage RPC,
+  // migration 005) or the uploader's PERSONAL quota (increment_personal_storage
+  // RPC, migration 014 — FIX #2: the old batch-level snapshot let a user
+  // overshoot their limit by an entire batch). The actual size is settled after
+  // upload; every failure path below releases the reservation so a
+  // rejected/failed file never eats quota.
   let reservedOutstanding = 0;
   const releaseReservation = async (): Promise<void> => {
-    if (team && reservedOutstanding > 0) {
+    if (reservedOutstanding > 0) {
       const toRelease = reservedOutstanding;
       reservedOutstanding = 0;
-      await incrementTeamStorage(supabase, team.id, -toRelease, { enforce: false }).catch((err) => {
-        console.error(`[upload.worker] failed to release team reservation (${team.id}):`, err);
-      });
+      if (team) {
+        await incrementTeamStorage(supabase, team.id, -toRelease, { enforce: false }).catch((err) => {
+          console.error(`[upload.worker] failed to release team reservation (${team.id}):`, err);
+        });
+      } else {
+        await incrementPersonalStorage(supabase, user.id, -toRelease, { enforce: false }).catch((err) => {
+          console.error(`[upload.worker] failed to release personal reservation (${user.id}):`, err);
+        });
+      }
     }
   };
   if (team) {
@@ -332,6 +350,28 @@ async function storeUpload(
       }
       throw err;
     }
+  } else {
+    let reservation;
+    try {
+      reservation = await incrementPersonalStorage(supabase, user.id, declaredSize ?? 0, {
+        enforce: true,
+      });
+    } catch (err) {
+      content.stream.destroy();
+      throw err;
+    }
+    if (reservation.overLimit) {
+      content.stream.destroy();
+      console.warn(
+        `[upload.worker] personal quota rejected: user=${user.id} file="${item.originalName}" ` +
+          `size=${declaredSize} used=${reservation.used} limit=${reservation.limit}`,
+      );
+      throw new FileRejectedError(
+        `user ${user.id} quota exceeded for "${item.originalName}"`,
+        PERSONAL_FULL_TEXT,
+      );
+    }
+    reservedOutstanding = declaredSize ?? 0;
   }
 
   // [2] Virus scan — small files only (VT free tier caps uploads at 32 MB).
@@ -383,6 +423,11 @@ async function storeUpload(
       lineGroupId,
       scanStatus,
       teamId: team?.id ?? null,
+      // Ledger record (FIX #3): immutable, unlike team_id which deleteTeam
+      // nulls — delete refunds follow this, never the uploader's personal quota
+      // for a team-charged file.
+      chargedTo: team ? 'team' : 'personal',
+      chargedTeamId: team?.id ?? null,
     });
   } catch (err) {
     await releaseReservation();
@@ -394,11 +439,11 @@ async function storeUpload(
     // size wasn't known up front (no Content-Length) or was under-declared.
     const { size } = await uploadStream(r2, r2Key, bodyStream, mimeType, config.MAX_FILE_SIZE_BYTES);
     await markFileReady(supabase, record.id, size);
-    // [4] Charge quota. Team-bound uploads consume TEAM quota: the declared
-    // size was reserved up front, so only the declared-vs-actual drift is
+    // [4] Settle quota. The declared size was reserved up front on the owning
+    // ledger (team or personal), so only the declared-vs-actual drift is
     // settled here (unenforced — the file is already stored). The uploader's
-    // personal quota is NOT touched for team files. Personal / unbound-group
-    // uploads keep the per-user accounting + storage-alert check.
+    // personal quota is NOT touched for team files. Personal uploads keep the
+    // storage-alert check that addStorageUsed used to run.
     if (team) {
       const drift = size - reservedOutstanding;
       reservedOutstanding = 0;
@@ -408,7 +453,15 @@ async function storeUpload(
         });
       }
     } else {
-      await addStorageUsed(supabase, user.id, size, space.id);
+      const drift = size - reservedOutstanding;
+      reservedOutstanding = 0;
+      if (drift !== 0) {
+        await incrementPersonalStorage(supabase, user.id, drift, { enforce: false }).catch((err) => {
+          console.error(`[upload.worker] personal storage settle failed (${user.id}):`, err);
+        });
+      }
+      // 80%/95% owner alerts (+ re-arm) — never throws.
+      await checkStorageAlert(supabase, user.id, space.id);
     }
 
     if (mimeType.startsWith('image/')) {
@@ -491,16 +544,13 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // Group bound to a team → files belong to the team and consume TEAM quota
     const team = await resolveTeamForUpload(job.lineSource, job.lineGroupId);
 
-    // Quota gate. Files are now processed in PARALLEL (see below), so instead of
-    // threading a running total through a sequential loop we check the
-    // batch-start snapshot. The authoritative accounting (increment_storage_used
-    // / increment_team_storage RPC) is still atomic and per-file; only the
-    // intra-batch soft cutoff is relaxed — a batch may overshoot by at most its
-    // own item count. (Team uploads additionally reserve quota per file inside
-    // storeUpload, so a team can never actually exceed its limit.)
-    const limit = team ? team.storage_limit : user.storage_limit;
-    const usedAtStart = team ? team.storage_used : user.storage_used;
-    const overLimit = usedAtStart >= limit;
+    // Quota gate. Both ledgers now enforce atomically PER FILE inside
+    // storeUpload (team: increment_team_storage; personal:
+    // increment_personal_storage, migration 014 — FIX #2), so the old personal
+    // batch-start snapshot is gone: it allowed overshooting by an entire batch.
+    // The team snapshot is kept only as a fast-path that skips the batch with a
+    // single notice instead of rejecting every file individually.
+    const overLimit = team ? team.storage_used >= team.storage_limit : false;
     if (overLimit && team) {
       try {
         await pushMessage(target, [{ type: 'text', text: teamFullMessage(team) }]);
@@ -508,6 +558,11 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         console.error('[upload.worker] team-full notice push failed:', err);
       }
     }
+
+    // One notice per distinct rejection message per batch: without this, a
+    // batch of N over-quota files would push the same storage-full text N
+    // times. Size-cap messages embed the filename, so those stay per-file.
+    const notifiedRejections = new Set<string>();
 
     // Process the batch in PARALLEL: the dominant cost per file is the VirusTotal
     // poll (up to ~60s). Run sequentially this made a batch stall at 0/N for
@@ -526,13 +581,18 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
           return { filename: res.filename, url: res.url };
         } catch (err) {
           if (err instanceof FileRejectedError) {
-            // Deterministic rejection (size cap / malware) — withRetry threw it
-            // straight through, so this runs exactly once per rejected file.
+            // Deterministic rejection (size cap / malware / quota) — withRetry
+            // threw it straight through, so this runs exactly once per rejected
+            // file. The has/add pair runs synchronously (no await between), so
+            // parallel items can't both claim the first notice.
             console.warn(`[upload.worker] batch item rejected (${item.lineMessageId}): ${err.message}`);
-            try {
-              await pushMessage(target, [{ type: 'text', text: err.userMessage }]);
-            } catch (pushErr) {
-              console.error(`[upload.worker] rejection notice push failed (${item.lineMessageId}):`, pushErr);
+            if (!notifiedRejections.has(err.userMessage)) {
+              notifiedRejections.add(err.userMessage);
+              try {
+                await pushMessage(target, [{ type: 'text', text: err.userMessage }]);
+              } catch (pushErr) {
+                console.error(`[upload.worker] rejection notice push failed (${item.lineMessageId}):`, pushErr);
+              }
             }
           } else {
             console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
@@ -770,6 +830,8 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     lineSource: null,
     lineGroupId: null,
     teamId: team?.id ?? null,
+    chargedTo: team ? 'team' : 'personal',
+    chargedTeamId: team?.id ?? null,
   });
 
   try {

@@ -5,8 +5,14 @@ const STATE_KEY = 'line_login_state';
 // FIX: 1 - Safari ITP / LINE in-app browser can drop sessionStorage across the
 // OAuth redirect; mirror the CSRF state in a short-lived SameSite=Lax cookie
 // (Lax cookies survive the top-level redirect back from access.line.me).
+// Secure on HTTPS so the state can't leak over plaintext; omitted on
+// http://localhost where some browsers refuse Secure cookies entirely.
+function secureAttr(): string {
+  return typeof window !== 'undefined' && window.location.protocol === 'https:' ? '; Secure' : '';
+}
+
 function setStateCookie(state: string): void {
-  document.cookie = `${STATE_KEY}=${state}; path=/; max-age=600; SameSite=Lax`;
+  document.cookie = `${STATE_KEY}=${state}; path=/; max-age=600; SameSite=Lax${secureAttr()}`;
 }
 
 function readStateCookie(): string | null {
@@ -15,7 +21,7 @@ function readStateCookie(): string | null {
 }
 
 function clearStateCookie(): void {
-  document.cookie = `${STATE_KEY}=; path=/; max-age=0; SameSite=Lax`;
+  document.cookie = `${STATE_KEY}=; path=/; max-age=0; SameSite=Lax${secureAttr()}`;
 }
 
 export function lineLoginRedirectUri(): string {

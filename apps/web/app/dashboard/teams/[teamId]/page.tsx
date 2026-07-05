@@ -10,7 +10,7 @@ import {
   deleteTeam,
   getMe,
   getTeamDetail,
-  getToken,
+  hasSession,
   listTeamJoinRequests,
   rejectTeamJoinRequest,
   removeTeamMember,
@@ -114,7 +114,7 @@ export default function TeamDetailPage() {
   }, [teamId]);
 
   useEffect(() => {
-    if (!getToken()) {
+    if (!hasSession()) {
       setNeedsLogin(true);
       return;
     }

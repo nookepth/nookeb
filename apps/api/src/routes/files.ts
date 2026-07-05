@@ -336,12 +336,25 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
       .eq('id', file.id);
     if (error) throw error;
 
-    // Return the freed space to whoever was charged: team files were charged
-    // to the TEAM quota (never the uploader), everything else to the uploader.
-    // (Also re-arms the storage alert once usage drops back under the reset line.)
+    // Return the freed space to the ledger that was actually CHARGED
+    // (files.charged_to / charged_team_id, migration 015). team_id is not a
+    // reliable ledger key: deleteTeam nulls it, which used to make the refund
+    // fall through to the uploader's personal quota — quota that was never
+    // charged for a team file. Rows predating migration 015 have no ledger
+    // stamp (backfill best-effort), so team_id remains the legacy fallback.
+    // (adjustStorageUsed also re-arms the storage alert once usage drops back
+    // under the reset line.)
     if (file.file_size > 0) {
-      if (file.team_id) {
-        await incrementTeamStorage(app.supabase, file.team_id, -file.file_size, { enforce: false });
+      const chargedTo = file.charged_to ?? (file.team_id ? 'team' : 'personal');
+      if (chargedTo === 'team') {
+        const chargedTeamId = file.charged_team_id ?? file.team_id ?? null;
+        if (chargedTeamId) {
+          // Refund the team — even a soft-deleted one (harmless counter update;
+          // the uploader's personal quota must never receive this refund).
+          await incrementTeamStorage(app.supabase, chargedTeamId, -file.file_size, { enforce: false });
+        }
+        // charged team unknown (hard-deleted row) → the quota is already gone
+        // with the team; refund no one.
       } else if (file.uploaded_by) {
         await adjustStorageUsed(app.supabase, file.uploaded_by, -file.file_size, file.space_id);
       }

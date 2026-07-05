@@ -13,6 +13,16 @@ interface TokenPayload {
 
 const SESSION_VERSION_CACHE_TTL_SECONDS = 60;
 
+/**
+ * HttpOnly session cookie carrying the app JWT (FIX #7). Set by POST
+ * /auth/line, cleared by POST /auth/logout. The dashboard reaches the API
+ * same-origin via the Next.js /api-proxy rewrite, so SameSite=Lax cookies flow
+ * on every request and client-side JS can never read the token.
+ */
+export const SESSION_COOKIE = 'nookeb_session';
+/** Matches the JWT's own 24h expiry. */
+export const SESSION_COOKIE_MAX_AGE_SECONDS = 60 * 60 * 24;
+
 export function signAppToken(payload: TokenPayload): string {
   return jwt.sign(
     { lineUserId: payload.lineUserId, sv: payload.sessionVersion },
@@ -66,11 +76,15 @@ export default fp(async (app) => {
   app.decorateRequest('authUser', null);
 
   app.decorate('authenticate', async (request: FastifyRequest, reply: FastifyReply) => {
-    // Session JWTs are accepted ONLY via the Authorization header — never in the
-    // URL, where they would leak into browser history and request logs. Browser
-    // download navigation uses one-time ?dl_token= tokens instead (see routes/files.ts).
+    // Session JWTs are accepted via the HttpOnly session cookie (primary — set
+    // by POST /auth/line) or the Authorization header (kept for older web
+    // bundles during the transition). Never via the URL, where they would leak
+    // into browser history and request logs. Browser download navigation uses
+    // one-time ?dl_token= tokens instead (see routes/files.ts).
     const header = request.headers.authorization;
-    const token = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
+    const token =
+      request.cookies?.[SESSION_COOKIE] ??
+      (header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null);
 
     const user = token ? verifyAppToken(token) : null;
     if (!user) {

@@ -1,4 +1,5 @@
 import Fastify from 'fastify';
+import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config';
 import supabasePlugin from './plugins/supabase';
@@ -16,7 +17,6 @@ import teamRoutes from './routes/team.router';
 import analyticsRoutes from './routes/analytics';
 import referralRoutes from './routes/referral';
 import adminRoutes from './routes/admin';
-import integrationsRoutes from './routes/integrations';
 import progressRoutes from './routes/progress';
 import staticRoutes from './routes/static';
 
@@ -27,15 +27,25 @@ async function main(): Promise<void> {
     },
   });
 
-  // CORS for the web dashboard
+  // CORS for the web dashboard. NOTE: the dashboard now reaches the API
+  // same-origin through the Next.js /api-proxy rewrite (so its requests never
+  // need CORS at all); these headers remain for the transition period while
+  // older deployed bundles still call the API cross-origin with a Bearer
+  // header. Allow-Credentials is set for completeness — the exact-origin
+  // Allow-Origin above it is what makes that legal for browsers.
   app.addHook('onRequest', async (request, reply) => {
     reply.header('Access-Control-Allow-Origin', config.WEB_URL);
+    reply.header('Access-Control-Allow-Credentials', 'true');
     reply.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
     reply.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
     if (request.method === 'OPTIONS') {
       return reply.code(204).send();
     }
   });
+
+  // Session cookie support (FIX #7): the app JWT now travels in an HttpOnly
+  // cookie set by POST /auth/line, so client-side JS can never read it.
+  await app.register(cookie);
 
   await app.register(supabasePlugin);
   await app.register(r2Plugin);
@@ -76,7 +86,6 @@ async function main(): Promise<void> {
   await app.register(analyticsRoutes);
   await app.register(referralRoutes);
   await app.register(adminRoutes);
-  await app.register(integrationsRoutes);
   await app.register(progressRoutes);
   await app.register(staticRoutes);
 

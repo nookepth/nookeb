@@ -2,7 +2,11 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { toUserDto, type SpaceRecord, type UserRecord } from '@nookeb/shared';
 import { config, isAdminLineUser } from '../config';
-import { signAppToken } from '../middleware/auth';
+import {
+  SESSION_COOKIE,
+  SESSION_COOKIE_MAX_AGE_SECONDS,
+  signAppToken,
+} from '../middleware/auth';
 import { ensureUserAndSpace } from '../services/file.service';
 
 interface LineTokenResponse {
@@ -90,11 +94,33 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       lineUserId: user.line_user_id,
       sessionVersion: user.session_version ?? 1,
     });
+    // FIX #7: the session travels in an HttpOnly cookie — JS can never read it.
+    // SameSite=Lax works because the dashboard calls the API same-origin via
+    // the Next.js /api-proxy rewrite. `secure` only in production: the Lax
+    // cookie is set on http://localhost:3000 in dev.
+    reply.setCookie(SESSION_COOKIE, accessToken, {
+      httpOnly: true,
+      secure: config.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
+    });
+    // accessToken stays in the body for backward compatibility with web
+    // bundles deployed before the cookie rollout (they still use Bearer auth).
+    // Safe to drop once every client is on the cookie flow.
     return {
       accessToken,
       user: toUserDto(user),
       defaultSpaceId: space.id,
     };
+  });
+
+  // POST /auth/logout — clear the session cookie. No auth required: clearing a
+  // cookie that is missing/expired/invalid must still succeed (the web calls
+  // this on any 401 to shed a stale cookie).
+  app.post('/auth/logout', async (_request, reply) => {
+    reply.clearCookie(SESSION_COOKIE, { path: '/' });
+    return reply.code(204).send();
   });
 
   // GET /auth/me — current user profile + default space

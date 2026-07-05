@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import {
   ApiError,
-  getToken,
+  hasSession,
   listAdminSpaces,
   listAdminUsers,
   setUserQuota,
@@ -31,7 +31,7 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (!getToken()) {
+    if (!hasSession()) {
       setError('กรุณาเข้าสู่ระบบก่อน');
       return;
     }

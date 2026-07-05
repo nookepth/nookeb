@@ -6,7 +6,6 @@ import {
   attachTag,
   deleteFile,
   detachTag,
-  exportToDrive,
   moveFile,
   renameFile,
   startDownload,
@@ -50,7 +49,6 @@ export interface FileCardProps {
   file: FileDto;
   folders: FolderDto[];
   tags: TagDto[];
-  driveConnected?: boolean;
   onChanged: () => void;
   /** Open the preview modal for this file. */
   onPreview?: (file: FileDto) => void;
@@ -66,7 +64,6 @@ export function FileCard({
   file,
   folders,
   tags,
-  driveConnected,
   onChanged,
   onPreview,
   view = 'grid',
@@ -110,19 +107,6 @@ export function FileCard({
   function toggleTag(tag: TagDto): void {
     const has = (file.tagIds ?? []).includes(tag.id);
     void run(() => (has ? detachTag(file.id, tag.id) : attachTag(file.id, tag.id)));
-  }
-
-  async function handleExportDrive(): Promise<void> {
-    setBusy(true);
-    try {
-      const { link } = await exportToDrive(file.id);
-      window.open(link, '_blank', 'noreferrer');
-    } catch {
-      alert('ส่งออกไป Google Drive ไม่สำเร็จ');
-    } finally {
-      setBusy(false);
-      setMenuOpen(false);
-    }
   }
 
   const metaText = `${formatBytes(file.fileSize)} · ${shortDate(file.createdAt)}`;
@@ -223,11 +207,6 @@ export function FileCard({
           }}
         >
           ดาวน์โหลด
-        </button>
-      )}
-      {driveConnected && file.status === 'ready' && (
-        <button className="btn secondary small" disabled={busy} onClick={() => void handleExportDrive()}>
-          ส่งออก Google Drive
         </button>
       )}
       <button className="btn danger small" disabled={busy} onClick={handleDelete}>
