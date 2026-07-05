@@ -34,10 +34,11 @@ import type { Redis } from 'ioredis';
 const GB = 1024 ** 3;
 const BONUS = 512 * 1024 * 1024;
 
+// Mirrors migration 013's corrected thresholds: 0→1, 3→3, 5→5, 7→7, 10→10 GB.
 const TIERS = [
   { min_referrals: 0, storage_limit_gb: 1 },
-  { min_referrals: 1, storage_limit_gb: 3 },
-  { min_referrals: 4, storage_limit_gb: 5 },
+  { min_referrals: 3, storage_limit_gb: 3 },
+  { min_referrals: 5, storage_limit_gb: 5 },
   { min_referrals: 7, storage_limit_gb: 7 },
   { min_referrals: 10, storage_limit_gb: 10 },
 ];
@@ -178,7 +179,7 @@ test('canRedeem: valid new pair is accepted', async () => {
   assert.deepEqual(result, { ok: true });
 });
 
-test('redeemCode: referrer at 0 referrals ends at count 1 and 3 GB', async () => {
+test('redeemCode: referrer at 0 referrals ends at count 1, still 1 GB (below 3-referral tier)', async () => {
   const { redeemCode } = await service;
   const users = [
     user({ id: 'A', referral_code: 'AAAA1111' }),
@@ -189,7 +190,20 @@ test('redeemCode: referrer at 0 referrals ends at count 1 and 3 GB', async () =>
   assert.equal(result.referrerId, 'A');
   const referrer = users[0]!;
   assert.equal(referrer.referral_count, 1);
-  assert.equal(referrer.storage_limit, 3 * GB);
+  // New tiers: 1 referral is below the first 3-referral threshold, so still 1 GB.
+  assert.equal(referrer.storage_limit, 1 * GB);
+});
+
+test('redeemCode: referrer reaching 3 referrals lands on the 3 GB tier', async () => {
+  const { redeemCode } = await service;
+  const users = [
+    user({ id: 'A', referral_code: 'AAAA1111', referral_count: 2, storage_limit: 1 * GB }),
+    user({ id: 'B' }),
+  ];
+  const result = await redeemCode(fakeSupabase(users), fakeRedis(), 'AAAA1111', 'B');
+  assert.equal(result.ok, true);
+  assert.equal(users[0]!.referral_count, 3);
+  assert.equal(users[0]!.storage_limit, 3 * GB);
 });
 
 test('redeemCode: referee storage increases by REFERRAL_BONUS_BYTES', async () => {
@@ -210,8 +224,8 @@ test('getStorageTierBytes: all 5 tiers return the right byte values', async () =
   const redis = fakeRedis();
   const expected: [number, number][] = [
     [0, 1 * GB],
-    [1, 3 * GB],
-    [4, 5 * GB],
+    [3, 3 * GB],
+    [5, 5 * GB],
     [7, 7 * GB],
     [10, 10 * GB],
   ];
@@ -219,6 +233,7 @@ test('getStorageTierBytes: all 5 tiers return the right byte values', async () =
     assert.equal(await getStorageTierBytes(supabase, redis, count), bytes, `tier for ${count}`);
   }
   // in-between counts snap to the tier below
-  assert.equal(await getStorageTierBytes(supabase, redis, 3), 3 * GB);
+  assert.equal(await getStorageTierBytes(supabase, redis, 2), 1 * GB);
+  assert.equal(await getStorageTierBytes(supabase, redis, 4), 3 * GB);
   assert.equal(await getStorageTierBytes(supabase, redis, 12), 10 * GB);
 });

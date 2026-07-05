@@ -45,8 +45,10 @@ export interface ReferralStatus {
   nextTierGB: number | null;
   /** referrals still needed to reach the next tier (0 when at top) */
   neededForNext: number;
-  /** progress from the current tier threshold to the next, 0–100 */
+  /** overall progress toward the top tier (10 referrals), 0–100 */
   progressPercent: number;
+  /** the user this account redeemed a code from — null if they never redeemed */
+  referredById: string | null;
 }
 
 /** 8 uppercase base36 chars from crypto-strength randomness (48 bits > 36^8 space needs ~41). */
@@ -225,7 +227,7 @@ export async function getReferralStatus(
 ): Promise<ReferralStatus> {
   const { data: user, error } = await supabase
     .from('users')
-    .select('referral_code, referral_count')
+    .select('referral_code, referral_count, referred_by_id')
     .eq('id', userId)
     .maybeSingle();
   if (error) throw error;
@@ -233,6 +235,11 @@ export async function getReferralStatus(
 
   const code = (user.referral_code as string | null) ?? (await generateReferralCode(supabase, userId));
   const referralCount = (user.referral_count as number | null) ?? 0;
+  const referredById = (user.referred_by_id as string | null) ?? null;
+
+  // Overall progress toward the top tier (10 referrals) — shared by the web bar
+  // and the LINE Flex progress bar so both read the same scale.
+  const overallPercent = Math.min(100, Math.round((referralCount / 10) * 100));
 
   const tiers = await getTiers(supabase, redis);
   let current: ReferralTier | null = null;
@@ -243,16 +250,18 @@ export async function getReferralStatus(
   }
 
   const currentTierGB = current?.storage_limit_gb ?? config.DEFAULT_STORAGE_LIMIT / GB;
-  const currentMin = current?.min_referrals ?? 0;
 
   if (!next) {
-    return { code, referralCount, currentTierGB, nextTierGB: null, neededForNext: 0, progressPercent: 100 };
+    return {
+      code,
+      referralCount,
+      currentTierGB,
+      nextTierGB: null,
+      neededForNext: 0,
+      progressPercent: 100,
+      referredById,
+    };
   }
-
-  const span = next.min_referrals - currentMin;
-  const progressPercent = span > 0
-    ? Math.min(100, Math.round(((referralCount - currentMin) / span) * 100))
-    : 100;
 
   return {
     code,
@@ -260,6 +269,7 @@ export async function getReferralStatus(
     currentTierGB,
     nextTierGB: next.storage_limit_gb,
     neededForNext: next.min_referrals - referralCount,
-    progressPercent,
+    progressPercent: overallPercent,
+    referredById,
   };
 }

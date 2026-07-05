@@ -182,6 +182,60 @@ function isCmd(text: string, ...matches: string[]): boolean {
   return matches.some((m) => t === m.toLowerCase());
 }
 
+/**
+ * Shared redeem flow for the "/redeem" and "กรอกโค้ด/ใส่โค้ด/โค้ด" triggers.
+ * Wrapped so any DB/Redis error produces an apology reply, never silence (the
+ * user was just told to type a code). Sends the same success/fail copy either way.
+ */
+async function handleRedeem(
+  app: FastifyInstance,
+  event: LineMessageEvent,
+  lineUserId: string,
+  rawCode: string | undefined,
+): Promise<void> {
+  try {
+    const code = rawCode?.trim();
+    if (!code) {
+      await reply(event, 'หนูเก็บ: พิมพ์โค้ดต่อท้ายด้วยนะ 📁\nเช่น กรอกโค้ด ABC12345');
+      return;
+    }
+    if (!/^[a-zA-Z0-9]{1,8}$/.test(code)) {
+      await reply(event, 'หนูเก็บ: หาโค้ดนี้ไม่เจอเลยนะ 📋\nลองเช็คตัวพิมพ์อีกทีได้เลย!');
+      return;
+    }
+    const profile = await getProfile(lineUserId).catch(() => undefined);
+    const { user } = await ensureUserAndSpace(
+      app.supabase,
+      lineUserId,
+      profile?.displayName,
+      profile?.pictureUrl,
+    );
+    if (!(await checkRedeemRateLimit(app.redis, user.id))) {
+      await reply(event, 'หนูเก็บ: พักก่อนนะ 😴\nลองใหม่ได้ในอีก 1 ชั่วโมงนะคะ!');
+      return;
+    }
+    const result = await redeemCode(app.supabase, app.redis, code, user.id);
+    if (!result.ok) {
+      await reply(event, REDEEM_FAIL_TEXT[result.reasonCode ?? 'not_found']);
+      return;
+    }
+    // Pushes are best-effort — the redemption is already committed.
+    try {
+      await sendRedeemSuccessToReferee(app.supabase, user.id, result.newStorageBytes!);
+    } catch (err) {
+      app.log.error({ err, userId: user.id }, 'referral: redeem-success push failed');
+    }
+    try {
+      await sendReferralProgressToReferrer(app.supabase, app.redis, result.referrerId!);
+    } catch (err) {
+      app.log.error({ err, referrerId: result.referrerId }, 'referral: referrer progress push failed');
+    }
+  } catch (err) {
+    app.log.error({ err, lineUserId }, 'referral: redeem handler error');
+    await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+  }
+}
+
 async function handleTextCommand(
   app: FastifyInstance,
   event: LineMessageEvent,
@@ -362,60 +416,25 @@ async function handleTextCommand(
     return;
   }
 
-  // Redeem a referral code: "/redeem XXXXXXXX". Same flow as POST /referral/redeem
-  // (shared service + push helpers), replying หนูเก็บ-voiced copy per reasonCode
-  // instead of the API's JSON reason. Checked before the "เชิญ" contains-match
-  // so "/redeem" text can never be swallowed by another branch.
+  // Redeem a referral code. Two entry points, same shared flow:
+  //   • "/redeem XXXXXXXX"
+  //   • "กรอกโค้ด XXXXXXXX" / "ใส่โค้ด XXXXXXXX" / "โค้ด XXXXXXXX"  (easy input)
+  // Checked before the "เชิญ" contains-match so the redeem text can never be
+  // swallowed by another branch. The prefix regex requires a space after the
+  // keyword; everything after it is the code.
   if (/^\/redeem\b/i.test(text.trim())) {
-    // A thrown error here would otherwise bubble to handleEvent's catch, which
-    // only logs — the user would get pure silence after being told to redeem.
-    try {
-      const code = text.trim().split(/\s+/)[1];
-      if (!code) {
-        await reply(event, 'หนูเก็บ: พิมพ์โค้ดต่อท้ายด้วยนะ 📁\nเช่น /redeem ABC12345');
-        return;
-      }
-      if (!/^[a-zA-Z0-9]{1,8}$/.test(code)) {
-        await reply(event, 'หนูเก็บ: หาโค้ดนี้ไม่เจอเลยนะ 📋\nลองเช็คตัวพิมพ์อีกทีได้เลย!');
-        return;
-      }
-      const profile = await getProfile(lineUserId).catch(() => undefined);
-      const { user } = await ensureUserAndSpace(
-        app.supabase,
-        lineUserId,
-        profile?.displayName,
-        profile?.pictureUrl,
-      );
-      if (!(await checkRedeemRateLimit(app.redis, user.id))) {
-        await reply(event, 'หนูเก็บ: พักก่อนนะ 😴\nลองใหม่ได้ในอีก 1 ชั่วโมงนะคะ!');
-        return;
-      }
-      const result = await redeemCode(app.supabase, app.redis, code, user.id);
-      if (!result.ok) {
-        await reply(event, REDEEM_FAIL_TEXT[result.reasonCode ?? 'not_found']);
-        return;
-      }
-      // Pushes are best-effort — the redemption is already committed.
-      try {
-        await sendRedeemSuccessToReferee(app.supabase, user.id, result.newStorageBytes!);
-      } catch (err) {
-        app.log.error({ err, userId: user.id }, 'referral: redeem-success push failed');
-      }
-      try {
-        await sendReferralProgressToReferrer(app.supabase, app.redis, result.referrerId!);
-      } catch (err) {
-        app.log.error({ err, referrerId: result.referrerId }, 'referral: referrer progress push failed');
-      }
-    } catch (err) {
-      app.log.error({ err, lineUserId }, 'referral: redeem handler error');
-      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
-    }
+    await handleRedeem(app, event, lineUserId, text.trim().split(/\s+/)[1]);
+    return;
+  }
+  const redeemPrefix = /^(?:กรอกโค้ด|ใส่โค้ด|โค้ด)\s+(.+)$/.exec(text.trim());
+  if (redeemPrefix) {
+    await handleRedeem(app, event, lineUserId, redeemPrefix[1]);
     return;
   }
 
-  // Show my invite code — "/invite" or any message containing "เชิญ".
+  // Show my invite code — "/invite", "หนูเก็บเชิญ", or any message containing "เชิญ".
   // (Group chats never reach here: the allowlist guard above returns first.)
-  if (/^\/invite\b/i.test(text.trim()) || text.includes('เชิญ')) {
+  if (/^\/invite\b/i.test(text.trim()) || text.includes('หนูเก็บเชิญ') || text.includes('เชิญ')) {
     // Same silent-fail guard as /redeem: a DB/Redis error must produce an
     // apology reply, never nothing.
     try {

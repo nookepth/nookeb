@@ -180,10 +180,27 @@ export interface ReferralStatusResponse {
   nextTierGB: number | null;
   neededForNext: number;
   progressPercent: number;
+  /** the user this account redeemed a code from — null if never redeemed */
+  referredById: string | null;
 }
 
 export function getReferralStatus(): Promise<ReferralStatusResponse> {
   return apiFetch(`/referral/status`);
+}
+
+export interface RedeemResponse {
+  ok: boolean;
+  /** Thai failure reason from the API when ok === false */
+  message?: string;
+}
+
+/** Redeem a friend's referral code for the signed-in user (one-time). */
+export function redeemReferralCode(code: string): Promise<RedeemResponse> {
+  return apiFetch<RedeemResponse>(`/referral/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
 }
 
 export interface GoogleStatus {

@@ -344,7 +344,40 @@ function progressBar(percent: number): Record<string, unknown> {
 }
 
 /**
+ * Dynamic motivational line keyed by the EXACT referral count (0–10+), matched to
+ * the new 3/5/7/10 tier thresholds. The web ReferralCard keeps an identical copy
+ * (getMotivationalText) — keep the two in sync when editing.
+ */
+export function referralMotivationalText(count: number): string {
+  switch (count) {
+    case 0:
+      return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! 📁';
+    case 1:
+      return 'อีก 2 คน ได้ 3 GB เลยน้า 💛';
+    case 2:
+      return 'ขาดแค่คนเดียวจะได้ 3 GB แล้วววว 🔥';
+    case 3:
+      return 'ได้ 3 GB แล้ว! ชวนต่อได้อีกนะ อีก 2 คน ได้ 5 GB 📂';
+    case 4:
+      return 'อีกคนเดียว! ได้ 5 GB เลยยย 💪';
+    case 5:
+      return 'ได้ 5 GB แล้ว เก่งมาก! อีก 2 คน ได้ 7 GB ⭐';
+    case 6:
+      return 'อีกคนเดียวได้ 7 GB แล้วนะ สู้ๆ 🌟';
+    case 7:
+      return 'ได้ 7 GB แล้ว! ยอดเยี่ยมมาก อีก 3 คน รับ 10 GB เลย';
+    case 8:
+      return 'อีก 2 คน ได้ 10 GB เต็มๆ เลย! 🏆';
+    case 9:
+      return 'อีกคนเดียวเท่านั้น! 10 GB รออยู่นะ 👑';
+    default:
+      return 'เจ๋งที่สุดไปเลยย! ได้ 10 GB เต็มๆ แล้ว 🏆📁';
+  }
+}
+
+/**
  * Pushed to the referee right after they successfully redeem a referral code.
+ * Compact teal-header card — clean, minimal, on-brand.
  * @param params.totalGB new total storage after the bonus (already in GB)
  * @param params.bonusGB the one-time bonus that was just granted (GB)
  */
@@ -360,11 +393,11 @@ export function buildRedeemSuccessFlexMessage(params: {
     ? {
         type: 'button',
         style: 'primary',
-        color: BRAND_RED,
+        color: TEAL,
         height: 'sm',
-        action: { type: 'uri', label: 'อัปโหลดเลย!', uri: dashboardUrl },
+        action: { type: 'uri', label: 'อัปโหลดเลย! →', uri: dashboardUrl },
       }
-    : { type: 'text', text: `อัปโหลดเลย!: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
+    : { type: 'text', text: `อัปโหลดเลย! →: ${dashboardUrl}`, size: 'xs', color: TEAL, wrap: true };
 
   return {
     type: 'flex',
@@ -375,9 +408,10 @@ export function buildRedeemSuccessFlexMessage(params: {
       header: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: TEAL,
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'หนูเก็บ: ได้พื้นที่เพิ่มแล้ว! 🎉', weight: 'bold', size: 'lg', color: INK, wrap: true },
+          { type: 'text', text: '📁 หนูเก็บ · ได้พื้นที่เพิ่มแล้ว!', weight: 'bold', size: 'sm', color: '#FFFFFF', wrap: true },
         ],
       },
       body: {
@@ -386,13 +420,13 @@ export function buildRedeemSuccessFlexMessage(params: {
         spacing: 'sm',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'เก่งมากเลยน้า หนูขยายล็อคเกอร์ให้แล้วน้า ✨', size: 'sm', color: '#333333', wrap: true },
-          { type: 'text', text: `ได้รับโบนัส +${bonusGB} GB จากการกรอกโค้ด 📂`, size: 'sm', color: '#333333', wrap: true },
-          { type: 'text', text: `พื้นที่ทั้งหมดตอนนี้ ${totalGB} GB 🗂️`, size: 'sm', color: '#333333', wrap: true },
+          { type: 'text', text: '🎉 ยินดีด้วยนะ!', weight: 'bold', size: 'lg', color: INK },
+          { type: 'text', text: `+${bonusGB} GB เพิ่มเข้าบัญชีแล้ว`, size: 'sm', color: TEAL, weight: 'bold' },
+          { type: 'text', text: `พื้นที่ทั้งหมด ${totalGB} GB 📂`, size: 'sm', color: MUTED },
         ],
       },
       footer: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [footer] },
-      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: TEAL }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
@@ -467,13 +501,12 @@ export function buildReferralProgressFlexMessage(params: ReferralProgressParams)
 }
 
 /** Invite-code card — replied when the user asks for their code ("เชิญ" / "/invite").
- * NOTE: LINE Flex can't set font-family, so the "monospace" code renders as
- * bold xxl teal instead — real monospace only exists on the web ReferralCard. */
+ * Compact teal-header design: big code block, one stat row, one motivational hint.
+ * The footer tells the RECIPIENT exactly what to type to redeem the code.
+ * NOTE: LINE Flex can't set font-family, so the code renders as bold xxl teal
+ * instead of true monospace — real monospace only exists on the web ReferralCard. */
 export function buildInviteFlexMessage(params: ReferralProgressParams & { code: string }): FlexMessage {
-  const nextLine =
-    params.nextTierGB !== null
-      ? `อีก ${params.neededForNext} คน ได้ ${params.nextTierGB} GB เพิ่ม`
-      : 'เต็มแล้ว!';
+  const motivationalText = referralMotivationalText(params.referralCount);
 
   return {
     type: 'flex',
@@ -484,23 +517,48 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
       header: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: TEAL,
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'หนูเก็บ: โค้ดชวนเพื่อนของคุณ 📁', weight: 'bold', size: 'lg', color: INK, wrap: true },
+          { type: 'text', text: '📁 หนูเก็บ · โค้ดชวนเพื่อน', color: '#FFFFFF', size: 'sm', weight: 'bold', wrap: true },
         ],
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'sm',
+        spacing: 'md',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'ชวนเพื่อนมาฝากไฟล์กับหนู แล้วได้พื้นที่เพิ่มเลยน้า', size: 'sm', color: '#333333', wrap: true },
-          { type: 'text', text: params.code, weight: 'bold', size: 'xxl', color: TEAL, align: 'center' },
-          { type: 'separator', margin: 'md' },
-          { type: 'text', text: `เชิญแล้ว ${params.referralCount} คน 🎉`, size: 'sm', color: '#333333' },
-          { type: 'text', text: `พื้นที่ตอนนี้ ${params.currentTierGB} GB · ${nextLine}`, size: 'sm', color: '#333333', wrap: true },
-          progressBar(params.progressPercent),
+          // Big code display
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: '#F0FDFA',
+            cornerRadius: '8px',
+            paddingAll: '12px',
+            contents: [
+              {
+                type: 'text',
+                text: params.code,
+                size: 'xxl',
+                weight: 'bold',
+                color: TEAL,
+                align: 'center',
+                letterSpacing: '4px',
+              },
+            ],
+          },
+          // Stats row
+          {
+            type: 'box',
+            layout: 'horizontal',
+            contents: [
+              { type: 'text', text: 'เชิญแล้ว', size: 'xs', color: '#6B7280', flex: 1 },
+              { type: 'text', text: `${params.referralCount} คน`, size: 'xs', color: TEAL, weight: 'bold', align: 'end' },
+            ],
+          },
+          // Progress hint
+          { type: 'text', text: motivationalText, size: 'xs', color: '#374151', wrap: true },
         ],
       },
       footer: {
@@ -508,10 +566,17 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
         layout: 'vertical',
         paddingAll: '12px',
         contents: [
-          { type: 'text', text: 'แชร์ให้เพื่อนกรอก แล้วหนูเก็บจะเพิ่มพื้นที่ให้เอง! 📂', size: 'xs', color: MUTED, align: 'center', wrap: true },
+          {
+            type: 'text',
+            text: `พิมพ์ว่า 'กรอกโค้ด ${params.code}' เพื่อรับพื้นที่เพิ่ม`,
+            size: 'xs',
+            color: '#6B7280',
+            wrap: true,
+            align: 'center',
+          },
         ],
       },
-      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: TEAL }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
