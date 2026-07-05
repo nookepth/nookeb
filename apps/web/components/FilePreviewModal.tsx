@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { FileDto } from '@nookeb/shared';
 import { getFile, startDownload } from '@/lib/api';
+// FIX: download - the preview image must stay long-pressable on iOS (no onContextMenu preventDefault, no pointer-events:none, no -webkit-touch-callout:none anywhere on .preview-media)
 
 function canInline(mimeType: string): boolean {
   return (
@@ -24,6 +25,8 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
   const isIOS = typeof navigator !== 'undefined' && /iPad|iPhone|iPod/.test(navigator.userAgent);
   // fileId → presigned url (null = fetch failed / file not ready → download fallback)
   const [urls, setUrls] = useState<Record<string, string | null>>({});
+  // FIX: download - dynamic save hint shown when the iOS share sheet isn't available (falls back to the always-on long-press hint)
+  const [hint, setHint] = useState<string | null>(null);
   const file = files[index];
 
   useEffect(() => {
@@ -40,6 +43,11 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
       cancelled = true;
     };
   }, [file, urls]);
+
+  // FIX: download - clear a stale save hint when navigating to another image
+  useEffect(() => {
+    setHint(null);
+  }, [file?.id]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
@@ -76,10 +84,19 @@ export function FilePreviewModal({ files, onClose }: FilePreviewModalProps) {
           {loading ? (
             <span className="preview-hint">กำลังโหลด...</span>
           ) : inline && url && file.mimeType.startsWith('image/') ? (
-            // FIX: 2 - iOS can't save via <a download>; tell the user to long-press the image
+            // FIX: download - iOS Strategy 1: a real Save button opens the native share sheet (Save to Photos); the long-press hint below is the Strategy 2 fallback
             <div className="preview-image-wrap">
               <img className="preview-media" src={url} alt={file.name} />
-              {isIOS && <span className="preview-hint ios-save-hint">กดค้างที่รูปเพื่อบันทึก</span>}
+              {isIOS && (
+                <>
+                  <button className="btn" onClick={() => void startDownload(file.id, file.mimeType, setHint)}>
+                    บันทึกรูปภาพ
+                  </button>
+                  <span className="preview-hint ios-save-hint">
+                    {hint ?? 'กดค้างที่รูปภาพเพื่อบันทึก'}
+                  </span>
+                </>
+              )}
             </div>
           ) : inline && url ? (
             <iframe className="preview-frame" src={url} title={file.name} />

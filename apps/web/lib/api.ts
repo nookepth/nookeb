@@ -388,20 +388,50 @@ export function unbindTeamGroup(teamId: string, lineGroupId: string): Promise<{ 
  * session JWT). The API 302-redirects to a presigned R2 URL with
  * Content-Disposition: attachment, so the page itself never navigates away.
  */
-export async function startDownload(fileId: string, mimeType?: string): Promise<void> {
+export async function startDownload(
+  fileId: string,
+  mimeType?: string,
+  onHint?: (msg: string) => void, // FIX: download - let the preview modal surface a Thai long-press hint when the share sheet isn't available (api.ts must not touch React/DOM state itself)
+): Promise<void> {
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/'); // FIX: download - scope the new iOS save flow to images only
+  const isLINEBrowser = /Line\//i.test(navigator.userAgent); // FIX: download - LINE's in-app browser shows a blank white screen on window.open(blob); detect it to suppress that path entirely
+  const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/'); // FIX: download - scope the iOS save flow to images only
 
   if (isIOS && isImage) {
-    // FIX: download - iOS Safari can't render or save a Content-Disposition:attachment URL (blank tab). Open the INLINE image instead so the user can long-press → "บันทึกรูปภาพ" (Save to Photos).
-    const win = window.open('', '_blank'); // FIX: download - open the tab synchronously inside the click gesture so Safari's popup blocker doesn't kill it after the await
-    const detail = await getFile(fileId); // FIX: download - inline presigned URL (no attachment disposition) so the image displays and can be saved
-    if (detail.url) {
-      if (win) win.location.href = detail.url; // FIX: download - point the pre-opened tab at the inline image
-      else window.location.href = detail.url; // FIX: download - popup blocked: navigate the current tab to the image instead
+    try {
+      const detail = await getFile(fileId); // FIX: download - inline presigned URL (no attachment disposition) so it can be fetched as a blob and shared
+      if (detail.url) {
+        // FIX: download - Strategy 1: fetch the bytes and hand them to the native iOS share sheet (Save to Photos / AirDrop) — closest to one-tap save
+        const res = await fetch(detail.url, { mode: 'cors' }); // FIX: download - Web Share needs a File built from the image bytes
+        const blob = await res.blob();
+        const file = new File([blob], detail.name || 'image.jpg', { type: blob.type }); // FIX: download - detail.name already carries its extension
+
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: detail.name }); // FIX: download - native share sheet handles the save; no tab is ever opened
+          return;
+        }
+
+        // FIX: download - CRITICAL: inside LINE's in-app browser NEVER call window.open (blank screen). Show the long-press hint — the only reliable save method there.
+        if (isLINEBrowser) {
+          onHint?.('กดค้างที่รูปภาพเพื่อบันทึก');
+          return;
+        }
+
+        // FIX: download - non-LINE Safari fallback: open the inline blob so the user can long-press → "บันทึกรูปภาพ"
+        const objectUrl = URL.createObjectURL(blob);
+        window.open(objectUrl, '_blank');
+        onHint?.('กดค้างที่รูปภาพ แล้วเลือก "บันทึกรูปภาพ"');
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 30000);
+        return;
+      }
+    } catch (err) {
+      // FIX: download - user cancelled the share sheet, or fetch/CORS failed: stay silent, never blank the screen
+      const aborted = err instanceof Error && err.name === 'AbortError';
+      if (!aborted && isLINEBrowser) onHint?.('กดค้างที่รูปภาพเพื่อบันทึก'); // FIX: download - give LINE users a way forward without window.open
+      if (aborted) return; // FIX: download - deliberate cancel: do nothing
       return;
     }
-    if (win) win.close(); // FIX: download - no inline url (file not ready): drop the blank tab and fall through to the token download
+    // FIX: download - inline url missing (file not ready): fall through to the token download below
   }
 
   const { token } = await apiFetch<{ token: string }>(`/files/${fileId}/download-token`, {
