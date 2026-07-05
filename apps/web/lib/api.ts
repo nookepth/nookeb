@@ -388,13 +388,27 @@ export function unbindTeamGroup(teamId: string, lineGroupId: string): Promise<{ 
  * session JWT). The API 302-redirects to a presigned R2 URL with
  * Content-Disposition: attachment, so the page itself never navigates away.
  */
-export async function startDownload(fileId: string): Promise<void> {
+export async function startDownload(fileId: string, mimeType?: string): Promise<void> {
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/'); // FIX: download - scope the new iOS save flow to images only
+
+  if (isIOS && isImage) {
+    // FIX: download - iOS Safari can't render or save a Content-Disposition:attachment URL (blank tab). Open the INLINE image instead so the user can long-press → "บันทึกรูปภาพ" (Save to Photos).
+    const win = window.open('', '_blank'); // FIX: download - open the tab synchronously inside the click gesture so Safari's popup blocker doesn't kill it after the await
+    const detail = await getFile(fileId); // FIX: download - inline presigned URL (no attachment disposition) so the image displays and can be saved
+    if (detail.url) {
+      if (win) win.location.href = detail.url; // FIX: download - point the pre-opened tab at the inline image
+      else window.location.href = detail.url; // FIX: download - popup blocked: navigate the current tab to the image instead
+      return;
+    }
+    if (win) win.close(); // FIX: download - no inline url (file not ready): drop the blank tab and fall through to the token download
+  }
+
   const { token } = await apiFetch<{ token: string }>(`/files/${fileId}/download-token`, {
     method: 'POST',
   });
   const downloadUrl = `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`;
-  // FIX: 2 - iOS Safari ignores in-place attachment navigation; open in a new tab so the native "save" flow works
-  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  // FIX: download - iOS non-image keeps opening in a new tab; Android + desktop navigate in place to trigger the attachment download
   if (isIOS) {
     window.open(downloadUrl, '_blank');
   } else {

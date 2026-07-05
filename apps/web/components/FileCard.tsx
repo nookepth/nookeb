@@ -212,7 +212,7 @@ export function FileCard({
         <button
           className="btn secondary small"
           disabled={busy}
-          onClick={() => void startDownload(file.id)}
+          onClick={() => void startDownload(file.id, file.mimeType)}
         >
           ดาวน์โหลด
         </button>
@@ -257,7 +257,7 @@ export function FileCard({
               <button
                 className="icon-btn"
                 aria-label="ดาวน์โหลด"
-                onClick={() => void startDownload(file.id)}
+                onClick={() => void startDownload(file.id, file.mimeType)}
               >
                 <DownloadIcon />
               </button>
