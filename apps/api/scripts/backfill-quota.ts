@@ -1,7 +1,12 @@
 /**
- * One-time maintenance: set every user's storage_limit to the current default (10 GB)
- * and recompute storage_used from the actual non-deleted files they uploaded.
- * Safe to re-run.
+ * One-time maintenance: set every user's storage_limit to the current
+ * DEFAULT_STORAGE_LIMIT and recompute storage_used from the actual non-deleted
+ * files they uploaded.
+ *
+ * ⚠️ Predates the referral tier system (migration 010): running it now would
+ * overwrite tier-earned quotas with the 1 GB default for EVERYONE. For the
+ * referral-era quota reset use scripts/backfill-referral-codes.ts instead,
+ * which only touches unused accounts.
  */
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../src/config';

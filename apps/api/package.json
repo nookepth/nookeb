@@ -10,6 +10,7 @@
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/index.js",
     "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/services/referral.service.test.ts",
     "setup:rich-menu": "tsx --env-file=../../.env scripts/setup-rich-menu-large.ts"
   },
   "dependencies": {
