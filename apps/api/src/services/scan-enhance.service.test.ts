@@ -4,9 +4,17 @@ import sharp from 'sharp';
 import {
   processScanPage,
   plainNormalize,
+  buildScanPdf,
   MSG_EDGE_FAILED,
   MSG_TOO_DARK,
 } from './scan-enhance.service';
+import { extractText, terminateOcr } from './ocr.service';
+
+// The tesseract singleton (Test 8) holds worker threads open — terminate it so
+// the test process can exit.
+test.after(async () => {
+  await terminateOcr();
+});
 
 // Synthetic fixtures rendered with sharp from SVG — no binary test assets.
 
@@ -128,4 +136,108 @@ test('Test 5 — reprocessing the same page is safe (stateless, no throw)', asyn
   const [ma, mb] = [await sharp(a.jpeg).metadata(), await sharp(b.jpeg).metadata()];
   assert.equal(ma.width, mb.width);
   assert.equal(ma.height, mb.height);
+});
+
+// --- Feature upgrade: improved detection (aspect gate + adaptive pass) + OCR PDF ---
+
+/** A degenerate sliver: bright, big enough area, but paper-unlike aspect (~6:1). */
+function sliverSvg(): Buffer {
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#453c33"/>
+      <rect x="0" y="350" width="1200" height="200" fill="#fcfcfa"/>
+    </svg>`,
+  );
+}
+
+/** Low-contrast: near-white page on a light desk — too weak for Canny 75/200. */
+function lowContrastSvg(): Buffer {
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#beb8ae"/>
+      <rect x="180" y="120" width="840" height="660" fill="#ccc6bb"/>
+    </svg>`,
+  );
+}
+
+test('Test 6 — paper-unlike sliver quad is rejected (aspect-ratio gate → fallback)', async () => {
+  const result = await processScanPage(await toJpeg(sliverSvg()), 'color', 'test=sliver');
+  assert.equal(result.edgeDetection, 'fallback');
+  assert.ok(result.warnings.includes(MSG_EDGE_FAILED));
+  const meta = await sharp(result.jpeg).metadata();
+  // Fallback keeps the full frame, not the sliver
+  assert.ok(Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 1200 / 900) < 0.05);
+});
+
+test('Test 7 — low-contrast page: adaptive-threshold second pass detects it', async () => {
+  const result = await processScanPage(await toJpeg(lowContrastSvg()), 'color', 'test=lowcontrast');
+  assert.equal(result.edgeDetection, 'detected');
+  const meta = await sharp(result.jpeg).metadata();
+  // Warp output ≈ the page rect (840×660), meaningfully smaller than the frame
+  assert.ok((meta.width ?? 0) < 1200 && (meta.height ?? 0) < 900);
+  assert.ok(Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 840 / 660) < 0.2);
+});
+
+test('Test 8 — OCR extracts Thai text (tesseract, tha+eng)', async () => {
+  // Rendered fixture: large printed Thai on white. Skip (not fail) if the host
+  // has no Thai font for SVG rendering — then the fixture would be blank/tofu.
+  const svg = Buffer.from(
+    `<svg width="1000" height="400" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1000" height="400" fill="#ffffff"/>
+      <text x="60" y="180" font-family="Leelawadee UI, Tahoma, Noto Sans Thai, sans-serif"
+            font-size="96" fill="#000000">สวัสดีประเทศไทย</text>
+      <text x="60" y="320" font-family="Arial, sans-serif" font-size="72" fill="#000000">HELLO 123</text>
+    </svg>`,
+  );
+  const png = await sharp(svg).png().toBuffer();
+  const stats = await sharp(png).grayscale().stats();
+  if ((stats.channels[0]?.mean ?? 255) > 254) {
+    console.warn('Test 8 skipped: SVG text did not render (no Thai font on this host)');
+    return;
+  }
+  const text = await extractText(png, 'tha+eng');
+  assert.ok(text.length > 0, 'expected non-empty OCR text');
+  assert.ok(/[฀-๿]/.test(text), `expected at least one Thai character, got: ${text}`);
+});
+
+test('Test 9 — OCR failure does not fail the PDF (image-only fallback)', async () => {
+  const page = await toJpeg(straightOnSvg());
+  const pdfBytes = await buildScanPdf([page, page], {
+    ocrEnabled: true,
+    logTag: 'test=ocr-throws',
+    ocr: async () => {
+      throw new Error('boom: simulated OCR crash');
+    },
+  });
+  const { PDFDocument } = await import('pdf-lib');
+  const pdf = await PDFDocument.load(pdfBytes);
+  assert.equal(pdf.getPageCount(), 2);
+});
+
+test('Test 10 — PDF is searchable: OCR words produce an embedded text layer', async () => {
+  const page = await toJpeg(straightOnSvg());
+  const pdfBytes = await buildScanPdf([page], {
+    ocrEnabled: true,
+    logTag: 'test=text-layer',
+    ocr: async () => ({
+      text: 'HELLO WORLD',
+      words: [
+        { text: 'HELLO', bbox: { x0: 100, y0: 100, x1: 320, y1: 150 } },
+        { text: 'WORLD', bbox: { x0: 340, y0: 100, x1: 560, y1: 150 } },
+      ],
+    }),
+  });
+  const { PDFDocument } = await import('pdf-lib');
+  const pdf = await PDFDocument.load(pdfBytes);
+  assert.equal(pdf.getPageCount(), 1);
+  // A text layer requires an embedded font; the image-only PDF has none.
+  // (Re-save without object streams so resource dicts are plaintext-visible.)
+  // (pdf-lib always writes an empty /Font resource dict, so assert on the
+  // actually-embedded base font instead.)
+  const raw = Buffer.from(await pdf.save({ useObjectStreams: false })).toString('latin1');
+  assert.ok(raw.includes('/Helvetica'), 'expected an embedded font (text layer) in the PDF');
+  // Control: same build without OCR embeds no font
+  const plainDoc = await PDFDocument.load(await buildScanPdf([page]));
+  const plainRaw = Buffer.from(await plainDoc.save({ useObjectStreams: false })).toString('latin1');
+  assert.ok(!plainRaw.includes('/Helvetica'));
 });

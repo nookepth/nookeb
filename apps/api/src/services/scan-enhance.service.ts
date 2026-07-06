@@ -1,5 +1,10 @@
+import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import sharp, { type Sharp } from 'sharp';
+import { PDFDocument, type PDFFont } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
 import type { ScanMode } from '@nookeb/shared';
+import { extractTextDetailed, type OcrPageResult } from './ocr.service';
 
 /**
  * CamScanner-style scan-page pipeline (worker-only — see upload.worker.ts):
@@ -36,6 +41,11 @@ const MIN_BLUR_VARIANCE = 100; // Laplacian variance below this → "too blurry"
 // A detected quad must cover at least this fraction of the frame to be trusted
 // (tiny quads are usually text blocks or noise, not the page outline).
 const MIN_QUAD_AREA_RATIO = 0.2;
+// Paper-likeness gate: the warped width/height ratio of an accepted quad.
+// Loose bounds on purpose — A4 is 0.71/1.41 but long receipts are legitimate;
+// this only rejects degenerate slivers (e.g. a lone text line or table rule).
+const MIN_QUAD_ASPECT = 0.2;
+const MAX_QUAD_ASPECT = 5;
 const PAGE_WIDTH = 1600; // normalized page width (matches the previous behavior)
 const JPEG_QUALITY = 85;
 
@@ -68,27 +78,24 @@ function orderCorners(pts: Point[]): [Point, Point, Point, Point] {
 
 const dist = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
 
+/** Paper-likeness check: the quad's warped width/height ratio must be sane. */
+function quadAspectOk(pts: Point[]): boolean {
+  const [tl, tr, br, bl] = orderCorners(pts);
+  const width = Math.max(dist(tl, tr), dist(bl, br));
+  const height = Math.max(1, Math.max(dist(tl, bl), dist(tr, br)));
+  const ratio = width / height;
+  return ratio >= MIN_QUAD_ASPECT && ratio <= MAX_QUAD_ASPECT;
+}
+
 /**
- * Stage 1: find the document's 4-corner outline. Returns null when no
- * convincing quad exists (caller falls back to full image bounds).
+ * Largest convex 4-point contour in a binary (edge/threshold) image that
+ * passes the area + aspect gates. Shared by both detection passes.
  */
-function detectDocumentQuad(cv: CV, rgba: InstanceType<CV['Mat']>): Point[] | null {
-  const gray = new cv.Mat();
-  const edges = new cv.Mat();
+function bestQuadFromBinary(cv: CV, binary: InstanceType<CV['Mat']>, minArea: number): Point[] | null {
   const contours = new cv.MatVector();
   const hierarchy = new cv.Mat();
   try {
-    cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
-    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
-    cv.Canny(gray, edges, 75, 200);
-    // Close small gaps in the page outline so it survives approxPolyDP
-    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
-    cv.dilate(edges, edges, kernel);
-    kernel.delete();
-
-    cv.findContours(edges, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
-    const minArea = rgba.cols * rgba.rows * MIN_QUAD_AREA_RATIO;
-
+    cv.findContours(binary, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
     let best: Point[] | null = null;
     let bestArea = 0;
     for (let i = 0; i < contours.size(); i++) {
@@ -103,6 +110,7 @@ function detectDocumentQuad(cv: CV, rgba: InstanceType<CV['Mat']>): Point[] | nu
           for (let r = 0; r < 4; r++) {
             pts.push({ x: approx.data32S[r * 2]!, y: approx.data32S[r * 2 + 1]! });
           }
+          if (!quadAspectOk(pts)) continue;
           best = pts;
           bestArea = area;
         }
@@ -113,10 +121,50 @@ function detectDocumentQuad(cv: CV, rgba: InstanceType<CV['Mat']>): Point[] | nu
     }
     return best;
   } finally {
-    gray.delete();
-    edges.delete();
     contours.delete();
     hierarchy.delete();
+  }
+}
+
+/**
+ * Stage 1: find the document's 4-corner outline. Two passes:
+ *   1. Canny → dilate (strong page/background contrast — the common case)
+ *   2. adaptive threshold (negative C highlights local edge bands) — catches
+ *      low-contrast pages Canny misses, e.g. white paper on a light desk
+ * Returns null when neither pass yields a convincing quad (caller falls back
+ * to full image bounds).
+ */
+function detectDocumentQuad(
+  cv: CV,
+  rgba: InstanceType<CV['Mat']>,
+): { corners: Point[]; pass: 'canny' | 'adaptive' } | null {
+  const gray = new cv.Mat();
+  const binary = new cv.Mat();
+  try {
+    cv.cvtColor(rgba, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, gray, new cv.Size(5, 5), 0);
+    const minArea = rgba.cols * rgba.rows * MIN_QUAD_AREA_RATIO;
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    try {
+      // Pass 1: Canny + dilate (close small gaps so the outline survives approxPolyDP)
+      cv.Canny(gray, binary, 75, 200);
+      cv.dilate(binary, binary, kernel);
+      const canny = bestQuadFromBinary(cv, binary, minArea);
+      if (canny) return { corners: canny, pass: 'canny' };
+
+      // Pass 2: adaptive threshold. C < 0 marks pixels brighter than their local
+      // mean — on a low-contrast photo that traces the page boundary as a band.
+      cv.adaptiveThreshold(gray, binary, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 51, -2);
+      cv.dilate(binary, binary, kernel);
+      const adaptive = bestQuadFromBinary(cv, binary, minArea);
+      if (adaptive) return { corners: adaptive, pass: 'adaptive' };
+      return null;
+    } finally {
+      kernel.delete();
+    }
+  } finally {
+    gray.delete();
+    binary.delete();
   }
 }
 
@@ -240,9 +288,9 @@ export async function processScanPage(
       if (quality.blurVariance < MIN_BLUR_VARIANCE) warnings.push(MSG_TOO_BLURRY);
 
       // Stage 1 + 2: quad detection → warp; fallback = full image bounds
-      const corners = detectDocumentQuad(cv, rgba);
-      if (corners) {
-        const warped = warpToQuad(cv, rgba, corners);
+      const detection = detectDocumentQuad(cv, rgba);
+      if (detection) {
+        const warped = warpToQuad(cv, rgba, detection.corners);
         try {
           outRaw = {
             data: Buffer.from(warped.mat.data),
@@ -253,7 +301,7 @@ export async function processScanPage(
         } finally {
           warped.mat.delete();
         }
-        console.log(`[scan-enhance] edge detection: detected ${logTag}`);
+        console.log(`[scan-enhance] edge detection: detected (pass=${detection.pass}) ${logTag}`);
       } else {
         outRaw = { data: Buffer.from(rgba.data), width: info.width, height: info.height };
         warnings.push(MSG_EDGE_FAILED);
@@ -276,4 +324,143 @@ export async function processScanPage(
     console.error(`[scan-enhance] pipeline failed — storing plain image ${logTag}:`, err);
     return { jpeg: await plainNormalize(input), edgeDetection: 'skipped', warnings };
   }
+}
+
+// ---------------------------------------------------------------------------
+// PDF assembly (extracted from the finalize_scan handler; worker calls this)
+// ---------------------------------------------------------------------------
+
+// A4 in PDF points (210×297 mm at 72 dpi)
+const A4_WIDTH_PT = 595.28;
+const A4_HEIGHT_PT = 841.89;
+
+/**
+ * Thai-capable TTF for the invisible OCR text layer (pdf-lib StandardFonts are
+ * WinAnsi-only and cannot encode Thai). Pre-seeded into apps/api/assets/fonts/
+ * by scripts/download-tessdata.js; lazily downloaded on first use if missing.
+ * Returns null (and logs once) when unavailable — non-ASCII words are then
+ * skipped, never failing the PDF.
+ */
+const THAI_FONT_PATH = path.join(__dirname, '..', '..', 'assets', 'fonts', 'NotoSansThai-Regular.ttf');
+const THAI_FONT_URL =
+  'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansThai/hinted/ttf/NotoSansThai-Regular.ttf';
+
+let thaiFontPromise: Promise<Buffer | null> | null = null;
+function getThaiFontBytes(): Promise<Buffer | null> {
+  if (!thaiFontPromise) {
+    thaiFontPromise = (async () => {
+      try {
+        return await fs.readFile(THAI_FONT_PATH);
+      } catch {
+        /* not on disk — try downloading */
+      }
+      try {
+        const res = await fetch(THAI_FONT_URL);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const bytes = Buffer.from(await res.arrayBuffer());
+        // Best-effort cache for the next process start
+        await fs
+          .mkdir(path.dirname(THAI_FONT_PATH), { recursive: true })
+          .then(() => fs.writeFile(THAI_FONT_PATH, bytes))
+          .catch(() => undefined);
+        return bytes;
+      } catch (err) {
+        console.error('[scan-enhance] Thai OCR font unavailable — Thai text layer disabled:', err);
+        return null;
+      }
+    })();
+  }
+  return thaiFontPromise;
+}
+
+const isAscii = (s: string): boolean => /^[\x20-\x7e]+$/.test(s);
+
+export type OcrFn = (jpeg: Buffer) => Promise<OcrPageResult>;
+
+export interface BuildScanPdfOptions {
+  /** Embed an invisible searchable text layer per page (SCAN_OCR_ENABLED). */
+  ocrEnabled?: boolean;
+  logTag?: string;
+  /** Injectable OCR engine (tests); defaults to ocr.service extractTextDetailed. */
+  ocr?: OcrFn;
+}
+
+/**
+ * Merge enhanced page JPEGs into one A4 PDF: each image fitted to the page
+ * with aspect ratio preserved, centered. With ocrEnabled, each page also gets
+ * an invisible (opacity 0) text layer positioned from the OCR word bounding
+ * boxes, making the PDF searchable. OCR runs for all pages in parallel and is
+ * strictly best-effort — any OCR/font/encoding failure degrades to an
+ * image-only page; only an unreadable page image itself throws (the worker's
+ * retry/last-attempt handling deals with that).
+ */
+export async function buildScanPdf(pages: Buffer[], opts: BuildScanPdfOptions = {}): Promise<Uint8Array> {
+  const { ocrEnabled = false, logTag = '', ocr = extractTextDetailed } = opts;
+
+  // Kick off OCR for every page up front (parallel with PDF/image embedding).
+  // Each page's OCR failure collapses to an empty result — never fatal.
+  const ocrResults: Promise<OcrPageResult>[] = pages.map((jpeg) =>
+    ocrEnabled
+      ? ocr(jpeg).catch((err): OcrPageResult => {
+          console.error(`[scan-enhance] OCR failed — image-only page ${logTag}:`, err);
+          return { text: '', words: [] };
+        })
+      : Promise.resolve({ text: '', words: [] }),
+  );
+
+  const pdf = await PDFDocument.create();
+  pdf.registerFontkit(fontkit);
+
+  // Fonts are embedded lazily, only when a page actually has OCR words
+  let helvetica: PDFFont | null = null;
+  let thaiFont: PDFFont | null | undefined; // undefined = not attempted yet
+
+  for (let i = 0; i < pages.length; i++) {
+    const started = Date.now();
+    const img = await pdf.embedJpg(pages[i]!);
+    const scale = Math.min(A4_WIDTH_PT / img.width, A4_HEIGHT_PT / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    const offX = (A4_WIDTH_PT - w) / 2;
+    const offY = (A4_HEIGHT_PT - h) / 2;
+    const pdfPage = pdf.addPage([A4_WIDTH_PT, A4_HEIGHT_PT]);
+    pdfPage.drawImage(img, { x: offX, y: offY, width: w, height: h });
+
+    const { words } = await ocrResults[i]!;
+    if (words.length > 0) {
+      try {
+        if (!helvetica) helvetica = await pdf.embedFont('Helvetica');
+        if (thaiFont === undefined && words.some((word) => !isAscii(word.text))) {
+          const bytes = await getThaiFontBytes();
+          thaiFont = bytes ? await pdf.embedFont(bytes, { subset: true }) : null;
+        }
+        for (const word of words) {
+          const font = isAscii(word.text) ? helvetica : thaiFont;
+          if (!font) continue; // Thai font unavailable — skip non-ASCII words
+          // Map image pixels → PDF points; PDF y-axis grows upward
+          const size = Math.max(2, Math.min(72, (word.bbox.y1 - word.bbox.y0) * scale));
+          try {
+            pdfPage.drawText(word.text, {
+              x: offX + word.bbox.x0 * scale,
+              y: offY + (img.height - word.bbox.y1) * scale,
+              size,
+              font,
+              opacity: 0,
+            });
+          } catch {
+            /* unencodable glyphs in this word — skip it */
+          }
+        }
+      } catch (err) {
+        console.error(`[scan-enhance] text layer failed on page ${i + 1} ${logTag}:`, err);
+      }
+    }
+
+    const elapsed = Date.now() - started;
+    if (elapsed > 15_000) {
+      console.warn(`[scan-enhance] page ${i + 1} took ${elapsed}ms (>15s) ${logTag}`);
+    }
+  }
+
+  return pdf.save();
 }

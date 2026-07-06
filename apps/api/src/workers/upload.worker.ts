@@ -4,8 +4,6 @@ import { randomUUID } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { buffer as readAll } from 'node:stream/consumers';
 import sharp from 'sharp';
-import { PDFDocument } from 'pdf-lib';
-import { createWorker as createTesseractWorker } from 'tesseract.js';
 import {
   FILE_QUEUE,
   type AddScanPageJob,
@@ -66,7 +64,8 @@ import {
   setSessionResultFile,
   setSessionStatus,
 } from '../services/scan.service';
-import { processScanPage, plainNormalize, MSG_PDF_FAILED } from '../services/scan-enhance.service';
+import { processScanPage, plainNormalize, buildScanPdf, MSG_PDF_FAILED } from '../services/scan-enhance.service';
+import { extractText, terminateOcr } from '../services/ocr.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -609,9 +608,9 @@ async function processOcrImage(job: OcrImageJob): Promise<void> {
     .png()
     .toBuffer();
 
-  const worker = await getTesseract();
-  const { data: result } = await worker.recognize(prepared);
-  const text = result.text.replace(/\s+/g, ' ').trim();
+  // Shared OCR engine (ocr.service): Document AI when configured, else the
+  // singleton tesseract worker. extractText never throws — '' on failure.
+  const text = (await extractText(prepared)).replace(/\s+/g, ' ').trim();
 
   const { error: updateErr } = await supabase
     .from('files')
@@ -674,10 +673,6 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
  * finalize_scan job: merge all scan pages into one PDF → store as a file →
  * confirm to the user. Temp page objects are cleaned up afterwards.
  */
-// A4 in PDF points (210×297 mm at 72 dpi)
-const A4_WIDTH_PT = 595.28;
-const A4_HEIGHT_PT = 841.89;
-
 async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
   if (!session || !session.space_id) return;
@@ -701,30 +696,24 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     return;
   }
 
-  // Assemble the PDF: one A4 page per scan page (pages are already enhanced +
-  // normalized JPEGs from add_scan_page), image fitted to the page with aspect
-  // ratio preserved, centered. (SCAN_OCR_ENABLED text layer: reserved, not yet
-  // implemented.) Failure here is retried by BullMQ like any other throw; on
-  // the LAST attempt we cancel the session and tell the user instead of
-  // crashing silently — the retake message asks them to run รวมรูป again.
+  // Assemble the PDF (buildScanPdf in scan-enhance.service): one A4 page per
+  // scan page (pages are already enhanced + normalized JPEGs from
+  // add_scan_page). With SCAN_OCR_ENABLED an invisible OCR text layer makes
+  // the PDF searchable — OCR failure inside buildScanPdf is best-effort and
+  // never throws. Failure here (unreadable page image / R2 read) is retried by
+  // BullMQ like any other throw; on the LAST attempt we cancel the session and
+  // tell the user instead of crashing silently — the retake message asks them
+  // to run รวมรูป again.
   let pdfBytes: Uint8Array;
   try {
-    const pdf = await PDFDocument.create();
+    const jpegs: Buffer[] = [];
     for (const page of pages) {
-      const jpeg = await readAll(await getObjectStream(r2, page.r2_key));
-      const img = await pdf.embedJpg(jpeg);
-      const scale = Math.min(A4_WIDTH_PT / img.width, A4_HEIGHT_PT / img.height);
-      const w = img.width * scale;
-      const h = img.height * scale;
-      const pdfPage = pdf.addPage([A4_WIDTH_PT, A4_HEIGHT_PT]);
-      pdfPage.drawImage(img, {
-        x: (A4_WIDTH_PT - w) / 2,
-        y: (A4_HEIGHT_PT - h) / 2,
-        width: w,
-        height: h,
-      });
+      jpegs.push(await readAll(await getObjectStream(r2, page.r2_key)));
     }
-    pdfBytes = await pdf.save();
+    pdfBytes = await buildScanPdf(jpegs, {
+      ocrEnabled: config.SCAN_OCR_ENABLED,
+      logTag: `session=${session.id}`,
+    });
   } catch (err) {
     console.error(`[upload.worker] finalize_scan PDF assembly failed (${session.id}):`, err);
     if (!isLastAttempt) throw err; // let BullMQ retry transient R2 read failures
@@ -880,19 +869,10 @@ export async function scheduleRepeatableJobs(): Promise<void> {
   );
 }
 
-let tesseractPromise: Promise<Awaited<ReturnType<typeof createTesseractWorker>>> | null = null;
-async function getTesseract() {
-  if (!tesseractPromise) tesseractPromise = createTesseractWorker('tha+eng');
-  return tesseractPromise;
-}
-
 export async function closeWorkerQueue(): Promise<void> {
   await fileQueue.close();
   await progressStore.closeProgressStore();
-  if (tesseractPromise) {
-    const worker = await tesseractPromise;
-    await worker.terminate();
-  }
+  await terminateOcr();
 }
 
 export function createUploadWorker(): Worker<FileJob> {

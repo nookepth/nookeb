@@ -10,6 +10,9 @@ dist/
 
 # OCR runtime cache (tesseract.js auto-downloads these — not source)
 *.traineddata
+apps/api/tessdata/
+# Downloaded PDF text-layer font (scripts/download-tessdata.js — not source)
+apps/api/assets/fonts/
 
 # Local Claude Code settings (machine-specific)
 .claude/settings.local.json
