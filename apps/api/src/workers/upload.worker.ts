@@ -524,10 +524,13 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
           dashboardUrl: `${config.WEB_URL}/dashboard`,
           username,
         });
+        console.log(`[DEBUG-PUSH] target=${target} type=upload-summary-card`);
         await pushMessage(target, [summary]);
+        console.log('[DEBUG-PUSH-OK] sent successfully');
       }
     } catch (err) {
       console.error('[upload.worker] summary push failed:', err);
+      console.log('[DEBUG-PUSH-ERROR]', err instanceof Error ? err.message : String(err), '(upload-summary-card)');
     }
   } catch (err) {
     // Setup failed (profile/space resolution) — report a full-failure card, don't throw
@@ -839,6 +842,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   // Best-effort — the PDF is already stored; a failed push must not rebuild it.
   // Same Flex builder as the upload summary card, in its scan/merge PDF variant.
   try {
+    console.log(`[DEBUG-PUSH] target=${job.lineUserId} type=finalize-confirm-card(${kind})`);
     await pushMessage(job.lineUserId, [
       buildSummaryFlexMessage({
         success: pages.length,
@@ -849,9 +853,11 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
         pdf: { count: pages.length, kind },
       }),
     ]);
+    console.log('[DEBUG-PUSH-OK] sent successfully');
     log('card-pushed');
   } catch (err) {
     console.error(`[upload.worker] finalize_scan confirm push failed for ${session.id}:`, err);
+    console.log('[DEBUG-PUSH-ERROR]', err instanceof Error ? err.message : String(err), `(finalize-confirm-card ${kind})`);
   }
 }
 

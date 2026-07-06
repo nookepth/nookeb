@@ -9,6 +9,10 @@ const authHeaders = {
   Authorization: `Bearer ${config.LINE_CHANNEL_ACCESS_TOKEN}`,
 };
 
+// [DEBUG] One-time startup check that the messaging-API token was actually read
+// from the env (length only — never log the secret itself).
+console.log('[LINE-CLIENT] token length:', config.LINE_CHANNEL_ACCESS_TOKEN?.length ?? 0);
+
 export interface LineContent {
   stream: Readable;
   contentType: string;
@@ -43,25 +47,35 @@ export interface TextMessage {
 export type LineMessage = TextMessage | FlexMessage;
 
 export async function replyMessage(replyToken: string, messages: LineMessage[]): Promise<void> {
+  const types = messages.map((m) => m.type).join(',');
+  console.log(`[DEBUG-PUSH] target=reply(${replyToken.slice(0, 8)}…) type=${types}`);
   const res = await fetch(`${LINE_API}/message/reply`, {
     method: 'POST',
     headers: { ...authHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ replyToken, messages }),
   });
   if (!res.ok) {
-    throw new Error(`LINE reply failed: ${res.status} ${await res.text()}`);
+    const body = await res.text();
+    console.log(`[DEBUG-PUSH-ERROR] ${body} ${res.status}`);
+    throw new Error(`LINE reply failed: ${res.status} ${body}`);
   }
+  console.log('[DEBUG-PUSH-OK] sent successfully');
 }
 
 export async function pushMessage(to: string, messages: LineMessage[]): Promise<void> {
+  const types = messages.map((m) => m.type).join(',');
+  console.log(`[DEBUG-PUSH] target=${to} type=${types}`);
   const res = await fetch(`${LINE_API}/message/push`, {
     method: 'POST',
     headers: { ...authHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ to, messages }),
   });
   if (!res.ok) {
-    throw new Error(`LINE push failed: ${res.status} ${await res.text()}`);
+    const body = await res.text();
+    console.log(`[DEBUG-PUSH-ERROR] ${body} ${res.status}`);
+    throw new Error(`LINE push failed: ${res.status} ${body}`);
   }
+  console.log('[DEBUG-PUSH-OK] sent successfully');
 }
 
 export async function getProfile(lineUserId: string): Promise<{

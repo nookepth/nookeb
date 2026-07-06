@@ -222,14 +222,19 @@ async function flushScanReply(app: FastifyInstance, lineUserId: string): Promise
     entry.kind === 'scan'
       ? buildScanFlexMessage({ kind: 'page', count: entry.count })
       : buildMergeFlexMessage({ kind: 'page', count: entry.count });
+  console.log(`[DEBUG-PUSH] target=${entry.target} type=${entry.kind}-page-card replyToken=${entry.replyToken ? 'yes' : 'no'}`);
   try {
     if (entry.replyToken) await replyMessage(entry.replyToken, [card]);
     else await pushMessage(entry.target, [card]);
+    console.log('[DEBUG-PUSH-OK] sent successfully');
   } catch (err) {
+    console.log('[DEBUG-PUSH-ERROR]', err instanceof Error ? err.message : String(err), `(${entry.kind}-page-card, trying push fallback)`);
     try {
       await pushMessage(entry.target, [card]);
+      console.log('[DEBUG-PUSH-OK] sent successfully');
     } catch (pushErr) {
       app.log.error({ err, pushErr }, 'scan page reply send failed');
+      console.log('[DEBUG-PUSH-ERROR]', pushErr instanceof Error ? pushErr.message : String(pushErr), `(${entry.kind}-page-card, push fallback also failed)`);
     }
   }
 }
