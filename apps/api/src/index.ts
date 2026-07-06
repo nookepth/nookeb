@@ -25,6 +25,15 @@ async function main(): Promise<void> {
     logger: {
       level: config.NODE_ENV === 'production' ? 'info' : 'debug',
     },
+    // The dashboard now reaches the API same-origin through the Next.js
+    // /api-proxy rewrite (and Railway's ingress fronts the API), so every
+    // request arrives from the proxy's socket address. Without trustProxy,
+    // `request.ip` is that single shared address — which makes the per-IP
+    // rate limiters (global 100/min, and especially POST /auth/line's
+    // 10/min + ban:5) count ALL users as one client. A re-login burst after
+    // a deploy then trips the ban and blocks login for everyone. Trusting the
+    // forwarded chain restores real per-client IPs so limits key per user.
+    trustProxy: true,
   });
 
   // CORS for the web dashboard. NOTE: the dashboard now reaches the API
