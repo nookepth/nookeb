@@ -36,12 +36,15 @@ migration 017; rebuild securely later if ever needed.)
    the atomic `increment_storage_used(p_user_id, p_delta)` RPC (migration 003) — never do a
    read-modify-write (worker concurrency would race it). New users get `DEFAULT_STORAGE_LIMIT`
    (1 GB free tier — raised through referrals, see migration 010 / `referral.service`).
-9. File-bearing jobs (`upload_file`, `add_scan_page`, `finalize_scan`) run with retry
-   (`attempts: 3`, exponential backoff) because LINE CDN content has a ~1h TTL and the user
-   was already told "received". Their handlers MUST stay safe to re-run: `finalize_scan`
-   skips sessions not in `processing`, `add_scan_page` dedups by `line_message_id`, and any
-   post-store step (thumbnail/OCR enqueue, confirm push) is best-effort (wrapped so it can
-   never throw and trigger a duplicating retry).
+9. File-bearing jobs (`add_scan_page`, `finalize_scan`) run with retry (`attempts: 3`,
+   exponential backoff) because LINE CDN content has a ~1h TTL and the user was already told
+   "received". Their handlers MUST stay safe to re-run: `finalize_scan` skips sessions not in
+   `processing` AND, once it has stored+charged the merged PDF, records `result_file_id` on the
+   session (migration 018 / `setSessionResultFile`) so a retry recovers that file instead of
+   re-storing it; `add_scan_page` dedups by `line_message_id`; and any post-store step
+   (thumbnail/OCR enqueue, confirm push) is best-effort (wrapped so it can never throw and
+   trigger a duplicating retry). (The legacy single-file `upload_file` handler was removed —
+   normal uploads go through `upload_batch`, which has its own internal-retry idempotency.)
 
 ## File Processing Flow (upload)
 0. Normal uploads are BATCHED per user to avoid message spam: the webhook adds each
@@ -72,9 +75,10 @@ migration 017; rebuild securely later if ever needed.)
   so rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu.ts`).
 
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
-`upload_batch` (normal uploads — see flow step 0) · `upload_file` (legacy single upload, kept
-for compatibility) · `generate_thumbnail` · `ocr_image` · `add_scan_page` · `finalize_scan` ·
-`purge_deleted` (daily repeatable, scheduled on worker startup via `scheduleRepeatableJobs`).
+`upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
+`add_scan_page` · `finalize_scan` · `purge_deleted` (daily repeatable, scheduled on worker
+startup via `scheduleRepeatableJobs`). (The legacy `upload_file` handler was removed — it had
+no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
 Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
 enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
 `upload_batch` does NOT use BullMQ attempts — it retries each file INTERNALLY (3 attempts,
@@ -92,18 +96,39 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `003_reliability.sql` — atomic `increment_storage_used` RPC (see rule 8), `files.purged_at`
     tombstone marker + partial index (rule 6), and `users.storage_limit` default → 10 GB.
     NOT auto-applied; MUST be applied before deploying code that uses the RPC / `purged_at`.
+  - `004_security_features.sql` · `005_teams.sql` · `006_cleanup_stale_team_spaces.sql` ·
+    `007_spaces_team_id.sql` · `008_team_join_requests.sql` — team system (spaces↔teams,
+    invites, join-request approval flow).
+  - `009_session_version.sql` — `users.session_version`; bumping it revokes outstanding JWTs
+    (see `middleware/auth.ts`, revocation check + 60s Redis cache).
+  - `010_referrals.sql` · `012_reset_quota.sql` · `013_fix_tiers.sql` — referral codes +
+    storage tiers (`referral.service`).
+  - `014_personal_quota_enforcement.sql` · `015_add_charged_to_column.sql` ·
+    `016_unique_space_constraints.sql` — atomic per-file personal quota enforcement, the
+    `charged_to` ledger column (correct quota refunds), and unique constraints closing a
+    space-creation race. Apply BEFORE the API/worker deploy that depends on them.
+  - `017_drop_google_accounts.sql` — drops the table from 002 (Drive feature removed). Apply
+    AFTER the code deploy that stops referencing it.
+  - `018_scan_page_seq.sql` — `scan_pages.page_seq BIGSERIAL` (DB-assigned, atomic) so
+    concurrent `add_scan_page` workers can't collide on page number; `finalize_scan` orders
+    by it. Also backs the `result_file_id` idempotency marker (rule 9).
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
 ## Project Structure
 - `apps/api` — Fastify API + LINE webhook + BullMQ workers
   - `src/routes/` — `webhook/line`, `auth`, `files`, `folders`, `tags`, `spaces`,
-    `analytics`, `admin`
+    `analytics`, `admin`, `referral`, `team.router` (mounted at `/api/teams`),
+    `progress` (upload-progress view + JSON), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
-    (Flex Message builders), `upload-queue` (per-user debounce batching)
+    (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
+    (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
+    (quota-warning thresholds), `virusTotal` (optional file scanning)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
-  - `src/middleware/` — `auth` (JWT), `line-verify` (signature)
-  - `scripts/` — `setup-rich-menu`, `backfill-quota`, `purge-deleted` (dry-run by default)
+  - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
+    HMAC signature — used ONLY on `/webhook/line`)
+  - `scripts/` — `setup-rich-menu`(`-large`), `backfill-quota`, `backfill-referral-codes`,
+    `purge-deleted` (dry-run by default), `upload-greeting-image`
 - `apps/web` — Next.js dashboard (`/dashboard`, `/admin`, `/join`, `/auth/callback`)
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
@@ -118,8 +143,58 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   `<public>/webhook/line`, enable "Use webhook", and turn OFF LINE auto-reply/greeting.
 - Redis: use the Upstash `rediss://` URL (TLS). Plain `redis://` to Upstash fails.
 
+## Deployment (Production)
+Three platforms. The web (Vercel) never talks to the API cross-origin — it calls the API
+**same-origin** through the Next.js `/api-proxy/:path*` rewrite (`apps/web/next.config.mjs`),
+because Safari ITP / the LINE in-app browser block the cross-site HttpOnly session cookie to
+the Railway domain. So the browser only ever hits `https://<web>/api-proxy/...`; Vercel rewrites
+that server-side to the Railway API.
+
+### Railway — API (`@nookeb/api`) + Worker (`nookeb-worker`, separate service)
+- API origin: `https://nookebapi-production.up.railway.app` — health at `GET /health`
+  (returns the live commit SHA via `RAILWAY_GIT_COMMIT_SHA` — always verify after a push,
+  auto-deploy has silently stalled before).
+- LINE Messaging webhook → `https://nookebapi-production.up.railway.app/webhook/line`.
+- Env vars are **per service** — the worker does NOT inherit from the API; set the full set on
+  BOTH (config throws in production if `APP_URL`/`WEB_URL` are localhost). Required (see
+  `.env.example`): `NODE_ENV=production`, `APP_URL`, `WEB_URL`, `LINE_CHANNEL_*`,
+  `LINE_LOGIN_CHANNEL_ID`, `LINE_LOGIN_CHANNEL_SECRET`, `SUPABASE_*`, `R2_*`, `REDIS_URL`
+  (`rediss://`), `JWT_SECRET`, plus quota/admin/limit vars.
+- `trustProxy: true` is set in `index.ts` — REQUIRED: Railway's ingress + the /api-proxy hop
+  make every request arrive from one socket; without it `request.ip` is shared and the per-IP
+  rate limiters (global 100/min, `POST /auth/line` 10/min + ban:5) count all users as one and
+  ban everyone after a re-login burst.
+
+### Vercel — Web (`nookeb-web`)
+- **`API_PROXY_TARGET=https://nookebapi-production.up.railway.app`** (no trailing slash) —
+  server-side var (NOT `NEXT_PUBLIC_*`), the destination of the `/api-proxy` rewrite. **If
+  unset it falls back to `http://localhost:3001`; Vercel then refuses to proxy to a private
+  host and every `/api-proxy/*` call 404s with `DNS_HOSTNAME_RESOLVED_PRIVATE` — which breaks
+  login ("เข้าสู่ระบบไม่สำเร็จ") and all dashboard API calls.** Changing it requires a redeploy.
+- `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID` — the LINE Login channel id baked into the authorize URL.
+- `NEXT_PUBLIC_API_URL` is NOT used anymore (web hardcodes `API_URL = '/api-proxy'`).
+- Verify the proxy end-to-end: `POST https://nookeb-web.vercel.app/api-proxy/auth/line` with a
+  dummy code should return `401 "LINE login failed"` (reaches the API) — a `404` means
+  `API_PROXY_TARGET` is unset/wrong.
+
+### LINE Developer Console
+- Messaging API channel: webhook URL = Railway `/webhook/line`, "Use webhook" ON, auto-reply/
+  greeting OFF. Env: `LINE_CHANNEL_ID` / `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`.
+- LINE Login channel: Callback URLs must include every web origin —
+  `https://nookeb-web.vercel.app/auth/callback` and the `*-nookeb.vercel.app/auth/callback`
+  preview domain. Env (on the API): `LINE_LOGIN_CHANNEL_ID` / `LINE_LOGIN_CHANNEL_SECRET`. The
+  `redirect_uri` the API sends to LINE's token endpoint must exactly match the one the browser
+  used to authorize (both derive from `window.location.origin + '/auth/callback'`).
+
+### Deploy order (critical-fix batches)
+Migrations that RPCs/columns depend on go BEFORE the API/worker deploy; deploy API BEFORE web
+(the web bundle authenticates only via the cookie + `/api-proxy`). See the migration headers
+and `supabase/backfills/` for specifics.
+
 ## Key Env Vars (see `.env.example`)
-- Core: `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`
+- Core (API): `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`
+- Web (Vercel, see `apps/web/.env.example`): `API_PROXY_TARGET` (server-side rewrite target =
+  Railway API origin, no trailing slash — login breaks if unset), `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID`
 - `DEFAULT_STORAGE_LIMIT` — free-tier quota in bytes (default 1 GB; raised via referral tiers)
 - `REFERRAL_BONUS_BYTES` — one-time bonus for redeeming a referral code (default 0.5 GB)
 - `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5)
