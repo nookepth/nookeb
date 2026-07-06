@@ -592,7 +592,7 @@ async function handleTextCommand(
     const active = await getActiveSession(app.supabase, user.id);
     if (!active) {
       // No session yet → open one in the requested mode and show the scan card.
-      await startSession(app.supabase, user.id, space.id, scanMode);
+      await startSession(app.supabase, user.id, space.id, scanMode, 'scan');
       await replyFlex(event, buildScanFlexMessage());
     } else if (scanPlain) {
       // Bare "สแกน" while already scanning → just acknowledge, keep current mode.
@@ -625,7 +625,7 @@ async function handleTextCommand(
       profile?.pictureUrl,
     );
     // Merge is personal-only (group/room returned above), so always the personal space.
-    await startSession(app.supabase, user.id, space.id, config.SCAN_DEFAULT_MODE);
+    await startSession(app.supabase, user.id, space.id, config.SCAN_DEFAULT_MODE, 'merge');
     await replyFlex(event, buildMergeFlexMessage({ kind: 'opened' }));
     return;
   }
@@ -783,6 +783,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         replyToken: event.replyToken ?? null,
         target: source.groupId ?? lineUserId,
         basePageCount,
+        kind: session.session_kind ?? 'merge',
       });
       return;
     }

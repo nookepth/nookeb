@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
-import type { BatchItem, LineSource, UploadBatchJob } from '@nookeb/shared';
+import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
-import { buildMergeFlexMessage, buildProgressFlexMessage } from './flex.service';
+import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
 import { pushMessage, replyMessage } from './line.service';
 
 /**
@@ -175,6 +175,8 @@ interface ScanReplyEntry {
   target: string;
   /** running total of pages in the session (pre-burst count + events so far) */
   count: number;
+  /** which feature owns the session — picks the scan vs merge per-page card */
+  kind: SessionKind;
 }
 
 const scanReplyQueues = new Map<string, ScanReplyEntry>();
@@ -186,7 +188,13 @@ const scanReplyQueues = new Map<string, ScanReplyEntry>();
  */
 export function enqueueScanPageReply(
   app: FastifyInstance,
-  p: { lineUserId: string; replyToken: string | null; target: string; basePageCount: number },
+  p: {
+    lineUserId: string;
+    replyToken: string | null;
+    target: string;
+    basePageCount: number;
+    kind: SessionKind;
+  },
 ): void {
   const existing = scanReplyQueues.get(p.lineUserId);
   if (existing) {
@@ -201,6 +209,7 @@ export function enqueueScanPageReply(
     replyToken: p.replyToken,
     target: p.target,
     count: p.basePageCount + 1,
+    kind: p.kind,
   });
 }
 
@@ -209,7 +218,10 @@ async function flushScanReply(app: FastifyInstance, lineUserId: string): Promise
   if (!entry) return;
   scanReplyQueues.delete(lineUserId);
 
-  const card = buildMergeFlexMessage({ kind: 'page', count: entry.count });
+  const card =
+    entry.kind === 'scan'
+      ? buildScanFlexMessage({ kind: 'page', count: entry.count })
+      : buildMergeFlexMessage({ kind: 'page', count: entry.count });
   try {
     if (entry.replyToken) await replyMessage(entry.replyToken, [card]);
     else await pushMessage(entry.target, [card]);

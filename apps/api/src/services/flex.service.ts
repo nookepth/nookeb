@@ -155,18 +155,26 @@ export function buildSummaryFlexMessage(params: {
   dashboardUrl: string;
   username: string | null;
   /**
-   * When set, render the "ระบบรวมรูป" (merge-to-PDF) completion variant instead
-   * of the upload summary: brand-red header titled "ระบบรวมรูป" and a single
-   * "หนูรวม N ไฟล์เป็น PDF ให้แล้วน้า" status line. Everything else (file list,
-   * timestamp, dashboard button) is shared with the upload card.
+   * When set, render the scan/merge-to-PDF completion variant instead of the
+   * upload summary: a title of "ระบบสแกน" (kind 'scan') or "ระบบรวมรูป" (kind
+   * 'merge') and a single "หนู{สแกน|รวม} N {หน้า|ไฟล์}เป็น PDF ให้แล้วน้า" status
+   * line. Everything else (file list, timestamp, dashboard button) is shared with
+   * the upload card.
    */
-  merge?: { count: number };
+  pdf?: { count: number; kind: 'scan' | 'merge' };
 }): FlexMessage {
-  const { success, failed, files, dashboardUrl, merge } = params;
+  const { success, failed, files, dashboardUrl, pdf } = params;
   const total = success + failed;
   const who = params.username ?? 'คุณ';
-  const title = merge
-    ? 'ระบบรวมรูป'
+  const pdfLine = pdf
+    ? pdf.kind === 'scan'
+      ? `หนูสแกน ${pdf.count} หน้าเป็น PDF ให้แล้วน้า`
+      : `หนูรวม ${pdf.count} ไฟล์เป็น PDF ให้แล้วน้า`
+    : '';
+  const title = pdf
+    ? pdf.kind === 'scan'
+      ? 'ระบบสแกน'
+      : 'ระบบรวมรูป'
     : failed === 0
       ? 'เก็บไฟล์แย้วน้า'
       : 'ทำเสร็จแล้วน้า แต่มีนิดนึงที่ไม่ผ่าน';
@@ -177,14 +185,14 @@ export function buildSummaryFlexMessage(params: {
     timeZone: 'Asia/Bangkok',
   });
 
-  const body: Record<string, unknown>[] = merge
-    ? [iconRow(LINE_GREEN, `หนูรวม ${merge.count} ไฟล์เป็น PDF ให้แล้วน้า`)]
+  const body: Record<string, unknown>[] = pdf
+    ? [iconRow(LINE_GREEN, pdfLine)]
     : [
         iconRow(LINE_GREEN, `หนูเก็บให้แล้วน้า พี่ ${who}`),
         { type: 'text', text: `ทั้งหมด ${total} ชิ้นเลยน้า`, size: 'sm', color: '#333333' },
       ];
-  if (!merge && success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} ชิ้นแย้ว`));
-  if (!merge && failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} ชิ้นที่ยังไม่ได้น้า`, ERROR_RED));
+  if (!pdf && success > 0) body.push(iconRow(LINE_GREEN, `เก็บได้ ${success} ชิ้นแย้ว`));
+  if (!pdf && failed > 0) body.push(iconRow(ERROR_RED, `มี ${failed} ชิ้นที่ยังไม่ได้น้า`, ERROR_RED));
 
   // Short list of stored file names (max 5) — uses the `files` param
   const named = files.slice(0, 5);
@@ -212,8 +220,8 @@ export function buildSummaryFlexMessage(params: {
       }
     : { type: 'text', text: `ไปดูล็อคเกอร์ได้เลยน้า: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
 
-  const altText = merge
-    ? `หนูรวม ${merge.count} ไฟล์เป็น PDF ให้แล้วน้า`
+  const altText = pdf
+    ? pdfLine
     : failed === 0
       ? `เก็บไฟล์แย้วน้า ${success} ชิ้น`
       : `ทำเสร็จแล้วน้า เก็บได้ ${success} ชิ้น มี ${failed} ชิ้นที่ยังไม่ได้`;
@@ -333,27 +341,82 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
 
 const SCAN_BLUE = '#1E88E5'; // scan-mode card header — distinct from the merge (red) card
 
+/** Which "ระบบสแกน" (scan-to-PDF) card to build. Mirrors {@link MergeCardVariant}. */
+export type ScanCardVariant =
+  | { kind: 'opened' }
+  | { kind: 'page'; count: number };
+
+/** Cancel button for the scan cards — sends "หนูเก็บยกเลิก" (prefixed for group safety). */
+function scanCancelButton(): Record<string, unknown> {
+  return {
+    type: 'button',
+    style: 'secondary',
+    height: 'sm',
+    action: { type: 'message', label: 'ยกเลิก ✖', text: 'หนูเก็บยกเลิก' },
+  };
+}
+
 /**
- * "ระบบสแกน" session-start card. Separate from {@link buildMergeFlexMessage}
+ * "ระบบสแกน" session cards. Separate from {@link buildMergeFlexMessage}
  * ("ระบบรวมรูป") so a scan command never shows the merge card. Blue header, same
- * kilo-bubble structure. The cancel button sends "หนูเก็บยกเลิก" (prefixed so it
- * still works if the button is ever surfaced in a group context).
+ * kilo-bubble structure. One builder, two variants: 'opened' (session start) and
+ * 'page' (per-page confirmation).
  */
-export function buildScanFlexMessage(): FlexMessage {
+export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened' }): FlexMessage {
+  const header = {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '16px',
+    contents: [{ type: 'text', text: 'ระบบสแกน', weight: 'bold', size: 'lg', color: '#FFFFFF' }],
+  };
+  const styles = { header: { backgroundColor: SCAN_BLUE }, body: { backgroundColor: '#FFFFFF' } };
+
+  if (variant.kind === 'page') {
+    const headline = `สแกนแล้ว ${variant.count} หน้าน้า`;
+    return {
+      type: 'flex',
+      altText: headline,
+      contents: {
+        type: 'bubble',
+        size: 'kilo',
+        header,
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          paddingAll: '16px',
+          contents: [
+            {
+              type: 'box',
+              layout: 'horizontal',
+              spacing: 'md',
+              alignItems: 'center',
+              contents: [
+                statusDot(LINE_GREEN),
+                { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
+              ],
+            },
+            { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
+          ],
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          paddingAll: '12px',
+          contents: [scanCancelButton()],
+        },
+        styles,
+      },
+    };
+  }
+
   return {
     type: 'flex',
     altText: 'เปิดโหมดสแกนเอกสารแล้วน้า',
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'ระบบสแกน', weight: 'bold', size: 'lg', color: '#FFFFFF' },
-        ],
-      },
+      header,
       body: {
         type: 'box',
         layout: 'vertical',
@@ -374,16 +437,9 @@ export function buildScanFlexMessage(): FlexMessage {
         type: 'box',
         layout: 'vertical',
         paddingAll: '12px',
-        contents: [
-          {
-            type: 'button',
-            style: 'secondary',
-            height: 'sm',
-            action: { type: 'message', label: 'ยกเลิก ✖', text: 'หนูเก็บยกเลิก' },
-          },
-        ],
+        contents: [scanCancelButton()],
       },
-      styles: { header: { backgroundColor: SCAN_BLUE }, body: { backgroundColor: '#FFFFFF' } },
+      styles,
     },
   };
 }

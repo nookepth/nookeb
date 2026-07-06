@@ -3,6 +3,9 @@ export type ScanStatus = 'collecting' | 'processing' | 'done' | 'cancelled';
 /** Color mode for the scan-enhance pipeline (migration 019). */
 export type ScanMode = 'bw' | 'color';
 
+/** Which feature opened the session — 'merge' (รวมรูป) or 'scan' (สแกน). Migration 020. */
+export type SessionKind = 'merge' | 'scan';
+
 export interface ScanSessionRecord {
   id: string;
   user_id: string;
@@ -12,6 +15,8 @@ export interface ScanSessionRecord {
   result_file_id: string | null;
   /** 'bw' = adaptive threshold, 'color' = normalize/sharpen (migration 019). */
   scan_mode: ScanMode;
+  /** Which feature opened the session — drives PDF name + card (migration 020). */
+  session_kind: SessionKind;
   created_at: string;
   expires_at: string;
 }

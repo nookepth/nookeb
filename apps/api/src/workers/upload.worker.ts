@@ -771,9 +771,12 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     }
   }
 
+  // Scan sessions name the PDF "สแกน_…"; merge sessions "รวมรูป_…" (migration 020).
+  const kind = session.session_kind ?? 'merge';
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
-  const name = `รวมรูป_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
+  const prefix = kind === 'scan' ? 'สแกน' : 'รวมรูป';
+  const name = `${prefix}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
 
   const fileId = randomUUID();
   const r2Key = buildFileKey(session.space_id, fileId, name);
@@ -836,7 +839,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   }
 
   // Best-effort — the PDF is already stored; a failed push must not rebuild it.
-  // Same Flex builder as the upload summary card, in its "merge" variant.
+  // Same Flex builder as the upload summary card, in its scan/merge PDF variant.
   try {
     await pushMessage(job.lineUserId, [
       buildSummaryFlexMessage({
@@ -845,7 +848,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
         files: [{ filename: name, url: `${config.WEB_URL}/dashboard` }],
         dashboardUrl: `${config.WEB_URL}/dashboard`,
         username: null,
-        merge: { count: pages.length },
+        pdf: { count: pages.length, kind },
       }),
     ]);
   } catch (err) {

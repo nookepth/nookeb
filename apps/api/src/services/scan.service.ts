@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ScanMode, ScanPageRecord, ScanSessionRecord } from '@nookeb/shared';
+import type { ScanMode, ScanPageRecord, ScanSessionRecord, SessionKind } from '@nookeb/shared';
 
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours, matches the schema default
 
@@ -27,6 +27,7 @@ export async function startSession(
   userId: string,
   spaceId: string,
   scanMode?: ScanMode,
+  kind: SessionKind = 'merge',
 ): Promise<ScanSessionRecord> {
   await supabase
     .from('scan_sessions')
@@ -43,6 +44,7 @@ export async function startSession(
       page_count: 0,
       // Omitted when not given so the DB default ('bw', migration 019) applies
       ...(scanMode ? { scan_mode: scanMode } : {}),
+      session_kind: kind, // 'scan' (สแกน) vs 'merge' (รวมรูป) — migration 020
       expires_at: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
     })
     .select('*')
