@@ -5,6 +5,7 @@ import { getProfile, replyMessage, type LineMessage } from '../../services/line.
 import {
   buildInviteFlexMessage,
   buildMergeFlexMessage,
+  buildScanFlexMessage,
   type FlexMessage,
 } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
@@ -566,12 +567,16 @@ async function handleTextCommand(
 
   // Scan-to-PDF session (scan-enhance pipeline, migration 019). All trigger words
   // use "สแกน" so none collide with the separate "รวมรูป" merge feature (Feature A
-  // below) once the "หนูเก็บ" prefix is stripped. "สแกน"/"scan"/"/scan" use BW;
-  // "สแกนสี"/"สแกนขาวดำ" start in — or switch an active session to — that mode.
-  // Personal-chat only (a shared group space would collide scan sessions).
+  // below) once the "หนูเก็บ" prefix is stripped. Three distinct triggers: bare
+  // "สแกน"/"scan"/"/scan" starts BW (and just says "already scanning" if a session
+  // is open); "สแกนขาวดำ"/"สแกนสี" start in — or switch an active session to — that
+  // mode. Starting a session always replies with the "ระบบสแกน" card (buildScanFlex-
+  // Message) — NOT the merge card. Personal-chat only (a shared group space would
+  // collide scan sessions).
   const scanColor = isCmd(text, 'สแกนสี');
-  const scanBw = isCmd(text, 'สแกนขาวดำ', 'สแกน', 'scan', '/scan');
-  if (scanColor || scanBw) {
+  const scanBw = isCmd(text, 'สแกนขาวดำ');
+  const scanPlain = isCmd(text, 'สแกน', 'scan', '/scan');
+  if (scanColor || scanBw || scanPlain) {
     if (source.type === 'group' || source.type === 'room') {
       await reply(event, 'ระบบสแกนใช้ได้เฉพาะแชทส่วนตัวน้า');
       return;
@@ -585,20 +590,27 @@ async function handleTextCommand(
       profile?.pictureUrl,
     );
     const active = await getActiveSession(app.supabase, user.id);
-    const modeLabel = scanMode === 'bw' ? 'ขาวดำ 📄' : 'สี 🎨';
-    if (active) {
-      await setSessionMode(app.supabase, active.id, scanMode);
-      await reply(event, `เปลี่ยนเป็นโหมด${modeLabel} แล้วน้า ส่งรูปต่อได้เลย`);
-    } else {
+    if (!active) {
+      // No session yet → open one in the requested mode and show the scan card.
       await startSession(app.supabase, user.id, space.id, scanMode);
-      await replyFlex(event, buildMergeFlexMessage({ kind: 'opened' }));
+      await replyFlex(event, buildScanFlexMessage());
+    } else if (scanPlain) {
+      // Bare "สแกน" while already scanning → just acknowledge, keep current mode.
+      await reply(event, 'กำลังสแกนอยู่แล้วน้า');
+    } else if (scanColor) {
+      await setSessionMode(app.supabase, active.id, 'color');
+      await reply(event, 'เปลี่ยนเป็นโหมดสีแล้วน้า 🌈');
+    } else {
+      await setSessionMode(app.supabase, active.id, 'bw');
+      await reply(event, 'เปลี่ยนเป็นโหมดขาวดำแล้วน้า 🖤');
     }
     return;
   }
 
-  // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell;
-  // "สแกน"/"scan" kept as legacy aliases — the old rich menu still sends them)
-  if (isCmd(text, 'รวมรูป', 'สแกน', 'scan', '/scan', 'รวมรูปเป็น pdf')) {
+  // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell).
+  // NOTE: "สแกน"/"scan"/"/scan" are deliberately NOT triggers here — they belong to
+  // the scan-session feature (Feature B above), which handles them first anyway.
+  if (isCmd(text, 'รวมรูป', 'รวมรูปเป็น pdf')) {
     // Merge-to-PDF is a personal-chat feature only — group scan sessions would
     // collide across members sharing one group space.
     if (source.type === 'group' || source.type === 'room') {

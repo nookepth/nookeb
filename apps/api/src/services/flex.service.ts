@@ -331,6 +331,63 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
   };
 }
 
+const SCAN_BLUE = '#1E88E5'; // scan-mode card header — distinct from the merge (red) card
+
+/**
+ * "ระบบสแกน" session-start card. Separate from {@link buildMergeFlexMessage}
+ * ("ระบบรวมรูป") so a scan command never shows the merge card. Blue header, same
+ * kilo-bubble structure. The cancel button sends "หนูเก็บยกเลิก" (prefixed so it
+ * still works if the button is ever surfaced in a group context).
+ */
+export function buildScanFlexMessage(): FlexMessage {
+  return {
+    type: 'flex',
+    altText: 'เปิดโหมดสแกนเอกสารแล้วน้า',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'ระบบสแกน', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'เปิดโหมดสแกนเอกสารแล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
+          {
+            type: 'text',
+            text: 'ส่งรูปเอกสารมาได้เลย หนูจะสแกนและแปลงเป็น PDF ให้น้า ครบแล้วพิมพ์ "เสร็จ"',
+            size: 'sm',
+            color: '#333333',
+            wrap: true,
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: { type: 'message', label: 'ยกเลิก ✖', text: 'หนูเก็บยกเลิก' },
+          },
+        ],
+      },
+      styles: { header: { backgroundColor: SCAN_BLUE }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
 /** Teal-on-gray progress bar (referral tier progress). Percent is clamped 0–100. */
 function progressBar(percent: number): Record<string, unknown> {
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));
