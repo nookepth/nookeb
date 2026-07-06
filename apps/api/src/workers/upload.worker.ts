@@ -66,6 +66,7 @@ import {
   setSessionResultFile,
   setSessionStatus,
 } from '../services/scan.service';
+import { processScanPage, plainNormalize, MSG_PDF_FAILED } from '../services/scan-enhance.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -620,8 +621,11 @@ async function processOcrImage(job: OcrImageJob): Promise<void> {
 }
 
 /**
- * add_scan_page job: download the page from LINE → normalize to JPEG →
- * store in R2 scan-temp → insert scan_page row.
+ * add_scan_page job: download the page from LINE → scan-enhance pipeline
+ * (edge detect → perspective warp → bw/color enhancement; flag-gated, never
+ * throws, falls back to the plain normalize) → store in R2 scan-temp →
+ * insert scan_page row. Quality warnings are pushed best-effort AFTER the
+ * page is stored, so a push failure can never retry-and-duplicate the page.
  */
 async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
@@ -631,24 +635,50 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   if (await pageExists(supabase, session.id, job.lineMessageId)) return;
 
   const content = await getMessageContent(job.lineMessageId);
-  const jpeg = await sharp(await readAll(content.stream))
-    .rotate()
-    .resize({ width: 1600, withoutEnlargement: true })
-    .jpeg({ quality: 82 })
-    .toBuffer();
+  const original = await readAll(content.stream);
+
+  let jpeg: Buffer;
+  let warnings: string[] = [];
+  if (config.SCAN_ENHANCE_ENABLED) {
+    // scan_mode falls back to the config default if migration 019 isn't applied yet
+    const mode = session.scan_mode ?? config.SCAN_DEFAULT_MODE;
+    const result = await processScanPage(
+      original,
+      mode,
+      `session=${session.id} msg=${job.lineMessageId}`,
+    );
+    jpeg = result.jpeg;
+    warnings = result.warnings;
+  } else {
+    jpeg = await plainNormalize(original);
+  }
 
   const pageId = randomUUID();
   const key = buildScanPageKey(session.space_id, session.id, pageId);
   await uploadStream(r2, key, Readable.from(jpeg), 'image/jpeg');
 
   await insertPage(supabase, session.id, key, job.lineMessageId);
+
+  // Best-effort retake hints (dark / blurry / edges not found) — the page IS
+  // stored either way; a failed push must never fail (and retry) the job.
+  if (warnings.length > 0 && job.lineUserId) {
+    try {
+      await pushMessage(job.lineUserId, [{ type: 'text', text: warnings.join('\n') }]);
+    } catch (err) {
+      console.error(`[upload.worker] scan warning push failed (${session.id}):`, err);
+    }
+  }
 }
 
 /**
  * finalize_scan job: merge all scan pages into one PDF → store as a file →
  * confirm to the user. Temp page objects are cleaned up afterwards.
  */
-async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
+// A4 in PDF points (210×297 mm at 72 dpi)
+const A4_WIDTH_PT = 595.28;
+const A4_HEIGHT_PT = 841.89;
+
+async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
   if (!session || !session.space_id) return;
   // Retry-safe: the webhook flips the session to 'processing' before enqueuing.
@@ -671,17 +701,41 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     return;
   }
 
-  const pdf = await PDFDocument.create();
-  for (const page of pages) {
-    const jpeg = await sharp(await readAll(await getObjectStream(r2, page.r2_key)))
-      .rotate()
-      .jpeg({ quality: 82 })
-      .toBuffer();
-    const img = await pdf.embedJpg(jpeg);
-    const pdfPage = pdf.addPage([img.width, img.height]);
-    pdfPage.drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+  // Assemble the PDF: one A4 page per scan page (pages are already enhanced +
+  // normalized JPEGs from add_scan_page), image fitted to the page with aspect
+  // ratio preserved, centered. (SCAN_OCR_ENABLED text layer: reserved, not yet
+  // implemented.) Failure here is retried by BullMQ like any other throw; on
+  // the LAST attempt we cancel the session and tell the user instead of
+  // crashing silently — the retake message asks them to run รวมรูป again.
+  let pdfBytes: Uint8Array;
+  try {
+    const pdf = await PDFDocument.create();
+    for (const page of pages) {
+      const jpeg = await readAll(await getObjectStream(r2, page.r2_key));
+      const img = await pdf.embedJpg(jpeg);
+      const scale = Math.min(A4_WIDTH_PT / img.width, A4_HEIGHT_PT / img.height);
+      const w = img.width * scale;
+      const h = img.height * scale;
+      const pdfPage = pdf.addPage([A4_WIDTH_PT, A4_HEIGHT_PT]);
+      pdfPage.drawImage(img, {
+        x: (A4_WIDTH_PT - w) / 2,
+        y: (A4_HEIGHT_PT - h) / 2,
+        width: w,
+        height: h,
+      });
+    }
+    pdfBytes = await pdf.save();
+  } catch (err) {
+    console.error(`[upload.worker] finalize_scan PDF assembly failed (${session.id}):`, err);
+    if (!isLastAttempt) throw err; // let BullMQ retry transient R2 read failures
+    await setSessionStatus(supabase, session.id, 'cancelled');
+    try {
+      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
+    } catch (pushErr) {
+      console.error(`[upload.worker] finalize_scan failure push failed (${session.id}):`, pushErr);
+    }
+    return;
   }
-  const pdfBytes = await pdf.save();
 
   // Team-bound group scans charge the TEAM quota (like normal group uploads),
   // not the uploader's personal quota. The scan session's space is the group's
@@ -856,7 +910,8 @@ export function createUploadWorker(): Worker<FileJob> {
           await processAddScanPage(job.data);
           break;
         case 'finalize_scan':
-          await processFinalizeScan(job.data);
+          // attemptsMade counts finished attempts; this run is attemptsMade + 1
+          await processFinalizeScan(job.data, job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
           break;
         case 'purge_deleted':
           await processPurgeDeleted(job.data);

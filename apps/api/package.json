@@ -10,7 +10,7 @@
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test src/services/referral.service.test.ts",
+    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts",
     "setup:rich-menu": "tsx --env-file=../../.env scripts/setup-rich-menu-large.ts"
   },
   "dependencies": {
@@ -21,6 +21,7 @@
     "@fastify/rate-limit": "^9.1.0",
     "@nookeb/shared": "*",
     "@supabase/supabase-js": "^2.44.0",
+    "@techstark/opencv-js": "^5.0.0-release.1",
     "bullmq": "^5.8.0",
     "fastify": "^4.28.0",
     "fastify-plugin": "^4.5.1",

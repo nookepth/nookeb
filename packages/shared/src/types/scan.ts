@@ -1,5 +1,8 @@
 export type ScanStatus = 'collecting' | 'processing' | 'done' | 'cancelled';
 
+/** Color mode for the scan-enhance pipeline (migration 019). */
+export type ScanMode = 'bw' | 'color';
+
 export interface ScanSessionRecord {
   id: string;
   user_id: string;
@@ -7,6 +10,8 @@ export interface ScanSessionRecord {
   status: ScanStatus;
   page_count: number;
   result_file_id: string | null;
+  /** 'bw' = adaptive threshold, 'color' = normalize/sharpen (migration 019). */
+  scan_mode: ScanMode;
   created_at: string;
   expires_at: string;
 }

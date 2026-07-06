@@ -143,24 +143,24 @@ function buildAreas(dashboardUri: string): RichMenuArea[] {
     },
     {
       bounds: { x: x1, y: y0, width: CENTER_W, height: ROW_H },
-      action: { type: 'message', text: 'แนะนำตัว', label: 'แนะนำตัว' },
+      action: { type: 'message', text: 'หนูเก็บแนะนำตัว', label: 'แนะนำตัว' },
     },
     {
       bounds: { x: x2, y: y0, width: COL_W, height: ROW_H },
-      action: { type: 'message', text: 'รวมรูปเป็น PDF', label: 'รวมรูปเป็น PDF' },
+      action: { type: 'message', text: 'หนูเก็บรวมรูป', label: 'รวมรูปเป็น PDF' },
     },
     // Row 1
     {
       bounds: { x: x0, y: y1, width: COL_W, height: ROW_H },
-      action: { type: 'message', text: 'วิธีใช้งาน', label: 'วิธีใช้งาน' },
+      action: { type: 'message', text: 'หนูเก็บวิธีใช้', label: 'วิธีใช้งาน' },
     },
     {
       bounds: { x: x1, y: y1, width: CENTER_W, height: ROW_H },
-      action: { type: 'message', text: 'สแกนรูปเป็น PDF', label: 'สแกนรูปเป็น PDF' },
+      action: { type: 'message', text: 'หนูเก็บสแกน', label: 'สแกนรูปเป็น PDF' },
     },
     {
       bounds: { x: x2, y: y1, width: COL_W, height: ROW_H },
-      action: { type: 'message', text: 'ช่วยเหลือ', label: 'ช่วยเหลือ' },
+      action: { type: 'message', text: 'หนูเก็บช่วยเหลือ', label: 'ช่วยเหลือ' },
     },
   ];
 }

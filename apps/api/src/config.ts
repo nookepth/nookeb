@@ -67,6 +67,22 @@ const envSchema = z.object({
   VIRUSTOTAL_API_KEY: z.string().optional(),
   VIRUSTOTAL_MAX_SCAN_SIZE_BYTES: z.coerce.number().int().positive().default(33_554_432),
 
+  // Scan-enhance pipeline (edge detection + perspective correction + color
+  // enhancement for รวมรูป/scan pages). Toggle via Railway env, no code change.
+  // Same string→boolean pattern as ENABLE_VIRUS_SCAN, but default ON: only the
+  // exact string 'false' disables it.
+  SCAN_ENHANCE_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v !== 'false'),
+  // Searchable-text OCR layer in the merged PDF — reserved, not yet implemented.
+  SCAN_OCR_ENABLED: z
+    .string()
+    .optional()
+    .transform((v) => v === 'true'),
+  // Default color mode for new scan sessions ('bw' | 'color').
+  SCAN_DEFAULT_MODE: z.enum(['bw', 'color']).default('bw'),
+
   // Storage warning thresholds (% of the uploader's storage_limit)
   STORAGE_WARN_THRESHOLD_LOW: z.coerce.number().int().min(1).max(100).default(80),
   STORAGE_WARN_THRESHOLD_HIGH: z.coerce.number().int().min(1).max(100).default(95),

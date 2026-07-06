@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { ScanPageRecord, ScanSessionRecord } from '@nookeb/shared';
+import type { ScanMode, ScanPageRecord, ScanSessionRecord } from '@nookeb/shared';
 
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours, matches the schema default
 
@@ -26,6 +26,7 @@ export async function startSession(
   supabase: SupabaseClient,
   userId: string,
   spaceId: string,
+  scanMode?: ScanMode,
 ): Promise<ScanSessionRecord> {
   await supabase
     .from('scan_sessions')
@@ -40,12 +41,27 @@ export async function startSession(
       space_id: spaceId,
       status: 'collecting',
       page_count: 0,
+      // Omitted when not given so the DB default ('bw', migration 019) applies
+      ...(scanMode ? { scan_mode: scanMode } : {}),
       expires_at: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
     })
     .select('*')
     .single();
   if (error) throw error;
   return data as ScanSessionRecord;
+}
+
+/** Switch the color mode of an in-flight session ("สแกนสี" / "สแกนขาวดำ"). */
+export async function setSessionMode(
+  supabase: SupabaseClient,
+  sessionId: string,
+  scanMode: ScanMode,
+): Promise<void> {
+  const { error } = await supabase
+    .from('scan_sessions')
+    .update({ scan_mode: scanMode })
+    .eq('id', sessionId);
+  if (error) throw error;
 }
 
 export async function cancelSession(supabase: SupabaseClient, sessionId: string): Promise<void> {

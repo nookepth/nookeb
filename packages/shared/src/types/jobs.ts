@@ -15,11 +15,17 @@ export interface OcrImageJob {
   fileId: string;
 }
 
-/** Job: download a scan page from LINE → store in R2 scan-temp → insert scan_page */
+/** Job: download a scan page from LINE → enhance (scan pipeline) → store in R2 scan-temp → insert scan_page */
 export interface AddScanPageJob {
   type: 'add_scan_page';
   sessionId: string;
   lineMessageId: string;
+  /**
+   * Push target for quality warnings (too dark / blurry / no edges). Optional
+   * for back-compat with jobs enqueued before the scan-enhance release —
+   * warnings are simply skipped when absent.
+   */
+  lineUserId?: string;
 }
 
 /** Job: merge all scan_pages into a single PDF → store as a file → confirm */
