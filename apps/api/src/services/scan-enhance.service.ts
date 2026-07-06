@@ -10,11 +10,12 @@ import { extractTextDetailed, type OcrPageResult } from './ocr.service';
  * CamScanner-style scan-page pipeline (worker-only — see upload.worker.ts):
  *   Stage 1  edge/contour detection  (OpenCV: Canny → findContours → approxPolyDP)
  *   Stage 2  perspective transform   (OpenCV: getPerspectiveTransform → warpPerspective)
- *   Stage 3  color enhancement       (sharp: 'bw' threshold or 'color' normalize/sharpen)
+ *   Stage 3  illumination flattening (flat-field divide + tone curve, JS + sharp)
  *
  * OpenCV is the WASM build (@techstark/opencv-js) — no native compile, so it
  * installs cleanly on Railway nixpacks and the Alpine Dockerfile. Its scope is
- * kept minimal (detection + warp + blur metric); all encoding/enhancement is sharp.
+ * kept minimal (detection + warp + blur metric); all encoding/enhancement is
+ * plain JS over raw buffers plus sharp.
  *
  * processScanPage NEVER throws: any stage failure degrades to the plain
  * normalized image (the pre-feature behavior), and detection failure falls back
@@ -216,29 +217,177 @@ function assessQuality(cv: CV, rgba: InstanceType<CV['Mat']>): { brightness: num
   }
 }
 
-/**
- * Stage 3, mode 'bw': grayscale → normalize (CLAHE-equivalent contrast stretch)
- * → sharpen → global threshold. Approximates adaptive thresholding with sharp
- * (per spec: OpenCV scope stays minimal).
- */
-function enhanceBw(pipeline: Sharp): Sharp {
-  return pipeline.grayscale().normalise({ lower: 2, upper: 98 }).sharpen({ sigma: 1 }).threshold(165);
+// ---------------------------------------------------------------------------
+// Stage 3: illumination flattening (flat-field correction)
+//
+// Model: photo = reflectance × illumination. The illumination (paper shade,
+// lighting gradients, shadows) is low-frequency, so it's estimated on a small
+// grayscale map with a morphological CLOSE (max-then-min erases dark ink,
+// leaving just paper + lighting) plus blur, then the photo is DIVIDED by it:
+// paper normalizes to white everywhere — shadows cancel out — while ink keeps
+// its local contrast. A tone LUT then sets the white/black points per mode.
+//
+// This replaced a global threshold(165), which did the opposite on real phone
+// photos: shadowed paper below the cutoff flipped to solid black and faint ink
+// above it (thermal receipts) was erased to blank white.
+// ---------------------------------------------------------------------------
+
+// Illumination is low-frequency — estimate it on a small map (fast, and the
+// downscale itself already suppresses text strokes).
+const BG_MAP_WIDTH = 256;
+// CLOSE radius on the map: erases dark features up to ~2r map-px wide
+// (≈ 60 px at full resolution — text, lines, small logos).
+const BG_CLOSE_RADIUS = 5;
+// Two box-blur passes ≈ Gaussian; smooths the closing's plateaus.
+const BG_BLUR_RADIUS = 3;
+
+interface ToneProfile {
+  /** Cap on the divide gain (255/background). Limits how hard large dark
+   *  regions (photos on the page) get pushed toward white. */
+  maxGain: number;
+  /** Output channels: 1 = grayscale document look, 3 = color kept. */
+  channels: 1 | 3;
+  lut: Uint8Array;
+}
+
+/** Levels-style tone curve: [black..white] → [0..255] with gamma on top. */
+function buildToneLut(black: number, white: number, gamma: number): Uint8Array {
+  const lut = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) {
+    const t = Math.min(1, Math.max(0, (i - black) / (white - black)));
+    lut[i] = Math.round(255 * Math.pow(t, gamma));
+  }
+  return lut;
+}
+
+const TONE: Record<ScanMode, ToneProfile> = {
+  // Aggressive cleanup: crisp white paper, dark ink, grayscale output.
+  bw: { maxGain: 4, channels: 1, lut: buildToneLut(30, 236, 1.5) },
+  // Conservative: shadows removed but colors (stamps, highlights, photos)
+  // survive — low gain cap and a near-linear curve.
+  color: { maxGain: 2.2, channels: 3, lut: buildToneLut(10, 242, 1.1) },
+};
+
+/** Separable running max/min filter (radius r) over a small gray map. */
+function rankFilter(src: Uint8Array, w: number, h: number, r: number, isMax: boolean): Uint8Array {
+  const pick = isMax ? Math.max : Math.min;
+  const tmp = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      let v = src[row + x]!;
+      for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) v = pick(v, src[row + k]!);
+      tmp[row + x] = v;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = tmp[y * w + x]!;
+      for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) v = pick(v, tmp[k * w + x]!);
+      out[y * w + x] = v;
+    }
+  }
+  return out;
+}
+
+/** Two-pass box blur (radius r) over a small gray map. */
+function boxBlur(src: Uint8Array, w: number, h: number, r: number): Uint8Array {
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      let n = 0;
+      for (let k = Math.max(0, x - r); k <= Math.min(w - 1, x + r); k++) {
+        s += src[y * w + k]!;
+        n++;
+      }
+      tmp[y * w + x] = s / n;
+    }
+  }
+  const out = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0;
+      let n = 0;
+      for (let k = Math.max(0, y - r); k <= Math.min(h - 1, y + r); k++) {
+        s += tmp[k * w + x]!;
+        n++;
+      }
+      out[y * w + x] = Math.round(s / n);
+    }
+  }
+  return out;
+}
+
+/** Small grayscale illumination map of a full-res RGBA page (close + blur). */
+async function estimateIllumination(
+  rgba: Buffer,
+  width: number,
+  height: number,
+): Promise<{ map: Uint8Array; w: number; h: number }> {
+  const { data, info } = await sharp(rgba, { raw: { width, height, channels: 4 } })
+    .grayscale()
+    .resize({ width: Math.min(BG_MAP_WIDTH, width) })
+    .raw()
+    .toBuffer({ resolveWithObject: true });
+  // grayscale() keeps the alpha band on raw output — take channel 0
+  const ch = info.channels;
+  const w = info.width;
+  const h = info.height;
+  let map: Uint8Array = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) map[i] = data[i * ch]!;
+  map = rankFilter(map, w, h, BG_CLOSE_RADIUS, true); // dilate: dark ink vanishes
+  map = rankFilter(map, w, h, BG_CLOSE_RADIUS, false); // erode: restore extents
+  map = boxBlur(map, w, h, BG_BLUR_RADIUS);
+  map = boxBlur(map, w, h, BG_BLUR_RADIUS);
+  return { map, w, h };
 }
 
 /**
- * Stage 3, mode 'color': contrast normalize + sharpen + gray-world white balance
- * (channel gains toward equal means), for documents with color/images.
+ * Divide the page by its illumination map (bilinearly upsampled) and apply the
+ * mode's tone curve. Returns raw pixels ready for sharp: 1 channel for 'bw',
+ * 3 for 'color'.
  */
-async function enhanceColor(pipeline: Sharp): Promise<Sharp> {
-  const stats = await pipeline.clone().stats();
-  const [r, g, b] = stats.channels;
-  const grayMean = ((r?.mean ?? 128) + (g?.mean ?? 128) + (b?.mean ?? 128)) / 3;
-  const gain = (mean: number | undefined): number =>
-    Math.min(1.4, Math.max(0.7, grayMean / Math.max(1, mean ?? grayMean)));
-  return pipeline
-    .linear([gain(r?.mean), gain(g?.mean), gain(b?.mean)], [0, 0, 0])
-    .normalise({ lower: 1, upper: 99 })
-    .sharpen({ sigma: 0.8 });
+async function flattenIllumination(
+  page: { data: Buffer; width: number; height: number },
+  mode: ScanMode,
+): Promise<{ data: Buffer; channels: 1 | 3 }> {
+  const { data: rgba, width, height } = page;
+  const { map, w: bw, h: bh } = await estimateIllumination(rgba, width, height);
+  const { maxGain, lut, channels } = TONE[mode];
+  const out = Buffer.alloc(width * height * channels);
+  const sx = bw / width;
+  const sy = bh / height;
+  for (let y = 0; y < height; y++) {
+    const fy = Math.max(0, Math.min(bh - 1, (y + 0.5) * sy - 0.5));
+    const y0 = Math.floor(fy);
+    const y1 = Math.min(y0 + 1, bh - 1);
+    const wy = fy - y0;
+    for (let x = 0; x < width; x++) {
+      const fx = Math.max(0, Math.min(bw - 1, (x + 0.5) * sx - 0.5));
+      const x0 = Math.floor(fx);
+      const x1 = Math.min(x0 + 1, bw - 1);
+      const wx = fx - x0;
+      const bg =
+        map[y0 * bw + x0]! * (1 - wx) * (1 - wy) +
+        map[y0 * bw + x1]! * wx * (1 - wy) +
+        map[y1 * bw + x0]! * (1 - wx) * wy +
+        map[y1 * bw + x1]! * wx * wy;
+      const gain = Math.min(maxGain, 255 / Math.max(1, bg));
+      const p = (y * width + x) * 4;
+      if (channels === 1) {
+        const g = 0.299 * rgba[p]! + 0.587 * rgba[p + 1]! + 0.114 * rgba[p + 2]!;
+        out[y * width + x] = lut[Math.min(255, Math.round(g * gain))]!;
+      } else {
+        const q = (y * width + x) * 3;
+        out[q] = lut[Math.min(255, Math.round(rgba[p]! * gain))]!;
+        out[q + 1] = lut[Math.min(255, Math.round(rgba[p + 1]! * gain))]!;
+        out[q + 2] = lut[Math.min(255, Math.round(rgba[p + 2]! * gain))]!;
+      }
+    }
+  }
+  return { data: out, channels };
 }
 
 /** The pre-feature behavior: EXIF-rotate + bound width + JPEG. Used as the safety net. */
@@ -311,12 +460,18 @@ export async function processScanPage(
       rgba.delete();
     }
 
-    // Stage 3: enhancement (sharp only)
-    let pipeline = sharp(outRaw.data, {
-      raw: { width: outRaw.width, height: outRaw.height, channels: 4 },
+    // Stage 3: flat-field illumination correction + tone curve, then sharpen.
+    // 'bw' outputs a grayscale document look; 'color' keeps colors with a
+    // gentler curve and a mild saturation boost.
+    const flat = await flattenIllumination(outRaw, mode);
+    let pipeline: Sharp = sharp(flat.data, {
+      raw: { width: outRaw.width, height: outRaw.height, channels: flat.channels },
     });
-    pipeline = mode === 'bw' ? enhanceBw(pipeline) : await enhanceColor(pipeline);
-    const jpeg = await pipeline.jpeg({ quality: JPEG_QUALITY }).toBuffer();
+    pipeline =
+      mode === 'bw'
+        ? pipeline.sharpen({ sigma: 1 })
+        : pipeline.modulate({ saturation: 1.12 }).sharpen({ sigma: 0.8 });
+    const jpeg = await pipeline.jpeg({ quality: JPEG_QUALITY, mozjpeg: true }).toBuffer();
 
     return { jpeg, edgeDetection, warnings };
   } catch (err) {

@@ -178,6 +178,110 @@ test('Test 7 — low-contrast page: adaptive-threshold second pass detects it', 
   assert.ok(Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 840 / 660) < 0.2);
 });
 
+/**
+ * The page from straightOnSvg with a strong diagonal shadow across the paper —
+ * the classic real-phone-photo condition. The old global threshold(165) turned
+ * the shadowed part of the WHITE paper solid black.
+ */
+function shadowedDocSvg(): Buffer {
+  const lines = Array.from(
+    { length: 14 },
+    (_, i) => `<rect x="260" y="${190 + i * 42}" width="${660 - (i % 3) * 110}" height="14" fill="#1c1c1c"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <defs><linearGradient id="shadow" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#000000" stop-opacity="0"/>
+        <stop offset="0.55" stop-color="#000000" stop-opacity="0.2"/>
+        <stop offset="1" stop-color="#000000" stop-opacity="0.6"/>
+      </linearGradient></defs>
+      <rect width="1200" height="900" fill="#4a4038"/>
+      <rect x="150" y="100" width="900" height="700" fill="#fdfdfb"/>
+      ${lines}
+      <rect width="1200" height="900" fill="url(#shadow)"/>
+    </svg>`,
+  );
+}
+
+/** Faint thermal-receipt print: light-gray ink the old threshold(165) ERASED. */
+function faintReceiptSvg(): Buffer {
+  const lines = Array.from(
+    { length: 16 },
+    (_, i) => `<rect x="120" y="${80 + i * 40}" width="${420 - (i % 4) * 60}" height="12" fill="#b4b4b0"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="700" height="800" xmlns="http://www.w3.org/2000/svg">
+      <rect width="700" height="800" fill="#3a352f"/>
+      <rect x="60" y="30" width="580" height="740" fill="#f4f2ec"/>
+      ${lines}
+    </svg>`,
+  );
+}
+
+test('Test 11 — shadowed photo (bw): paper stays white, shadow removed, text kept', async () => {
+  const result = await processScanPage(await toJpeg(shadowedDocSvg()), 'bw', 'test=shadow-bw');
+  const { data, info } = await sharp(result.jpeg).grayscale().raw().toBuffer({ resolveWithObject: true });
+  const n = info.width * info.height;
+  let black = 0;
+  let white = 0;
+  for (let i = 0; i < n; i++) {
+    const v = data[i]!;
+    if (v < 32) black++;
+    else if (v > 224) white++;
+  }
+  // Before the flat-field fix the shadowed half of the page was solid black
+  // (black ≈ 40–55%). Now black is text only and the paper is white.
+  assert.ok(black / n < 0.2, `expected only text to be dark, got ${((100 * black) / n).toFixed(1)}% black`);
+  assert.ok(white / n > 0.6, `expected white paper to dominate, got ${((100 * white) / n).toFixed(1)}% white`);
+  assert.ok(black / n > 0.02, 'expected the text itself to survive as dark pixels');
+
+  // The deepest-shadow region (bottom-right quadrant) must be clean white
+  // paper + text — not a black blob.
+  let brBlack = 0;
+  let brCount = 0;
+  for (let y = Math.floor(info.height * 0.55); y < info.height * 0.95; y++) {
+    for (let x = Math.floor(info.width * 0.55); x < info.width * 0.95; x++) {
+      brCount++;
+      if (data[y * info.width + x]! < 32) brBlack++;
+    }
+  }
+  assert.ok(
+    brBlack / brCount < 0.25,
+    `shadowed corner should be mostly white paper, got ${((100 * brBlack) / brCount).toFixed(1)}% black`,
+  );
+});
+
+test('Test 12 — shadowed photo (color): shadow removed without blackening', async () => {
+  const result = await processScanPage(await toJpeg(shadowedDocSvg()), 'color', 'test=shadow-color');
+  const { data, info } = await sharp(result.jpeg).grayscale().raw().toBuffer({ resolveWithObject: true });
+  const n = info.width * info.height;
+  let black = 0;
+  let bright = 0;
+  for (let i = 0; i < n; i++) {
+    const v = data[i]!;
+    if (v < 32) black++;
+    else if (v > 200) bright++;
+  }
+  assert.ok(black / n < 0.2, `expected only text to be dark, got ${((100 * black) / n).toFixed(1)}% black`);
+  assert.ok(bright / n > 0.6, `expected bright paper to dominate, got ${((100 * bright) / n).toFixed(1)}% bright`);
+});
+
+test('Test 13 — faint thermal-receipt ink survives bw mode (old threshold erased it)', async () => {
+  const result = await processScanPage(await toJpeg(faintReceiptSvg()), 'bw', 'test=faint-bw');
+  const { data, info } = await sharp(result.jpeg).grayscale().raw().toBuffer({ resolveWithObject: true });
+  const n = info.width * info.height;
+  let inkish = 0; // meaningfully darker than paper
+  let white = 0;
+  for (let i = 0; i < n; i++) {
+    const v = data[i]!;
+    if (v < 200) inkish++;
+    if (v > 224) white++;
+  }
+  // The 16 text lines cover a few % of the page; threshold(165) left <0.5%.
+  assert.ok(inkish / n > 0.02, `expected faint text to remain visible, got ${((100 * inkish) / n).toFixed(2)}%`);
+  assert.ok(white / n > 0.5, `expected white paper, got ${((100 * white) / n).toFixed(1)}% white`);
+});
+
 test('Test 8 — OCR extracts Thai text (tesseract, tha+eng)', async () => {
   // Rendered fixture: large printed Thai on white. Skip (not fail) if the host
   // has no Thai font for SVG rendering — then the fixture would be blank/tofu.
