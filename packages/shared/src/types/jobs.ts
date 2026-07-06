@@ -3,20 +3,6 @@ import type { LineSource } from './file';
 /** BullMQ queue names */
 export const FILE_QUEUE = 'nookeb-file-processing';
 
-/** Job: download from LINE CDN → upload to R2 → update DB → push confirm */
-export interface UploadFileJob {
-  type: 'upload_file';
-  lineMessageId: string;
-  lineUserId: string;
-  lineSource: LineSource;
-  lineGroupId: string | null;
-  /** file name from LINE (file messages only — images get a generated name) */
-  originalName: string;
-  /** MIME hint from the event; worker trusts the CDN Content-Type over this */
-  mimeType: string | null;
-  replyToken: string | null;
-}
-
 /** Job: download image from R2 → sharp resize → upload thumbnail → update DB */
 export interface GenerateThumbnailJob {
   type: 'generate_thumbnail';
@@ -80,7 +66,6 @@ export interface UploadBatchJob {
 }
 
 export type FileJob =
-  | UploadFileJob
   | UploadBatchJob
   | GenerateThumbnailJob
   | OcrImageJob

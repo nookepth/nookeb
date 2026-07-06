@@ -77,26 +77,6 @@ function getWindow(lineUserId: string): RateWindow {
   return w;
 }
 
-export interface RateLimitStats {
-  filesThisHour: number;
-  bytesThisHour: number;
-  filesRemaining: number;
-  bytesRemaining: number;
-}
-
-/** Current rolling-window usage for a user (for dashboards/alerts). */
-export function getRateLimitStats(lineUserId: string): RateLimitStats {
-  const w = getWindow(lineUserId);
-  const filesThisHour = w.entries.length;
-  const bytesThisHour = w.entries.reduce((sum, e) => sum + e.bytes, 0);
-  return {
-    filesThisHour,
-    bytesThisHour,
-    filesRemaining: Math.max(0, config.RATE_LIMIT_FILES_PER_HOUR - filesThisHour),
-    bytesRemaining: Math.max(0, config.RATE_LIMIT_BYTES_PER_HOUR - bytesThisHour),
-  };
-}
-
 /**
  * Check-and-record: returns true (and records nothing) if accepting this file
  * would exceed either hourly limit; otherwise records it and re-arms the notice.

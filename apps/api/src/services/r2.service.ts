@@ -1,4 +1,4 @@
-import { S3Client, GetObjectCommand, PutObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PassThrough, type Readable } from 'node:stream';
@@ -109,20 +109,6 @@ export async function presignedGetUrl(
     ...(downloadName
       ? { ResponseContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}` }
       : {}),
-  });
-  return getSignedUrl(r2, command, { expiresIn: PRESIGNED_URL_TTL_SECONDS });
-}
-
-/** Presigned PUT — for direct browser uploads (POST /files/upload flow, Phase 1+). */
-export async function presignedPutUrl(
-  r2: S3Client,
-  key: string,
-  contentType: string,
-): Promise<string> {
-  const command = new PutObjectCommand({
-    Bucket: config.R2_BUCKET_NAME,
-    Key: key,
-    ContentType: contentType,
   });
   return getSignedUrl(r2, command, { expiresIn: PRESIGNED_URL_TTL_SECONDS });
 }

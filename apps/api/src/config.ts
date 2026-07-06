@@ -25,7 +25,6 @@ const envSchema = z.object({
   R2_ACCESS_KEY_ID: z.string().min(1),
   R2_SECRET_ACCESS_KEY: z.string().min(1),
   R2_BUCKET_NAME: z.string().default('nookeb-files'),
-  R2_PUBLIC_URL: z.string().url().optional(),
 
   // Redis — BullMQ ต้องใช้ TCP connection (redis:// หรือ rediss://)
   REDIS_URL: z.string().min(1).default('redis://localhost:6379'),

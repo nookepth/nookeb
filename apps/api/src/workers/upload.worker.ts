@@ -20,7 +20,6 @@ import {
   type SpaceRecord,
   type TeamRecord,
   type UploadBatchJob,
-  type UploadFileJob,
   type UserRecord,
 } from '@nookeb/shared';
 import { config } from '../config';
@@ -64,6 +63,7 @@ import {
   insertPage,
   listPages,
   pageExists,
+  setSessionResultFile,
   setSessionStatus,
 } from '../services/scan.service';
 
@@ -113,120 +113,6 @@ async function resolveTeamForUpload(
   } catch (err) {
     console.error('[upload.worker] team lookup failed — falling back to personal quota:', err);
     return null;
-  }
-}
-
-/**
- * upload_file job:
- *   download LINE CDN → stream to R2 → files.status = 'ready' → LINE push confirm
- * Never touches local disk — the LINE response body is piped straight to R2.
- */
-async function processUploadFile(job: UploadFileJob): Promise<void> {
-  // 1. Resolve user + space (LINE Group files go to the group's space — Phase 3;
-  //    Phase 1 stores everything in the sender's personal space)
-  let profile: { displayName: string; pictureUrl?: string } | undefined;
-  try {
-    profile = await getProfile(job.lineUserId);
-  } catch {
-    // profile is optional — continue without it
-  }
-  const { user, space: personalSpace } = await ensureUserAndSpace(
-    supabase,
-    job.lineUserId,
-    profile?.displayName,
-    profile?.pictureUrl,
-  );
-
-  // 1b. Files sent in a LINE group land in the group's shared team space
-  const space =
-    job.lineSource === 'group' && job.lineGroupId
-      ? await ensureGroupSpace(supabase, job.lineGroupId, user)
-      : personalSpace;
-
-  // 1c. Group bound to a team → the file belongs to the team + team quota
-  const team = await resolveTeamForUpload(job.lineSource ?? null, job.lineGroupId ?? null);
-
-  // 2. Quota check (team quota when the group is team-bound)
-  if (team) {
-    if (team.storage_used >= team.storage_limit) {
-      await pushMessage(job.lineUserId, [{ type: 'text', text: teamFullMessage(team) }]);
-      return;
-    }
-  } else if (user.storage_used >= user.storage_limit) {
-    await pushMessage(job.lineUserId, [
-      { type: 'text', text: 'พื้นที่เก็บไฟล์เต็มแล้วน้า ลบไฟล์เก่าหรืออัปเกรดแผนก่อนหน่อยน้า' },
-    ]);
-    return;
-  }
-
-  // 3. Download from LINE CDN (TTL ~1 ชม. — ต้องรีบทำ)
-  const content = await getMessageContent(job.lineMessageId);
-  const mimeType = job.mimeType ?? content.contentType;
-
-  // 4. Create DB row first so we have the file id for the R2 key
-  const fileId = randomUUID();
-  const r2Key = buildFileKey(space.id, fileId, job.originalName);
-  const record = await createFileRecord(supabase, {
-    id: fileId,
-    spaceId: space.id,
-    uploadedBy: user.id,
-    originalName: job.originalName,
-    mimeType,
-    fileSize: content.contentLength ?? 0,
-    extension: extensionOf(job.originalName),
-    r2Key,
-    lineMessageId: job.lineMessageId,
-    lineSource: job.lineSource,
-    lineGroupId: job.lineGroupId,
-    teamId: team?.id ?? null,
-    chargedTo: team ? 'team' : 'personal',
-    chargedTeamId: team?.id ?? null,
-  });
-
-  // 5. Stream upload to R2
-  try {
-    const { size } = await uploadStream(r2, r2Key, content.stream, mimeType);
-    await markFileReady(supabase, record.id, size);
-    // Team-bound files charge the TEAM quota (unenforced post-store — the soft
-    // check above already gated); otherwise the uploader's personal quota.
-    if (team) {
-      await incrementTeamStorage(supabase, team.id, size, { enforce: false });
-    } else {
-      await addStorageUsed(supabase, user.id, size, space.id);
-    }
-  } catch (err) {
-    await markFileError(supabase, record.id);
-    throw err;
-  }
-
-  // The file is now durably stored + charged. Everything below is secondary —
-  // it must NOT throw, or the whole job would retry and store a *second* copy.
-
-  // 6. Images get a thumbnail + OCR — separate jobs so their failure never fails the upload
-  if (mimeType.startsWith('image/')) {
-    try {
-      await fileQueue.add(
-        'generate_thumbnail',
-        { type: 'generate_thumbnail', fileId: record.id },
-        { jobId: jobId('thumb', record.id), attempts: 3, backoff: { type: 'exponential', delay: 3000 } },
-      );
-      await fileQueue.add(
-        'ocr_image',
-        { type: 'ocr_image', fileId: record.id },
-        { jobId: jobId('ocr', record.id), attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
-      );
-    } catch (err) {
-      console.error(`[upload.worker] failed to enqueue thumbnail/ocr for ${record.id}:`, err);
-    }
-  }
-
-  // 7. Confirm to the user (best-effort — a failed push must not re-store the file)
-  try {
-    await pushMessage(job.lineUserId, [
-      { type: 'text', text: `หนูเก็บ "${job.originalName}" ให้แล้วน้า\nเปิดดูได้ที่ ${config.WEB_URL}/dashboard เลยน้า` },
-    ]);
-  } catch (err) {
-    console.error(`[upload.worker] confirm push failed for ${record.id}:`, err);
   }
 }
 
@@ -550,12 +436,24 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // batch-start snapshot is gone: it allowed overshooting by an entire batch.
     // The team snapshot is kept only as a fast-path that skips the batch with a
     // single notice instead of rejecting every file individually.
-    const overLimit = team ? team.storage_used >= team.storage_limit : false;
+    const overLimit = team
+      ? team.storage_used >= team.storage_limit
+      : user.storage_used >= user.storage_limit;
     if (overLimit && team) {
       try {
         await pushMessage(target, [{ type: 'text', text: teamFullMessage(team) }]);
       } catch (err) {
         console.error('[upload.worker] team-full notice push failed:', err);
+      }
+    } else if (overLimit && !team) {
+      // Personal quota fast-path mirror of the team branch: tell the uploader
+      // their personal storage is full (same copy the per-file rejection uses)
+      // once, up front, instead of silently counting "failed N". The shared
+      // `if (overLimit) return null` below skips storing every file in the batch.
+      try {
+        await pushMessage(target, [{ type: 'text', text: PERSONAL_FULL_TEXT }]);
+      } catch (err) {
+        console.error('[upload.worker] personal-full notice push failed:', err);
       }
     }
 
@@ -743,8 +641,7 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const key = buildScanPageKey(session.space_id, session.id, pageId);
   await uploadStream(r2, key, Readable.from(jpeg), 'image/jpeg');
 
-  const pageNumber = (await countPages(supabase, session.id)) + 1;
-  await insertPage(supabase, session.id, pageNumber, key, job.lineMessageId);
+  await insertPage(supabase, session.id, key, job.lineMessageId);
 }
 
 /**
@@ -757,6 +654,15 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
   // Retry-safe: the webhook flips the session to 'processing' before enqueuing.
   // If a prior attempt already finished it ('done'), don't build a second PDF.
   if (session.status !== 'processing') return;
+
+  // Retry-safe: if a prior attempt already stored + charged the PDF but crashed
+  // before (or during) the finishSession status flip, result_file_id is already
+  // recorded. Don't rebuild/re-store/re-charge — just complete the status flip.
+  if (session.result_file_id) {
+    const pageCount = await countPages(supabase, session.id);
+    await finishSession(supabase, session.id, session.result_file_id, pageCount);
+    return;
+  }
 
   const pages = await listPages(supabase, session.id);
   if (pages.length === 0) {
@@ -858,6 +764,12 @@ async function processFinalizeScan(job: FinalizeScanJob): Promise<void> {
     }
     throw err;
   }
+
+  // The PDF is now stored + charged. Record the result id BEFORE the retry
+  // boundary (finishSession's status flip) so that if finishSession fails and
+  // BullMQ retries, the recovery check above skips a second store/charge.
+  await setSessionResultFile(supabase, session.id, record.id);
+
   await finishSession(supabase, session.id, record.id, pages.length);
 
   // Clean up temporary page images (best-effort)
@@ -931,9 +843,6 @@ export function createUploadWorker(): Worker<FileJob> {
     FILE_QUEUE,
     async (job: Job<FileJob>) => {
       switch (job.data.type) {
-        case 'upload_file':
-          await processUploadFile(job.data);
-          break;
         case 'upload_batch':
           await processUploadBatch(job.data);
           break;

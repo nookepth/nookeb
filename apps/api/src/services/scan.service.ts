@@ -109,20 +109,20 @@ export async function pageExists(
 export async function insertPage(
   supabase: SupabaseClient,
   sessionId: string,
-  pageNumber: number,
   r2Key: string,
   lineMessageId: string,
 ): Promise<void> {
+  // page ordinal is assigned atomically by the DB (page_seq, migration 018) —
+  // do NOT compute it in app code (COUNT(*)+1 races under worker concurrency).
   const { error } = await supabase.from('scan_pages').insert({
     session_id: sessionId,
-    page_number: pageNumber,
     r2_key: r2Key,
     line_message_id: lineMessageId,
   });
   if (error) throw error;
 }
 
-/** All pages for a session, ordered by arrival time (stable page order). */
+/** All pages for a session, ordered by the atomic insert sequence (stable). */
 export async function listPages(
   supabase: SupabaseClient,
   sessionId: string,
@@ -131,9 +131,27 @@ export async function listPages(
     .from('scan_pages')
     .select('*')
     .eq('session_id', sessionId)
-    .order('created_at', { ascending: true });
+    .order('page_seq', { ascending: true });
   if (error) throw error;
   return (data as ScanPageRecord[]) ?? [];
+}
+
+/**
+ * Record the produced PDF's file id on the session BEFORE the finalize job's
+ * retry boundary (the status flip in finishSession). If finishSession later
+ * fails and BullMQ retries, this marker lets the handler recognise the file was
+ * already stored + charged and skip straight to completing the status flip.
+ */
+export async function setSessionResultFile(
+  supabase: SupabaseClient,
+  sessionId: string,
+  resultFileId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('scan_sessions')
+    .update({ result_file_id: resultFileId })
+    .eq('id', sessionId);
+  if (error) throw error;
 }
 
 export async function finishSession(

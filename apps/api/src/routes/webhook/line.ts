@@ -1,5 +1,4 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
-import rateLimit from '@fastify/rate-limit';
 import type { AddScanPageJob, LineSource } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
@@ -710,18 +709,10 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
 }
 
 const lineWebhookRoutes: FastifyPluginAsync = async (app) => {
-  // Rate limit — scoped to this encapsulated plugin, so it applies ONLY to the
-  // webhook route (100 req/min per IP). Other routes are unaffected.
-  await app.register(rateLimit, {
-    global: true,
-    max: 100,
-    timeWindow: '1 minute',
-    errorResponseBuilder: () => ({
-      statusCode: 429,
-      error: 'Too Many Requests',
-      message: 'Rate limit exceeded, retry later',
-    }),
-  });
+  // No IP rate limiter here: LINE delivers webhooks from a small shared IP pool,
+  // so a per-IP limit would 429 a busy Official Account's legitimate traffic and
+  // make LINE retry (worsening load). The HMAC signature check below already
+  // rejects every illegitimate request, so an IP limiter adds no security value.
 
   // Scoped raw-body parser: signature verification needs the exact bytes LINE sent
   app.addContentTypeParser('application/json', { parseAs: 'buffer' }, (_req, body, done) => {

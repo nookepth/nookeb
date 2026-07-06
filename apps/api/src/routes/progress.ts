@@ -58,6 +58,11 @@ const VIEW_HTML = `<!DOCTYPE html>
   var batchId = '__BATCH_ID__';
   var dashboardUrl = '__DASHBOARD_URL__';
   var timer = null;
+  // The Redis progress key only appears once the worker picks up the batch, so
+  // early polls can 404 for a few seconds. Tolerate that instead of failing —
+  // only give up (link expired / batch genuinely gone) after N consecutive 404s.
+  var notFoundCount = 0;
+  var MAX_NOT_FOUND = 10; // ~15s at the 1.5s poll interval
 
   function render(p) {
     document.getElementById('counter').textContent = p.current + ' / ' + p.total;
@@ -74,10 +79,19 @@ const VIEW_HTML = `<!DOCTYPE html>
   function poll() {
     fetch('/progress/' + encodeURIComponent(batchId))
       .then(function (res) {
-        if (!res.ok) throw new Error('not found');
+        if (res.status === 404) {
+          // Job not started yet — keep waiting unless we've hit the limit.
+          notFoundCount++;
+          if (notFoundCount >= MAX_NOT_FOUND) throw new Error('not found');
+          return null;
+        }
+        if (!res.ok) throw new Error('request failed');
+        notFoundCount = 0;
         return res.json();
       })
-      .then(render)
+      .then(function (p) {
+        if (p) render(p);
+      })
       .catch(function () {
         clearInterval(timer);
         document.getElementById('status').textContent = 'หนูหาข้อมูลไม่เจอแล้วน้า ลองเปิดใหม่อีกทีน้า';

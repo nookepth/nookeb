@@ -14,7 +14,10 @@ export interface ScanSessionRecord {
 export interface ScanPageRecord {
   id: string;
   session_id: string;
-  page_number: number;
+  /** Atomic per-insert ordinal (global BIGSERIAL); use this for page ordering. */
+  page_seq: number;
+  /** Legacy display ordinal; no longer written (see migration 018). */
+  page_number: number | null;
   r2_key: string;
   line_message_id: string | null;
   created_at: string;

@@ -9,11 +9,10 @@ import { config } from '../config';
 export function verifyLineSignature(rawBody: Buffer, signature: string | undefined): boolean {
   if (!signature) return false;
   const expected = createHmac('sha256', config.LINE_CHANNEL_SECRET).update(rawBody).digest();
-  let received: Buffer;
-  try {
-    received = Buffer.from(signature, 'base64');
-  } catch {
-    return false;
-  }
-  return expected.length === received.length && timingSafeEqual(expected, received);
+  // Buffer.from(str, 'base64') never throws — malformed base64 just yields a
+  // wrong-length buffer. The explicit length guard is the real defense (and
+  // timingSafeEqual requires equal-length inputs).
+  const received = Buffer.from(signature, 'base64');
+  if (received.length !== expected.length) return false;
+  return timingSafeEqual(expected, received);
 }
