@@ -214,6 +214,27 @@ test('Test 9 — OCR failure does not fail the PDF (image-only fallback)', async
   assert.equal(pdf.getPageCount(), 2);
 });
 
+test('Test 9b — a hanging OCR call cannot stall the PDF (per-page timeout → image-only)', async () => {
+  const page = await toJpeg(straightOnSvg());
+  // OCR that never resolves — before the timeout fix this hung buildScanPdf (and
+  // thus the whole finalize_scan job) forever. Now it degrades to image-only.
+  const start = Date.now();
+  const pdfBytes = await buildScanPdf([page, page], {
+    ocrEnabled: true,
+    ocrTimeoutMs: 150,
+    logTag: 'test=ocr-hang',
+    ocr: () => new Promise<never>(() => {}), // never settles
+  });
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed < 5000, `expected the build to give up on OCR quickly, took ${elapsed}ms`);
+  const { PDFDocument } = await import('pdf-lib');
+  const pdf = await PDFDocument.load(pdfBytes);
+  assert.equal(pdf.getPageCount(), 2);
+  // No OCR words landed, so no font was embedded (image-only pages).
+  const raw = Buffer.from(await pdf.save({ useObjectStreams: false })).toString('latin1');
+  assert.ok(!raw.includes('/Helvetica'), 'timed-out OCR must not embed a text layer');
+});
+
 test('Test 10 — PDF is searchable: OCR words produce an embedded text layer', async () => {
   const page = await toJpeg(straightOnSvg());
   const pdfBytes = await buildScanPdf([page], {

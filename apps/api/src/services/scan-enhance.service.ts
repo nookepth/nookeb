@@ -377,12 +377,48 @@ const isAscii = (s: string): boolean => /^[\x20-\x7e]+$/.test(s);
 
 export type OcrFn = (jpeg: Buffer) => Promise<OcrPageResult>;
 
+/**
+ * Hard ceiling on how long a single page's OCR may take before it's abandoned
+ * (→ image-only page). Without this a stuck OCR call (tesseract stall on a huge
+ * page, WASM hang) would make `await ocrResults[i]` below never resolve, so
+ * buildScanPdf never returns → the finalize_scan job hangs forever with no card
+ * and no error. OCR is strictly best-effort, so a timeout just degrades the page.
+ */
+const OCR_PAGE_TIMEOUT_MS = 45_000;
+
+/**
+ * Resolve `p`, but never take longer than `ms` — on timeout resolve to
+ * `fallback` (and run `onTimeout`) instead of leaving the caller hanging.
+ * Rejections are swallowed to `fallback` too (callers here treat OCR as
+ * best-effort). The timer is always cleared so it can't keep the process alive.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number, fallback: T, onTimeout: () => void): Promise<T> {
+  return new Promise<T>((resolve) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      resolve(fallback);
+    }, ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
+}
+
 export interface BuildScanPdfOptions {
   /** Embed an invisible searchable text layer per page (SCAN_OCR_ENABLED). */
   ocrEnabled?: boolean;
   logTag?: string;
   /** Injectable OCR engine (tests); defaults to ocr.service extractTextDetailed. */
   ocr?: OcrFn;
+  /** Per-page OCR timeout override (tests). Defaults to {@link OCR_PAGE_TIMEOUT_MS}. */
+  ocrTimeoutMs?: number;
 }
 
 /**
@@ -395,16 +431,23 @@ export interface BuildScanPdfOptions {
  * retry/last-attempt handling deals with that).
  */
 export async function buildScanPdf(pages: Buffer[], opts: BuildScanPdfOptions = {}): Promise<Uint8Array> {
-  const { ocrEnabled = false, logTag = '', ocr = extractTextDetailed } = opts;
+  const { ocrEnabled = false, logTag = '', ocr = extractTextDetailed, ocrTimeoutMs = OCR_PAGE_TIMEOUT_MS } = opts;
 
   // Kick off OCR for every page up front (parallel with PDF/image embedding).
-  // Each page's OCR failure collapses to an empty result — never fatal.
-  const ocrResults: Promise<OcrPageResult>[] = pages.map((jpeg) =>
+  // Each page's OCR failure OR timeout collapses to an empty result — never
+  // fatal, and (crucially) can never leave `await ocrResults[i]` hanging, which
+  // would hang the whole finalize_scan job with no card and no error.
+  const ocrResults: Promise<OcrPageResult>[] = pages.map((jpeg, i) =>
     ocrEnabled
-      ? ocr(jpeg).catch((err): OcrPageResult => {
-          console.error(`[scan-enhance] OCR failed — image-only page ${logTag}:`, err);
-          return { text: '', words: [] };
-        })
+      ? withTimeout(
+          ocr(jpeg).catch((err): OcrPageResult => {
+            console.error(`[scan-enhance] OCR failed — image-only page ${logTag}:`, err);
+            return { text: '', words: [] };
+          }),
+          ocrTimeoutMs,
+          { text: '', words: [] },
+          () => console.warn(`[scan-enhance] OCR timed out (>${ocrTimeoutMs}ms) — image-only page ${i + 1} ${logTag}`),
+        )
       : Promise.resolve({ text: '', words: [] }),
   );
 

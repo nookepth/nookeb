@@ -674,6 +674,11 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
  * confirm to the user. Temp page objects are cleaned up afterwards.
  */
 async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean): Promise<void> {
+  const t0 = Date.now();
+  const log = (stage: string, extra = ''): void =>
+    console.log(`[finalize_scan] session=${job.sessionId} stage=${stage} +${Date.now() - t0}ms ${extra}`.trim());
+  log('start', `lastAttempt=${isLastAttempt}`);
+
   const session = await getSession(supabase, job.sessionId);
   if (!session || !session.space_id) return;
   // Retry-safe: the webhook flips the session to 'processing' before enqueuing.
@@ -695,6 +700,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     await pushMessage(job.lineUserId, [{ type: 'text', text: 'ยังไม่มีไฟล์ให้รวมเป็น PDF เลยน้า' }]);
     return;
   }
+  log('pages-listed', `count=${pages.length}`);
 
   // Assemble the PDF (buildScanPdf in scan-enhance.service): one A4 page per
   // scan page (pages are already enhanced + normalized JPEGs from
@@ -714,6 +720,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
       ocrEnabled: config.SCAN_OCR_ENABLED,
       logTag: `session=${session.id}`,
     });
+    log('pdf-built', `bytes=${pdfBytes.length} ocr=${config.SCAN_OCR_ENABLED}`);
   } catch (err) {
     console.error(`[upload.worker] finalize_scan PDF assembly failed (${session.id}):`, err);
     if (!isLastAttempt) throw err; // let BullMQ retry transient R2 read failures
@@ -815,8 +822,10 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   // boundary (finishSession's status flip) so that if finishSession fails and
   // BullMQ retries, the recovery check above skips a second store/charge.
   await setSessionResultFile(supabase, session.id, record.id);
+  log('stored', `fileId=${record.id} team=${team?.id ?? 'none'}`);
 
   await finishSession(supabase, session.id, record.id, pages.length);
+  log('done');
 
   // Clean up temporary page images (best-effort)
   for (const page of pages) {
@@ -840,6 +849,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
         pdf: { count: pages.length, kind },
       }),
     ]);
+    log('card-pushed');
   } catch (err) {
     console.error(`[upload.worker] finalize_scan confirm push failed for ${session.id}:`, err);
   }
@@ -892,10 +902,33 @@ export function createUploadWorker(): Worker<FileJob> {
         case 'add_scan_page':
           await processAddScanPage(job.data);
           break;
-        case 'finalize_scan':
+        case 'finalize_scan': {
+          // Capture the narrowed job data in a local — TS drops the discriminant
+          // narrowing on `job.data` (a re-evaluated property access) across the
+          // awaits/catch below.
+          const data = job.data;
           // attemptsMade counts finished attempts; this run is attemptsMade + 1
-          await processFinalizeScan(job.data, job.attemptsMade + 1 >= (job.opts.attempts ?? 1));
+          const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          try {
+            await processFinalizeScan(data, isLastAttempt);
+          } catch (err) {
+            // processFinalizeScan already notifies the user for PDF-ASSEMBLY
+            // failures. This outer net covers every step AFTER assembly (R2
+            // store, quota, DB writes): let BullMQ retry until the last attempt,
+            // then tell the user instead of dying silently. Idempotency holds —
+            // a retry re-enters processFinalizeScan and the result_file_id /
+            // status guards skip any already-completed store/charge.
+            if (!isLastAttempt) throw err;
+            console.error(
+              `[upload.worker] finalize_scan exhausted job=${job.id} session=${data.sessionId}:`,
+              err,
+            );
+            await pushMessage(data.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]).catch((pushErr) => {
+              console.error(`[upload.worker] finalize_scan exhaustion push failed (${data.sessionId}):`, pushErr);
+            });
+          }
           break;
+        }
         case 'purge_deleted':
           await processPurgeDeleted(job.data);
           break;
