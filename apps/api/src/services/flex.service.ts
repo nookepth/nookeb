@@ -723,8 +723,8 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
 // APP_URL-derived so they resolve to the deployed API per environment. LINE
 // fetches these hero URLs directly, so they must be permanent public HTTPS URLs.
 
-/** Shared hero-image props for every onboarding bubble (full-width, 20:13 cover). */
-const ONBOARDING_HERO = { type: 'image', size: 'full', aspectRatio: '20:13', aspectMode: 'cover' } as const;
+/** Shared hero-image props for every onboarding bubble (full-width, 1:1 fit on white). */
+const ONBOARDING_HERO = { type: 'image', size: 'full', aspectRatio: '1:1', aspectMode: 'fit', backgroundColor: '#FFFFFF' } as const;
 
 /** Decorative welcome hero card (no tap action). Image: /static/welcome.jpg. */
 export function buildWelcomeFlexMessage(): FlexMessage {
@@ -758,6 +758,7 @@ const ONBOARDING_ACTIONS: readonly Record<string, unknown>[] = [
 export function buildOnboardingCarouselMessage(): FlexMessage {
   const bubbles = ONBOARDING_ACTIONS.map((action, i) => ({
     type: 'bubble',
+    size: 'giga',
     hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/onboarding/${i + 1}.jpg`, action },
   }));
   return {
