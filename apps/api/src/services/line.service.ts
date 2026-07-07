@@ -43,8 +43,15 @@ export interface TextMessage {
   text: string;
 }
 
-/** Any LINE message we send (text or Flex). */
-export type LineMessage = TextMessage | FlexMessage;
+/** A plain LINE image message (both URLs must be permanent public HTTPS). */
+export interface ImageMessage {
+  type: 'image';
+  originalContentUrl: string;
+  previewImageUrl: string;
+}
+
+/** Any LINE message we send (text, image, or Flex). */
+export type LineMessage = TextMessage | ImageMessage | FlexMessage;
 
 export async function replyMessage(replyToken: string, messages: LineMessage[]): Promise<void> {
   const types = messages.map((m) => m.type).join(',');

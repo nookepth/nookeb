@@ -717,26 +717,15 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
 }
 
 // ── Onboarding (follow/join) ────────────────────────────────────────────────
-// Sent as two Flex messages when a user adds the bot (follow) or it's added to a
-// group (join): a decorative welcome bubble + a 7-bubble scrollable carousel.
-// Hero images are public R2 static assets (routes/static.ts → /static/...),
+// Sent on onboarding when a user adds the bot (follow) or it's added to a group
+// (join): a 7-bubble scrollable carousel (paired with a plain welcome image sent
+// from webhook/line.ts). Hero images are public R2 static assets
+// (routes/static.ts → /static/...),
 // APP_URL-derived so they resolve to the deployed API per environment. LINE
 // fetches these hero URLs directly, so they must be permanent public HTTPS URLs.
 
 /** Shared hero-image props for every onboarding bubble (full-width, 1:1 fit on white). */
 const ONBOARDING_HERO = { type: 'image', size: 'full', aspectRatio: '1:1', aspectMode: 'fit', backgroundColor: '#FFFFFF' } as const;
-
-/** Decorative welcome hero card (no tap action). Image: /static/welcome.jpg. */
-export function buildWelcomeFlexMessage(): FlexMessage {
-  return {
-    type: 'flex',
-    altText: 'ยินดีต้อนรับสู่หนูเก็บน้า',
-    contents: {
-      type: 'bubble',
-      hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/welcome.jpg` },
-    },
-  };
-}
 
 /**
  * Per-bubble tap action for the onboarding carousel (index 0 = 1.jpg … 6 = 7.jpg).
