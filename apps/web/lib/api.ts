@@ -81,6 +81,7 @@ export class ApiError extends Error {
 
 export interface ListFilesOptions {
   page?: number;
+  limit?: number;
   search?: string;
   folderId?: string;
   tagId?: string;
@@ -89,10 +90,30 @@ export interface ListFilesOptions {
 export function listFiles(spaceId: string, opts: ListFilesOptions = {}): Promise<FileListResponse> {
   const params = new URLSearchParams({ spaceId });
   if (opts.page) params.set('page', String(opts.page));
+  if (opts.limit) params.set('limit', String(opts.limit));
   if (opts.search) params.set('search', opts.search);
   if (opts.folderId) params.set('folderId', opts.folderId);
   if (opts.tagId) params.set('tagId', opts.tagId);
   return apiFetch<FileListResponse>(`/files?${params.toString()}`);
+}
+
+/** Aggregate counts for the dashboard stat chips — reflects ALL matching files,
+ *  not just the current page. Counts are keyed by raw mime type; the client
+ *  buckets them via `fileGroup`. */
+export interface FileStatsResponse {
+  total: number;
+  byType: Record<string, number>;
+  storageUsed: number;
+}
+
+export type FileStatsOptions = Pick<ListFilesOptions, 'search' | 'folderId' | 'tagId'>;
+
+export function getFileStats(spaceId: string, opts: FileStatsOptions = {}): Promise<FileStatsResponse> {
+  const params = new URLSearchParams({ spaceId });
+  if (opts.search) params.set('search', opts.search);
+  if (opts.folderId) params.set('folderId', opts.folderId);
+  if (opts.tagId) params.set('tagId', opts.tagId);
+  return apiFetch<FileStatsResponse>(`/files/stats?${params.toString()}`);
 }
 
 /** File detail incl. presigned inline `url` (expires 1 hour) — used for preview. */

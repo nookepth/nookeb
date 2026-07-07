@@ -12,6 +12,13 @@ export interface ScanSessionRecord {
   space_id: string | null;
   status: ScanStatus;
   page_count: number;
+  /**
+   * How many image events the webhook accepted for this session (migration 023).
+   * finalize_scan waits until COUNT(scan_pages) catches up to this before building
+   * the PDF, so pages whose add_scan_page job is still in flight aren't dropped.
+   * Nullable — reads as `?? 0` so the wait-gate no-ops if migration 023 isn't applied.
+   */
+  expected_pages: number | null;
   result_file_id: string | null;
   /** 'bw' = adaptive threshold, 'color' = normalize/sharpen (migration 019). */
   scan_mode: ScanMode;

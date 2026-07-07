@@ -289,7 +289,14 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   };
   try {
     const jobId = `batch-${lineUserId}-${Date.now()}`.replace(/[^a-zA-Z0-9-_]/g, '-');
-    await app.fileQueue.add('upload_batch', job, { jobId });
+    // attempts: 1 overrides the queue default (3, see plugins/bullmq.ts): a batch
+    // retry would re-run processUploadBatch and risk re-storing / double-charging
+    // every file. The handler already never throws and retries each file
+    // INTERNALLY, so BullMQ must not retry the batch. (storeUpload's per-message
+    // dedup + the unique index (migration 022) are the backstop for the separate
+    // STALLED-job re-run that BullMQ does on worker restart, which attempts can't
+    // disable.)
+    await app.fileQueue.add('upload_batch', job, { jobId, attempts: 1 });
   } catch (err) {
     app.log.error({ err }, 'failed to enqueue upload_batch');
   }

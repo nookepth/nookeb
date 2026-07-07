@@ -9,6 +9,7 @@ import {
   createFolder,
   createTag,
   deleteFolder,
+  getFileStats,
   getMe,
   getSpaceId,
   getUsage,
@@ -17,6 +18,7 @@ import {
   listFolders,
   listSpaces,
   listTags,
+  type FileStatsResponse,
   type UsageResponse,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
@@ -43,6 +45,9 @@ function spaceLabel(s: SpaceDto, username?: string | null): string {
   return `${s.teamName?.trim() || 'ทีม (ไม่มีชื่อ)'} · คลังทีม`;
 }
 
+/** Files per page — matches the API's default `limit` (see GET /files). */
+const PAGE_SIZE = 50;
+
 const TYPE_TABS: { id: TypeFilter; label: string }[] = [
   { id: 'all', label: 'ทั้งหมด' },
   { id: 'image', label: 'รูปภาพ' },
@@ -53,6 +58,9 @@ const TYPE_TABS: { id: TypeFilter; label: string }[] = [
 
 export default function DashboardPage() {
   const [files, setFiles] = useState<FileDto[] | null>(null);
+  const [stats, setStats] = useState<FileStatsResponse | null>(null);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [folders, setFolders] = useState<FolderDto[]>([]);
   const [tags, setTags] = useState<TagDto[]>([]);
   const [spaces, setSpaces] = useState<SpaceDto[]>([]);
@@ -78,7 +86,10 @@ export default function DashboardPage() {
 
 
   useEffect(() => {
-    const t = setTimeout(() => setDebouncedSearch(search.trim()), 350);
+    const t = setTimeout(() => {
+      setDebouncedSearch(search.trim());
+      setPage(1); // a new search resets to the first page
+    }, 350);
     return () => clearTimeout(t);
   }, [search]);
 
@@ -112,6 +123,8 @@ export default function DashboardPage() {
     try {
       const [fileRes, folderRes, tagRes] = await Promise.all([
         listFiles(spaceId, {
+          page,
+          limit: PAGE_SIZE,
           search: debouncedSearch || undefined,
           folderId: currentFolder?.id,
           tagId: activeTagId ?? undefined,
@@ -120,6 +133,7 @@ export default function DashboardPage() {
         listTags(spaceId),
       ]);
       setFiles(fileRes.files);
+      setTotal(fileRes.total);
       setFolders(folderRes.folders);
       setTags(tagRes.tags);
       setError(null);
@@ -131,11 +145,38 @@ export default function DashboardPage() {
         setError('โหลดรายการไฟล์ไม่สำเร็จ ลองรีเฟรชอีกครั้ง');
       }
     }
-  }, [spaceId, debouncedSearch, currentFolder, activeTagId]);
+  }, [spaceId, debouncedSearch, currentFolder, activeTagId, page]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Stat chips must count ALL matching files, not the current page — fetch the
+  // aggregate separately. Keyed on the filter context only (NOT page), so it
+  // doesn't refetch as the user pages through the grid.
+  useEffect(() => {
+    if (!hasSession() || !spaceId) return;
+    getFileStats(spaceId, {
+      search: debouncedSearch || undefined,
+      folderId: currentFolder?.id,
+      tagId: activeTagId ?? undefined,
+    })
+      .then(setStats)
+      .catch(() => {});
+  }, [spaceId, debouncedSearch, currentFolder, activeTagId]);
+
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // Guard against pointing past the last page (e.g. after deleting files on the
+  // final page shrinks the total).
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [page, totalPages]);
+
+  function goToPage(next: number): void {
+    setPage(Math.min(Math.max(1, next), totalPages));
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
 
   function switchSpace(id: string): void {
     setSpaceId(id);
@@ -144,6 +185,24 @@ export default function DashboardPage() {
     setSearch('');
     setTypeFilter('all');
     setFiles(null);
+    setPage(1);
+  }
+
+  // Filter changes always reset pagination to page 1 — otherwise the user could
+  // land on an out-of-range page (e.g. page 3 of a folder with one page).
+  function changeTypeFilter(next: TypeFilter): void {
+    setTypeFilter(next);
+    setPage(1);
+  }
+
+  function selectFolder(folder: FolderDto | null): void {
+    setCurrentFolder(folder);
+    setPage(1);
+  }
+
+  function toggleTag(id: string | null): void {
+    setActiveTagId(id);
+    setPage(1);
   }
 
   function handleLogout(): void {
@@ -167,7 +226,7 @@ export default function DashboardPage() {
     if (!window.confirm(`ลบโฟลเดอร์ "${folder.name}" ? (ไฟล์ข้างในจะย้ายออกมาข้างนอก)`)) return;
     try {
       await deleteFolder(folder.id);
-      if (currentFolder?.id === folder.id) setCurrentFolder(null);
+      if (currentFolder?.id === folder.id) selectFolder(null);
       await load();
     } catch {
       alert('ลบโฟลเดอร์ไม่สำเร็จ');
@@ -189,7 +248,7 @@ export default function DashboardPage() {
   function handleBottomNav(tab: BottomTab): void {
     setActiveTab(tab);
     if (tab === 'vault') {
-      setTypeFilter('all');
+      changeTypeFilter('all');
       window.scrollTo({ top: 0, behavior: 'smooth' });
     } else if (tab === 'search') {
       setSearchOpen(true);
@@ -202,11 +261,17 @@ export default function DashboardPage() {
 
   // ---------- derived lists (client-side filter + sort) ----------
 
+  // Derived from the /files/stats aggregate — counting the paginated `files`
+  // array would only ever reflect the current page (the wrong-totals bug).
   const groupCounts = useMemo(() => {
     const counts: Record<FileGroup, number> = { image: 0, doc: 0, video: 0, other: 0 };
-    for (const f of files ?? []) counts[fileGroup(f.mimeType)]++;
+    if (stats) {
+      for (const [mimeType, n] of Object.entries(stats.byType)) counts[fileGroup(mimeType)] += n;
+    }
     return counts;
-  }, [files]);
+  }, [stats]);
+
+  const totalFiles = stats?.total ?? 0;
 
   const shownFiles = useMemo(() => {
     if (!files) return null;
@@ -273,20 +338,20 @@ export default function DashboardPage() {
           <div className="stats-row">
             <button
               className={`stat-chip ${typeFilter === 'all' ? 'active' : ''}`}
-              onClick={() => setTypeFilter('all')}
+              onClick={() => changeTypeFilter('all')}
             >
               <span className="stat-icon">
                 <BoxIcon />
               </span>
               <span>
-                <span className="stat-num">{files.length}</span>
+                <span className="stat-num">{totalFiles}</span>
                 <br />
                 <span className="stat-label">ไฟล์ทั้งหมด</span>
               </span>
             </button>
             <button
               className={`stat-chip ${typeFilter === 'image' ? 'active' : ''}`}
-              onClick={() => setTypeFilter(typeFilter === 'image' ? 'all' : 'image')}
+              onClick={() => changeTypeFilter(typeFilter === 'image' ? 'all' : 'image')}
             >
               <span className="stat-icon">
                 <ImageIcon />
@@ -299,7 +364,7 @@ export default function DashboardPage() {
             </button>
             <button
               className={`stat-chip ${typeFilter === 'doc' ? 'active' : ''}`}
-              onClick={() => setTypeFilter(typeFilter === 'doc' ? 'all' : 'doc')}
+              onClick={() => changeTypeFilter(typeFilter === 'doc' ? 'all' : 'doc')}
             >
               <span className="stat-icon">
                 <DocIcon />
@@ -367,7 +432,7 @@ export default function DashboardPage() {
                 role="tab"
                 aria-selected={typeFilter === t.id}
                 className={`type-tab ${typeFilter === t.id ? 'active' : ''}`}
-                onClick={() => setTypeFilter(t.id)}
+                onClick={() => changeTypeFilter(t.id)}
               >
                 {t.label}
               </button>
@@ -413,7 +478,7 @@ export default function DashboardPage() {
                 key={t.id}
                 className={`tag-chip toggle ${activeTagId === t.id ? 'active' : ''}`}
                 style={activeTagId === t.id ? { background: t.color } : undefined}
-                onClick={() => setActiveTagId(activeTagId === t.id ? null : t.id)}
+                onClick={() => toggleTag(activeTagId === t.id ? null : t.id)}
               >
                 {t.name}
               </button>
@@ -422,7 +487,7 @@ export default function DashboardPage() {
         )}
 
         <div className="breadcrumb">
-          <button className="crumb" onClick={() => setCurrentFolder(null)}>
+          <button className="crumb" onClick={() => selectFolder(null)}>
             ทั้งหมด
           </button>
           {currentFolder && <span className="crumb current">/ {currentFolder.name}</span>}
@@ -432,7 +497,7 @@ export default function DashboardPage() {
           <div className="folder-row">
             {visibleFolders.map((f) => (
               <div key={f.id} className="folder-chip">
-                <button className="folder-open" onClick={() => setCurrentFolder(f)}>
+                <button className="folder-open" onClick={() => selectFolder(f)}>
                   <span className="folder-glyph">
                     <FolderIcon />
                   </span>
@@ -456,7 +521,7 @@ export default function DashboardPage() {
             files={recentFiles}
             onOpen={setPreviewFile}
             onSeeAll={() => {
-              setTypeFilter('all');
+              changeTypeFilter('all');
               setSort('newest');
             }}
           />
@@ -482,6 +547,28 @@ export default function DashboardPage() {
             view={view}
             onChanged={() => void load()}
           />
+        )}
+
+        {!error && shownFiles !== null && totalPages > 1 && (
+          <nav className="pagination" aria-label="แบ่งหน้า">
+            <button
+              className="btn secondary"
+              disabled={page <= 1}
+              onClick={() => goToPage(page - 1)}
+            >
+              ← ก่อนหน้า
+            </button>
+            <span className="page-indicator" aria-live="polite">
+              หน้า {page} / {totalPages}
+            </span>
+            <button
+              className="btn secondary"
+              disabled={page >= totalPages}
+              onClick={() => goToPage(page + 1)}
+            >
+              ถัดไป →
+            </button>
+          </nav>
         )}
       </main>
 

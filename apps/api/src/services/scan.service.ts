@@ -99,6 +99,21 @@ export async function getSession(
   return (data as ScanSessionRecord | null) ?? null;
 }
 
+/**
+ * Atomically bump the session's `expected_pages` counter by one (migration 023).
+ * Called once per accepted image event in the webhook; finalize_scan compares this
+ * against the stored page count so in-flight add_scan_page jobs aren't dropped.
+ * Fails open: a missing column/RPC (migration not applied) is swallowed by the
+ * caller so scanning still works — the wait-gate just no-ops.
+ */
+export async function incrementExpectedPages(
+  supabase: SupabaseClient,
+  sessionId: string,
+): Promise<void> {
+  const { error } = await supabase.rpc('increment_expected_pages', { p_session_id: sessionId });
+  if (error) throw error;
+}
+
 /** How many pages already collected — used for the "หน้า N" reply. */
 export async function countPages(supabase: SupabaseClient, sessionId: string): Promise<number> {
   const { count, error } = await supabase

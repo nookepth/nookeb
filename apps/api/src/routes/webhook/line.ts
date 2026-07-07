@@ -12,7 +12,7 @@ import {
   buildTeamGuideFlexMessage,
   type FlexMessage,
 } from '../../services/flex.service';
-import { ensureUserAndSpace } from '../../services/file.service';
+import { ensureUserAndSpace, findLiveFileByLineMessageId } from '../../services/file.service';
 import { getGroupNotifySetting, setGroupNotifySetting } from '../../services/group-settings.service';
 import {
   checkRedeemRateLimit,
@@ -33,6 +33,7 @@ import {
   cancelSession,
   countPages,
   getActiveSession,
+  incrementExpectedPages,
   setSessionMode,
   setSessionStatus,
   startSession,
@@ -50,6 +51,12 @@ interface LineMessageEvent {
   type: string; // 'message' | 'join' | 'follow' | 'postback' | ...
   replyToken?: string;
   source: LineEventSource;
+  /**
+   * LINE marks retried webhook deliveries here. `isRedelivery` is true when LINE
+   * re-sends an event it isn't sure we processed — for normal uploads we skip
+   * re-enqueuing if the file is already stored (see handleEvent).
+   */
+  deliveryContext?: { isRedelivery: boolean };
   /** Present on 'postback' events — the tapped action's `data` string. */
   postback?: { data: string };
   message?: {
@@ -858,6 +865,16 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         jobId: sanitizeJobId('scan-page', message.id),
         ...RETRY_OPTS,
       });
+      // Record that we accepted one more page for this session BEFORE the add_scan_page
+      // job lands. finalize_scan (triggered by "เสร็จ") waits until the stored page
+      // count catches up to this, so a page whose job is still queued / in CDN-retry
+      // backoff isn't silently dropped from the PDF. Fail open — if migration 023 isn't
+      // applied yet the RPC errors and the wait-gate simply no-ops.
+      try {
+        await incrementExpectedPages(app.supabase, session.id);
+      } catch (err) {
+        app.log.warn({ err, sessionId: session.id }, 'increment_expected_pages failed (migration 023?)');
+      }
       // One confirmation per burst, not per image: debounce the reply and show the
       // accumulated session total. `basePageCount` is the count BEFORE this burst;
       // only the first event of a burst uses it (see enqueueScanPageReply).
@@ -869,6 +886,24 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         basePageCount,
         kind: session.session_kind ?? 'merge',
       });
+      return;
+    }
+  }
+
+  // LINE occasionally REDELIVERS a webhook event (deliveryContext.isRedelivery)
+  // when it isn't sure the first delivery was processed. For normal uploads that
+  // would enqueue a SECOND upload_batch and double-store the file (scan pages
+  // already dedup by message id via pageExists). If this is a redelivery and the
+  // file is already stored, skip re-enqueuing. First deliveries, and redeliveries
+  // whose file isn't stored yet, fall through — storeUpload's per-message dedup and
+  // the unique index (migration 022) are the final backstop.
+  if (event.deliveryContext?.isRedelivery) {
+    const existing = await findLiveFileByLineMessageId(app.supabase, message.id);
+    if (existing) {
+      app.log.info(
+        { messageId: message.id, fileId: existing.id },
+        'skipping redelivered upload — file already stored',
+      );
       return;
     }
   }

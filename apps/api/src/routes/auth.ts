@@ -20,6 +20,13 @@ interface LineProfileResponse {
   pictureUrl?: string;
 }
 
+// Audit finding (rate-limit bypass): with the old `trustProxy: true`, the
+// per-IP limiter on POST /auth/line keyed off a client-spoofable X-Forwarded-For
+// entry. After switching to `trustProxy: 1` (see index.ts), log the resolved
+// request.ip once (info level) so it is easy to confirm in Railway logs that the
+// limiter now sees the REAL client IP, not a forged `X-Forwarded-For` value.
+let loggedFirstRequestIp = false;
+
 const authRoutes: FastifyPluginAsync = async (app) => {
   // POST /auth/line — exchange LINE Login authorization code → app JWT.
   // Stricter limit than the global 100/min: this endpoint can be used to
@@ -39,6 +46,12 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       },
     },
   }, async (request, reply) => {
+    // See the audit-finding note above: confirm the resolved client IP once.
+    if (!loggedFirstRequestIp) {
+      loggedFirstRequestIp = true;
+      app.log.info({ resolvedClientIp: request.ip }, 'auth: resolved request.ip for first /auth/line request (trustProxy=1)');
+    }
+
     const bodySchema = z.object({
       code: z.string().min(1),
       redirectUri: z.string().url(),

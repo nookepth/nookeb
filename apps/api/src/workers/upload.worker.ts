@@ -36,6 +36,7 @@ import { getMessageContent, getProfile, pushMessage } from '../services/line.ser
 import {
   ensureUserAndSpace,
   createFileRecord,
+  findLiveFileByLineMessageId,
   markFileReady,
   markFileError,
   addStorageUsed,
@@ -45,7 +46,7 @@ import {
 } from '../services/file.service';
 import { checkStorageAlert } from '../services/storage-monitor.service';
 import { isVirusScanEnabled, scanBuffer, type ScanVerdict } from '../services/virusTotal.service';
-import { ensureGroupSpace } from '../services/space.service';
+import { ensureGroupSpace, getMemberRole } from '../services/space.service';
 import {
   getTeamByLineGroup,
   incrementTeamStorage,
@@ -75,6 +76,17 @@ const r2 = createR2Client();
 const fileQueue = new Queue<FileJob>(FILE_QUEUE, { connection: createRedis() });
 
 const THUMBNAIL_WIDTH = 480;
+
+// finalize_scan wait-gate (migration 023). Max times finalize_scan re-enqueues itself
+// waiting for in-flight add_scan_page jobs to land before it gives up and builds the PDF
+// from whatever pages exist (~MAX * 3s worst-case wait). Hard stop = no infinite loop.
+const MAX_FINALIZE_WAITS = 5;
+// Pushed when finalize_scan exhausts the wait budget with pages still missing.
+const MSG_SCAN_PAGES_INCOMPLETE = 'พบว่าบางหน้าอาจไม่ครบ กรุณาตรวจสอบ PDF ที่ได้รับ';
+// Pushed when an add_scan_page job lands after the session already left 'collecting'
+// (user typed "เสร็จ" and finalize started) — the page couldn't join the PDF.
+const MSG_SCAN_PAGE_TOO_LATE =
+  'หน้านี้ส่งมาช้าไปน้า หนูปิดการสแกนรอบนี้ไปแล้ว ถ้าอยากได้หน้านี้ด้วยต้องเริ่มสแกนใหม่น้า';
 
 function extensionOf(name: string): string | null {
   const dot = name.lastIndexOf('.');
@@ -173,7 +185,25 @@ async function storeUpload(
   lineSource: UploadBatchJob['lineSource'],
   lineGroupId: string | null,
   team: TeamRecord | null = null,
+  uploadedBy: string | null = user.id,
 ): Promise<{ filename: string; url: string; size: number }> {
+  // [0] Idempotency fast-path (migration 022): a batch retry (worker restart /
+  // stalled job) or a LINE webhook redelivery can re-run this for a message we
+  // already stored. If a live file row already exists for this LINE message id,
+  // return it WITHOUT re-downloading from the CDN or charging quota again. The
+  // unique partial index is the true guard (the createFileRecord backstop below);
+  // this pre-check just avoids the CDN fetch + reservation churn in the common case.
+  if (item.lineMessageId) {
+    const existing = await findLiveFileByLineMessageId(supabase, item.lineMessageId);
+    if (existing) {
+      console.log(
+        `[upload.worker] dedup: file already stored for message ${item.lineMessageId} ` +
+          `(file ${existing.id}) — skipping re-store/charge`,
+      );
+      return { filename: existing.original_name, url: `${config.WEB_URL}/dashboard`, size: existing.file_size };
+    }
+  }
+
   // Open the LINE CDN response — at this point only headers have been read;
   // the body isn't consumed until something pulls from the stream, so a size
   // rejection here aborts before any transfer (and before any DB row exists).
@@ -294,10 +324,10 @@ async function storeUpload(
       }
     }
 
-    record = await createFileRecord(supabase, {
+    const created = await createFileRecord(supabase, {
       id: fileId,
       spaceId: space.id,
-      uploadedBy: user.id,
+      uploadedBy,
       originalName: item.originalName,
       mimeType,
       fileSize: content.contentLength ?? 0,
@@ -314,6 +344,23 @@ async function storeUpload(
       chargedTo: team ? 'team' : 'personal',
       chargedTeamId: team?.id ?? null,
     });
+    if (created.deduped) {
+      // Lost the INSERT race to a concurrent run (unique line_message_id index,
+      // migration 022) — that run owns the stored file + its quota charge. Release
+      // our reservation and return its row instead of re-storing/charging.
+      content.stream.destroy();
+      await releaseReservation();
+      console.log(
+        `[upload.worker] dedup: lost INSERT race for message ${item.lineMessageId} ` +
+          `(file ${created.record.id}) — released reservation, skipping re-store/charge`,
+      );
+      return {
+        filename: created.record.original_name,
+        url: `${config.WEB_URL}/dashboard`,
+        size: created.record.file_size,
+      };
+    }
+    record = created.record;
   } catch (err) {
     await releaseReservation();
     throw err;
@@ -429,6 +476,18 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // Group bound to a team → files belong to the team and consume TEAM quota
     const team = await resolveTeamForUpload(job.lineSource, job.lineGroupId);
 
+    // Attribute the upload. ensureGroupSpace grants a space_members row to a
+    // LINE sender only if they're an active team member (see the invariant
+    // there). A sender who is NOT a space member (ex-member still in the group)
+    // still has their file stored — but with a NULL uploader, so they gain no
+    // dashboard ownership. NULL uploaded_by is the codebase convention for
+    // unowned rows (see files.ts DELETE), and team-charged deletes refund the
+    // team ledger, not a personal quota that was never charged.
+    const uploadedBy =
+      space.type === 'team' && (await getMemberRole(supabase, space.id, user.id)) === null
+        ? null
+        : user.id;
+
     // Quota gate. Both ledgers now enforce atomically PER FILE inside
     // storeUpload (team: increment_team_storage; personal:
     // increment_personal_storage, migration 014 — FIX #2), so the old personal
@@ -471,7 +530,7 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
         if (overLimit) return null;
         try {
           const res = await withRetry(
-            () => storeUpload(user, space, item, job.lineSource, job.lineGroupId, team),
+            () => storeUpload(user, space, item, job.lineSource, job.lineGroupId, team, uploadedBy),
             3,
           );
           await progressStore.increment(job.batchId).catch(() => undefined);
@@ -601,7 +660,29 @@ async function processOcrImage(job: OcrImageJob): Promise<void> {
  */
 async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
-  if (!session || session.status !== 'collecting' || !session.space_id) return;
+  if (!session || !session.space_id) return;
+  if (session.status !== 'collecting') {
+    // The session already left 'collecting'. Previously we returned SILENTLY and the
+    // page vanished from the PDF with zero trace. If the user typed "เสร็จ" and
+    // finalize is running ('processing'), tell them this page arrived too late — but
+    // only when the message isn't already stored (a plain retry of an on-time page
+    // must stay quiet). done/cancelled sessions just log-and-drop.
+    if (session.status === 'processing') {
+      const alreadyStored = await pageExists(supabase, session.id, job.lineMessageId);
+      console.warn(
+        `[upload.worker] add_scan_page LATE session=${session.id} msg=${job.lineMessageId} ` +
+          `status=processing alreadyStored=${alreadyStored} — page arrived after finalize started`,
+      );
+      if (!alreadyStored && job.lineUserId) {
+        try {
+          await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_SCAN_PAGE_TOO_LATE }]);
+        } catch (err) {
+          console.error(`[upload.worker] late-page push failed (${session.id}):`, err);
+        }
+      }
+    }
+    return;
+  }
 
   // Retry-safe: if a previous attempt already stored this message, don't add it twice
   if (await pageExists(supabase, session.id, job.lineMessageId)) return;
@@ -683,6 +764,45 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     const pageCount = await countPages(supabase, session.id);
     await finishSession(supabase, session.id, session.result_file_id, pageCount);
     return;
+  }
+
+  // Wait-gate (migration 023): "เสร็จ" flips status to 'processing' and enqueues this
+  // immediately, but add_scan_page jobs for pages accepted just before "เสร็จ" may still
+  // be queued or in CDN-retry backoff. If fewer pages are stored than the webhook
+  // accepted (expected_pages), re-enqueue ourselves with a short delay until they land —
+  // up to MAX_FINALIZE_WAITS, then build the PDF from what we have and warn the user.
+  // expected=0 (migration not applied / no images) makes this a no-op, so it's safe.
+  const expected = session.expected_pages ?? 0;
+  const stored = await countPages(supabase, session.id);
+  if (expected > stored) {
+    const waitAttempt = job.waitAttempt ?? 0;
+    if (waitAttempt < MAX_FINALIZE_WAITS) {
+      log('wait-pages', `stored=${stored} expected=${expected} attempt=${waitAttempt + 1}/${MAX_FINALIZE_WAITS}`);
+      await fileQueue.add(
+        'finalize_scan',
+        { ...job, waitAttempt: waitAttempt + 1 },
+        {
+          // Distinct jobId per wait so BullMQ doesn't reject it as a duplicate of the
+          // just-completed job. Fresh attempts:3 for the real processing that follows.
+          jobId: jobId(`scan-final-w${waitAttempt + 1}`, session.id),
+          delay: 3000,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+        },
+      );
+      return;
+    }
+    // Wait budget exhausted — an add_scan_page job never landed. Build the PDF from the
+    // pages we DO have (better than blocking forever) but tell the user to check it.
+    console.warn(
+      `[upload.worker] finalize_scan session=${session.id} proceeding with ${stored}/${expected} ` +
+        `pages after ${MAX_FINALIZE_WAITS} waits — some pages missing`,
+    );
+    try {
+      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_SCAN_PAGES_INCOMPLETE }]);
+    } catch (err) {
+      console.error(`[upload.worker] finalize_scan incomplete-warning push failed (${session.id}):`, err);
+    }
   }
 
   const pages = await listPages(supabase, session.id);
@@ -767,7 +887,9 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
 
   const fileId = randomUUID();
   const r2Key = buildFileKey(session.space_id, fileId, name);
-  const record = await createFileRecord(supabase, {
+  // lineMessageId is null for merged scan PDFs, so createFileRecord never dedups
+  // here — the result_file_id guard above already makes finalize_scan retry-safe.
+  const { record } = await createFileRecord(supabase, {
     id: fileId,
     spaceId: session.space_id,
     uploadedBy: session.user_id,

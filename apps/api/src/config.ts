@@ -6,6 +6,12 @@ const envSchema = z.object({
   APP_URL: z.string().url().default('http://localhost:3001'),
   WEB_URL: z.string().url().default('http://localhost:3000'),
 
+  // Reverse-proxy assumption: this API is deployed behind exactly 1 proxy hop
+  // (Railway's ingress), so `trustProxy: 1` is hardcoded in index.ts to resolve
+  // `request.ip` to the real client IP for the per-IP rate limiters. If you add
+  // a CDN or an additional proxy layer in front, increase trustProxy accordingly
+  // (otherwise request.ip resolves to the wrong hop and rate limiting misbehaves).
+
   // LINE Messaging API
   LINE_CHANNEL_ID: z.string().min(1),
   LINE_CHANNEL_SECRET: z.string().min(1),

@@ -33,6 +33,13 @@ export interface FinalizeScanJob {
   type: 'finalize_scan';
   sessionId: string;
   lineUserId: string;
+  /**
+   * Wait-gate re-enqueue counter (migration 023). When finalize_scan finds fewer
+   * stored scan_pages than the session's expected_pages, it re-enqueues itself with
+   * a short delay and this incremented, until a hard cap — then proceeds with the
+   * pages it has and warns the user. Absent/0 on the first enqueue.
+   */
+  waitAttempt?: number;
 }
 
 /** Job: purge R2 objects of files soft-deleted past the retention window */

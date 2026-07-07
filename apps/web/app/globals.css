@@ -872,6 +872,28 @@ button:active,
   padding-bottom: 120px;
 }
 
+/* ---------- pagination ---------- */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 24px 0 8px;
+}
+
+/* Buttons keep a 44px touch target on mobile (WCAG 2.5.5). */
+.pagination .btn {
+  min-height: 44px;
+}
+
+.page-indicator {
+  min-width: 84px;
+  text-align: center;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
 .file-card {
   position: relative;
   background: var(--color-surface);

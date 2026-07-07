@@ -128,7 +128,9 @@ export async function ensureUserAndSpace(
 export interface CreateFileInput {
   id: string;
   spaceId: string;
-  uploadedBy: string;
+  /** null for a file stored to a team-bound group space by a non-team-member —
+   * they get no dashboard ownership (same convention as legacy unowned rows). */
+  uploadedBy: string | null;
   originalName: string;
   mimeType: string;
   fileSize: number;
@@ -151,10 +153,41 @@ export interface CreateFileInput {
   chargedTeamId?: string | null;
 }
 
+/**
+ * Find the single LIVE (not soft-deleted) file row for a LINE message id, if any.
+ * Backs the upload idempotency guard (migration 022): a batch retry or LINE webhook
+ * redelivery must recover the already-stored file instead of storing a duplicate.
+ * Returns null when `lineMessageId` maps to no live row. Server-generated files
+ * (merged scan PDFs) carry a NULL line_message_id and are never matched here.
+ */
+export async function findLiveFileByLineMessageId(
+  supabase: SupabaseClient,
+  lineMessageId: string,
+): Promise<FileRecord | null> {
+  const { data, error } = await supabase
+    .from('files')
+    .select('*')
+    .eq('line_message_id', lineMessageId)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: true })
+    .limit(1);
+  if (error) throw error;
+  const row = (data as FileRecord[] | null)?.[0];
+  return row ?? null;
+}
+
+/**
+ * Insert a file row. Idempotent by `line_message_id` (migration 022): if a
+ * concurrent retry / webhook redelivery already inserted a live row for the same
+ * LINE message, the unique partial index rejects this INSERT (23505) and we recover
+ * the winner's row instead of throwing — returning `deduped: true` so the caller can
+ * skip re-storing to R2 and re-charging quota. `deduped` is always false for
+ * server-generated files (NULL line_message_id, e.g. merged scan PDFs).
+ */
 export async function createFileRecord(
   supabase: SupabaseClient,
   input: CreateFileInput,
-): Promise<FileRecord> {
+): Promise<{ record: FileRecord; deduped: boolean }> {
   const { data, error } = await supabase
     .from('files')
     .insert({
@@ -180,8 +213,17 @@ export async function createFileRecord(
     })
     .select('*')
     .single();
-  if (error) throw error;
-  return data as FileRecord;
+  if (error) {
+    // Lost the INSERT race on the unique line_message_id index (migration 022) —
+    // recover the row the winning run just stored. Only treat 23505 as a dedup when
+    // we can actually find that row by message id; otherwise it's a real error.
+    if (error.code === PG_UNIQUE_VIOLATION && input.lineMessageId) {
+      const existing = await findLiveFileByLineMessageId(supabase, input.lineMessageId);
+      if (existing) return { record: existing, deduped: true };
+    }
+    throw error;
+  }
+  return { record: data as FileRecord, deduped: false };
 }
 
 export async function markFileReady(

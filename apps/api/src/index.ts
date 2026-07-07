@@ -25,15 +25,24 @@ async function main(): Promise<void> {
     logger: {
       level: config.NODE_ENV === 'production' ? 'info' : 'debug',
     },
-    // The dashboard now reaches the API same-origin through the Next.js
-    // /api-proxy rewrite (and Railway's ingress fronts the API), so every
-    // request arrives from the proxy's socket address. Without trustProxy,
-    // `request.ip` is that single shared address — which makes the per-IP
-    // rate limiters (global 100/min, and especially POST /auth/line's
-    // 10/min + ban:5) count ALL users as one client. A re-login burst after
-    // a deploy then trips the ban and blocks login for everyone. Trusting the
-    // forwarded chain restores real per-client IPs so limits key per user.
-    trustProxy: true,
+    // Trust exactly 1 hop (Railway ingress). Do not use `true` — it trusts the
+    // full X-Forwarded-For chain and takes the LEFTMOST (client-controlled)
+    // entry, so any attacker can spoof `X-Forwarded-For: 1.2.3.4` per request
+    // and bypass every per-IP rate limiter (global 100/min, and critically
+    // POST /auth/line's 10/min + ban:5 that stops authorization-code brute
+    // force). With `1`, Fastify strips exactly one trusted hop and resolves
+    // `request.ip` to the RIGHTMOST entry that Railway's ingress appended —
+    // the real client IP, which cannot be forged from the outside.
+    //
+    // The dashboard still reaches the API same-origin via the Next.js
+    // /api-proxy rewrite fronted by Railway's ingress, so requests arrive from
+    // the proxy socket — trusting that single hop restores real per-client IPs
+    // so the limiters key per user instead of collapsing everyone onto one IP.
+    //
+    // To verify the fix works: send a request to any rate-limited endpoint with
+    // header `X-Forwarded-For: 1.1.1.1` and confirm that request.ip in logs
+    // shows the ACTUAL Railway-assigned client IP, not 1.1.1.1.
+    trustProxy: 1,
   });
 
   // CORS for the web dashboard. NOTE: the dashboard now reaches the API

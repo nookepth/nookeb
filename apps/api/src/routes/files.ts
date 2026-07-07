@@ -56,6 +56,24 @@ const listQuerySchema = z.object({
   order: z.enum(['asc', 'desc']).default('desc'),
 });
 
+// GET /files/stats shares the list's space/folder/tag/search filters (minus
+// pagination) — the dashboard's stat chips must count ALL matching files, not
+// just the page the grid is showing.
+const statsQuerySchema = z.object({
+  spaceId: z.string().uuid(),
+  folderId: z.string().uuid().optional(),
+  tagId: z.string().uuid().optional(),
+  search: z.string().optional(),
+});
+
+// Strip PostgREST or() syntax characters so user input can't break the filter
+// (shared by GET /files and GET /files/stats).
+function buildSearchOr(search: string): string | null {
+  const safe = search.replace(/[(),]/g, ' ').trim();
+  if (!safe) return null;
+  return `original_name.ilike.%${safe}%,display_name.ilike.%${safe}%,ocr_text.ilike.%${safe}%`;
+}
+
 async function toDtoWithExtras(
   r2: S3Client,
   row: FileRecord,
@@ -103,14 +121,9 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
 
     if (folderId) query = query.eq('folder_id', folderId);
     // search matches the visible name (original/display) and OCR-extracted text.
-    // Strip PostgREST or() syntax characters so user input cannot break the filter.
     if (search) {
-      const safe = search.replace(/[(),]/g, ' ').trim();
-      if (safe) {
-        query = query.or(
-          `original_name.ilike.%${safe}%,display_name.ilike.%${safe}%,ocr_text.ilike.%${safe}%`,
-        );
-      }
+      const or = buildSearchOr(search);
+      if (or) query = query.or(or);
     }
 
     if (tagId) {
@@ -154,6 +167,70 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
       limit,
     };
     return response;
+  });
+
+  // GET /files/stats — aggregate counts for the dashboard stat chips. Same
+  // filters as GET /files but NOT paginated: the chips must reflect every
+  // matching file, not just the page the grid renders. Returns per-mime-type
+  // counts (the web client buckets them into image/doc/video/other) plus the
+  // total count and summed byte size. We stream the two tiny columns in 1000-row
+  // batches (Supabase caps a single select) and aggregate in memory, so the
+  // result stays exact for users with thousands of files.
+  app.get('/files/stats', async (request, reply) => {
+    const parsed = statsQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid query', issues: parsed.error.issues });
+    }
+    const { spaceId, folderId, tagId, search } = parsed.data;
+    const userId = request.authUser!.userId;
+
+    if (!(await isSpaceMember(app.supabase, spaceId, userId))) {
+      return reply.code(403).send({ error: 'Not a member of this space' });
+    }
+
+    // Resolve the tag filter up front (same as GET /files): no tagged files → empty stats.
+    let tagFileIds: string[] | null = null;
+    if (tagId) {
+      const { data: tagged, error: taggedErr } = await app.supabase
+        .from('file_tags')
+        .select('file_id')
+        .eq('tag_id', tagId);
+      if (taggedErr) throw taggedErr;
+      tagFileIds = (tagged as { file_id: string }[]).map((t) => t.file_id);
+      if (tagFileIds.length === 0) {
+        return { total: 0, byType: {}, storageUsed: 0 };
+      }
+    }
+
+    const searchOr = search ? buildSearchOr(search) : null;
+    const byType: Record<string, number> = {};
+    let total = 0;
+    let storageUsed = 0;
+
+    const BATCH = 1000;
+    for (let from = 0; ; from += BATCH) {
+      let query = app.supabase
+        .from('files')
+        .select('mime_type, file_size')
+        .eq('space_id', spaceId)
+        .is('deleted_at', null)
+        .range(from, from + BATCH - 1);
+      if (folderId) query = query.eq('folder_id', folderId);
+      if (searchOr) query = query.or(searchOr);
+      if (tagFileIds) query = query.in('id', tagFileIds);
+
+      const { data, error } = await query;
+      if (error) throw error;
+      const rows = data as { mime_type: string; file_size: number }[];
+      for (const row of rows) {
+        total += 1;
+        storageUsed += row.file_size ?? 0;
+        byType[row.mime_type] = (byType[row.mime_type] ?? 0) + 1;
+      }
+      if (rows.length < BATCH) break;
+    }
+
+    return { total, byType, storageUsed };
   });
 
   // Loads a file row and enforces space membership
