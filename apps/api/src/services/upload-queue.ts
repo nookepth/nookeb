@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
 import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
+import { getGroupNotifySetting } from './group-settings.service';
 import { replyMessage, type LineMessage } from './line.service';
 
 /**
@@ -28,6 +29,8 @@ interface QueueEntry {
   replyToken: string | null;
   lineSource: LineSource;
   lineGroupId: string | null;
+  /** group/room id for the notify-toggle lookup (group-only for routing lives in lineGroupId) */
+  notifyGroupId: string | null;
   username: string | null;
 }
 
@@ -118,6 +121,7 @@ export interface EnqueueParams {
   replyToken: string | null;
   lineSource: LineSource;
   lineGroupId: string | null;
+  notifyGroupId: string | null;
   username: string | null;
 }
 
@@ -150,6 +154,7 @@ export function enqueueUpload(app: FastifyInstance, p: EnqueueParams): void {
     replyToken: p.replyToken,
     lineSource: p.lineSource,
     lineGroupId: p.lineGroupId,
+    notifyGroupId: p.notifyGroupId,
     username: p.username,
   });
 }
@@ -250,6 +255,10 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   // neither pushes. Previously groups got no reply here and a worker text push —
   // that push is gone, so the group acknowledgement now lives here as a reply.
   const isGroup = entry.lineSource === 'group' || entry.lineSource === 'room';
+  // Per-group opt-out: a group can silence the "บันทึกแล้วน้า ✓" confirmation with
+  // "หนูเก็บปิดแจ้งเตือน" (migration 021). Default ON, and getGroupNotifySetting fails
+  // open, so a missing setting / DB error still notifies. 1-on-1 chats are unaffected.
+  const shouldNotify = isGroup ? await getGroupNotifySetting(app.supabase, entry.notifyGroupId) : true;
   const message: LineMessage = isGroup
     ? { type: 'text', text: 'บันทึกแล้วน้า ✓' }
     : buildProgressFlexMessage({
@@ -258,11 +267,14 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
         // The progress page is served by the API, not the web app — hence APP_URL
         progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
       });
-  try {
-    if (entry.replyToken) await replyMessage(entry.replyToken, [message]);
-    else app.log.warn({ lineUserId }, 'upload confirmation skipped — no reply token');
-  } catch (err) {
-    app.log.error({ err, lineUserId }, 'upload confirmation reply failed — skipping (no push fallback)');
+  // When notifications are OFF for this group, store silently — no reply at all.
+  if (shouldNotify) {
+    try {
+      if (entry.replyToken) await replyMessage(entry.replyToken, [message]);
+      else app.log.warn({ lineUserId }, 'upload confirmation skipped — no reply token');
+    } catch (err) {
+      app.log.error({ err, lineUserId }, 'upload confirmation reply failed — skipping (no push fallback)');
+    }
   }
 
   // 2. Hand the batch to the worker (uploads run there — project rule 1)

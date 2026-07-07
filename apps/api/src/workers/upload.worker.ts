@@ -588,11 +588,16 @@ async function processOcrImage(job: OcrImageJob): Promise<void> {
 }
 
 /**
- * add_scan_page job: download the page from LINE → scan-enhance pipeline
- * (edge detect → perspective warp → bw/color enhancement; flag-gated, never
- * throws, falls back to the plain normalize) → store in R2 scan-temp →
- * insert scan_page row. Quality warnings are pushed best-effort AFTER the
- * page is stored, so a push failure can never retry-and-duplicate the page.
+ * add_scan_page job: download the page from LINE → per-kind processing →
+ * store in R2 scan-temp → insert scan_page row.
+ *   kind 'scan'  (สแกน)   → scan-enhance pipeline (edge detect → perspective
+ *                           warp → bw/color enhancement; never throws, falls
+ *                           back to the plain normalize per page).
+ *   kind 'merge' (รวมรูป) → plain normalize ONLY — merge combines the images
+ *                           as-is; running the document pipeline here would
+ *                           grayscale/flatten the user's photos.
+ * Quality warnings are pushed best-effort AFTER the page is stored, so a push
+ * failure can never retry-and-duplicate the page.
  */
 async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const session = await getSession(supabase, job.sessionId);
@@ -604,11 +609,13 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const content = await getMessageContent(job.lineMessageId);
   const original = await readAll(content.stream);
 
+  // kind falls back to 'merge' (migration 020's default) and scan_mode to the
+  // config default (migration 019) if either migration isn't applied yet.
+  const kind = session.session_kind ?? 'merge';
+  const mode = session.scan_mode ?? config.SCAN_DEFAULT_MODE;
   let jpeg: Buffer;
   let warnings: string[] = [];
-  if (config.SCAN_ENHANCE_ENABLED) {
-    // scan_mode falls back to the config default if migration 019 isn't applied yet
-    const mode = session.scan_mode ?? config.SCAN_DEFAULT_MODE;
+  if (kind === 'scan' && config.SCAN_ENHANCE_ENABLED) {
     const result = await processScanPage(
       original,
       mode,
@@ -616,7 +623,23 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
     );
     jpeg = result.jpeg;
     warnings = result.warnings;
+    // One line per page stating which pipeline path ran — 'skipped' here means
+    // the pipeline crashed and degraded to the plain image (see scan-enhance).
+    console.log(
+      `[upload.worker] add_scan_page session=${session.id} kind=${kind} mode=${mode} ` +
+        `edge=${result.edgeDetection} warnings=${warnings.length}`,
+    );
   } else {
+    // A SCAN page falling through here means the kill switch is on — the user
+    // asked for document processing and is getting a raw photo. Say so loudly:
+    // this exact state previously shipped unprocessed "สแกน_*.pdf" files with
+    // zero log evidence.
+    if (kind === 'scan') {
+      console.warn(
+        `[upload.worker] add_scan_page session=${session.id} SCAN page stored WITHOUT enhancement ` +
+          `(SCAN_ENHANCE_ENABLED=false kill switch)`,
+      );
+    }
     jpeg = await plainNormalize(original);
   }
 

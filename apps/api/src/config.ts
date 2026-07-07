@@ -67,10 +67,11 @@ const envSchema = z.object({
   VIRUSTOTAL_API_KEY: z.string().optional(),
   VIRUSTOTAL_MAX_SCAN_SIZE_BYTES: z.coerce.number().int().positive().default(33_554_432),
 
-  // Scan-enhance pipeline (edge detection + perspective correction + color
-  // enhancement for รวมรูป/scan pages). Toggle via Railway env, no code change.
-  // Same string→boolean pattern as ENABLE_VIRUS_SCAN, but default ON: only the
-  // exact string 'false' disables it.
+  // Scan-enhance pipeline (edge detection + perspective correction + bw/color
+  // enhancement) — applies to SCAN (สแกน) session pages only; merge (รวมรูป)
+  // pages are always stored plain. EMERGENCY KILL SWITCH: setting the exact
+  // string 'false' makes scan sessions ship raw, unprocessed pages (the worker
+  // warns per page), so leave it unset in normal operation. Default ON.
   SCAN_ENHANCE_ENABLED: z
     .string()
     .optional()

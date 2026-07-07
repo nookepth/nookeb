@@ -13,6 +13,7 @@ import {
   type FlexMessage,
 } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
+import { getGroupNotifySetting, setGroupNotifySetting } from '../../services/group-settings.service';
 import {
   checkRedeemRateLimit,
   getReferralStatus,
@@ -234,6 +235,8 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บผูกทีม — ผูกกลุ่มนี้กับทีม
 หนูเก็บยกเลิกผูกทีม — ยกเลิกการผูกกลุ่มกับทีม
 หนูเก็บไอดีกลุ่ม — ดูไอดีกลุ่มสำหรับผูกทีม
+หนูเก็บปิดแจ้งเตือน — ปิดข้อความ "บันทึกแล้วน้า" ในกลุ่มนี้
+หนูเก็บเปิดแจ้งเตือน — เปิดข้อความแจ้งเตือนกลับมา
 
 🎁 เชิญเพื่อน / โค้ด
 หนูเก็บเชิญ — ดูโค้ดเชิญเพื่อน (เพิ่มพื้นที่)
@@ -555,6 +558,46 @@ async function handleTextCommand(
     return;
   }
 
+  // Group notification toggle (group/room only). Turns the per-upload
+  // "บันทึกแล้วน้า ✓" confirmation reply ON/OFF for THIS group — stored per group
+  // (migration 021, group-settings.service). Open to any member (LINE's Messaging
+  // API can't expose group-admin role); `updated_by` records who last changed it.
+  // Reached in group/room because the "หนูเก็บ" prefix passes the bot-directed guard
+  // above. In 1-on-1 it just explains the command is group-only.
+  const notifyOff = isCmd(text, 'ปิดแจ้งเตือน', 'หนูเก็บปิดแจ้งเตือน');
+  const notifyOn = isCmd(text, 'เปิดแจ้งเตือน', 'หนูเก็บเปิดแจ้งเตือน');
+  if (notifyOff || notifyOn) {
+    // Room (OpenChat) is treated like a group; both key off the group/room id.
+    const groupId = source.groupId ?? source.roomId;
+    if ((source.type !== 'group' && source.type !== 'room') || !groupId) {
+      await reply(event, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มน้า');
+      return;
+    }
+    const enable = notifyOn;
+    // Already in the requested state → acknowledge without a redundant write.
+    const current = await getGroupNotifySetting(app.supabase, groupId);
+    if (current === enable) {
+      await reply(
+        event,
+        enable ? 'เปิดอยู่แล้วน้า ปกติเลย' : 'ปิดอยู่แล้วน้า ไม่ต้องทำอะไรเพิ่มเลย',
+      );
+      return;
+    }
+    try {
+      await setGroupNotifySetting(app.supabase, groupId, enable, lineUserId);
+      await reply(
+        event,
+        enable
+          ? 'เปิดการแจ้งเตือนแล้วน้า\nหนูจะบอกทุกครั้งที่เก็บของเสร็จน้า'
+          : 'ปิดการแจ้งเตือนแล้วน้า\nต่อไปหนูจะเก็บของเงียบๆ ให้น้า 🤫',
+      );
+    } catch (err) {
+      app.log.error({ err, groupId }, 'group notify toggle failed');
+      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+    }
+    return;
+  }
+
   // Redeem a referral code. Two entry points, same shared flow:
   //   • "/redeem XXXXXXXX"
   //   • "กรอกโค้ด XXXXXXXX" / "ใส่โค้ด XXXXXXXX" / "โค้ด XXXXXXXX"  (easy input)
@@ -796,8 +839,12 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     message.type === 'audio';
   if (!supported) return;
 
-  // An image sent while a scan session is collecting becomes a scan page
-  if (message.type === 'image') {
+  // An image sent while a scan session is collecting becomes a scan page.
+  // 1-on-1 chats ONLY (matching where sessions can be opened): without the
+  // source check, a user with an open personal scan/merge session who posts an
+  // image in a GROUP would have it swallowed into their personal session
+  // instead of stored in the group's shared space.
+  if (message.type === 'image' && source.type === 'user') {
     const userId = await findUserId(app, lineUserId);
     const session = userId ? await getActiveSession(app.supabase, userId) : null;
     if (session) {
@@ -853,6 +900,10 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     replyToken: event.replyToken ?? null,
     lineSource: source.type as LineSource,
     lineGroupId: source.groupId ?? null,
+    // Group/room id for the notify-toggle lookup in flush(). Kept separate from
+    // lineGroupId (which stays group-only for the worker's space routing) so a
+    // room's confirmation reply can still be silenced per its roomId.
+    notifyGroupId: source.groupId ?? source.roomId ?? null,
     username,
   });
 }
