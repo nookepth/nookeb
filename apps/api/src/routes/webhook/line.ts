@@ -5,7 +5,10 @@ import { getProfile, replyMessage, type LineMessage } from '../../services/line.
 import {
   buildInviteFlexMessage,
   buildMergeFlexMessage,
+  buildOnboardingCarouselMessage,
   buildScanFlexMessage,
+  buildTeamGuideFlexMessage,
+  buildWelcomeFlexMessage,
   type FlexMessage,
 } from '../../services/flex.service';
 import { ensureUserAndSpace } from '../../services/file.service';
@@ -45,9 +48,11 @@ interface LineEventSource {
 }
 
 interface LineMessageEvent {
-  type: string; // 'message' | 'join' | 'follow' | ...
+  type: string; // 'message' | 'join' | 'follow' | 'postback' | ...
   replyToken?: string;
   source: LineEventSource;
+  /** Present on 'postback' events — the tapped action's `data` string. */
+  postback?: { data: string };
   message?: {
     id: string;
     type: string; // 'image' | 'file' | 'video' | 'audio' | 'text' | ...
@@ -84,12 +89,20 @@ function sanitizeJobId(prefix: string, id: string): string {
 // (The worker's handlers are written to be safe to re-run — see upload.worker.ts.)
 const RETRY_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 5000 } } as const;
 
-// Greeting image sent on the `follow` event (1-1 chat). Served as a public,
-// unauthenticated static asset from the API (routes/static.ts → R2 static/welcome.jpg)
-// because LINE fetches originalContentUrl directly, so it must be a permanent
-// public HTTPS URL — not a 1h-presigned R2 URL. Derived from APP_URL so it
-// resolves to the deployed API domain per environment.
-const GREETING_IMAGE_URL = `${config.APP_URL}/static/welcome.jpg`;
+/**
+ * Onboarding sent on `follow` (1-1 chat) and `join` (group/room): exactly two
+ * Flex messages — a decorative welcome bubble + a 7-bubble scrollable carousel
+ * (builders in flex.service.ts). Two messages fit LINE's 5-per-reply limit, so
+ * no push/split is needed. The carousel's per-bubble postback taps are routed by
+ * the postback handler in handleEvent.
+ */
+async function sendOnboarding(event: LineMessageEvent): Promise<void> {
+  if (!event.replyToken) return;
+  await replyMessage(event.replyToken, [
+    buildWelcomeFlexMessage(),
+    buildOnboardingCarouselMessage(),
+  ]);
+}
 
 async function reply(event: LineMessageEvent, text: string): Promise<void> {
   if (event.replyToken) await replyMessage(event.replyToken, [{ type: 'text', text }]);
@@ -414,6 +427,18 @@ async function handleTextCommand(
     return;
   }
 
+  // Team onboarding guide ("หนูเก็บทีม" command / onboarding carousel bubble-5
+  // postback). After stripBotPrefix the remainder is "ทีม", so exact-match that
+  // (NOT includes — that would shadow "ผูกทีม"/"ยกเลิกผูกทีม", which contain "ทีม").
+  // Works in 1-1 and group alike: the "หนูเก็บ"-prefixed form passes the group
+  // bot-directed guard above. Grouped with the team commands, before the tail
+  // "unrecognized command" catch-all (the exact-match "หนูเก็บ" menu handler above
+  // never matches "ทีม", so sitting below it is safe).
+  if (isCmd(text, 'ทีม', 'team')) {
+    await replyFlex(event, buildTeamGuideFlexMessage());
+    return;
+  }
+
   // Unbind this LINE group from its team (group context only; owner/admin only).
   if (isCmd(text, 'หนูเก็บยกเลิกผูกทีม')) {
     if (source.type !== 'group' || !source.groupId) {
@@ -705,40 +730,25 @@ async function handleTextCommand(
 }
 
 async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promise<void> {
-  // User adds the bot (1-1 chat) → greet with the welcome image, plus quick-reply
-  // buttons so a new user can tap to see their invite code or open the dashboard
-  // instead of having to type a command.
+  // User adds the bot (1-1 chat) → welcome bubble + onboarding carousel.
   if (event.type === 'follow') {
-    if (event.replyToken) {
-      await replyMessage(event.replyToken, [
-        {
-          type: 'image',
-          originalContentUrl: GREETING_IMAGE_URL,
-          previewImageUrl: GREETING_IMAGE_URL,
-          quickReply: {
-            items: [
-              {
-                type: 'action',
-                action: { type: 'message', label: '📁 ดูโค้ดเชิญ', text: 'เชิญ' },
-              },
-              {
-                type: 'action',
-                action: { type: 'uri', label: '📂 เปิดคลังไฟล์', uri: `${config.WEB_URL}/dashboard` },
-              },
-            ],
-          },
-        },
-      ] as unknown as LineMessage[]);
-    }
+    await sendOnboarding(event);
     return;
   }
 
-  // Bot added to a group → greet
+  // Bot added to a group/room → same welcome bubble + onboarding carousel.
   if (event.type === 'join') {
-    await reply(
-      event,
-      'สวัสดีค้าบ หนูเก็บเองน้า\nส่งรูปหรือไฟล์เข้ามาได้เลย หนูจะเก็บให้เองเลยน้า\nพิมพ์ "วิธีใช้" ถ้าอยากดูคำสั่งทั้งหมดน้า',
-    );
+    await sendOnboarding(event);
+    return;
+  }
+
+  // Onboarding-carousel taps arrive as `postback` events whose `data` is an
+  // existing "หนูเก็บ…" text command — route it through the same handler as typed
+  // text so the taps behave exactly like sending that command.
+  if (event.type === 'postback') {
+    if (event.source.userId && event.postback?.data) {
+      await handleTextCommand(app, event, event.postback.data);
+    }
     return;
   }
 

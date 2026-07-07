@@ -10,6 +10,8 @@
  * `{ type: 'image', url: '<https-png>' }` component.
  */
 
+import { config } from '../config';
+
 const LINE_GREEN = '#06C755';
 const BRAND_RED = '#b53a32'; // nookeb brand — CTA buttons/links
 const ERROR_RED = '#FF334B';
@@ -710,6 +712,110 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
         ],
       },
       styles: { header: { backgroundColor: TEAL }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
+// ── Onboarding (follow/join) ────────────────────────────────────────────────
+// Sent as two Flex messages when a user adds the bot (follow) or it's added to a
+// group (join): a decorative welcome bubble + a 7-bubble scrollable carousel.
+// Hero images are public R2 static assets (routes/static.ts → /static/...),
+// APP_URL-derived so they resolve to the deployed API per environment. LINE
+// fetches these hero URLs directly, so they must be permanent public HTTPS URLs.
+
+/** Shared hero-image props for every onboarding bubble (full-width, 20:13 cover). */
+const ONBOARDING_HERO = { type: 'image', size: 'full', aspectRatio: '20:13', aspectMode: 'cover' } as const;
+
+/** Decorative welcome hero card (no tap action). Image: /static/welcome.jpg. */
+export function buildWelcomeFlexMessage(): FlexMessage {
+  return {
+    type: 'flex',
+    altText: 'ยินดีต้อนรับสู่หนูเก็บน้า',
+    contents: {
+      type: 'bubble',
+      hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/welcome.jpg` },
+    },
+  };
+}
+
+/**
+ * Per-bubble tap action for the onboarding carousel (index 0 = 1.jpg … 6 = 7.jpg).
+ * All are `postback`s whose `data` is an existing "หนูเก็บ…" text command (routed
+ * by the postback handler in webhook/line.ts → handleTextCommand), except bubble 6
+ * (index 5) which opens the LINE sticker shop via a `uri` action.
+ */
+const ONBOARDING_ACTIONS: readonly Record<string, unknown>[] = [
+  { type: 'postback', data: 'หนูเก็บ' },
+  { type: 'postback', data: 'หนูเก็บแนะนำตัว' },
+  { type: 'postback', data: 'หนูเก็บวิธีใช้งาน' },
+  { type: 'postback', data: 'หนูเก็บคำสั่ง' },
+  { type: 'postback', data: 'หนูเก็บทีม' },
+  { type: 'uri', uri: 'https://store.line.me/stickershop/product/35012660/en' },
+  { type: 'postback', data: 'หนูเก็บ' },
+];
+
+/** 7-bubble scrollable onboarding carousel (images /static/onboarding/1..7.jpg). */
+export function buildOnboardingCarouselMessage(): FlexMessage {
+  const bubbles = ONBOARDING_ACTIONS.map((action, i) => ({
+    type: 'bubble',
+    hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/onboarding/${i + 1}.jpg`, action },
+  }));
+  return {
+    type: 'flex',
+    altText: 'วิธีใช้งานหนูเก็บ',
+    contents: { type: 'carousel', contents: bubbles },
+  };
+}
+
+/**
+ * "วิธีเริ่มใช้งานกับทีม" guide — replied to the "หนูเก็บทีม" command / onboarding
+ * carousel bubble-5 postback. Brand-red header (BRAND_RED, the same red the merge
+ * card uses), 5 numbered steps, muted footer. No emoji (parity with the other
+ * cards). Static content, so no params.
+ */
+export function buildTeamGuideFlexMessage(): FlexMessage {
+  const steps = [
+    '1.  เพิ่มหนูเก็บเข้ากลุ่ม',
+    '2.  สร้างทีมในแดชบอร์ด',
+    '3.  เข้าร่วมทีม',
+    '4.  ผูกทีมกับไลน์กลุ่ม  (พิมพ์ หนูเก็บผูกทีม ได้เลย)',
+    '5.  เริ่มส่งรูปแล้วเก็บความทรงจำได้เลยยย',
+  ];
+  return {
+    type: 'flex',
+    altText: 'วิธีสร้างทีมกับหนูเก็บ',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'วิธีเริ่มใช้งานกับทีม', color: '#FFFFFF', weight: 'bold', size: 'lg', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: steps.map((text) => ({
+          type: 'text',
+          text,
+          wrap: true,
+          size: 'sm',
+          color: '#333333',
+          margin: 'md',
+        })),
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          { type: 'text', text: 'มีปัญหา? พิมพ์ หนูเก็บ เพื่อดูเมนูหลัก', size: 'xs', color: '#AAAAAA', wrap: true },
+        ],
+      },
+      styles: { header: { backgroundColor: BRAND_RED }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
