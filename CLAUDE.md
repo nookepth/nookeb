@@ -71,6 +71,10 @@ migration 017; rebuild securely later if ever needed.)
 - `เสร็จ` / `done` — `finalize_scan`: merge pages into one PDF (pdf-lib) → store as a file
 - `ยกเลิก` / `cancel` — cancel the session
 - `วิธีใช้` / `help` — usage text
+- `หนูเก็บปิดแจ้งเตือน` / `หนูเก็บเปิดแจ้งเตือน` — group/room only: toggles the per-upload
+  "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
+  `group-settings.service`). Open to any member (Messaging API can't expose
+  group-admin role). Default ON; OFF stores files silently (no reply at all).
 - The webhook handles `message` and `join`/`follow` events. There is NO postback handler,
   so rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu.ts`).
 
@@ -112,6 +116,13 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `018_scan_page_seq.sql` — `scan_pages.page_seq BIGSERIAL` (DB-assigned, atomic) so
     concurrent `add_scan_page` workers can't collide on page number; `finalize_scan` orders
     by it. Also backs the `result_file_id` idempotency marker (rule 9).
+  - `019_scan_mode.sql` — `scan_sessions.scan_mode` (color/bw), `020_session_kind.sql` —
+    `scan_sessions.session_kind` ('scan' vs 'merge'), distinguishing the scan-enhance
+    pipeline from the plain merge-to-PDF flow (see `upload.worker.ts` `processAddScanPage`).
+  - `021_group_notify_settings.sql` — `group_notify_settings` table keyed by LINE
+    group/room id: per-group toggle for the upload confirmation reply (default ON).
+    NOT auto-applied; code fails open (notify=TRUE) if the table is missing, so it's
+    safe to deploy the code before applying this one.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -123,7 +134,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
-    (quota-warning thresholds), `virusTotal` (optional file scanning)
+    (quota-warning thresholds), `virusTotal` (optional file scanning), `group-settings`
+    (per-group notify toggle, migration 021 — 5-min in-memory cache, fails open)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
