@@ -446,6 +446,68 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
   };
 }
 
+/**
+ * Finalize-in-progress card — replied at "เสร็จ" (the moment the user asks to
+ * build the PDF), replacing the old worker-side completion PUSH. The reply token
+ * is fresh here, so this always lands for free; the merged PDF then appears in the
+ * locker (the button target). One compact kilo bubble, same header colors as the
+ * scan (blue) / merge (red) session cards:
+ *   • header  — "ระบบสแกน" / "ระบบรวมรูป"
+ *   • body    — green-dot status line + a soft "แป๊บนึงน้าพี่" note
+ *   • footer  — coral/red "ดูล็อคเกอร์ได้เลย" button → dashboard
+ */
+export function buildFinalizingFlexMessage(params: {
+  kind: 'scan' | 'merge';
+  count: number;
+  dashboardUrl: string;
+}): FlexMessage {
+  const { kind, count, dashboardUrl } = params;
+  const headerColor = kind === 'scan' ? SCAN_BLUE : BRAND_RED;
+  const title = kind === 'scan' ? 'ระบบสแกน' : 'ระบบรวมรูป';
+  const statusLine =
+    kind === 'scan'
+      ? `หนูกำลังสแกน ${count} หน้าเป็น PDF ให้น้า`
+      : `หนูกำลังรวม ${count} ไฟล์เป็น PDF ให้น้า`;
+
+  // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
+  const footer = dashboardUrl.startsWith('https://')
+    ? {
+        type: 'button',
+        style: 'primary',
+        color: BRAND_RED,
+        height: 'sm',
+        action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: dashboardUrl },
+      }
+    : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
+
+  return {
+    type: 'flex',
+    altText: statusLine,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [{ type: 'text', text: title, weight: 'bold', size: 'lg', color: '#FFFFFF' }],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          iconRow(LINE_GREEN, statusLine),
+          { type: 'text', text: 'แป๊บนึงน้าพี่ เดี๋ยวเก็บเข้าล็อคเกอร์ให้เลยน้า', size: 'xs', color: MUTED, wrap: true },
+        ],
+      },
+      footer: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [footer] },
+      styles: { header: { backgroundColor: headerColor }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
 /** Teal-on-gray progress bar (referral tier progress). Percent is clamped 0–100. */
 function progressBar(percent: number): Record<string, unknown> {
   const clamped = Math.max(0, Math.min(100, Math.round(percent)));

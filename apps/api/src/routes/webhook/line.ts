@@ -3,9 +3,11 @@ import type { AddScanPageJob, LineSource, ScanMode } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
 import {
+  buildFinalizingFlexMessage,
   buildInviteFlexMessage,
   buildMergeFlexMessage,
   buildOnboardingCarouselMessage,
+  buildRedeemSuccessFlexMessage,
   buildScanFlexMessage,
   buildTeamGuideFlexMessage,
   type FlexMessage,
@@ -17,10 +19,7 @@ import {
   redeemCode,
   type RedeemFailCode,
 } from '../../services/referral.service';
-import {
-  sendRedeemSuccessToReferee,
-  sendReferralProgressToReferrer,
-} from '../../services/referral.messages';
+import { sendReferralProgressToReferrer } from '../../services/referral.messages';
 import {
   bindLineGroup,
   getTeamByLineGroup,
@@ -87,6 +86,9 @@ function sanitizeJobId(prefix: string, id: string): string {
 // so the file-bearing jobs MUST survive transient failures. Retry with backoff.
 // (The worker's handlers are written to be safe to re-run — see upload.worker.ts.)
 const RETRY_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 5000 } } as const;
+
+/** Bytes-per-GB — referral bonus/total math for the redeem-success reply card. */
+const REFERRAL_GB = 1024 * 1024 * 1024;
 
 /**
  * Onboarding sent on `follow` (1-1 chat) and `join` (group/room): a plain welcome
@@ -330,12 +332,24 @@ async function handleRedeem(
       await reply(event, REDEEM_FAIL_TEXT[result.reasonCode ?? 'not_found']);
       return;
     }
-    // Pushes are best-effort — the redemption is already committed.
+    // The referee (this user) typed the code here, so we have a fresh reply
+    // token — REPLY the success card instead of a paid push. On the success path
+    // the token is otherwise unused (only failures call reply() above). Web-
+    // dashboard redemptions have no chat token and still push (referral.messages).
     try {
-      await sendRedeemSuccessToReferee(app.supabase, user.id, result.newStorageBytes!);
+      await replyFlex(
+        event,
+        buildRedeemSuccessFlexMessage({
+          totalGB: Number((result.newStorageBytes! / REFERRAL_GB).toFixed(2)),
+          bonusGB: Number((config.REFERRAL_BONUS_BYTES / REFERRAL_GB).toFixed(2)),
+          dashboardUrl: `${config.WEB_URL}/dashboard`,
+        }),
+      );
     } catch (err) {
-      app.log.error({ err, userId: user.id }, 'referral: redeem-success push failed');
+      app.log.error({ err, userId: user.id }, 'referral: redeem-success reply failed');
     }
+    // The referrer is a DIFFERENT user (not in this chat) — no reply token for
+    // them, so this stays a best-effort push.
     try {
       await sendReferralProgressToReferrer(app.supabase, app.redis, result.referrerId!);
     } catch (err) {
@@ -679,7 +693,17 @@ async function handleTextCommand(
       { type: 'finalize_scan', sessionId: session.id, lineUserId },
       { jobId: sanitizeJobId('scan-final', session.id), ...RETRY_OPTS },
     );
-    await reply(event, `หนูกำลังรวม ${pages} ไฟล์เป็น PDF อยู่น้า เดี๋ยวส่งให้เลยน้า`);
+    // Reply the finalize-in-progress card HERE (fresh reply token) with a
+    // "ดูล็อคเกอร์" button — this replaces the old worker-side completion PUSH.
+    // The merged PDF shows up in the locker once finalize_scan finishes.
+    await replyFlex(
+      event,
+      buildFinalizingFlexMessage({
+        kind: session.session_kind ?? 'merge',
+        count: pages,
+        dashboardUrl: `${config.WEB_URL}/dashboard`,
+      }),
+    );
     return;
   }
 

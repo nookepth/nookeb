@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
 import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
-import { pushMessage, replyMessage } from './line.service';
+import { replyMessage, type LineMessage } from './line.service';
 
 /**
  * Per-user debounce queue for normal uploads. A burst of image/file events from
@@ -100,17 +100,14 @@ function notifyRateLimited(app: FastifyInstance, p: EnqueueParams): void {
   w.limitNotified = true;
 
   const message = { type: 'text' as const, text: RATE_LIMIT_TEXT };
-  const target = p.lineGroupId ?? p.lineUserId;
+  // Reply-only (no paid push fallback). The rate-limit gate runs synchronously in
+  // the webhook, so the event's token is fresh; if it's missing/expired we skip.
   void (async () => {
     try {
       if (p.replyToken) await replyMessage(p.replyToken, [message]);
-      else await pushMessage(target, [message]);
+      else app.log.warn({ lineUserId: p.lineUserId }, 'rate-limit notice skipped — no reply token');
     } catch (err) {
-      try {
-        await pushMessage(target, [message]);
-      } catch (pushErr) {
-        app.log.error({ err, pushErr, lineUserId: p.lineUserId }, 'rate-limit notice send failed');
-      }
+      app.log.error({ err, lineUserId: p.lineUserId }, 'rate-limit notice reply failed — skipping (no push fallback)');
     }
   })();
 }
@@ -222,20 +219,14 @@ async function flushScanReply(app: FastifyInstance, lineUserId: string): Promise
     entry.kind === 'scan'
       ? buildScanFlexMessage({ kind: 'page', count: entry.count })
       : buildMergeFlexMessage({ kind: 'page', count: entry.count });
-  console.log(`[DEBUG-PUSH] target=${entry.target} type=${entry.kind}-page-card replyToken=${entry.replyToken ? 'yes' : 'no'}`);
+  // Reply-only (no paid push fallback). Scan/merge is a personal-chat feature, so
+  // the debounced first-event token is present and fresh (~1.5s) here; if it's
+  // somehow gone we skip silently and log rather than push.
   try {
     if (entry.replyToken) await replyMessage(entry.replyToken, [card]);
-    else await pushMessage(entry.target, [card]);
-    console.log('[DEBUG-PUSH-OK] sent successfully');
+    else app.log.warn({ target: entry.target }, `${entry.kind} page card skipped — no reply token`);
   } catch (err) {
-    console.log('[DEBUG-PUSH-ERROR]', err instanceof Error ? err.message : String(err), `(${entry.kind}-page-card, trying push fallback)`);
-    try {
-      await pushMessage(entry.target, [card]);
-      console.log('[DEBUG-PUSH-OK] sent successfully');
-    } catch (pushErr) {
-      app.log.error({ err, pushErr }, 'scan page reply send failed');
-      console.log('[DEBUG-PUSH-ERROR]', pushErr instanceof Error ? pushErr.message : String(pushErr), `(${entry.kind}-page-card, push fallback also failed)`);
-    }
+    app.log.error({ err }, `${entry.kind} page card reply failed — skipping (no push fallback)`);
   }
 }
 
@@ -244,29 +235,34 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   if (!entry) return;
   queues.delete(lineUserId);
 
-  // 1. ONE progress ("รอสักครู่น้า") card via the first replyToken. If it's
-  //    expired/used (>60s or >1 use → 400), fall back to a push. In a GROUP/ROOM
-  //    this card is noisy — skip it entirely; the worker already sends a short
-  //    "บันทึกแล้วน้า ✓" when the batch finishes. 1-on-1 chats keep the card.
-  const target = entry.lineGroupId ?? lineUserId;
+  // 1. ONE "รอสักครู่น้า …" progress card as a REPLY (the first event's token is
+  //    only ~1.5s old here, so it's fresh). This is now the ONLY confirmation for
+  //    the whole upload — the worker no longer pushes a summary — so it's sent in
+  //    GROUPS too (previously groups were skipped and got a worker push instead).
+  //    Reply-only: if the token is somehow already gone we skip silently and log,
+  //    never falling back to a paid push (project goal: eliminate push messages).
+  //    Its "ดูล็อคเกอร์" button opens the live progress page, which flips to
+  //    "เสร็จแล้ว" and redirects to the locker once the worker finishes the batch.
   const batchId = randomUUID();
-  if (entry.lineSource !== 'group' && entry.lineSource !== 'room') {
-    const progress = buildProgressFlexMessage({
-      total: entry.items.length,
-      username: entry.username,
-      // The progress page is served by the API, not the web app — hence APP_URL
-      progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
-    });
-    try {
-      if (entry.replyToken) await replyMessage(entry.replyToken, [progress]);
-      else await pushMessage(target, [progress]);
-    } catch (err) {
-      try {
-        await pushMessage(target, [progress]);
-      } catch (pushErr) {
-        app.log.error({ err, pushErr }, 'progress card send failed');
-      }
-    }
+  // Pre-existing rule: GROUP/ROOM chats stay quiet — a short PLAIN-TEXT reply
+  // only, never the Flex card/button (the card is noisy in a shared group). Only
+  // 1-on-1 chats get the reference progress card. Both are REPLIES (fresh token);
+  // neither pushes. Previously groups got no reply here and a worker text push —
+  // that push is gone, so the group acknowledgement now lives here as a reply.
+  const isGroup = entry.lineSource === 'group' || entry.lineSource === 'room';
+  const message: LineMessage = isGroup
+    ? { type: 'text', text: 'บันทึกแล้วน้า ✓' }
+    : buildProgressFlexMessage({
+        total: entry.items.length,
+        username: entry.username,
+        // The progress page is served by the API, not the web app — hence APP_URL
+        progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
+      });
+  try {
+    if (entry.replyToken) await replyMessage(entry.replyToken, [message]);
+    else app.log.warn({ lineUserId }, 'upload confirmation skipped — no reply token');
+  } catch (err) {
+    app.log.error({ err, lineUserId }, 'upload confirmation reply failed — skipping (no push fallback)');
   }
 
   // 2. Hand the batch to the worker (uploads run there — project rule 1)

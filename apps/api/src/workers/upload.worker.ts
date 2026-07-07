@@ -33,7 +33,6 @@ import {
   SizeLimitExceededError,
 } from '../services/r2.service';
 import { getMessageContent, getProfile, pushMessage } from '../services/line.service';
-import { buildSummaryFlexMessage } from '../services/flex.service';
 import {
   ensureUserAndSpace,
   createFileRecord,
@@ -503,57 +502,23 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     const files = results.filter((r): r is { filename: string; url: string } => r !== null);
     const failed = job.items.length - files.length;
 
-    // In a GROUP chat keep it quiet — one short text line, no Flex card (the card
-    // is chatty and noisy in a shared group). 1-on-1 chats keep the full summary.
-    try {
-      if (job.lineSource === 'group') {
-        let text: string;
-        if (files.length === 0) {
-          text = 'ยังเก็บไม่สำเร็จน้า ลองส่งใหม่อีกทีนะคะ';
-        } else if (failed > 0) {
-          text = `บันทึกแล้วน้า ✓ (สำเร็จ ${files.length}, พลาด ${failed})`;
-        } else {
-          text = 'บันทึกแล้วน้า ✓';
-        }
-        await pushMessage(target, [{ type: 'text', text }]);
-      } else {
-        const summary = buildSummaryFlexMessage({
-          success: files.length,
-          failed,
-          files,
-          dashboardUrl: `${config.WEB_URL}/dashboard`,
-          username,
-        });
-        console.log(`[DEBUG-PUSH] target=${target} type=upload-summary-card`);
-        await pushMessage(target, [summary]);
-        console.log('[DEBUG-PUSH-OK] sent successfully');
-      }
-    } catch (err) {
-      console.error('[upload.worker] summary push failed:', err);
-      console.log('[DEBUG-PUSH-ERROR]', err instanceof Error ? err.message : String(err), '(upload-summary-card)');
-    }
+    // No completion PUSH here anymore. The user already got the "รอสักครู่น้า …"
+    // progress card as a REPLY when the batch was enqueued (upload-queue flush),
+    // and its "ดูล็อคเกอร์" button opens the live progress page, which flips to
+    // "เสร็จแล้ว" + redirects to the locker as this batch finishes (progressStore
+    // .complete in the finally). So the outcome is delivered for free — we only
+    // log it here. (Per-file rejection / quota-full notices above are separate:
+    // they're rare error events with no reply token, kept as best-effort pushes.)
+    console.log(
+      `[upload.worker] batch ${job.batchId} done for ${username ?? job.lineUserId}: ` +
+        `stored ${files.length}, failed ${failed}`,
+    );
   } catch (err) {
-    // Setup failed (profile/space resolution) — report a full-failure card, don't throw
+    // Setup failed (profile/space resolution). Nothing to reply to (no fresh
+    // token in the worker) — the progress card already told the user we're on it,
+    // and progressStore.complete below ends the progress page. Log and move on;
+    // do NOT push (project goal: reply-only, no paid pushes).
     console.error('[upload.worker] upload_batch fatal:', err);
-    try {
-      if (job.lineSource === 'group') {
-        await pushMessage(target, [
-          { type: 'text', text: 'ยังเก็บไม่สำเร็จน้า ลองส่งใหม่อีกทีนะคะ' },
-        ]);
-      } else {
-        await pushMessage(target, [
-          buildSummaryFlexMessage({
-            success: 0,
-            failed: job.items.length,
-            files: [],
-            dashboardUrl: `${config.WEB_URL}/dashboard`,
-            username: job.username,
-          }),
-        ]);
-      }
-    } catch {
-      /* ignore — nothing else we can do */
-    }
   } finally {
     await progressStore.complete(job.batchId).catch(() => undefined);
   }
@@ -839,26 +804,13 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     }
   }
 
-  // Best-effort — the PDF is already stored; a failed push must not rebuild it.
-  // Same Flex builder as the upload summary card, in its scan/merge PDF variant.
-  try {
-    console.log(`[DEBUG-PUSH] target=${job.lineUserId} type=finalize-confirm-card(${kind})`);
-    await pushMessage(job.lineUserId, [
-      buildSummaryFlexMessage({
-        success: pages.length,
-        failed: 0,
-        files: [{ filename: name, url: `${config.WEB_URL}/dashboard` }],
-        dashboardUrl: `${config.WEB_URL}/dashboard`,
-        username: null,
-        pdf: { count: pages.length, kind },
-      }),
-    ]);
-    console.log('[DEBUG-PUSH-OK] sent successfully');
-    log('card-pushed');
-  } catch (err) {
-    console.error(`[upload.worker] finalize_scan confirm push failed for ${session.id}:`, err);
-    console.log('[DEBUG-PUSH-ERROR]', err instanceof Error ? err.message : String(err), `(finalize-confirm-card ${kind})`);
-  }
+  // No completion PUSH here anymore. When the user typed "เสร็จ", the webhook
+  // already REPLIED the finalize-in-progress card (buildFinalizingFlexMessage)
+  // with a "ดูล็อคเกอร์" button — fresh reply token, free. The merged PDF is now
+  // in the locker, so tapping that button shows it. (Error paths above — empty
+  // session / PDF-assembly failure / team-full — keep their best-effort text
+  // pushes: they're rare and have no reply token to fall back on.)
+  log('done-no-push', `kind=${kind} file=${name}`);
 }
 
 /**
