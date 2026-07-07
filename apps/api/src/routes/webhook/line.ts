@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
+import { sanitizeJobId } from '@nookeb/shared';
 import type { AddScanPageJob, LineSource, ScanMode } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
@@ -84,10 +85,6 @@ function timestampName(ext: string): string {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   return `LINE_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.${ext}`;
-}
-
-function sanitizeJobId(prefix: string, id: string): string {
-  return `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}`;
 }
 
 // LINE CDN content has a ~1h TTL and the user has already been told "รับแล้ว",
@@ -266,17 +263,21 @@ const REDEEM_FAIL_TEXT: Record<RedeemFailCode, string> = {
 };
 
 /**
- * Normalize command text for exact matching. LINE can deliver Thai text (rich-menu
- * taps, quick-reply echoes, typed input) as non-NFC or with zero-width chars, which
- * broke the old raw `===` compare (same class of bug the invite handler hit). Strip
- * zero-width chars + NFC-normalize both sides so the menu/locker commands still match.
+ * Strip zero-width chars (U+200B–U+200D, U+FEFF) and NFC-normalize. LINE can
+ * deliver Thai text (rich-menu taps, quick-reply echoes, typed input) as non-NFC
+ * or with zero-width chars, which broke raw `===`/`includes` matching. This is the
+ * shared core used by normalizeCmd, stripBotPrefix, and the invite match — extracted
+ * so the three can't drift. Callers add their own trim()/toLowerCase() as needed.
+ */
+function normalizeText(s: string): string {
+  return s.replace(/[​-‍﻿]/g, '').normalize('NFC');
+}
+
+/**
+ * Normalize command text for exact matching: shared strip+NFC, then lowercase.
  */
 function normalizeCmd(s: string): string {
-  return s
-    .trim()
-    .replace(/[​-‍﻿]/g, '') // remove zero-width chars
-    .normalize('NFC')
-    .toLowerCase();
+  return normalizeText(s.trim()).toLowerCase();
 }
 
 function isCmd(text: string, ...matches: string[]): boolean {
@@ -297,7 +298,7 @@ const BOT_PREFIX = 'หนูเก็บ';
  * "หนูเก็บ" (nothing after) maps to the menu trigger.
  */
 function stripBotPrefix(raw: string): { text: string; prefixed: boolean } {
-  const cleaned = raw.replace(/[​-‍﻿]/g, '').normalize('NFC').trim();
+  const cleaned = normalizeText(raw).trim();
   if (cleaned.startsWith(BOT_PREFIX)) {
     const rest = cleaned.slice(BOT_PREFIX.length).trim();
     return { text: rest === '' ? 'เมนู' : rest, prefixed: true };
@@ -621,17 +622,17 @@ async function handleTextCommand(
     return;
   }
 
-  // Show my invite code — contains-match on "เชิญ" (or "/invite" prefix).
+  // Show my invite code — prefix-match on "เชิญ" (or "/invite").
   // Robust for Thai text from LINE, which may arrive with zero-width chars or a
   // non-NFC composition that broke the old exact `===` match. Strip zero-width
-  // chars, normalize to NFC, then contains-match. Group chats never reach here:
-  // the allowlist guard at the top returns first, so bare "เชิญ" only fires 1-on-1.
-  const normalizedText = text
-    .trim()
-    .replace(/[\u200B-\u200D\uFEFF]/g, '') // remove zero-width chars
-    .normalize('NFC');
+  // chars, normalize to NFC, then prefix-match. startsWith (not includes) so a
+  // message that merely *contains* "เชิญ" (e.g. "ยกเลิกคำเชิญ", which ends in it)
+  // isn't swallowed here and can fall through to its own handler. Group chats
+  // never reach here: the allowlist guard at the top returns first, so bare
+  // "เชิญ" only fires 1-on-1.
+  const normalizedText = normalizeText(text.trim());
   const isInviteCommand =
-    normalizedText.includes('เชิญ') || normalizedText.toLowerCase().startsWith('/invite');
+    normalizedText.startsWith('เชิญ') || normalizedText.toLowerCase().startsWith('/invite');
   if (isInviteCommand) {
     // Same silent-fail guard as /redeem: a DB/Redis error must produce an
     // apology reply, never nothing.

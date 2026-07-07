@@ -41,6 +41,9 @@ export async function getGroupNotifySetting(
 
   const cached = cache.get(groupId);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
+  // Delete-on-read eviction: an expired entry is dropped before the refetch so the
+  // Map doesn't retain one entry per group forever.
+  if (cached) cache.delete(groupId);
 
   try {
     const { data, error } = await supabase

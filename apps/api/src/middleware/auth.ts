@@ -82,11 +82,15 @@ export default fp(async (app) => {
     // into browser history and request logs. Browser download navigation uses
     // one-time ?dl_token= tokens instead (see routes/files.ts).
     const header = request.headers.authorization;
-    const token =
-      request.cookies?.[SESSION_COOKIE] ??
-      (header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null);
+    const cookieToken = request.cookies?.[SESSION_COOKIE] ?? null;
+    const bearerToken = header?.startsWith('Bearer ') ? header.slice('Bearer '.length) : null;
 
-    const user = token ? verifyAppToken(token) : null;
+    // Try the cookie first; if it's missing/expired/invalid, fall through to the
+    // Bearer token so a stale cookie can't mask a valid Authorization header.
+    let user = cookieToken ? verifyAppToken(cookieToken) : null;
+    if (!user && bearerToken) {
+      user = verifyAppToken(bearerToken);
+    }
     if (!user) {
       await reply.code(401).send({ error: 'Unauthorized' });
       return;

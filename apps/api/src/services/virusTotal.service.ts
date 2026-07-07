@@ -14,6 +14,10 @@ import { config } from '../config';
 const VT_API = 'https://www.virustotal.com/api/v3';
 const POLL_INTERVAL_MS = 5_000;
 const MAX_POLL_ATTEMPTS = 12; // 12 × 5s = 60s total budget
+// Per-request network timeout (AbortSignal.timeout). A hung VT socket must not
+// block the upload — on timeout the catch below folds it into `scan_failed`, so
+// the caller proceeds with the upload (scanning is best-effort).
+const VT_REQUEST_TIMEOUT_MS = 30_000;
 
 interface VtUploadResponse {
   data: { id: string; type: string };
@@ -93,6 +97,7 @@ export async function scanBuffer(buffer: Buffer, filename: string): Promise<Scan
       method: 'POST',
       headers: { 'x-apikey': apiKey, 'Content-Type': contentType },
       body,
+      signal: AbortSignal.timeout(VT_REQUEST_TIMEOUT_MS),
     });
     if (!uploadRes.ok) {
       return { outcome: 'scan_failed', reason: `VT upload failed: HTTP ${uploadRes.status}` };
@@ -103,6 +108,7 @@ export async function scanBuffer(buffer: Buffer, filename: string): Promise<Scan
       await sleep(POLL_INTERVAL_MS);
       const pollRes = await fetch(`${VT_API}/analyses/${encodeURIComponent(analysisId)}`, {
         headers: { 'x-apikey': apiKey },
+        signal: AbortSignal.timeout(VT_REQUEST_TIMEOUT_MS),
       });
       if (!pollRes.ok) {
         return { outcome: 'scan_failed', reason: `VT poll failed: HTTP ${pollRes.status}` };
@@ -124,6 +130,10 @@ export async function scanBuffer(buffer: Buffer, filename: string): Promise<Scan
       reason: `VT analysis not completed within ${(POLL_INTERVAL_MS * MAX_POLL_ATTEMPTS) / 1000}s`,
     };
   } catch (err) {
+    if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+      console.warn(`[VT-TIMEOUT] scan request timed out after ${VT_REQUEST_TIMEOUT_MS}ms — proceeding without scan`);
+      return { outcome: 'scan_failed', reason: `VT request timed out after ${VT_REQUEST_TIMEOUT_MS}ms` };
+    }
     return {
       outcome: 'scan_failed',
       reason: `VT request error: ${err instanceof Error ? err.message : String(err)}`,

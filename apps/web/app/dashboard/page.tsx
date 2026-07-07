@@ -128,6 +128,7 @@ export default function DashboardPage() {
           search: debouncedSearch || undefined,
           folderId: currentFolder?.id,
           tagId: activeTagId ?? undefined,
+          fileType: typeFilter === 'all' ? undefined : typeFilter,
         }),
         listFolders(spaceId),
         listTags(spaceId),
@@ -145,7 +146,7 @@ export default function DashboardPage() {
         setError('โหลดรายการไฟล์ไม่สำเร็จ ลองรีเฟรชอีกครั้ง');
       }
     }
-  }, [spaceId, debouncedSearch, currentFolder, activeTagId, page]);
+  }, [spaceId, debouncedSearch, currentFolder, activeTagId, typeFilter, page]);
 
   useEffect(() => {
     void load();
@@ -275,8 +276,9 @@ export default function DashboardPage() {
 
   const shownFiles = useMemo(() => {
     if (!files) return null;
-    const filtered = typeFilter === 'all' ? files : files.filter((f) => fileGroup(f.mimeType) === typeFilter);
-    const sorted = [...filtered];
+    // Type filtering is done server-side (see the listFiles fileType param), so
+    // `files` is already scoped to the active tab — just sort the page here.
+    const sorted = [...files];
     switch (sort) {
       case 'newest':
         sorted.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
@@ -292,7 +294,7 @@ export default function DashboardPage() {
         break;
     }
     return sorted;
-  }, [files, typeFilter, sort]);
+  }, [files, sort]);
 
   const recentFiles = useMemo(() => {
     if (!files) return [];

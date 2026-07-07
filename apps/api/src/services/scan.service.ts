@@ -1,7 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ScanMode, ScanPageRecord, ScanSessionRecord, SessionKind } from '@nookeb/shared';
+import { createR2Client, deleteObject } from './r2.service';
 
 const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours, matches the schema default
+
+// Module-level client for temp-page cleanup — constructing an S3Client opens no
+// connection, so this is cheap even in the API process (mirrors the worker).
+const r2 = createR2Client();
 
 /** The user's active (still-collecting, unexpired) scan session, if any. */
 export async function getActiveSession(
@@ -29,11 +34,24 @@ export async function startSession(
   scanMode?: ScanMode,
   kind: SessionKind = 'merge',
 ): Promise<ScanSessionRecord> {
-  await supabase
+  const { data: superseded, error: cancelError } = await supabase
     .from('scan_sessions')
     .update({ status: 'cancelled' })
     .eq('user_id', userId)
-    .eq('status', 'collecting');
+    .eq('status', 'collecting')
+    .select('id');
+  // Don't throw — getActiveSession picks the newest 'collecting' row, so a failed
+  // cancel self-heals. But surface it: silence would hide two coexisting sessions.
+  if (cancelError) {
+    console.warn(
+      `[scan] failed to cancel prior collecting session(s) for user ${userId}: ${cancelError.message}`,
+    );
+  }
+  // Free the temp page images of any session we just superseded (best-effort;
+  // the daily purge sweep is the safety net if this misses).
+  for (const s of (superseded ?? []) as { id: string }[]) {
+    await deleteScanTempObjects(supabase, s.id);
+  }
 
   const { data, error } = await supabase
     .from('scan_sessions')
@@ -72,6 +90,51 @@ export async function cancelSession(supabase: SupabaseClient, sessionId: string)
     .update({ status: 'cancelled' })
     .eq('id', sessionId);
   if (error) throw error;
+  // Free the temp page images now that the session is cancelled. Best-effort —
+  // deleteScanTempObjects never throws, so a failed R2 delete can't block the
+  // cancel; the daily purge sweep is the safety net.
+  await deleteScanTempObjects(supabase, sessionId);
+}
+
+/**
+ * Delete the R2 objects backing a session's scan pages (stored under
+ * `spaces/{sid}/scan-temp/...`), then drop the scan_pages rows. Without this,
+ * cancelled/timed-out sessions leak their page images forever — only a
+ * successful finalize used to clean them up.
+ *
+ * Best-effort on R2: a failed object delete is caught + logged, never thrown, so
+ * it can't block a session cancellation. Only rows whose object was actually
+ * removed are dropped — the rest are kept so the daily purge sweep retries them.
+ * A session with zero pages is handled gracefully (no-op).
+ *
+ * ONLY call this for sessions already out of 'collecting'/'processing' (i.e.
+ * cancelled or done) — deleting temp pages under an in-flight session would
+ * corrupt it. The r2_key on each row is self-contained (it encodes the space id),
+ * so no spaceId argument is needed to locate the objects.
+ */
+export async function deleteScanTempObjects(
+  supabase: SupabaseClient,
+  sessionId: string,
+): Promise<{ objectsDeleted: number; errors: number }> {
+  const pages = await listPages(supabase, sessionId);
+  let objectsDeleted = 0;
+  let errors = 0;
+  const deletedIds: string[] = [];
+  for (const page of pages) {
+    try {
+      await deleteObject(r2, page.r2_key);
+      objectsDeleted += 1;
+      deletedIds.push(page.id);
+    } catch (err) {
+      errors += 1;
+      console.error(`[scan] scan-temp cleanup failed for ${page.r2_key}:`, err);
+    }
+  }
+  if (deletedIds.length > 0) {
+    const { error } = await supabase.from('scan_pages').delete().in('id', deletedIds);
+    if (error) console.error(`[scan] scan-temp row delete failed (session=${sessionId}):`, error);
+  }
+  return { objectsDeleted, errors };
 }
 
 export async function setSessionStatus(

@@ -67,18 +67,29 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(503).send({ error: 'LINE Login is not configured' });
     }
 
-    // 1. Exchange code for access token
-    const tokenRes = await fetch('https://api.line.me/oauth2/v2.1/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({
-        grant_type: 'authorization_code',
-        code: parsed.data.code,
-        redirect_uri: parsed.data.redirectUri,
-        client_id: loginChannelId,
-        client_secret: loginChannelSecret,
-      }),
-    });
+    // 1. Exchange code for access token (15s timeout — a hung LINE token
+    // endpoint must not pin the request; return 503 so the client can retry).
+    let tokenRes: Response;
+    try {
+      tokenRes = await fetch('https://api.line.me/oauth2/v2.1/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          grant_type: 'authorization_code',
+          code: parsed.data.code,
+          redirect_uri: parsed.data.redirectUri,
+          client_id: loginChannelId,
+          client_secret: loginChannelSecret,
+        }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        app.log.warn('LINE token exchange timed out after 15000ms');
+        return reply.code(503).send({ error: 'LINE login temporarily unavailable' });
+      }
+      throw err;
+    }
     if (!tokenRes.ok) {
       app.log.warn({ status: tokenRes.status }, 'LINE token exchange failed');
       return reply.code(401).send({ error: 'LINE login failed' });

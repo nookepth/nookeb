@@ -24,21 +24,27 @@ const analyticsRoutes: FastifyPluginAsync = async (app) => {
     if (userErr) throw userErr;
     if (!user) return reply.code(404).send({ error: 'User not found' });
 
-    // Files this user uploaded (drives their personal quota) — breakdown by type
-    const { data: myFiles, error: mfErr } = await app.supabase
-      .from('files')
-      .select('mime_type, file_size')
-      .eq('uploaded_by', userId)
-      .is('deleted_at', null);
+    // Files this user uploaded (drives their personal quota) — breakdown by type.
+    // Aggregated per mime_type in SQL (a plain select is capped at 1000 rows by
+    // PostgREST, which would undercount); the category mapping stays in JS.
+    const { data: mimeRows, error: mfErr } = await app.supabase.rpc('usage_by_mime', {
+      p_user_id: userId,
+    });
     if (mfErr) throw mfErr;
 
     const byTypeMap = new Map<string, { count: number; bytes: number }>();
-    for (const f of myFiles ?? []) {
-      const cat = categoryOf(f.mime_type as string);
+    let totalFileCount = 0;
+    for (const row of (mimeRows as
+      | { mime_type: string; file_count: number; total_bytes: number }[]
+      | null) ?? []) {
+      const fileCount = Number(row.file_count);
+      const bytes = Number(row.total_bytes);
+      const cat = categoryOf(row.mime_type);
       const cur = byTypeMap.get(cat) ?? { count: 0, bytes: 0 };
-      cur.count += 1;
-      cur.bytes += f.file_size as number;
+      cur.count += fileCount;
+      cur.bytes += bytes;
       byTypeMap.set(cat, cur);
+      totalFileCount += fileCount;
     }
     const byType = [...byTypeMap.entries()]
       .map(([type, v]) => ({ type, ...v }))
@@ -55,17 +61,18 @@ const analyticsRoutes: FastifyPluginAsync = async (app) => {
 
     const totalsBySpace = new Map<string, { count: number; bytes: number }>();
     if (spaceIds.length > 0) {
-      const { data: spaceFiles, error: sfErr } = await app.supabase
-        .from('files')
-        .select('space_id, file_size')
-        .in('space_id', spaceIds)
-        .is('deleted_at', null);
+      // Aggregated per space in SQL (avoids the 1000-row select cap).
+      const { data: spaceStats, error: sfErr } = await app.supabase.rpc('usage_by_space', {
+        p_space_ids: spaceIds,
+      });
       if (sfErr) throw sfErr;
-      for (const f of spaceFiles ?? []) {
-        const cur = totalsBySpace.get(f.space_id as string) ?? { count: 0, bytes: 0 };
-        cur.count += 1;
-        cur.bytes += f.file_size as number;
-        totalsBySpace.set(f.space_id as string, cur);
+      for (const row of (spaceStats as
+        | { space_id: string; file_count: number; total_bytes: number }[]
+        | null) ?? []) {
+        totalsBySpace.set(row.space_id, {
+          count: Number(row.file_count),
+          bytes: Number(row.total_bytes),
+        });
       }
     }
 
@@ -81,7 +88,7 @@ const analyticsRoutes: FastifyPluginAsync = async (app) => {
     return {
       storageUsed: user.storage_used as number,
       storageLimit: user.storage_limit as number,
-      fileCount: (myFiles ?? []).length,
+      fileCount: totalFileCount,
       byType,
       spaces,
     };

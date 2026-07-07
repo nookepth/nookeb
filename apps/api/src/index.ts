@@ -19,6 +19,7 @@ import referralRoutes from './routes/referral';
 import adminRoutes from './routes/admin';
 import progressRoutes from './routes/progress';
 import staticRoutes from './routes/static';
+import { flushAll } from './services/upload-queue';
 
 async function main(): Promise<void> {
   const app = Fastify({
@@ -109,6 +110,22 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
   app.log.info(`nookeb API listening on :${config.PORT}`);
+
+  // On deploy/restart, flush any in-memory upload batches still inside the 1.5s
+  // debounce window before exiting — otherwise those collected files are lost
+  // with no trace. Bounded by a 5s timeout so a hung flush can't block Railway's
+  // deploy cycle; we force-exit either way.
+  process.on('SIGTERM', () => {
+    void (async () => {
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 5000));
+      try {
+        await Promise.race([flushAll(app), timeout]);
+      } catch (err) {
+        app.log.error({ err }, 'flushAll on SIGTERM failed');
+      }
+      process.exit(0);
+    })();
+  });
 }
 
 main().catch((err) => {

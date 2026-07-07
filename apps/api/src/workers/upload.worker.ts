@@ -6,6 +6,7 @@ import { buffer as readAll } from 'node:stream/consumers';
 import sharp from 'sharp';
 import {
   FILE_QUEUE,
+  sanitizeJobId,
   type AddScanPageJob,
   type BatchItem,
   type FileJob,
@@ -39,7 +40,6 @@ import {
   findLiveFileByLineMessageId,
   markFileReady,
   markFileError,
-  addStorageUsed,
   checkFileSizeLimit,
   incrementPersonalStorage,
   FileRejectedError,
@@ -52,10 +52,11 @@ import {
   incrementTeamStorage,
   StorageQuotaError,
 } from '../services/team.service';
-import { purgeDeletedFiles } from '../services/purge.service';
+import { purgeDeletedFiles, purgeOrphanScanTemp } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
 import {
   countPages,
+  deleteScanTempObjects,
   finishSession,
   getSession,
   insertPage,
@@ -91,10 +92,6 @@ const MSG_SCAN_PAGE_TOO_LATE =
 function extensionOf(name: string): string | null {
   const dot = name.lastIndexOf('.');
   return dot > 0 ? name.slice(dot + 1).toLowerCase() : null;
-}
-
-function jobId(prefix: string, id: string): string {
-  return `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}`;
 }
 
 // GB is declared below with the size-cap helpers; toGb is only called at runtime
@@ -213,7 +210,7 @@ async function storeUpload(
   // [1] Hard per-file size cap. Prefer the size LINE declared in the webhook
   // event, falling back to the CDN Content-Length header.
   const declaredSize = item.fileSize ?? content.contentLength;
-  if (declaredSize !== null && !checkFileSizeLimit(declaredSize, item.originalName)) {
+  if (declaredSize !== null && !checkFileSizeLimit(declaredSize)) {
     content.stream.destroy();
     console.warn(
       `[upload.worker] size limit rejected: user=${user.id} file="${item.originalName}" ` +
@@ -401,12 +398,12 @@ async function storeUpload(
         await fileQueue.add(
           'generate_thumbnail',
           { type: 'generate_thumbnail', fileId: record.id },
-          { jobId: jobId('thumb', record.id), attempts: 3, backoff: { type: 'exponential', delay: 3000 } },
+          { jobId: sanitizeJobId('thumb', record.id), attempts: 3, backoff: { type: 'exponential', delay: 3000 } },
         );
         await fileQueue.add(
           'ocr_image',
           { type: 'ocr_image', fileId: record.id },
-          { jobId: jobId('ocr', record.id), attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
+          { jobId: sanitizeJobId('ocr', record.id), attempts: 2, backoff: { type: 'exponential', delay: 5000 } },
         );
       } catch (err) {
         console.error(`[upload.worker] failed to enqueue thumbnail/ocr for ${record.id}:`, err);
@@ -569,7 +566,7 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // log it here. (Per-file rejection / quota-full notices above are separate:
     // they're rare error events with no reply token, kept as best-effort pushes.)
     console.log(
-      `[upload.worker] batch ${job.batchId} done for ${username ?? job.lineUserId}: ` +
+      `[upload.worker] batch ${job.batchId} done for ${username ?? '[profile unavailable]'}: ` +
         `stored ${files.length}, failed ${failed}`,
     );
   } catch (err) {
@@ -784,7 +781,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
         {
           // Distinct jobId per wait so BullMQ doesn't reject it as a duplicate of the
           // just-completed job. Fresh attempts:3 for the real processing that follows.
-          jobId: jobId(`scan-final-w${waitAttempt + 1}`, session.id),
+          jobId: sanitizeJobId(`scan-final-w${waitAttempt + 1}`, session.id),
           delay: 3000,
           attempts: 3,
           backoff: { type: 'exponential', delay: 5000 },
@@ -836,6 +833,9 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     console.error(`[upload.worker] finalize_scan PDF assembly failed (${session.id}):`, err);
     if (!isLastAttempt) throw err; // let BullMQ retry transient R2 read failures
     await setSessionStatus(supabase, session.id, 'cancelled');
+    // The merged PDF will never be produced — free the temp page images now so
+    // this permanently-cancelled session doesn't leak them (best-effort).
+    await deleteScanTempObjects(supabase, session.id);
     try {
       await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
     } catch (pushErr) {
@@ -861,20 +861,43 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     });
   }
 
-  // Reserve the team quota BEFORE storing so an over-quota team never stores the
-  // PDF. The merged size is known exactly (pdfBytes.length), so there's no drift.
+  // Reserve quota BEFORE storing so an over-quota space never stores the PDF.
+  // The merged size is known exactly (pdfBytes.length), so there's no drift.
+  // Personal and team paths now both use reserve-before-store: the team branch
+  // reserves via incrementTeamStorage (enforce default), the personal branch via
+  // incrementPersonalStorage(enforce:true) — mirroring the per-file guard the
+  // normal upload path applies. Both release/settle after the store below.
   if (team) {
     try {
       await incrementTeamStorage(supabase, team.id, pdfBytes.length);
     } catch (err) {
       if (err instanceof StorageQuotaError) {
         await setSessionStatus(supabase, session.id, 'cancelled');
+        // Same leak class as the assembly-failure path: the session is now
+        // permanently cancelled, so free its temp page images (best-effort).
+        await deleteScanTempObjects(supabase, session.id);
         await pushMessage(job.lineUserId, [
           { type: 'text', text: 'พื้นที่ทีมเต็มแล้วน้า ไม่สามารถบันทึกไฟล์รวมรูปได้' },
         ]);
         return;
       }
       throw err;
+    }
+  } else {
+    const reservation = await incrementPersonalStorage(supabase, session.user_id, pdfBytes.length, {
+      enforce: true,
+    });
+    if (reservation.overLimit) {
+      console.warn(
+        `[upload.worker] finalize_scan personal quota rejected: user=${session.user_id} ` +
+          `session=${session.id} size=${pdfBytes.length} used=${reservation.used} limit=${reservation.limit}`,
+      );
+      await setSessionStatus(supabase, session.id, 'cancelled');
+      // Same leak class as the assembly-failure path: the session is now
+      // permanently cancelled, so free its temp page images (best-effort).
+      await deleteScanTempObjects(supabase, session.id);
+      await pushMessage(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }]);
+      return;
     }
   }
 
@@ -909,24 +932,40 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   try {
     const { size } = await uploadStream(r2, r2Key, Readable.from(Buffer.from(pdfBytes)), 'application/pdf');
     await markFileReady(supabase, record.id, size);
+    // Settle any (normally zero) difference from the reserved size. Both paths
+    // reserved pdfBytes.length above, so only the drift is applied here (enforce
+    // off — a small over-actual must never be refused after the file is stored).
+    const drift = size - pdfBytes.length;
     if (team) {
-      // Settle any (normally zero) difference from the reserved size; never
-      // charge the uploader's personal quota for a team file.
-      const drift = size - pdfBytes.length;
+      // Never charge the uploader's personal quota for a team file.
       if (drift !== 0) {
         await incrementTeamStorage(supabase, team.id, drift, { enforce: false }).catch((err) => {
           console.error(`[upload.worker] finalize_scan team settle failed (${team!.id}):`, err);
         });
       }
     } else {
-      await addStorageUsed(supabase, session.user_id, size, session.space_id);
+      if (drift !== 0) {
+        await incrementPersonalStorage(supabase, session.user_id, drift, { enforce: false }).catch(
+          (err) => {
+            console.error(`[upload.worker] finalize_scan personal settle failed (${session.user_id}):`, err);
+          },
+        );
+      }
+      // Run the storage-usage alert monitor for the space (adjustStorageUsed does
+      // this automatically; the enforced-RPC path above does not). Runs after every
+      // successful store, not just when there's drift — PDF size is known exactly so
+      // drift is almost always 0, and the alert must still fire at 80%/95%.
+      await checkStorageAlert(supabase, session.user_id, session.space_id).catch(() => undefined);
     }
   } catch (err) {
-    // Release the team reservation so a failed store (which will retry) never
-    // leaks team quota. Personal accounting happens after a successful upload,
-    // so it needs no release here.
+    // Release the reservation so a failed store (which will retry) never leaks
+    // quota. Both paths reserved pdfBytes.length before storing.
     if (team) {
       await incrementTeamStorage(supabase, team.id, -pdfBytes.length, { enforce: false }).catch(() => undefined);
+    } else {
+      await incrementPersonalStorage(supabase, session.user_id, -pdfBytes.length, {
+        enforce: false,
+      }).catch(() => undefined);
     }
     throw err;
   }
@@ -970,6 +1009,14 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
   console.log(
     `[upload.worker] purge: scanned ${result.scanned} file(s) deleted before ${result.cutoff}, ` +
       `removed ${result.objectsDeleted} R2 object(s), errors ${result.errors}`,
+  );
+
+  // Safety net for orphaned scan-temp page images from cancelled/timed-out sessions.
+  const scanSweep = await purgeOrphanScanTemp(supabase);
+  console.log(
+    `[upload.worker] purge: scan-temp reaped ${scanSweep.expiredReaped} expired session(s), ` +
+      `swept ${scanSweep.sessionsSwept} session(s), removed ${scanSweep.objectsDeleted} R2 object(s), ` +
+      `errors ${scanSweep.errors}`,
   );
 }
 

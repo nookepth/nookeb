@@ -75,8 +75,10 @@ migration 017; rebuild securely later if ever needed.)
   "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
   `group-settings.service`). Open to any member (Messaging API can't expose
   group-admin role). Default ON; OFF stores files silently (no reply at all).
-- The webhook handles `message` and `join`/`follow` events. There is NO postback handler,
-  so rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu.ts`).
+- The webhook handles `message`, `join`/`follow`, and `postback` events. The postback
+  handler exists for the onboarding-carousel taps — it routes each tap's `data` (a
+  "หนูเก็บ…" text command) through the same `handleTextCommand` path as typed text.
+  Rich-menu buttons still use `type: 'message'` actions (see `scripts/setup-rich-menu.ts`).
 
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·

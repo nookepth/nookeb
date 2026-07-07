@@ -4,7 +4,7 @@ import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb
 import { config } from '../config';
 import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
 import { getGroupNotifySetting } from './group-settings.service';
-import { replyMessage, type LineMessage } from './line.service';
+import { pushMessage, replyMessage, type LineMessage } from './line.service';
 
 /**
  * Per-user debounce queue for normal uploads. A burst of image/file events from
@@ -77,6 +77,9 @@ function getWindow(lineUserId: string): RateWindow {
   // Drop entries older than 60 minutes (entries are appended in time order)
   const cutoff = Date.now() - HOUR_MS;
   while (w.entries.length > 0 && w.entries[0]!.timestamp < cutoff) w.entries.shift();
+  // Evict a fully-expired window so the Map doesn't grow one entry per user
+  // forever. A no-longer-referenced entry is re-created on the next upload.
+  if (w.entries.length === 0) rateWindows.delete(lineUserId);
   return w;
 }
 
@@ -93,6 +96,9 @@ function isRateLimited(lineUserId: string, incomingBytes: number): boolean {
   }
   w.entries.push({ timestamp: Date.now(), bytes: incomingBytes });
   w.limitNotified = false; // back under the limit → future limit events notify again
+  // Re-insert: getWindow evicts a fully-expired window from the map, so the one we
+  // hold may be detached. Recording an entry makes it live again — put it back.
+  rateWindows.set(lineUserId, w);
   return false;
 }
 
@@ -298,6 +304,37 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
     // disable.)
     await app.fileQueue.add('upload_batch', job, { jobId, attempts: 1 });
   } catch (err) {
-    app.log.error({ err }, 'failed to enqueue upload_batch');
+    // The user was already told "บันทึกแล้วน้า ✓" / shown the progress card above,
+    // but the job never made it to the queue — the files are lost. Own the failure:
+    // apologise so the user knows to resend, instead of silently dropping the batch.
+    // Best-effort push (reply token is already spent on the confirmation above);
+    // never let a failure here throw. Log with batch context but NO PII (no LINE
+    // user id) — item count + batch id are enough to debug.
+    app.log.error(
+      { err, batchId, itemCount: entry.items.length, isGroup },
+      'failed to enqueue upload_batch — files dropped, notifying user',
+    );
+    try {
+      const target = entry.lineGroupId ?? lineUserId;
+      await pushMessage(target, [
+        { type: 'text', text: 'เกิดข้อผิดพลาด ไม่สามารถบันทึกไฟล์ได้ กรุณาส่งใหม่อีกครั้งน้า' },
+      ]);
+    } catch (notifyErr) {
+      app.log.error({ err: notifyErr, batchId }, 'failed to notify user of dropped upload_batch');
+    }
   }
+}
+
+/**
+ * Flush every pending upload batch immediately. Called from the API's SIGTERM
+ * handler so a deploy/restart during the 1.5s debounce window doesn't silently
+ * drop collected uploads. Each entry's timer is cleared so it can't double-fire.
+ */
+export async function flushAll(app: FastifyInstance): Promise<void> {
+  const pending = [...queues.keys()];
+  for (const lineUserId of pending) {
+    const entry = queues.get(lineUserId);
+    if (entry) clearTimeout(entry.timer);
+  }
+  await Promise.allSettled(pending.map((lineUserId) => flush(app, lineUserId)));
 }

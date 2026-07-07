@@ -24,7 +24,7 @@ export class FileRejectedError extends Error {
 }
 
 /** True if `bytes` is within the per-file hard cap (MAX_FILE_SIZE_BYTES, default 1 GB). */
-export function checkFileSizeLimit(bytes: number, _filename?: string): boolean {
+export function checkFileSizeLimit(bytes: number): boolean {
   return bytes <= config.MAX_FILE_SIZE_BYTES;
 }
 

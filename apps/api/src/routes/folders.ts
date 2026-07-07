@@ -47,14 +47,9 @@ const foldersRoutes: FastifyPluginAsync = async (app) => {
     }
 
     if (parentId) {
-      const { data: parent, error: parentErr } = await app.supabase
-        .from('folders')
-        .select('id')
-        .eq('id', parentId)
-        .eq('space_id', spaceId)
-        .maybeSingle();
-      if (parentErr) throw parentErr;
-      if (!parent) return reply.code(400).send({ error: 'Parent folder not found in this space' });
+      if (!(await parentExistsInSpace(parentId, spaceId))) {
+        return reply.code(400).send({ error: 'Parent folder not found in this space' });
+      }
     }
 
     const { data, error } = await app.supabase
@@ -66,6 +61,18 @@ const foldersRoutes: FastifyPluginAsync = async (app) => {
 
     return reply.code(201).send(toFolderDto(data as FolderRecord));
   });
+
+  // True if `parentId` names a folder that lives in `spaceId` (prevents cross-tenant refs)
+  async function parentExistsInSpace(parentId: string, spaceId: string): Promise<boolean> {
+    const { data, error } = await app.supabase
+      .from('folders')
+      .select('id')
+      .eq('id', parentId)
+      .eq('space_id', spaceId)
+      .maybeSingle();
+    if (error) throw error;
+    return !!data;
+  }
 
   // Loads a folder and enforces space membership
   async function getAuthorizedFolder(folderId: string, userId: string): Promise<FolderRecord | null> {
@@ -82,6 +89,9 @@ const foldersRoutes: FastifyPluginAsync = async (app) => {
   }
 
   // PATCH /folders/:id — rename / move
+  // A move sets parentId, which must satisfy two invariants: parentId must exist in the
+  // same space (prevents cross-tenant references) and must not be a descendant of this
+  // folder (prevents unreachable cycles).
   app.patch<{ Params: { id: string } }>('/folders/:id', async (request, reply) => {
     const bodySchema = z.object({
       name: z.string().min(1).max(120).optional(),
@@ -97,6 +107,34 @@ const foldersRoutes: FastifyPluginAsync = async (app) => {
 
     if (parsed.data.parentId === folder.id) {
       return reply.code(400).send({ error: 'Folder cannot be its own parent' });
+    }
+
+    if (parsed.data.parentId) {
+      const newParentId = parsed.data.parentId;
+
+      // Guard A — parent must live in the same space (cross-tenant reference otherwise).
+      if (!(await parentExistsInSpace(newParentId, folder.space_id))) {
+        return reply.code(400).send({ error: 'Parent folder not found in this space' });
+      }
+
+      // Guard B — walk up from the new parent toward the root. If we reach this folder,
+      // the new parent is a descendant of it, so the move would create an unreachable
+      // cycle. Cap at 20 hops so pre-existing bad data can't loop forever.
+      let cursor: string | null = newParentId;
+      for (let hops = 0; cursor && hops < 20; hops++) {
+        if (cursor === folder.id) {
+          return reply.code(400).send({ error: 'Cannot move a folder into its own descendant' });
+        }
+        const { data, error: ancestorErr } = await app.supabase
+          .from('folders')
+          .select('parent_id')
+          .eq('id', cursor)
+          .eq('space_id', folder.space_id)
+          .maybeSingle();
+        if (ancestorErr) throw ancestorErr;
+        const ancestor = data as { parent_id: string | null } | null;
+        cursor = ancestor?.parent_id ?? null;
+      }
     }
 
     const updates: Record<string, unknown> = {};

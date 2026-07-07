@@ -20,15 +20,13 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       .order('created_at', { ascending: true });
     if (error) throw error;
 
-    const { data: files, error: fErr } = await app.supabase
-      .from('files')
-      .select('uploaded_by')
-      .is('deleted_at', null);
+    // Count files per user in SQL (GROUP BY) — a plain select is capped at
+    // 1000 rows by PostgREST, which would silently undercount.
+    const { data: counts, error: fErr } = await app.supabase.rpc('admin_file_counts_by_user');
     if (fErr) throw fErr;
     const countByUser = new Map<string, number>();
-    for (const f of files ?? []) {
-      const k = f.uploaded_by as string | null;
-      if (k) countByUser.set(k, (countByUser.get(k) ?? 0) + 1);
+    for (const row of (counts as { uploaded_by: string; file_count: number }[] | null) ?? []) {
+      countByUser.set(row.uploaded_by, Number(row.file_count));
     }
 
     return {
@@ -64,18 +62,18 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       memberCount.set(k, (memberCount.get(k) ?? 0) + 1);
     }
 
-    const { data: files, error: fErr } = await app.supabase
-      .from('files')
-      .select('space_id, file_size')
-      .is('deleted_at', null);
+    // Count + sum file sizes per space in SQL (GROUP BY) — a plain select is
+    // capped at 1000 rows by PostgREST, which would silently undercount.
+    const { data: statRows, error: fErr } = await app.supabase.rpc('admin_file_stats_by_space');
     if (fErr) throw fErr;
     const fileStats = new Map<string, { count: number; bytes: number }>();
-    for (const f of files ?? []) {
-      const k = f.space_id as string;
-      const cur = fileStats.get(k) ?? { count: 0, bytes: 0 };
-      cur.count += 1;
-      cur.bytes += f.file_size as number;
-      fileStats.set(k, cur);
+    for (const row of (statRows as
+      | { space_id: string; file_count: number; total_bytes: number }[]
+      | null) ?? []) {
+      fileStats.set(row.space_id, {
+        count: Number(row.file_count),
+        bytes: Number(row.total_bytes),
+      });
     }
 
     return {
@@ -92,7 +90,9 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  // PATCH /admin/users/:id — adjust a user's storage quota
+  // PATCH /admin/users/:id — adjust a user's storage quota.
+  // This is the only place that may set storage_limit to an arbitrary value.
+  // redeem_referral uses GREATEST() to avoid overwriting this.
   app.patch<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
     const parsed = z
       .object({ storageLimit: z.number().int().positive() })

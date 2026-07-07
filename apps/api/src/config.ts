@@ -23,7 +23,9 @@ const envSchema = z.object({
 
   // Supabase
   SUPABASE_URL: z.string().url(),
-  SUPABASE_ANON_KEY: z.string().min(1),
+  // Not used by the API (service-role key is used instead). Kept optional for
+  // compatibility — safe to omit.
+  SUPABASE_ANON_KEY: z.string().optional(),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
 
   // Cloudflare R2

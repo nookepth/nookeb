@@ -52,9 +52,25 @@ const listQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(50),
   search: z.string().optional(),
+  // Dashboard type tabs bucket files into these groups (mirrors the web
+  // `fileGroup` in apps/web/lib/filetype.ts). Optional — omit = all types.
+  fileType: z.enum(['image', 'doc', 'video', 'other']).optional(),
   sortBy: z.enum(['created_at', 'original_name', 'file_size']).default('created_at'),
   order: z.enum(['asc', 'desc']).default('desc'),
 });
+
+// mime_type patterns that make up the "doc" tab (mirrors `fileGroup`). Used
+// both to select the doc group and (negated + AND-ed) to select "other".
+const DOC_MIME_MATCHERS: { op: 'eq' | 'ilike'; value: string }[] = [
+  { op: 'eq', value: 'application/pdf' },
+  { op: 'ilike', value: 'text/%' },
+  { op: 'ilike', value: '%word%' },
+  { op: 'ilike', value: '%officedocument%' },
+  { op: 'ilike', value: '%spreadsheet%' },
+  { op: 'ilike', value: '%presentation%' },
+  { op: 'ilike', value: '%ms-excel%' },
+  { op: 'ilike', value: '%ms-powerpoint%' },
+];
 
 // GET /files/stats shares the list's space/folder/tag/search filters (minus
 // pagination) — the dashboard's stat chips must count ALL matching files, not
@@ -71,7 +87,9 @@ const statsQuerySchema = z.object({
 function buildSearchOr(search: string): string | null {
   const safe = search.replace(/[(),]/g, ' ').trim();
   if (!safe) return null;
-  return `original_name.ilike.%${safe}%,display_name.ilike.%${safe}%,ocr_text.ilike.%${safe}%`;
+  // Escape ILIKE metacharacters to prevent wildcard DoS.
+  const escaped = safe.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
+  return `original_name.ilike.%${escaped}%,display_name.ilike.%${escaped}%,ocr_text.ilike.%${escaped}%`;
 }
 
 async function toDtoWithExtras(
@@ -104,7 +122,7 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Invalid query', issues: parsed.error.issues });
     }
-    const { spaceId, folderId, tagId, page, limit, search, sortBy, order } = parsed.data;
+    const { spaceId, folderId, tagId, page, limit, search, fileType, sortBy, order } = parsed.data;
     const userId = request.authUser!.userId;
 
     if (!(await isSpaceMember(app.supabase, spaceId, userId))) {
@@ -124,6 +142,21 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
     if (search) {
       const or = buildSearchOr(search);
       if (or) query = query.or(or);
+    }
+
+    // Type-tab filter — done server-side so pagination/count reflect the type,
+    // not a client-side slice of one page. Groups mirror the web `fileGroup`.
+    if (fileType === 'image') {
+      query = query.ilike('mime_type', 'image/%');
+    } else if (fileType === 'video') {
+      query = query.ilike('mime_type', 'video/%');
+    } else if (fileType === 'doc') {
+      query = query.or(DOC_MIME_MATCHERS.map((m) => `mime_type.${m.op}.${m.value}`).join(','));
+    } else if (fileType === 'other') {
+      // "other" = not image, not video, and none of the doc matchers. AND-ing
+      // the negations is the De Morgan complement of those OR groups.
+      query = query.not('mime_type', 'ilike', 'image/%').not('mime_type', 'ilike', 'video/%');
+      for (const m of DOC_MIME_MATCHERS) query = query.not('mime_type', m.op, m.value);
     }
 
     if (tagId) {
@@ -407,11 +440,23 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
         .send({ error: 'เฉพาะคนที่อัพโหลดไฟล์นี้เท่านั้นที่ลบได้น้า' });
     }
 
-    const { error } = await app.supabase
+    // Guard against a double refund from two concurrent DELETEs: both pass
+    // getAuthorizedFile (row not yet deleted), so gate the soft-delete on
+    // deleted_at still being NULL and only refund when THIS request is the one
+    // that actually flipped the row. select() lets us see whether a row changed.
+    const { data: deletedRows, error } = await app.supabase
       .from('files')
       .update({ deleted_at: new Date().toISOString() })
-      .eq('id', file.id);
+      .eq('id', file.id)
+      .is('deleted_at', null)
+      .select('id');
     if (error) throw error;
+
+    // No row changed → the file was already soft-deleted by a concurrent
+    // request. Idempotent success, and crucially DO NOT refund again.
+    if (!deletedRows || deletedRows.length === 0) {
+      return reply.code(204).send();
+    }
 
     // Return the freed space to the ledger that was actually CHARGED
     // (files.charged_to / charged_team_id, migration 015). team_id is not a

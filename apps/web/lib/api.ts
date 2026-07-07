@@ -85,6 +85,8 @@ export interface ListFilesOptions {
   search?: string;
   folderId?: string;
   tagId?: string;
+  /** Type-tab group ('image' | 'doc' | 'video' | 'other'); omit for all types. */
+  fileType?: string;
 }
 
 export function listFiles(spaceId: string, opts: ListFilesOptions = {}): Promise<FileListResponse> {
@@ -94,6 +96,7 @@ export function listFiles(spaceId: string, opts: ListFilesOptions = {}): Promise
   if (opts.search) params.set('search', opts.search);
   if (opts.folderId) params.set('folderId', opts.folderId);
   if (opts.tagId) params.set('tagId', opts.tagId);
+  if (opts.fileType) params.set('fileType', opts.fileType);
   return apiFetch<FileListResponse>(`/files?${params.toString()}`);
 }
 
@@ -394,22 +397,19 @@ export function unbindTeamGroup(teamId: string, lineGroupId: string): Promise<{ 
  */
 export async function startDownload(fileId: string, mimeType?: string): Promise<void> {
   const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-  const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/'); // FIX: download - scope the iOS direct-open path to images only
+  const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/');
 
   if (isIOS && isImage) {
-    // FIX: download - iOS/LINE blocks window.open (popup blocker) and navigator.share (gesture lost after await). The one reliable method: navigate THIS tab to the inline image so it renders fullscreen → user long-presses → Save to Photos → Back returns to the app.
-    const detail = await getFile(fileId); // FIX: download - inline presigned URL (no attachment disposition) so the image renders instead of downloading
+    const detail = await getFile(fileId);
     if (detail.url) {
-      window.location.href = detail.url; // FIX: download - navigate the current tab (works in Safari AND LINE); never window.open
+      window.location.href = detail.url;
       return;
     }
-    // FIX: download - inline url missing (file not ready): fall through to the token download below
   }
 
   const { token } = await apiFetch<{ token: string }>(`/files/${fileId}/download-token`, {
     method: 'POST',
   });
   const downloadUrl = `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`;
-  // FIX: download - navigate in place to trigger the attachment download (302 → attachment keeps the page). No window.open — LINE's popup blocker kills it on iOS.
   window.location.assign(downloadUrl);
 }

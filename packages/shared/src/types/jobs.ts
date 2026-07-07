@@ -3,6 +3,15 @@ import type { LineSource } from './file';
 /** BullMQ queue names */
 export const FILE_QUEUE = 'nookeb-file-processing';
 
+/**
+ * Build a BullMQ custom jobId. Custom jobIds must NOT contain ':' (LINE message
+ * ids do), so every char outside [a-zA-Z0-9-_] is replaced with '-'. Shared so
+ * the webhook (enqueue) and worker (re-enqueue) can never drift.
+ */
+export function sanitizeJobId(prefix: string, id: string): string {
+  return `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}`;
+}
+
 /** Job: download image from R2 → sharp resize → upload thumbnail → update DB */
 export interface GenerateThumbnailJob {
   type: 'generate_thumbnail';
