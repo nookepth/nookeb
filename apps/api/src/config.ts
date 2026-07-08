@@ -102,6 +102,16 @@ const envSchema = z.object({
   // Default color mode for new scan sessions ('bw' | 'color').
   SCAN_DEFAULT_MODE: z.enum(['bw', 'color']).default('bw'),
 
+  // Mistral OCR — powers the "แปลงไฟล์" convert-to-Word feature. The feature is
+  // DISABLED (command replies "not available") until the key is set. Pin the
+  // model id for cost control: 'mistral-ocr-latest' tracks the newest (pricier)
+  // release; OCR 3 is ~half the per-page price of OCR 4.
+  MISTRAL_API_KEY: z.string().optional(),
+  MISTRAL_OCR_MODEL: z.string().default('mistral-ocr-latest'),
+  // Per-source cap for convert-to-Word (bytes). Mistral OCR accepts up to
+  // ~50 MB, but conversion buffers the source in worker memory — keep it small.
+  DOCX_CONVERT_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+
   // Storage warning thresholds (% of the uploader's storage_limit)
   STORAGE_WARN_THRESHOLD_LOW: z.coerce.number().int().min(1).max(100).default(80),
   STORAGE_WARN_THRESHOLD_HIGH: z.coerce.number().int().min(1).max(100).default(95),

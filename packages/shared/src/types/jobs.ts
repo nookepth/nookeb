@@ -56,6 +56,24 @@ export interface PurgeDeletedJob {
   type: 'purge_deleted';
 }
 
+/**
+ * Job: download an image/PDF from LINE CDN → OCR (Mistral, markdown out) →
+ * rebuild as an editable .docx → store as a file → push a result card.
+ * Retried via BullMQ attempts (LINE CDN ~1h TTL); the handler dedups by a
+ * marker line_message_id so a retry never double-stores the .docx.
+ */
+export interface ConvertToDocxJob {
+  type: 'convert_to_docx';
+  lineMessageId: string;
+  lineUserId: string;
+  /** LINE message type of the source: 'image' | 'file' */
+  kind: string;
+  /** Original file name (file messages) or a generated name (images). */
+  originalName: string;
+  /** Size declared by LINE (file messages only) — pre-download cap check. */
+  fileSize?: number | null;
+}
+
 /** One upload collected during a user's debounce window. */
 export interface BatchItem {
   lineMessageId: string;
@@ -93,4 +111,5 @@ export type FileJob =
   | OcrImageJob
   | AddScanPageJob
   | FinalizeScanJob
-  | PurgeDeletedJob;
+  | PurgeDeletedJob
+  | ConvertToDocxJob;

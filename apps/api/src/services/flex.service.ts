@@ -770,3 +770,67 @@ export function buildTeamGuideFlexMessage(): FlexMessage {
     },
   };
 }
+
+/**
+ * Convert-to-Word result card (convert_to_docx worker push). Same kilo-bubble
+ * language as the upload cards: dot-row status, brand-red locker button.
+ * `warning` adds a muted caution row (e.g. very little text was recognized).
+ */
+export function buildDocxResultFlexMessage(params: {
+  fileName: string;
+  pageCount: number;
+  dashboardUrl: string;
+  warning?: string;
+}): FlexMessage {
+  const bodyContents: Record<string, unknown>[] = [
+    iconRow(LINE_GREEN, params.fileName),
+    {
+      type: 'text',
+      text: `${params.pageCount} หน้า พร้อมแก้ไขต่อได้เลยน้า`,
+      size: 'xs',
+      color: MUTED,
+      wrap: true,
+    },
+  ];
+  if (params.warning) bodyContents.push(iconRow(ERROR_RED, params.warning, MUTED));
+
+  return {
+    type: 'flex',
+    altText: 'แปลงเป็นไฟล์ Word เสร็จแล้วน้า',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'แปลงเป็น Word เสร็จแล้วน้า', weight: 'bold', size: 'lg', color: INK, wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: bodyContents,
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          params.dashboardUrl.startsWith('https://')
+            ? {
+                type: 'button',
+                style: 'primary',
+                color: BRAND_RED,
+                action: { type: 'uri', label: 'เปิดดูในล็อคเกอร์', uri: params.dashboardUrl },
+              }
+            : { type: 'text', text: `เปิดดูในล็อคเกอร์: ${params.dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true },
+        ],
+      },
+      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}

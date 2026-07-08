@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { sanitizeJobId } from '@nookeb/shared';
-import type { AddScanPageJob, LineSource, ScanMode } from '@nookeb/shared';
+import type { AddScanPageJob, ConvertToDocxJob, LineSource, ScanMode } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
 import {
@@ -39,6 +39,8 @@ import {
   setSessionStatus,
   startSession,
 } from '../../services/scan.service';
+import { armDocxConvert, consumeDocxConvert } from '../../services/docx-convert.service';
+import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { config } from '../../config';
 
 interface LineEventSource {
@@ -200,6 +202,7 @@ const HELP_TEXT = `วิธีใช้หนูเก็บน้า
 • ส่งรูป/ไฟล์มาในแชท หนูจะเก็บให้เองเลย
 • พิมพ์ "หนูเก็บรวมรูป" ถ้าอยากรวมรูปหลายหน้าเป็น PDF 
 • พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" ถ้าอยากสแกนเป็น PDF แบบสีหรือขาวดำ
+• พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF ถ้าอยากแปลงเป็นไฟล์ Word แก้ไขต่อได้
 • เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ https://nookeb-web.vercel.app/dashboard เลยน้า`;
 
 // Rich-menu "แนะนำตัว" cell → the bot's self-introduction (message action, since the
@@ -226,6 +229,9 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บสแกน — เปิดโหมดสแกน
 หนูเก็บสแกนสี — สแกนเป็น PDF แบบสี
 หนูเก็บสแกนขาวดำ — สแกนเป็น PDF แบบขาวดำ
+
+📝 แปลงไฟล์เป็น Word
+หนูเก็บแปลงไฟล์ — แปลงรูป/PDF เป็นไฟล์ Word (.docx) แก้ไขต่อได้
 
 👥 ทีม (ใช้ในกลุ่ม)
 หนูเก็บผูกทีม — ผูกกลุ่มนี้กับทีม
@@ -715,6 +721,28 @@ async function handleTextCommand(
     return;
   }
 
+  // Convert-to-Word ("หนูเก็บแปลงไฟล์") — arms a one-shot Redis flag; the NEXT
+  // image/PDF this user sends is OCR'd (Mistral) and rebuilt as an editable
+  // .docx instead of being archived as-is. Personal-chat only, like scan (a
+  // shared group flag would convert other members' uploads). Feature-gated on
+  // the Mistral key: without it the command explains it's unavailable.
+  if (isCmd(text, 'แปลงไฟล์', 'แปลงเป็นเวิร์ด', 'word', 'เวิร์ด', 'to word')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ระบบแปลงไฟล์ใช้ได้เฉพาะแชทส่วนตัวน้า');
+      return;
+    }
+    if (!isMistralOcrConfigured()) {
+      await reply(event, 'ระบบแปลงไฟล์ยังไม่เปิดใช้งานตอนนี้น้า รอติดตามเร็วๆ นี้เลยน้า');
+      return;
+    }
+    await armDocxConvert(app.redis, lineUserId);
+    await reply(
+      event,
+      'ส่งรูปหรือไฟล์ PDF มาได้เลยน้า หนูจะแปลงเป็นไฟล์ Word (.docx) ให้\n\n• เอกสารพิมพ์ชัดๆ ถ่ายตรงๆ จะได้ผลดีที่สุดน้า\n• ลายมือหรือรูปเบลออาจอ่านไม่ค่อยออกน้า\n• เปลี่ยนใจพิมพ์ "ยกเลิก" ได้เลย (โหมดนี้ค้างไว้ 10 นาทีน้า)',
+    );
+    return;
+  }
+
   const userId = await findUserId(app, lineUserId);
   const session = userId ? await getActiveSession(app.supabase, userId) : null;
 
@@ -750,11 +778,15 @@ async function handleTextCommand(
     return;
   }
 
-  // Cancel merge session
+  // Cancel merge session / convert-to-Word mode
   if (isCmd(text, 'ยกเลิก', 'cancel')) {
+    // Disarm the convert flag unconditionally (harmless no-op when not armed).
+    const wasArmed = await consumeDocxConvert(app.redis, lineUserId);
     if (session) {
       await cancelSession(app.supabase, session.id);
       await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะคะ');
+    } else if (wasArmed) {
+      await reply(event, 'ยกเลิกโหมดแปลงไฟล์ให้แล้วน้า');
     } else {
       await reply(event, 'ตอนนี้ไม่ได้อยู่ในโหมดรวมรูปอยู่แล้วน้า');
     }
@@ -838,6 +870,40 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     message.type === 'video' ||
     message.type === 'audio';
   if (!supported) return;
+
+  // Convert-to-Word one-shot (armed by "แปลงไฟล์"). Checked BEFORE the scan
+  // session below: the flag is armed explicitly and consumed atomically
+  // (GETDEL), so it always claims exactly one file, even over an older open
+  // scan session. 1-on-1 only (matching where the command can arm it). NOTE:
+  // a LINE redelivery of an already-converted event falls through to the
+  // normal upload path (flag already consumed) — rare, and the jobId dedup
+  // prevents a double conversion; worst case the source gets archived too.
+  if (source.type === 'user' && (message.type === 'image' || message.type === 'file')) {
+    const armed = await consumeDocxConvert(app.redis, lineUserId);
+    if (armed) {
+      // Pre-download cap for file messages (LINE declares fileSize for those).
+      if (message.fileSize && message.fileSize > config.DOCX_CONVERT_MAX_SOURCE_BYTES) {
+        const mb = Math.round(config.DOCX_CONVERT_MAX_SOURCE_BYTES / (1024 * 1024));
+        await reply(event, `ไฟล์ใหญ่เกิน ${mb}MB น้า ระบบแปลงไฟล์รับได้แค่นี้ก่อน ลองย่อไฟล์หรือแบ่งส่งน้า`);
+        return;
+      }
+      const job: ConvertToDocxJob = {
+        type: 'convert_to_docx',
+        lineMessageId: message.id,
+        lineUserId,
+        kind: message.type,
+        originalName:
+          message.type === 'file' && message.fileName ? message.fileName : timestampName('jpg'),
+        fileSize: message.fileSize ?? null,
+      };
+      await app.fileQueue.add('convert_to_docx', job, {
+        jobId: sanitizeJobId('docx', message.id),
+        ...RETRY_OPTS,
+      });
+      await reply(event, 'รับแล้วน้า กำลังแปลงเป็น Word ให้ แป๊บนึงน้า');
+      return;
+    }
+  }
 
   // An image sent while a scan session is collecting becomes a scan page.
   // 1-on-1 chats ONLY (matching where sessions can be opened): without the
