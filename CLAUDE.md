@@ -16,6 +16,37 @@ migration 017; rebuild securely later if ever needed.)
 - Auth: LINE Login → app-signed JWT (HS256, `jsonwebtoken`)
 - Images: `sharp` (thumbnails, page normalization) · PDF: `pdf-lib` · OCR: `tesseract.js` (tha+eng)
 
+## LINE Messaging — Critical Rules
+
+### NEVER use push messages — use reply only
+- push = costs monthly quota → fails silently when quota runs out
+- reply = always free, always works, no quota consumed
+- This is a hard rule with no exceptions
+
+### How reply works in async workers
+When a worker finishes a long job (OCR, convert, scan merge etc.),
+it cannot use the original replyToken (expired after ~30s).
+Solution in this codebase:
+- replyToken is saved into the BullMQ job payload when the job is queued
+- Worker retrieves replyToken from the job payload
+- Worker calls replyMessage() with the saved token
+- If token expired/used → send to locker only, notify on next interaction
+
+### Queue discipline
+- Save replyToken at webhook time (it's valid for ~30s from receipt)
+- Pass replyToken through job payload
+- Worker uses it once, then discards
+- Never store replyToken longer than the job TTL
+
+### Quota-safe fallback
+If replyToken is expired or missing:
+- Complete the job (save file to locker)
+- Do NOT push notify
+- On next user interaction, bot surfaces "มีไฟล์ใหม่ในล็อคเกอร์น้า"
+  (pending-notify flag in Redis, checked at webhook time and prepended
+  to the next reply — see `services/pending-notify.service.ts`)
+- User is never left with a broken experience
+
 ## Key Engineering Rules
 1. LINE Webhook MUST reply within 1 second → reply 200 immediately, process events in
    `setImmediate`, and enqueue async jobs for file ops.
@@ -42,27 +73,30 @@ migration 017; rebuild securely later if ever needed.)
    `processing` AND, once it has stored+charged the merged PDF, records `result_file_id` on the
    session (migration 018 / `setSessionResultFile`) so a retry recovers that file instead of
    re-storing it; `add_scan_page` dedups by `line_message_id`; and any post-store step
-   (thumbnail/OCR enqueue, confirm push) is best-effort (wrapped so it can never throw and
+   (thumbnail/OCR enqueue, user notify) is best-effort (wrapped so it can never throw and
    trigger a duplicating retry). (The legacy single-file `upload_file` handler was removed —
    normal uploads go through `upload_batch`, which has its own internal-retry idempotency.)
 
 ## File Processing Flow (upload)
 0. Normal uploads are BATCHED per user to avoid message spam: the webhook adds each
    image/file event to an in-memory per-user debounce queue (`services/upload-queue.ts`,
-   sliding 1500ms window). When the window closes it sends ONE "progress" Flex card (via the
-   first event's replyToken, falling back to push) and enqueues ONE `upload_batch` job. The
-   worker processes the batch sequentially and sends ONE "summary" Flex card (Flex builders in
-   `services/flex.service.ts` — NO emoji; status icons are native colored boxes because LINE
-   Flex can't render SVG/data-URIs). Scan-mode images bypass the batch (see below).
+   sliding 1500ms window). When the window closes it sends ONE "progress" Flex card as a
+   REPLY via the first event's replyToken (reply-only — no push fallback; if the token is
+   gone it skips and logs) and enqueues ONE `upload_batch` job. The worker sends no summary:
+   the progress card's button opens the live progress page, which flips to "เสร็จแล้ว" when
+   the batch finishes. (Flex builders in `services/flex.service.ts` — NO emoji; status icons
+   are native colored boxes because LINE Flex can't render SVG/data-URIs). Scan-mode images
+   bypass the batch (see below).
 1. LINE sends webhook (image/file message); API replies 200 immediately.
 2. Worker resolves user + space. Files sent in a LINE GROUP go to that group's shared team
    space (`ensureGroupSpace`); otherwise the sender's personal space.
-3. Quota check (skip + push "space full" message if over limit).
+3. Quota check (skip + queue a "space full" notice via `pending-notify` if over limit).
 4. Worker downloads binary from LINE CDN (messageId + channel access token), streams to R2
    key `spaces/{space_id}/files/{file_id}/{name}`, sets `files.status = 'ready'`.
 5. For images, enqueues `generate_thumbnail` (→ `spaces/{sid}/thumbnails/{fid}/thumb.webp`)
    and `ocr_image` (→ `files.ocr_text`) as separate best-effort jobs.
-6. Worker sends a LINE push message to confirm. Steps 5–6 are wrapped best-effort — once the
+6. No worker confirmation message (the reply-card's progress page covers it); rejection/
+   quota notices defer via `pending-notify`. Steps 5–6 are wrapped best-effort — once the
    file is stored + charged the job is "done", so a failure there can't retry and re-store it.
 
 ## LINE Bot Commands (text or rich-menu message actions)
@@ -76,7 +110,10 @@ migration 017; rebuild securely later if ever needed.)
   10 min, cleared by `ยกเลิก`); the NEXT image/PDF is OCR'd via Mistral OCR
   (`mistral-ocr.service`, markdown out) and rebuilt as an editable .docx
   (`docx-builder.service`) → stored as a normal personal-space file (quota-charged) →
-  result Flex card. The flag check runs BEFORE the scan-session image check.
+  result Flex card delivered as a REPLY with the replyToken saved in the job payload (the
+  webhook does NOT spend it on an ack); if the token is expired/spent, the card is deferred
+  via `pending-notify.service` to the user's next interaction. The flag check runs BEFORE
+  the scan-session image check.
 - `หนูเก็บปิดแจ้งเตือน` / `หนูเก็บเปิดแจ้งเตือน` — group/room only: toggles the per-upload
   "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
   `group-settings.service`). Open to any member (Messaging API can't expose
@@ -146,6 +183,9 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
     (quota-warning thresholds), `virusTotal` (optional file scanning), `group-settings`
     (per-group notify toggle, migration 021 — 5-min in-memory cache, fails open),
+    `pending-notify` (Redis queue of deferred user notifications — the reply-only rule's
+    fallback: workers queue here instead of pushing; the webhook drains it on the user's
+    next 1-on-1 text/postback and prepends the messages to that reply),
     `mistral-ocr` (Mistral OCR REST client), `docx-builder` (markdown → editable .docx,
     pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)

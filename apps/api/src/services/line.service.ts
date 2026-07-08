@@ -101,29 +101,11 @@ export async function replyMessage(replyToken: string, messages: LineMessage[]):
   }
 }
 
-export async function pushMessage(to: string, messages: LineMessage[]): Promise<void> {
-  let res: Response;
-  try {
-    res = await fetch(`${LINE_API}/message/push`, {
-      method: 'POST',
-      headers: { ...authHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, messages }),
-      signal: AbortSignal.timeout(LINE_MESSAGING_TIMEOUT_MS),
-    });
-  } catch (err) {
-    if (isTimeoutError(err)) {
-      // Best-effort messaging: swallow the timeout so a slow LINE endpoint can
-      // never crash the worker (the file is already stored + charged by now).
-      console.warn(`[LINE-TIMEOUT] push timed out after ${LINE_MESSAGING_TIMEOUT_MS}ms — continuing`);
-      return;
-    }
-    throw err;
-  }
-  if (!res.ok) {
-    console.error(`LINE API error: status=${res.status} call=push`);
-    throw new Error(`LINE push failed: ${res.status}`);
-  }
-}
+// NOTE: there is deliberately NO pushMessage here. Push messages consume the
+// monthly Messaging API quota and FAIL SILENTLY once it runs out; replies are
+// free and always work. Reply with the event's token, or defer through
+// pending-notify.service for delivery on the user's next interaction — see
+// "LINE Messaging — Critical Rules" in CLAUDE.md.
 
 export async function getProfile(lineUserId: string): Promise<{
   displayName: string;

@@ -30,7 +30,8 @@ export interface AddScanPageJob {
   sessionId: string;
   lineMessageId: string;
   /**
-   * Push target for quality warnings (too dark / blurry / no edges). Optional
+   * Notify target for quality warnings (too dark / blurry / no edges) — the
+   * warnings go through pending-notify (reply-only messaging). Optional
    * for back-compat with jobs enqueued before the scan-enhance release —
    * warnings are simply skipped when absent.
    */
@@ -58,7 +59,7 @@ export interface PurgeDeletedJob {
 
 /**
  * Job: download an image/PDF from LINE CDN → OCR (Mistral, markdown out) →
- * rebuild as an editable .docx → store as a file → push a result card.
+ * rebuild as an editable .docx → store as a file → REPLY a result card.
  * Retried via BullMQ attempts (LINE CDN ~1h TTL); the handler dedups by a
  * marker line_message_id so a retry never double-stores the .docx.
  */
@@ -72,6 +73,14 @@ export interface ConvertToDocxJob {
   originalName: string;
   /** Size declared by LINE (file messages only) — pre-download cap check. */
   fileSize?: number | null;
+  /**
+   * The source event's reply token, saved at webhook time (reply-only
+   * messaging — no pushes). Single-use and short-lived (~1 min): the worker
+   * replies the result/error card with it when the conversion is quick; when
+   * it's already spent/expired the message is deferred to pending-notify.
+   * Optional for back-compat with jobs enqueued before this field existed.
+   */
+  replyToken?: string | null;
 }
 
 /** One upload collected during a user's debounce window. */

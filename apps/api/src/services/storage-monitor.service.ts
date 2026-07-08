@@ -1,10 +1,15 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SpaceRecord, UserRecord } from '@nookeb/shared';
 import { config } from '../config';
-import { pushMessage } from './line.service';
+import { addPendingNotify } from './pending-notify.service';
 
 /**
  * Storage warning notifications to the space owner at 80% / 95% usage.
+ *
+ * Delivery is reply-only (no pushes — CLAUDE.md "LINE Messaging — Critical
+ * Rules"): the alert has no triggering interaction from the OWNER (it fires on
+ * an uploader's storage adjustment), so it's queued in pending-notify and rides
+ * along on the owner's next 1-on-1 interaction with the bot.
  *
  * Quota in this system is per-USER (users.storage_used / storage_limit — it is
  * the uploader's quota that gates uploads, see the batch handler). So the check
@@ -50,7 +55,7 @@ function buildAlertText(
   );
 }
 
-/** The space owner's LINE user id (push target), or null if it can't be resolved. */
+/** The space owner's LINE user id (notify target), or null if it can't be resolved. */
 async function findOwnerLineUserId(
   supabase: SupabaseClient,
   spaceId: string,
@@ -153,7 +158,7 @@ async function runCheck(
     return;
   }
 
-  await pushMessage(ownerLineUserId, [
+  await addPendingNotify(ownerLineUserId, [
     { type: 'text', text: buildAlertText(crossed, space.name, user.storage_used, user.storage_limit) },
   ]);
 
