@@ -9,6 +9,7 @@ import {
   sanitizeJobId,
   type AddScanPageJob,
   type BatchItem,
+  type ConvertToDocxJob,
   type FileJob,
   type FileRecord,
   type FinalizeScanJob,
@@ -67,6 +68,9 @@ import {
 } from '../services/scan.service';
 import { processScanPage, plainNormalize, buildScanPdf, MSG_PDF_FAILED } from '../services/scan-enhance.service';
 import { extractText, terminateOcr } from '../services/ocr.service';
+import { isMistralOcrConfigured, mistralOcr, MistralOcrRejectedError } from '../services/mistral-ocr.service';
+import { buildDocxFromMarkdown } from '../services/docx-builder.service';
+import { buildDocxResultFlexMessage } from '../services/flex.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -997,6 +1001,215 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   log('done-no-push', `kind=${kind} file=${name}`);
 }
 
+// ---------------------------------------------------------------------------
+// convert_to_docx — image/PDF → OCR (Mistral, markdown) → editable .docx
+// ---------------------------------------------------------------------------
+
+const MSG_DOCX_TOO_LARGE = `ไฟล์ใหญ่เกิน ${Math.round(config.DOCX_CONVERT_MAX_SOURCE_BYTES / (1024 * 1024))}MB น้า ระบบแปลงไฟล์รับได้แค่นี้ก่อน ลองย่อไฟล์หรือแบ่งส่งน้า`;
+const MSG_DOCX_UNSUPPORTED = 'หนูแปลงได้เฉพาะรูป (JPG / PNG / WebP) กับไฟล์ PDF น้า';
+const MSG_DOCX_UNREADABLE =
+  'หนูอ่านข้อความในไฟล์นี้ไม่ออกเลยน้า ลองส่งรูปที่ชัดขึ้น ถ่ายตรงๆ ไม่เอียง แล้วลองใหม่อีกทีน้า';
+const MSG_DOCX_FAILED = 'แปลงไฟล์เป็น Word ไม่สำเร็จน้า ขอโทษนะคะ ลองส่งใหม่อีกทีน้า';
+const MSG_DOCX_LOW_TEXT = 'ข้อความบางส่วนอาจอ่านไม่ครบ ลองเปิดตรวจก่อนใช้น้า';
+
+// Pages that OCR to fewer than this many characters on average trigger the
+// "check the result" warning row (Mistral returns no confidence score, so a
+// text-density heuristic is the honest stand-in).
+const DOCX_LOW_TEXT_CHARS_PER_PAGE = 80;
+
+/** Magic-byte sniff, falling back to the CDN-declared type. */
+function detectConvertMime(buf: Buffer, declared: string): string | null {
+  if (buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-') return 'application/pdf';
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) return 'image/jpeg';
+  if (buf.length >= 4 && buf[0] === 0x89 && buf.subarray(1, 4).toString('latin1') === 'PNG') return 'image/png';
+  if (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    buf.subarray(8, 12).toString('latin1') === 'WEBP'
+  )
+    return 'image/webp';
+  const base = (declared.split(';')[0] ?? '').trim().toLowerCase();
+  return ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'].includes(base) ? base : null;
+}
+
+function docxOutputName(originalName: string): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const dot = originalName.lastIndexOf('.');
+  const base = (dot > 0 ? originalName.slice(0, dot) : originalName).trim();
+  return `${base || `เวิร์ด_${stamp}`}.docx`;
+}
+
+/**
+ * convert_to_docx (BullMQ attempts: 3 — LINE CDN content survives retries for
+ * ~1h). Retry safety: the output row carries line_message_id `docx-<msgId>`;
+ * a 'ready' row under that marker short-circuits the retry, and a failed store
+ * soft-deletes its row so the unique live index (migration 022) lets the retry
+ * re-insert. User-visible failures push ONE friendly Thai message and return
+ * without throwing (no point retrying a too-large / unreadable source).
+ */
+async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolean): Promise<void> {
+  const markerId = `docx-${job.lineMessageId}`;
+  const dashboardUrl = `${config.WEB_URL}/dashboard`;
+
+  // Retry recovery: a previous attempt already stored the .docx.
+  const existing = await findLiveFileByLineMessageId(supabase, markerId);
+  if (existing) {
+    if (existing.status === 'ready') {
+      // Stored + charged; only the result push may have been missed — resend it
+      // (worst case the user sees the card twice).
+      await pushMessage(job.lineUserId, [
+        buildDocxResultFlexMessage({ fileName: existing.original_name, pageCount: 1, dashboardUrl }),
+      ]).catch(() => undefined);
+    }
+    return;
+  }
+
+  const { user, space } = await ensureUserAndSpace(supabase, job.lineUserId);
+
+  // Download the source from LINE CDN, capped. Buffering is fine here: the cap
+  // is DOCX_CONVERT_MAX_SOURCE_BYTES (default 10 MB), not the 1 GB upload cap.
+  const cap = config.DOCX_CONVERT_MAX_SOURCE_BYTES;
+  const content = await getMessageContent(job.lineMessageId);
+  if (content.contentLength !== null && content.contentLength > cap) {
+    content.stream.destroy();
+    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_TOO_LARGE }]).catch(() => undefined);
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of content.stream) {
+    total += (chunk as Buffer).length;
+    if (total > cap) {
+      content.stream.destroy();
+      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_TOO_LARGE }]).catch(() => undefined);
+      return;
+    }
+    chunks.push(chunk as Buffer);
+  }
+  const source = Buffer.concat(chunks);
+
+  const mime = detectConvertMime(source, content.contentType);
+  if (!mime) {
+    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }]).catch(() => undefined);
+    return;
+  }
+
+  // OCR → per-page markdown. Mistral handles PDFs (digital AND scanned)
+  // natively. Fallback when Mistral is unconfigured (webhook normally gates
+  // the command on it): plain-text OCR for images; PDFs can't be converted.
+  let pagesMarkdown: string[];
+  let pageCount: number;
+  try {
+    if (isMistralOcrConfigured()) {
+      const result = await mistralOcr(source, mime);
+      pagesMarkdown = result.pages.map((p) => p.markdown);
+      pageCount = result.pageCount;
+      console.log(
+        `[convert_to_docx] msg=${job.lineMessageId} mistral pages=${pageCount} model=${config.MISTRAL_OCR_MODEL}`,
+      );
+    } else if (mime !== 'application/pdf') {
+      pagesMarkdown = [await extractText(source)];
+      pageCount = 1;
+    } else {
+      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }]).catch(() => undefined);
+      return;
+    }
+  } catch (err) {
+    if (err instanceof MistralOcrRejectedError) {
+      // The document itself was refused — retrying the same bytes can't help.
+      console.warn(`[convert_to_docx] msg=${job.lineMessageId} rejected:`, err.message);
+      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }]).catch(() => undefined);
+      return;
+    }
+    if (!isLastAttempt) throw err; // transient (timeout / 5xx / 429) — retry
+    console.error(`[convert_to_docx] msg=${job.lineMessageId} OCR exhausted:`, err);
+    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }]).catch(() => undefined);
+    return;
+  }
+
+  const totalChars = pagesMarkdown.join('').replace(/\s+/g, '').length;
+  if (totalChars < 10) {
+    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNREADABLE }]).catch(() => undefined);
+    return;
+  }
+  const lowText = totalChars / Math.max(pagesMarkdown.length, 1) < DOCX_LOW_TEXT_CHARS_PER_PAGE;
+
+  const docxBuf = await buildDocxFromMarkdown(pagesMarkdown);
+  const name = docxOutputName(job.originalName);
+
+  // Reserve quota before storing (same pattern as finalize_scan's personal path;
+  // convert is personal-chat only, so there is no team branch).
+  const reservation = await incrementPersonalStorage(supabase, user.id, docxBuf.length, { enforce: true });
+  if (reservation.overLimit) {
+    await pushMessage(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }]).catch(() => undefined);
+    return;
+  }
+
+  const fileId = randomUUID();
+  const r2Key = buildFileKey(space.id, fileId, name);
+  const { record, deduped } = await createFileRecord(supabase, {
+    id: fileId,
+    spaceId: space.id,
+    uploadedBy: user.id,
+    originalName: name,
+    mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    fileSize: docxBuf.length,
+    extension: 'docx',
+    r2Key,
+    lineMessageId: markerId, // dedup marker — a concurrent retry recovers this row
+    lineSource: null,
+    lineGroupId: null,
+    chargedTo: 'personal',
+  });
+  if (deduped) {
+    // A concurrent attempt won the insert race and owns the store + charge.
+    await incrementPersonalStorage(supabase, user.id, -docxBuf.length, { enforce: false }).catch(() => undefined);
+    return;
+  }
+
+  try {
+    const { size } = await uploadStream(
+      r2,
+      r2Key,
+      Readable.from(docxBuf),
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    );
+    await markFileReady(supabase, record.id, size);
+    const drift = size - docxBuf.length;
+    if (drift !== 0) {
+      await incrementPersonalStorage(supabase, user.id, drift, { enforce: false }).catch(() => undefined);
+    }
+    await checkStorageAlert(supabase, user.id, space.id).catch(() => undefined);
+  } catch (err) {
+    // Release the reservation and soft-delete the 'processing' row so the
+    // marker dedup (live rows only) lets the NEXT attempt re-insert cleanly.
+    await incrementPersonalStorage(supabase, user.id, -docxBuf.length, { enforce: false }).catch(() => undefined);
+    await supabase
+      .from('files')
+      .update({ status: 'error', deleted_at: new Date().toISOString() })
+      .eq('id', record.id)
+      .then(undefined, () => undefined);
+    if (!isLastAttempt) throw err;
+    console.error(`[convert_to_docx] msg=${job.lineMessageId} store exhausted:`, err);
+    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }]).catch(() => undefined);
+    return;
+  }
+
+  // Stored + charged — the job is done; the result card is best-effort.
+  await pushMessage(job.lineUserId, [
+    buildDocxResultFlexMessage({
+      fileName: name,
+      pageCount: pagesMarkdown.length,
+      dashboardUrl,
+      warning: lowText ? MSG_DOCX_LOW_TEXT : undefined,
+    }),
+  ]).catch((err) => {
+    console.error(`[convert_to_docx] result push failed (msg=${job.lineMessageId}):`, err);
+  });
+}
+
 /**
  * purge_deleted job (repeatable, daily): remove R2 objects of files soft-deleted
  * past the retention window. DB rows are kept as tombstones.
@@ -1075,6 +1288,26 @@ export function createUploadWorker(): Worker<FileJob> {
             );
             await pushMessage(data.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]).catch((pushErr) => {
               console.error(`[upload.worker] finalize_scan exhaustion push failed (${data.sessionId}):`, pushErr);
+            });
+          }
+          break;
+        }
+        case 'convert_to_docx': {
+          // Same narrowing capture + last-attempt netting as finalize_scan.
+          const data = job.data;
+          const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          try {
+            await processConvertToDocx(data, isLastAttempt);
+          } catch (err) {
+            if (!isLastAttempt) throw err;
+            console.error(
+              `[upload.worker] convert_to_docx exhausted job=${job.id} msg=${data.lineMessageId}:`,
+              err,
+            );
+            await pushMessage(data.lineUserId, [
+              { type: 'text', text: 'แปลงไฟล์เป็น Word ไม่สำเร็จน้า ขอโทษนะคะ ลองส่งใหม่อีกทีน้า' },
+            ]).catch((pushErr) => {
+              console.error(`[upload.worker] convert_to_docx exhaustion push failed:`, pushErr);
             });
           }
           break;

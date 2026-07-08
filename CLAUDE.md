@@ -71,6 +71,12 @@ migration 017; rebuild securely later if ever needed.)
 - `เสร็จ` / `done` — `finalize_scan`: merge pages into one PDF (pdf-lib) → store as a file
 - `ยกเลิก` / `cancel` — cancel the session
 - `วิธีใช้` / `help` — usage text
+- `แปลงไฟล์` / `word` — convert-to-Word mode (personal chat only; needs `MISTRAL_API_KEY`,
+  else replies "not available"). Arms a one-shot Redis flag (`docx-convert.service`, TTL
+  10 min, cleared by `ยกเลิก`); the NEXT image/PDF is OCR'd via Mistral OCR
+  (`mistral-ocr.service`, markdown out) and rebuilt as an editable .docx
+  (`docx-builder.service`) → stored as a normal personal-space file (quota-charged) →
+  result Flex card. The flag check runs BEFORE the scan-session image check.
 - `หนูเก็บปิดแจ้งเตือน` / `หนูเก็บเปิดแจ้งเตือน` — group/room only: toggles the per-upload
   "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
   `group-settings.service`). Open to any member (Messaging API can't expose
@@ -82,8 +88,10 @@ migration 017; rebuild securely later if ever needed.)
 
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
-`add_scan_page` · `finalize_scan` · `purge_deleted` (daily repeatable, scheduled on worker
-startup via `scheduleRepeatableJobs`). (The legacy `upload_file` handler was removed — it had
+`add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
+.docx; attempts: 3, retry-safe via a `docx-<lineMessageId>` line_message_id marker row —
+a failed store soft-deletes its row so the retry can re-insert) · `purge_deleted` (daily
+repeatable, scheduled on worker startup via `scheduleRepeatableJobs`). (The legacy `upload_file` handler was removed — it had
 no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
 Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
 enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
@@ -137,7 +145,9 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
     (quota-warning thresholds), `virusTotal` (optional file scanning), `group-settings`
-    (per-group notify toggle, migration 021 — 5-min in-memory cache, fails open)
+    (per-group notify toggle, migration 021 — 5-min in-memory cache, fails open),
+    `mistral-ocr` (Mistral OCR REST client), `docx-builder` (markdown → editable .docx,
+    pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
@@ -213,6 +223,8 @@ and `supabase/backfills/` for specifics.
 - `REFERRAL_BONUS_BYTES` — one-time bonus for redeeming a referral code (default 0.5 GB)
 - `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5)
 - `ADMIN_LINE_USER_IDS` — comma-separated LINE user ids granted admin access (no DB column)
+- `MISTRAL_API_KEY` / `MISTRAL_OCR_MODEL` / `DOCX_CONVERT_MAX_SOURCE_BYTES` — convert-to-Word
+  ("แปลงไฟล์"); feature is OFF (command replies "not available") until the key is set
 
 ## Status (built)
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.
