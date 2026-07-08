@@ -912,6 +912,15 @@ button:active,
   box-shadow: var(--shadow-lg);
 }
 
+/* A card holds its share modal as a child. The card's hover transform makes a
+   containing block for the modal's position:fixed overlay, and overflow:hidden
+   then clips it to the card box. While a modal is open, drop both so the fixed
+   overlay escapes to the viewport and the whole modal (incl. buttons) shows. */
+.file-card:has(.modal-overlay) {
+  transform: none;
+  overflow: visible;
+}
+
 .file-card:nth-child(1) { animation-delay: 0.04s; }
 .file-card:nth-child(2) { animation-delay: 0.08s; }
 .file-card:nth-child(3) { animation-delay: 0.12s; }
@@ -1734,7 +1743,7 @@ button:active,
 .modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 40;
+  z-index: 9999;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1743,10 +1752,18 @@ button:active,
   animation: fadeIn 160ms ease;
 }
 
+/* Lock background scroll while any modal is open (iOS Safari needs position:fixed,
+   not just overflow:hidden, to actually stop rubber-band scrolling). */
+body:has(.modal-overlay) {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+}
+
 .modal {
   width: 100%;
-  max-width: 380px;
-  max-height: 80vh;
+  max-width: min(400px, 90vw);
+  max-height: 85vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -2335,7 +2352,7 @@ button:active,
    ============================================================ */
 
 .share-modal {
-  max-width: 440px;
+  max-width: min(400px, 90vw);
   gap: 16px;
 }
 

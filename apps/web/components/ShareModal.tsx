@@ -43,6 +43,22 @@ export function ShareModal({ file, onClose }: ShareModalProps) {
   const [justCreated, setJustCreated] = useState<ShareDto | null>(null);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
 
+  // iOS Safari scroll preservation: pin <body> at the current scroll offset while
+  // the modal is open, then restore it on close so the page doesn't jump to top.
+  useEffect(() => {
+    const scrollY = window.scrollY;
+    const body = document.body;
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.width = '100%';
+    return () => {
+      body.style.position = '';
+      body.style.top = '';
+      body.style.width = '';
+      window.scrollTo(0, scrollY);
+    };
+  }, []);
+
   useEffect(() => {
     let active = true;
     getShares(file.id)
