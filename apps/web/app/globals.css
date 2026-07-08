@@ -1752,13 +1752,9 @@ button:active,
   animation: fadeIn 160ms ease;
 }
 
-/* Lock background scroll while any modal is open (iOS Safari needs position:fixed,
-   not just overflow:hidden, to actually stop rubber-band scrolling). */
-body:has(.modal-overlay) {
-  overflow: hidden;
-  position: fixed;
-  width: 100%;
-}
+/* Background scroll lock is owned by JS (ShareModal useEffect pins <body> with a
+   restored scroll offset). CSS must NOT also pin body — a body:has(.modal-overlay)
+   position:fixed rule fires without the scroll offset and collapses the page. */
 
 .modal {
   width: 100%;
