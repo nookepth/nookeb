@@ -11,6 +11,7 @@
  */
 
 import { config } from '../config';
+import { documentTypeDisplayName, formatThaiBuddhistDate, type DocumentType } from './docx-builder.service';
 
 const LINE_GREEN = '#06C755';
 const BRAND_RED = '#b53a32'; // nookeb brand — CTA buttons/links
@@ -19,6 +20,12 @@ const MUTED = '#8C8C8C';
 const INK = '#111111';
 const TEAL = '#0D9488'; // referral accents — invite code + progress-bar fill
 const BAR_TRACK = '#EEEEEE'; // referral progress-bar background
+// Convert-to-Word result card — dark header zone. #1F2937 (slate) over pure
+// #111827 (near-black): it reads as a distinct surface rather than a void, keeps
+// the white title/gray subtitle legible, and pairs cleanly with the brand-red
+// CTA below (near-black would fight the red and feel like an error state).
+const DOCX_HEADER = '#1F2937';
+const DOCX_SUBTITLE = '#D1D5DB'; // light gray subtitle on the dark header
 
 /**
  * Strip emoji/pictographs from a string for LINE Flex text fields (Fix 5).
@@ -771,47 +778,93 @@ export function buildTeamGuideFlexMessage(): FlexMessage {
   };
 }
 
+/** Human-readable file size (B / KB / MB) for the convert result card. */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/** "label ……… value" meta row (muted label left, ink value right-aligned). */
+function metaRow(label: string, value: string): Record<string, unknown> {
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'sm',
+    contents: [
+      { type: 'text', text: label, size: 'xs', color: MUTED, flex: 3 },
+      { type: 'text', text: value, size: 'xs', color: '#333333', align: 'end', wrap: true, flex: 5 },
+    ],
+  };
+}
+
 /**
- * Convert-to-Word result card (convert_to_docx worker push). Same kilo-bubble
- * language as the upload cards: dot-row status, brand-red locker button.
- * `warning` adds a muted caution row (e.g. very little text was recognized).
+ * Convert-to-Word result card (convert_to_docx worker push). Dark header zone
+ * (white title + gray "ประเภท: …" subtitle from the detected document type),
+ * white body with the .docx filename, page count, file size and Thai converted
+ * date/time, and the brand-red "ดูล็อคเกอร์ได้เลย" locker button (same target/
+ * label as the upload progress card). All fields except docxFilename/lockerUrl
+ * are optional so the retry-recovery path (which only knows the stored name) and
+ * missing-size cases degrade gracefully. `warning` adds a muted caution row.
  */
-export function buildDocxResultFlexMessage(params: {
-  fileName: string;
-  pageCount: number;
-  dashboardUrl: string;
+export function buildConvertToDocxResultCard(params: {
+  docxFilename: string;
+  lockerUrl: string;
+  originalFilename?: string;
+  documentType?: DocumentType;
+  fileSize?: number;
+  pageCount?: number;
+  convertedAt?: Date;
   warning?: string;
 }): FlexMessage {
-  const bodyContents: Record<string, unknown>[] = [
-    iconRow(LINE_GREEN, params.fileName),
-    {
-      type: 'text',
-      text: `${params.pageCount} หน้า พร้อมแก้ไขต่อได้เลยน้า`,
-      size: 'xs',
-      color: MUTED,
-      wrap: true,
-    },
+  const headerContents: Record<string, unknown>[] = [
+    { type: 'text', text: 'แปลงเป็น Word เสร็จแล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
   ];
+  if (params.documentType) {
+    headerContents.push({
+      type: 'text',
+      text: `ประเภท: ${documentTypeDisplayName(params.documentType)}`,
+      size: 'xs',
+      color: DOCX_SUBTITLE,
+      wrap: true,
+    });
+  }
+
+  const bodyContents: Record<string, unknown>[] = [iconRow(LINE_GREEN, params.docxFilename)];
+  const meta: Record<string, unknown>[] = [];
+  if (params.pageCount !== undefined) meta.push(metaRow('จำนวนหน้า', `${params.pageCount} หน้า`));
+  if (params.fileSize !== undefined) meta.push(metaRow('ขนาดไฟล์', formatFileSize(params.fileSize)));
+  if (params.convertedAt) {
+    const t = params.convertedAt;
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const when = `${formatThaiBuddhistDate(t)} ${pad(t.getHours())}:${pad(t.getMinutes())} น.`;
+    meta.push(metaRow('แปลงเมื่อ', when));
+  }
+  if (meta.length > 0) {
+    bodyContents.push({ type: 'separator', margin: 'md', color: BAR_TRACK });
+    bodyContents.push(...meta);
+  }
   if (params.warning) bodyContents.push(iconRow(ERROR_RED, params.warning, MUTED));
 
   return {
     type: 'flex',
-    altText: 'แปลงเป็นไฟล์ Word เสร็จแล้วน้า',
+    altText: 'แปลงเป็นไฟล์ Word เสร็จแล้วน้า กดดูในล็อคเกอร์ได้เลย',
     contents: {
       type: 'bubble',
       size: 'kilo',
       header: {
         type: 'box',
         layout: 'vertical',
+        spacing: 'xs',
+        backgroundColor: DOCX_HEADER,
         paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'แปลงเป็น Word เสร็จแล้วน้า', weight: 'bold', size: 'lg', color: INK, wrap: true },
-        ],
+        contents: headerContents,
       },
       body: {
         type: 'box',
         layout: 'vertical',
-        spacing: 'md',
+        spacing: 'sm',
         paddingAll: '16px',
         contents: bodyContents,
       },
@@ -820,17 +873,17 @@ export function buildDocxResultFlexMessage(params: {
         layout: 'vertical',
         paddingAll: '12px',
         contents: [
-          params.dashboardUrl.startsWith('https://')
+          params.lockerUrl.startsWith('https://')
             ? {
                 type: 'button',
                 style: 'primary',
                 color: BRAND_RED,
-                action: { type: 'uri', label: 'เปิดดูในล็อคเกอร์', uri: params.dashboardUrl },
+                action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: params.lockerUrl },
               }
-            : { type: 'text', text: `เปิดดูในล็อคเกอร์: ${params.dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true },
+            : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${params.lockerUrl}`, size: 'xs', color: BRAND_RED, wrap: true },
         ],
       },
-      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: DOCX_HEADER }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }

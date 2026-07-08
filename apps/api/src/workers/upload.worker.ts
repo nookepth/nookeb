@@ -34,7 +34,8 @@ import {
   uploadStream,
   SizeLimitExceededError,
 } from '../services/r2.service';
-import { getMessageContent, getProfile, pushMessage } from '../services/line.service';
+import { getMessageContent, getProfile, replyMessage, type LineMessage } from '../services/line.service';
+import { addPendingNotify, closePendingNotify } from '../services/pending-notify.service';
 import {
   ensureUserAndSpace,
   createFileRecord,
@@ -69,8 +70,8 @@ import {
 import { processScanPage, plainNormalize, buildScanPdf, MSG_PDF_FAILED } from '../services/scan-enhance.service';
 import { extractText, terminateOcr } from '../services/ocr.service';
 import { isMistralOcrConfigured, mistralOcr, MistralOcrRejectedError } from '../services/mistral-ocr.service';
-import { buildDocxFromMarkdown } from '../services/docx-builder.service';
-import { buildDocxResultFlexMessage } from '../services/flex.service';
+import { buildDocxFromMarkdown, detectDocumentType } from '../services/docx-builder.service';
+import { buildConvertToDocxResultCard } from '../services/flex.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -82,13 +83,43 @@ const fileQueue = new Queue<FileJob>(FILE_QUEUE, { connection: createRedis() });
 
 const THUMBNAIL_WIDTH = 480;
 
+/**
+ * Reply-only user notification (CLAUDE.md "LINE Messaging — Critical Rules"):
+ * pushes are banned (they burn monthly quota and fail silently when it runs
+ * out). When the job carries a saved reply token, try ONE reply with it —
+ * tokens are single-use and valid ~1 min, so a quick job's message lands as a
+ * free reply. A missing/spent/expired token defers the message to
+ * pending-notify, where the webhook surfaces it on the user's next 1-on-1
+ * interaction. Never throws — by the time a handler notifies, the job's real
+ * work (store + charge) is already committed, and a notification failure must
+ * never fail/retry the job.
+ */
+async function notifyUser(
+  lineUserId: string,
+  messages: LineMessage[],
+  replyToken?: string | null,
+): Promise<void> {
+  if (replyToken) {
+    try {
+      await replyMessage(replyToken, messages);
+      return;
+    } catch (err) {
+      console.warn(
+        `[upload.worker] reply token spent/expired — deferring to pending-notify: ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+  await addPendingNotify(lineUserId, messages);
+}
+
 // finalize_scan wait-gate (migration 023). Max times finalize_scan re-enqueues itself
 // waiting for in-flight add_scan_page jobs to land before it gives up and builds the PDF
 // from whatever pages exist (~MAX * 3s worst-case wait). Hard stop = no infinite loop.
 const MAX_FINALIZE_WAITS = 5;
-// Pushed when finalize_scan exhausts the wait budget with pages still missing.
+// Queued (pending-notify) when finalize_scan exhausts the wait budget with pages missing.
 const MSG_SCAN_PAGES_INCOMPLETE = 'พบว่าบางหน้าอาจไม่ครบ กรุณาตรวจสอบ PDF ที่ได้รับ';
-// Pushed when an add_scan_page job lands after the session already left 'collecting'
+// Queued when an add_scan_page job lands after the session already left 'collecting'
 // (user typed "เสร็จ" and finalize started) — the page couldn't join the PDF.
 const MSG_SCAN_PAGE_TOO_LATE =
   'หน้านี้ส่งมาช้าไปน้า หนูปิดการสแกนรอบนี้ไปแล้ว ถ้าอยากได้หน้านี้ด้วยต้องเริ่มสแกนใหม่น้า';
@@ -445,11 +476,11 @@ async function storeUpload(
 /**
  * upload_batch job: process a debounced batch sequentially. Each file gets up to
  * 3 attempts; a file that still fails is counted and the batch continues. The
- * handler NEVER throws (a batch retry would re-store everything) and always ends
- * with ONE summary Flex push — to the group when in a group, else the user.
+ * handler NEVER throws (a batch retry would re-store everything). The outcome is
+ * delivered by the progress page the reply card already linked; rejection/quota
+ * notices defer via pending-notify (reply-only messaging, no pushes).
  */
 async function processUploadBatch(job: UploadBatchJob): Promise<void> {
-  const target = job.lineGroupId ?? job.lineUserId;
   // Progress store updates are best-effort — this handler must never throw
   await progressStore.init(job.batchId, job.items.length).catch((err) => {
     console.error('[upload.worker] progress init failed:', err);
@@ -498,22 +529,19 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     const overLimit = team
       ? team.storage_used >= team.storage_limit
       : user.storage_used >= user.storage_limit;
+    // Quota-full notices: no reply token survives to the worker (the batch's
+    // token was spent on the progress card), so these defer to pending-notify
+    // and surface on the uploader's next 1-on-1 interaction — even for group
+    // batches (a group has no personal drain; the uploader still learns why
+    // nothing was stored). notifyUser never throws.
     if (overLimit && team) {
-      try {
-        await pushMessage(target, [{ type: 'text', text: teamFullMessage(team) }]);
-      } catch (err) {
-        console.error('[upload.worker] team-full notice push failed:', err);
-      }
+      await notifyUser(job.lineUserId, [{ type: 'text', text: teamFullMessage(team) }]);
     } else if (overLimit && !team) {
       // Personal quota fast-path mirror of the team branch: tell the uploader
       // their personal storage is full (same copy the per-file rejection uses)
       // once, up front, instead of silently counting "failed N". The shared
       // `if (overLimit) return null` below skips storing every file in the batch.
-      try {
-        await pushMessage(target, [{ type: 'text', text: PERSONAL_FULL_TEXT }]);
-      } catch (err) {
-        console.error('[upload.worker] personal-full notice push failed:', err);
-      }
+      await notifyUser(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }]);
     }
 
     // One notice per distinct rejection message per batch: without this, a
@@ -545,11 +573,7 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
             console.warn(`[upload.worker] batch item rejected (${item.lineMessageId}): ${err.message}`);
             if (!notifiedRejections.has(err.userMessage)) {
               notifiedRejections.add(err.userMessage);
-              try {
-                await pushMessage(target, [{ type: 'text', text: err.userMessage }]);
-              } catch (pushErr) {
-                console.error(`[upload.worker] rejection notice push failed (${item.lineMessageId}):`, pushErr);
-              }
+              await notifyUser(job.lineUserId, [{ type: 'text', text: err.userMessage }]);
             }
           } else {
             console.error(`[upload.worker] batch item failed (${item.lineMessageId}):`, err);
@@ -568,7 +592,7 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // "เสร็จแล้ว" + redirects to the locker as this batch finishes (progressStore
     // .complete in the finally). So the outcome is delivered for free — we only
     // log it here. (Per-file rejection / quota-full notices above are separate:
-    // they're rare error events with no reply token, kept as best-effort pushes.)
+    // rare error events with no reply token, deferred via pending-notify.)
     console.log(
       `[upload.worker] batch ${job.batchId} done for ${username ?? '[profile unavailable]'}: ` +
         `stored ${files.length}, failed ${failed}`,
@@ -675,11 +699,7 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
           `status=processing alreadyStored=${alreadyStored} — page arrived after finalize started`,
       );
       if (!alreadyStored && job.lineUserId) {
-        try {
-          await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_SCAN_PAGE_TOO_LATE }]);
-        } catch (err) {
-          console.error(`[upload.worker] late-page push failed (${session.id}):`, err);
-        }
+        await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_SCAN_PAGE_TOO_LATE }]);
       }
     }
     return;
@@ -732,13 +752,11 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   await insertPage(supabase, session.id, key, job.lineMessageId);
 
   // Best-effort retake hints (dark / blurry / edges not found) — the page IS
-  // stored either way; a failed push must never fail (and retry) the job.
+  // stored either way; notifyUser never throws, so a notification problem can
+  // never fail (and retry) the job. No token here (the page card's debounced
+  // reply spent it), so the hint rides on the user's next interaction.
   if (warnings.length > 0 && job.lineUserId) {
-    try {
-      await pushMessage(job.lineUserId, [{ type: 'text', text: warnings.join('\n') }]);
-    } catch (err) {
-      console.error(`[upload.worker] scan warning push failed (${session.id}):`, err);
-    }
+    await notifyUser(job.lineUserId, [{ type: 'text', text: warnings.join('\n') }]);
   }
 }
 
@@ -799,17 +817,13 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
       `[upload.worker] finalize_scan session=${session.id} proceeding with ${stored}/${expected} ` +
         `pages after ${MAX_FINALIZE_WAITS} waits — some pages missing`,
     );
-    try {
-      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_SCAN_PAGES_INCOMPLETE }]);
-    } catch (err) {
-      console.error(`[upload.worker] finalize_scan incomplete-warning push failed (${session.id}):`, err);
-    }
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_SCAN_PAGES_INCOMPLETE }]);
   }
 
   const pages = await listPages(supabase, session.id);
   if (pages.length === 0) {
     await setSessionStatus(supabase, session.id, 'cancelled');
-    await pushMessage(job.lineUserId, [{ type: 'text', text: 'ยังไม่มีไฟล์ให้รวมเป็น PDF เลยน้า' }]);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: 'ยังไม่มีไฟล์ให้รวมเป็น PDF เลยน้า' }]);
     return;
   }
   log('pages-listed', `count=${pages.length}`);
@@ -840,11 +854,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     // The merged PDF will never be produced — free the temp page images now so
     // this permanently-cancelled session doesn't leak them (best-effort).
     await deleteScanTempObjects(supabase, session.id);
-    try {
-      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
-    } catch (pushErr) {
-      console.error(`[upload.worker] finalize_scan failure push failed (${session.id}):`, pushErr);
-    }
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
     return;
   }
 
@@ -880,7 +890,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
         // Same leak class as the assembly-failure path: the session is now
         // permanently cancelled, so free its temp page images (best-effort).
         await deleteScanTempObjects(supabase, session.id);
-        await pushMessage(job.lineUserId, [
+        await notifyUser(job.lineUserId, [
           { type: 'text', text: 'พื้นที่ทีมเต็มแล้วน้า ไม่สามารถบันทึกไฟล์รวมรูปได้' },
         ]);
         return;
@@ -900,7 +910,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
       // Same leak class as the assembly-failure path: the session is now
       // permanently cancelled, so free its temp page images (best-effort).
       await deleteScanTempObjects(supabase, session.id);
-      await pushMessage(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }]);
+      await notifyUser(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }]);
       return;
     }
   }
@@ -992,12 +1002,12 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     }
   }
 
-  // No completion PUSH here anymore. When the user typed "เสร็จ", the webhook
+  // No completion message here. When the user typed "เสร็จ", the webhook
   // already REPLIED the finalize-in-progress card (buildFinalizingFlexMessage)
   // with a "ดูล็อคเกอร์" button — fresh reply token, free. The merged PDF is now
   // in the locker, so tapping that button shows it. (Error paths above — empty
-  // session / PDF-assembly failure / team-full — keep their best-effort text
-  // pushes: they're rare and have no reply token to fall back on.)
+  // session / PDF-assembly failure / team-full — defer their text notices via
+  // pending-notify: rare events with no reply token, never pushed.)
   log('done-no-push', `kind=${kind} file=${name}`);
 }
 
@@ -1046,7 +1056,10 @@ function docxOutputName(originalName: string): string {
  * ~1h). Retry safety: the output row carries line_message_id `docx-<msgId>`;
  * a 'ready' row under that marker short-circuits the retry, and a failed store
  * soft-deletes its row so the unique live index (migration 022) lets the retry
- * re-insert. User-visible failures push ONE friendly Thai message and return
+ * re-insert. User-visible outcomes (result card AND failure texts) go through
+ * notifyUser: the webhook saved the event's reply token into the job payload
+ * (it did NOT spend it on an ack), so a quick conversion delivers as a free
+ * REPLY; a spent/expired token defers to pending-notify. Failure paths return
  * without throwing (no point retrying a too-large / unreadable source).
  */
 async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolean): Promise<void> {
@@ -1057,11 +1070,22 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
   const existing = await findLiveFileByLineMessageId(supabase, markerId);
   if (existing) {
     if (existing.status === 'ready') {
-      // Stored + charged; only the result push may have been missed — resend it
-      // (worst case the user sees the card twice).
-      await pushMessage(job.lineUserId, [
-        buildDocxResultFlexMessage({ fileName: existing.original_name, pageCount: 1, dashboardUrl }),
-      ]).catch(() => undefined);
+      // Stored + charged; only the result card may have been missed — resend it
+      // (worst case the user sees the card twice). The token was likely spent
+      // by the earlier attempt, so this usually lands in pending-notify.
+      await notifyUser(
+        job.lineUserId,
+        [
+          buildConvertToDocxResultCard({
+            docxFilename: existing.original_name,
+            originalFilename: existing.original_name,
+            lockerUrl: dashboardUrl,
+            fileSize: existing.file_size,
+            convertedAt: existing.created_at ? new Date(existing.created_at) : undefined,
+          }),
+        ],
+        job.replyToken,
+      );
     }
     return;
   }
@@ -1074,7 +1098,7 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
   const content = await getMessageContent(job.lineMessageId);
   if (content.contentLength !== null && content.contentLength > cap) {
     content.stream.destroy();
-    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_TOO_LARGE }]).catch(() => undefined);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_TOO_LARGE }], job.replyToken);
     return;
   }
   const chunks: Buffer[] = [];
@@ -1083,7 +1107,7 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
     total += (chunk as Buffer).length;
     if (total > cap) {
       content.stream.destroy();
-      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_TOO_LARGE }]).catch(() => undefined);
+      await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_TOO_LARGE }], job.replyToken);
       return;
     }
     chunks.push(chunk as Buffer);
@@ -1092,7 +1116,7 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
 
   const mime = detectConvertMime(source, content.contentType);
   if (!mime) {
-    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }]).catch(() => undefined);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }], job.replyToken);
     return;
   }
 
@@ -1113,37 +1137,40 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
       pagesMarkdown = [await extractText(source)];
       pageCount = 1;
     } else {
-      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }]).catch(() => undefined);
+      await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }], job.replyToken);
       return;
     }
   } catch (err) {
     if (err instanceof MistralOcrRejectedError) {
       // The document itself was refused — retrying the same bytes can't help.
       console.warn(`[convert_to_docx] msg=${job.lineMessageId} rejected:`, err.message);
-      await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }]).catch(() => undefined);
+      await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }], job.replyToken);
       return;
     }
     if (!isLastAttempt) throw err; // transient (timeout / 5xx / 429) — retry
     console.error(`[convert_to_docx] msg=${job.lineMessageId} OCR exhausted:`, err);
-    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }]).catch(() => undefined);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }], job.replyToken);
     return;
   }
 
   const totalChars = pagesMarkdown.join('').replace(/\s+/g, '').length;
   if (totalChars < 10) {
-    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNREADABLE }]).catch(() => undefined);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNREADABLE }], job.replyToken);
     return;
   }
   const lowText = totalChars / Math.max(pagesMarkdown.length, 1) < DOCX_LOW_TEXT_CHARS_PER_PAGE;
 
-  const docxBuf = await buildDocxFromMarkdown(pagesMarkdown);
+  // Detect the document type once so the result card can show it (buildDocx
+  // re-uses the same type — passing it avoids a second detection pass).
+  const docType = detectDocumentType(pagesMarkdown.join('\n\n'));
+  const docxBuf = await buildDocxFromMarkdown(pagesMarkdown, docType);
   const name = docxOutputName(job.originalName);
 
   // Reserve quota before storing (same pattern as finalize_scan's personal path;
   // convert is personal-chat only, so there is no team branch).
   const reservation = await incrementPersonalStorage(supabase, user.id, docxBuf.length, { enforce: true });
   if (reservation.overLimit) {
-    await pushMessage(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }]).catch(() => undefined);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }], job.replyToken);
     return;
   }
 
@@ -1193,21 +1220,30 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
       .then(undefined, () => undefined);
     if (!isLastAttempt) throw err;
     console.error(`[convert_to_docx] msg=${job.lineMessageId} store exhausted:`, err);
-    await pushMessage(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }]).catch(() => undefined);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }], job.replyToken);
     return;
   }
 
-  // Stored + charged — the job is done; the result card is best-effort.
-  await pushMessage(job.lineUserId, [
-    buildDocxResultFlexMessage({
-      fileName: name,
-      pageCount: pagesMarkdown.length,
-      dashboardUrl,
-      warning: lowText ? MSG_DOCX_LOW_TEXT : undefined,
-    }),
-  ]).catch((err) => {
-    console.error(`[convert_to_docx] result push failed (msg=${job.lineMessageId}):`, err);
-  });
+  // Stored + charged — the job is done; the result card is best-effort. A fast
+  // conversion arrives as the REPLY to the file the user sent (the webhook
+  // saved the token instead of spending it on an ack); a slow one lands in the
+  // locker now and the card follows on the next interaction via pending-notify.
+  await notifyUser(
+    job.lineUserId,
+    [
+      buildConvertToDocxResultCard({
+        docxFilename: name,
+        originalFilename: job.originalName,
+        documentType: docType,
+        fileSize: docxBuf.length,
+        pageCount: pagesMarkdown.length,
+        convertedAt: new Date(),
+        lockerUrl: dashboardUrl,
+        warning: lowText ? MSG_DOCX_LOW_TEXT : undefined,
+      }),
+    ],
+    job.replyToken,
+  );
 }
 
 /**
@@ -1245,6 +1281,7 @@ export async function scheduleRepeatableJobs(): Promise<void> {
 export async function closeWorkerQueue(): Promise<void> {
   await fileQueue.close();
   await progressStore.closeProgressStore();
+  await closePendingNotify();
   await terminateOcr();
 }
 
@@ -1286,9 +1323,7 @@ export function createUploadWorker(): Worker<FileJob> {
               `[upload.worker] finalize_scan exhausted job=${job.id} session=${data.sessionId}:`,
               err,
             );
-            await pushMessage(data.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]).catch((pushErr) => {
-              console.error(`[upload.worker] finalize_scan exhaustion push failed (${data.sessionId}):`, pushErr);
-            });
+            await notifyUser(data.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
           }
           break;
         }
@@ -1304,11 +1339,11 @@ export function createUploadWorker(): Worker<FileJob> {
               `[upload.worker] convert_to_docx exhausted job=${job.id} msg=${data.lineMessageId}:`,
               err,
             );
-            await pushMessage(data.lineUserId, [
-              { type: 'text', text: 'แปลงไฟล์เป็น Word ไม่สำเร็จน้า ขอโทษนะคะ ลองส่งใหม่อีกทีน้า' },
-            ]).catch((pushErr) => {
-              console.error(`[upload.worker] convert_to_docx exhaustion push failed:`, pushErr);
-            });
+            await notifyUser(
+              data.lineUserId,
+              [{ type: 'text', text: 'แปลงไฟล์เป็น Word ไม่สำเร็จน้า ขอโทษนะคะ ลองส่งใหม่อีกทีน้า' }],
+              data.replyToken,
+            );
           }
           break;
         }

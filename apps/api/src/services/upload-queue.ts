@@ -4,7 +4,8 @@ import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb
 import { config } from '../config';
 import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
 import { getGroupNotifySetting } from './group-settings.service';
-import { pushMessage, replyMessage, type LineMessage } from './line.service';
+import { replyMessage, type LineMessage } from './line.service';
+import { addPendingNotify } from './pending-notify.service';
 
 /**
  * Per-user debounce queue for normal uploads. A burst of image/file events from
@@ -179,7 +180,7 @@ interface ScanReplyEntry {
   timer: NodeJS.Timeout;
   /** first event's replyToken — the only one we may reply with */
   replyToken: string | null;
-  /** group id or user id — where a push fallback goes */
+  /** group id or user id — logging context when the reply is skipped */
   target: string;
   /** running total of pages in the session (pre-burst count + events so far) */
   count: number;
@@ -307,21 +308,18 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
     // The user was already told "บันทึกแล้วน้า ✓" / shown the progress card above,
     // but the job never made it to the queue — the files are lost. Own the failure:
     // apologise so the user knows to resend, instead of silently dropping the batch.
-    // Best-effort push (reply token is already spent on the confirmation above);
-    // never let a failure here throw. Log with batch context but NO PII (no LINE
-    // user id) — item count + batch id are enough to debug.
+    // The reply token is already spent on the confirmation above and pushes are
+    // banned (reply-only messaging), so the apology is deferred to pending-notify
+    // and surfaces on the sender's next 1-on-1 interaction — even for a group
+    // batch, since pending-notify drains in personal chat only. Log with batch
+    // context but NO PII (no LINE user id) — item count + batch id are enough.
     app.log.error(
       { err, batchId, itemCount: entry.items.length, isGroup },
-      'failed to enqueue upload_batch — files dropped, notifying user',
+      'failed to enqueue upload_batch — files dropped, deferring apology to pending-notify',
     );
-    try {
-      const target = entry.lineGroupId ?? lineUserId;
-      await pushMessage(target, [
-        { type: 'text', text: 'เกิดข้อผิดพลาด ไม่สามารถบันทึกไฟล์ได้ กรุณาส่งใหม่อีกครั้งน้า' },
-      ]);
-    } catch (notifyErr) {
-      app.log.error({ err: notifyErr, batchId }, 'failed to notify user of dropped upload_batch');
-    }
+    await addPendingNotify(lineUserId, [
+      { type: 'text', text: 'เกิดข้อผิดพลาด ไม่สามารถบันทึกไฟล์ได้ กรุณาส่งใหม่อีกครั้งน้า' },
+    ]);
   }
 }
 

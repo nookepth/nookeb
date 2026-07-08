@@ -39,6 +39,7 @@ import {
   setSessionStatus,
   startSession,
 } from '../../services/scan.service';
+import { addPendingNotify, drainPendingNotify } from '../../services/pending-notify.service';
 import { armDocxConvert, consumeDocxConvert } from '../../services/docx-convert.service';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { config } from '../../config';
@@ -116,12 +117,52 @@ async function sendOnboarding(event: LineMessageEvent): Promise<void> {
   ]);
 }
 
+/**
+ * Pending worker notifications drained for this event (reply-only messaging:
+ * workers can't push, so their deferred notices ride along on the next
+ * interaction's reply — see pending-notify.service). Filled in handleEvent for
+ * 1-on-1 text/postback events; sendReply prepends-and-consumes it so the
+ * notices are sent at most once, on whichever reply the handler makes.
+ */
+const pendingPreface = new WeakMap<LineMessageEvent, LineMessage[]>();
+
+/** Take (and clear) the event's drained notices — empty when none/consumed. */
+function takePreface(event: LineMessageEvent): LineMessage[] {
+  const preface = pendingPreface.get(event) ?? [];
+  if (preface.length > 0) pendingPreface.delete(event);
+  return preface;
+}
+
+/**
+ * Single reply funnel: prepends any drained pending notices (trimmed so the
+ * total stays within LINE's 5-messages-per-reply limit). If the reply fails,
+ * the notices are re-queued so they aren't lost with the spent token.
+ */
+async function sendReply(event: LineMessageEvent, messages: LineMessage[]): Promise<void> {
+  if (!event.replyToken) return;
+  const drained = takePreface(event);
+  const room = Math.max(0, 5 - messages.length);
+  const preface = drained.slice(0, room);
+  // Notices that don't fit this reply go back in the queue for the next one.
+  if (drained.length > room && event.source.userId) {
+    await addPendingNotify(event.source.userId, drained.slice(room));
+  }
+  try {
+    await replyMessage(event.replyToken, [...preface, ...messages]);
+  } catch (err) {
+    if (preface.length > 0 && event.source.userId) {
+      await addPendingNotify(event.source.userId, preface);
+    }
+    throw err;
+  }
+}
+
 async function reply(event: LineMessageEvent, text: string): Promise<void> {
-  if (event.replyToken) await replyMessage(event.replyToken, [{ type: 'text', text }]);
+  await sendReply(event, [{ type: 'text', text }]);
 }
 
 async function replyFlex(event: LineMessageEvent, message: FlexMessage): Promise<void> {
-  if (event.replyToken) await replyMessage(event.replyToken, [message]);
+  await sendReply(event, [message]);
 }
 
 /**
@@ -154,7 +195,7 @@ async function replyFlexWithQuickReply(
     ...message,
     quickReply: { items: buttons.map(quickReplyAction) },
   } as unknown as LineMessage;
-  await replyMessage(event.replyToken, [withQr]);
+  await sendReply(event, [withQr]);
 }
 
 /**
@@ -183,7 +224,7 @@ async function replyWithQuickReply(
     text,
     quickReply: { items: buttons.map(quickReplyAction) },
   } as unknown as LineMessage;
-  await replyMessage(event.replyToken, [message]);
+  await sendReply(event, [message]);
 }
 
 /** Lightweight lookup — does not create a user (used before we know we need one). */
@@ -342,9 +383,10 @@ async function handleRedeem(
       return;
     }
     // The referee (this user) typed the code here, so we have a fresh reply
-    // token — REPLY the success card instead of a paid push. On the success path
-    // the token is otherwise unused (only failures call reply() above). Web-
-    // dashboard redemptions have no chat token and still push (referral.messages).
+    // token — REPLY the success card. On the success path the token is
+    // otherwise unused (only failures call reply() above). Web-dashboard
+    // redemptions have no chat token, so theirs is deferred to pending-notify
+    // (referral.messages).
     try {
       await replyFlex(
         event,
@@ -358,11 +400,12 @@ async function handleRedeem(
       app.log.error({ err, userId: user.id }, 'referral: redeem-success reply failed');
     }
     // The referrer is a DIFFERENT user (not in this chat) — no reply token for
-    // them, so this stays a best-effort push.
+    // them ever, so their progress card is deferred to pending-notify and
+    // arrives on their next interaction with the bot.
     try {
       await sendReferralProgressToReferrer(app.supabase, app.redis, result.referrerId!);
     } catch (err) {
-      app.log.error({ err, referrerId: result.referrerId }, 'referral: referrer progress push failed');
+      app.log.error({ err, referrerId: result.referrerId }, 'referral: referrer progress notify failed');
     }
   } catch (err) {
     app.log.error({ err, lineUserId }, 'referral: redeem handler error');
@@ -831,6 +874,46 @@ async function handleTextCommand(
   }
 }
 
+/**
+ * Load the user's deferred worker notifications onto this event so the reply
+ * helpers prepend them (see pendingPreface). 1-on-1 only — group replies must
+ * never leak someone's personal locker/quota notices into a shared chat — and
+ * only when there's a token to eventually deliver them with.
+ */
+async function drainPendingForEvent(
+  app: FastifyInstance,
+  event: LineMessageEvent,
+  lineUserId: string,
+): Promise<void> {
+  if (event.source.type !== 'user' || !event.replyToken) return;
+  try {
+    const pending = await drainPendingNotify(lineUserId);
+    if (pending.length > 0) pendingPreface.set(event, pending);
+  } catch (err) {
+    app.log.warn({ err, lineUserId }, 'pending-notify drain failed — continuing without');
+  }
+}
+
+/**
+ * The handler above didn't reply (quiet chatter / group-guard return), so the
+ * token is still fresh — deliver the drained notices on their own. A failed
+ * delivery re-queues them for the next interaction.
+ */
+async function deliverLeftoverPending(
+  app: FastifyInstance,
+  event: LineMessageEvent,
+  lineUserId: string,
+): Promise<void> {
+  const leftover = takePreface(event);
+  if (leftover.length === 0 || !event.replyToken) return;
+  try {
+    await replyMessage(event.replyToken, leftover);
+  } catch (err) {
+    app.log.warn({ err, lineUserId }, 'pending-notify delivery failed — re-queueing');
+    await addPendingNotify(lineUserId, leftover);
+  }
+}
+
 async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promise<void> {
   // User adds the bot (1-1 chat) → welcome bubble + onboarding carousel.
   if (event.type === 'follow') {
@@ -849,7 +932,15 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   // text so the taps behave exactly like sending that command.
   if (event.type === 'postback') {
     if (event.source.userId && event.postback?.data) {
-      await handleTextCommand(app, event, event.postback.data);
+      await drainPendingForEvent(app, event, event.source.userId);
+      try {
+        await handleTextCommand(app, event, event.postback.data);
+      } finally {
+        // Runs whether the handler replied, stayed quiet, or threw before
+        // replying — drained notices are either already consumed (empty
+        // leftover) or still deliverable on the untouched token.
+        await deliverLeftoverPending(app, event, event.source.userId);
+      }
     }
     return;
   }
@@ -860,7 +951,14 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   if (!lineUserId) return;
 
   if (message.type === 'text') {
-    await handleTextCommand(app, event, message.text ?? '');
+    await drainPendingForEvent(app, event, lineUserId);
+    try {
+      await handleTextCommand(app, event, message.text ?? '');
+    } finally {
+      // Same guarantee as the postback path: leftover notices are delivered
+      // (or re-queued by sendReply on failure) even if the handler threw.
+      await deliverLeftoverPending(app, event, lineUserId);
+    }
     return;
   }
 
@@ -895,12 +993,17 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         originalName:
           message.type === 'file' && message.fileName ? message.fileName : timestampName('jpg'),
         fileSize: message.fileSize ?? null,
+        // Reply-only messaging: the token is NOT spent on an ack here — it's
+        // saved for the worker, whose result/error card becomes the reply when
+        // the conversion finishes inside the token's ~1 min validity (the
+        // common case; Mistral OCR takes seconds). A spent/expired token falls
+        // back to pending-notify, never a push.
+        replyToken: event.replyToken ?? null,
       };
       await app.fileQueue.add('convert_to_docx', job, {
         jobId: sanitizeJobId('docx', message.id),
         ...RETRY_OPTS,
       });
-      await reply(event, 'รับแล้วน้า กำลังแปลงเป็น Word ให้ แป๊บนึงน้า');
       return;
     }
   }
@@ -918,7 +1021,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         type: 'add_scan_page',
         sessionId: session.id,
         lineMessageId: message.id,
-        lineUserId, // push target for scan-enhance quality warnings
+        lineUserId, // pending-notify target for scan-enhance quality warnings
       };
       await app.fileQueue.add('add_scan_page', job, {
         jobId: sanitizeJobId('scan-page', message.id),
