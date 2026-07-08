@@ -10,13 +10,53 @@ import {
   type ShareExpiresIn,
 } from '@/lib/api';
 import { CloseIcon, CopyIcon } from './icons';
+import { typeBadge } from '@/lib/filetype';
 
-const DURATIONS: { id: ShareExpiresIn; label: string }[] = [
-  { id: '1h', label: '1 ชั่วโมง' },
-  { id: '24h', label: '24 ชั่วโมง' },
-  { id: '7d', label: '7 วัน' },
-  { id: 'never', label: 'ตลอดไป' },
+// 2x2 duration grid. `value` is the big glyph, `unit` the small caption below it.
+const DURATIONS: { id: ShareExpiresIn; value: string; unit: string }[] = [
+  { id: '1h', value: '1', unit: 'ชั่วโมง' },
+  { id: '24h', value: '24', unit: 'ชั่วโมง' },
+  { id: '7d', value: '7', unit: 'วัน' },
+  { id: 'never', value: '∞', unit: 'ตลอดไป' },
 ];
+
+// Small inline icons kept local to the modal (project convention: no emoji, stroke = currentColor).
+function LinkIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="M10 13a5 5 0 0 0 7 0l3-3a5 5 0 0 0-7-7l-1.5 1.5" />
+      <path d="M14 11a5 5 0 0 0-7 0l-3 3a5 5 0 0 0 7 7l1.5-1.5" />
+    </svg>
+  );
+}
+
+function CheckIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden
+    >
+      <path d="m5 13 4 4 10-10" />
+    </svg>
+  );
+}
 
 function expiryLabel(expiresAt: string | null): string {
   if (!expiresAt) return 'ตลอดไป';
@@ -29,19 +69,34 @@ function expiryLabel(expiresAt: string | null): string {
   });
 }
 
+// Friendly "หมดอายุใน X" copy for the freshly-created link.
+function expiryCountdown(expiresAt: string | null): string {
+  if (!expiresAt) return 'ลิงก์นี้ไม่มีวันหมดอายุ';
+  const ms = new Date(expiresAt).getTime() - Date.now();
+  if (ms <= 0) return 'ลิงก์หมดอายุแล้ว';
+  const hours = Math.round(ms / 3_600_000);
+  if (hours >= 24) {
+    const days = Math.round(hours / 24);
+    return `ลิงก์หมดอายุใน ${days} วัน`;
+  }
+  return `ลิงก์หมดอายุใน ${Math.max(1, hours)} ชั่วโมง`;
+}
+
 export interface ShareModalProps {
   file: FileDto;
   onClose: () => void;
 }
 
 export function ShareModal({ file, onClose }: ShareModalProps) {
-  const [duration, setDuration] = useState<ShareExpiresIn>('7d');
+  const [duration, setDuration] = useState<ShareExpiresIn | null>('7d');
   const [shares, setShares] = useState<ShareDto[]>([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The most recently created link — highlighted at the top of the modal.
   const [justCreated, setJustCreated] = useState<ShareDto | null>(null);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
+
+  const badge = typeBadge(file);
 
   // iOS Safari scroll preservation: pin <body> at the current scroll offset while
   // the modal is open, then restore it on close so the page doesn't jump to top.
@@ -58,6 +113,15 @@ export function ShareModal({ file, onClose }: ShareModalProps) {
       window.scrollTo(0, scrollY);
     };
   }, []);
+
+  // Close on Escape.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
 
   useEffect(() => {
     let active = true;
@@ -80,6 +144,7 @@ export function ShareModal({ file, onClose }: ShareModalProps) {
   }, [copiedToken]);
 
   async function handleCreate(): Promise<void> {
+    if (!duration) return;
     setCreating(true);
     setError(null);
     try {
@@ -115,35 +180,55 @@ export function ShareModal({ file, onClose }: ShareModalProps) {
   }
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal share-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-overlay share-overlay" onClick={onClose}>
+      <div
+        className="modal share-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`แชร์ไฟล์ ${file.name}`}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="share-modal-head">
-          <h3 className="modal-title">แชร์ไฟล์: {file.name}</h3>
-          <button className="icon-btn" aria-label="ปิด" onClick={onClose}>
+          <span className="share-file-icon" style={{ background: badge.color }} aria-hidden>
+            {badge.label}
+          </span>
+          <div className="share-modal-heading">
+            <h3 className="share-modal-title" title={file.name}>
+              {file.name}
+            </h3>
+            <p className="share-modal-subtitle">เลือกระยะเวลาการแชร์</p>
+          </div>
+          <button className="share-close-btn" aria-label="ปิด" onClick={onClose}>
             <CloseIcon />
           </button>
         </div>
 
         <div className="share-section">
-          <span className="share-section-label">ระยะเวลาการแชร์</span>
           <div className="share-duration-grid" role="radiogroup" aria-label="ระยะเวลาการแชร์">
             {DURATIONS.map((d) => (
               <button
                 key={d.id}
+                type="button"
                 role="radio"
                 aria-checked={duration === d.id}
                 className={`share-duration ${duration === d.id ? 'active' : ''}`}
                 onClick={() => setDuration(d.id)}
                 disabled={creating}
               >
-                {d.label}
+                <span className="share-duration-value">{d.value}</span>
+                <span className="share-duration-unit">{d.unit}</span>
               </button>
             ))}
           </div>
         </div>
 
-        <button className="btn" onClick={() => void handleCreate()} disabled={creating}>
-          {creating ? 'กำลังสร้าง...' : 'สร้างลิงก์'}
+        <button
+          className="btn share-generate-btn"
+          onClick={() => void handleCreate()}
+          disabled={creating || !duration}
+        >
+          <LinkIcon />
+          {creating ? 'กำลังสร้าง...' : 'สร้างลิงก์แชร์'}
         </button>
 
         {error && <p className="share-error">{error}</p>}
@@ -151,15 +236,31 @@ export function ShareModal({ file, onClose }: ShareModalProps) {
         {justCreated && (
           <div className="share-created">
             <div className="share-link-row">
-              <input className="share-link-input" readOnly value={justCreated.shareUrl} />
+              <input
+                className="share-link-input"
+                readOnly
+                value={justCreated.shareUrl}
+                onFocus={(e) => e.currentTarget.select()}
+                aria-label="ลิงก์แชร์"
+              />
               <button
-                className="btn secondary small"
+                type="button"
+                className={`share-copy-btn ${copiedToken === justCreated.token ? 'copied' : ''}`}
                 onClick={() => void handleCopy(justCreated)}
+                aria-label="คัดลอกลิงก์"
               >
-                <CopyIcon /> {copiedToken === justCreated.token ? 'คัดลอกแล้ว' : 'คัดลอก'}
+                {copiedToken === justCreated.token ? (
+                  <>
+                    <CheckIcon /> คัดลอกแล้ว
+                  </>
+                ) : (
+                  <>
+                    <CopyIcon /> คัดลอก
+                  </>
+                )}
               </button>
             </div>
-            <div className="share-link-meta">หมดอายุ: {expiryLabel(justCreated.expiresAt)}</div>
+            <div className="share-link-meta">{expiryCountdown(justCreated.expiresAt)}</div>
           </div>
         )}
 

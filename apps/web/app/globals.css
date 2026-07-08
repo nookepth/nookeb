@@ -2347,20 +2347,86 @@ button:active,
    Share modal (ShareModal.tsx)
    ============================================================ */
 
+/* Share modal owns its own centered overlay so the backdrop blur + tint don't
+   leak onto the app's other (folder/rename) modals that share .modal-overlay. */
+.share-overlay {
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  animation: shareBackdropIn 150ms ease;
+}
+
 .share-modal {
-  max-width: min(400px, 90vw);
-  gap: 16px;
+  width: 100%;
+  min-width: min(360px, 100%);
+  max-width: min(440px, 92vw);
+  max-height: 90vh;
+  gap: 18px;
+  padding: 24px;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  animation: shareModalIn 200ms ease-out;
 }
 
 .share-modal-head {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
   gap: 12px;
 }
 
-.share-modal-head .modal-title {
-  overflow-wrap: anywhere;
+.share-file-icon {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.share-modal-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.share-modal-title {
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-modal-subtitle {
+  margin-top: 2px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.share-close-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.share-close-btn:hover {
+  background: var(--color-surface-3);
+  color: var(--color-text-primary);
 }
 
 .share-section {
@@ -2378,36 +2444,69 @@ button:active,
 .share-duration-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  gap: 10px;
 }
 
 .share-duration {
-  min-height: 44px;
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1.5px solid var(--color-border);
   background: var(--color-surface);
   color: var(--color-text-primary);
-  font-size: var(--font-size-sm);
   font-family: inherit;
   cursor: pointer;
   transition: var(--transition-fast);
 }
 
-.share-duration:hover:not(:disabled) {
-  border-color: var(--color-primary);
+.share-duration-value {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.share-duration-unit {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.share-duration:hover:not(:disabled):not(.active) {
+  border-color: #5eead4; /* teal-300 */
+  box-shadow: 0 2px 8px rgba(13, 148, 136, 0.12);
 }
 
 .share-duration.active {
-  border-color: var(--color-primary);
-  background: var(--color-primary-soft);
-  color: var(--color-primary-dark);
-  font-weight: 600;
+  border-color: var(--color-teal);
+  background: var(--color-teal-soft);
+}
+
+.share-duration.active .share-duration-value {
+  color: #0f766e; /* teal-700 */
+}
+
+.share-duration.active .share-duration-unit {
+  color: var(--color-teal);
 }
 
 .share-duration:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.share-generate-btn {
+  width: 100%;
+  min-height: 48px;
+  border-radius: 12px;
+  background: var(--color-teal);
+  font-size: var(--font-size-base);
+}
+
+.share-generate-btn:hover:not(:disabled) {
+  background: #0f766e; /* teal-700 */
 }
 
 .share-error {
@@ -2418,11 +2517,12 @@ button:active,
 .share-created {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 12px;
+  gap: 8px;
+  padding: 14px;
   border-radius: var(--radius-md);
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
+  background: var(--color-teal-soft);
+  border: 1px solid var(--color-teal);
+  animation: shareModalIn 200ms ease-out;
 }
 
 .share-link-row {
@@ -2434,26 +2534,71 @@ button:active,
 .share-link-input {
   flex: 1;
   min-width: 0;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--color-border);
   background: var(--color-surface);
-  color: var(--color-text-primary);
+  color: var(--color-text-secondary);
   font-size: var(--font-size-xs);
   font-family: inherit;
+  text-overflow: ellipsis;
 }
 
-.share-link-row .btn {
+.share-copy-btn {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid var(--color-teal);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-teal);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  font-family: inherit;
   white-space: nowrap;
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.share-copy-btn:hover {
+  background: var(--color-surface);
+  border-color: #0f766e;
+  color: #0f766e;
+}
+
+.share-copy-btn.copied {
+  background: var(--color-teal);
+  border-color: var(--color-teal);
+  color: #ffffff;
 }
 
 .share-link-meta {
   font-size: var(--font-size-xs);
-  color: var(--color-text-secondary);
+  color: #0f766e; /* teal-700 */
+  font-weight: 500;
+}
+
+@keyframes shareBackdropIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes shareModalIn {
+  from {
+    opacity: 0;
+    transform: scale(0.95);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .share-list {
