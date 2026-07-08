@@ -26,24 +26,24 @@ async function main(): Promise<void> {
     logger: {
       level: config.NODE_ENV === 'production' ? 'info' : 'debug',
     },
-    // Trust exactly 1 hop (Railway ingress). Do not use `true` — it trusts the
-    // full X-Forwarded-For chain and takes the LEFTMOST (client-controlled)
-    // entry, so any attacker can spoof `X-Forwarded-For: 1.2.3.4` per request
-    // and bypass every per-IP rate limiter (global 100/min, and critically
-    // POST /auth/line's 10/min + ban:5 that stops authorization-code brute
-    // force). With `1`, Fastify strips exactly one trusted hop and resolves
-    // `request.ip` to the RIGHTMOST entry that Railway's ingress appended —
-    // the real client IP, which cannot be forged from the outside.
+    // MUST stay `true` (see CLAUDE.md "Deployment"; regression history: 771fd9f
+    // fixed a login-wide ban, a39adec re-broke it with `trustProxy: 1`).
     //
-    // The dashboard still reaches the API same-origin via the Next.js
-    // /api-proxy rewrite fronted by Railway's ingress, so requests arrive from
-    // the proxy socket — trusting that single hop restores real per-client IPs
-    // so the limiters key per user instead of collapsing everyone onto one IP.
+    // Dashboard traffic arrives through TWO proxy hops — browser → Vercel
+    // (/api-proxy rewrite) → Railway ingress → API — so with `trustProxy: 1`
+    // the one trusted hop resolves `request.ip` to the RIGHTMOST X-Forwarded-For
+    // entry, which is Vercel's shared egress IP, NOT the client. Every dashboard
+    // user then shares one "IP": POST /auth/line's 10/min + ban:5 limiter bans
+    // the whole userbase after a login burst (nobody can log in), and the global
+    // 100/min limiter 429s all dashboard traffic under modest load.
     //
-    // To verify the fix works: send a request to any rate-limited endpoint with
-    // header `X-Forwarded-For: 1.1.1.1` and confirm that request.ip in logs
-    // shows the ACTUAL Railway-assigned client IP, not 1.1.1.1.
-    trustProxy: 1,
+    // `true` takes the LEFTMOST entry — the real client for proxied traffic.
+    // Known tradeoff: a client hitting Railway directly can spoof its
+    // X-Forwarded-For and dodge per-IP limits; accepted for now because a
+    // static hop count cannot be correct for both the 2-hop dashboard path and
+    // 1-hop direct traffic. If limiter-dodging becomes a concern, key the
+    // /auth/line limiter on something better than IP instead of lowering this.
+    trustProxy: true,
   });
 
   // CORS for the web dashboard. NOTE: the dashboard now reaches the API

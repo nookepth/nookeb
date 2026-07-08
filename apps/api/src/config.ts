@@ -6,11 +6,12 @@ const envSchema = z.object({
   APP_URL: z.string().url().default('http://localhost:3001'),
   WEB_URL: z.string().url().default('http://localhost:3000'),
 
-  // Reverse-proxy assumption: this API is deployed behind exactly 1 proxy hop
-  // (Railway's ingress), so `trustProxy: 1` is hardcoded in index.ts to resolve
-  // `request.ip` to the real client IP for the per-IP rate limiters. If you add
-  // a CDN or an additional proxy layer in front, increase trustProxy accordingly
-  // (otherwise request.ip resolves to the wrong hop and rate limiting misbehaves).
+  // Reverse-proxy assumption: dashboard traffic reaches this API through TWO
+  // hops (Vercel /api-proxy rewrite → Railway ingress), while webhooks arrive
+  // direct (one hop). index.ts therefore hardcodes `trustProxy: true` — a fixed
+  // hop count cannot be right for both paths, and `1` resolves request.ip to
+  // Vercel's shared egress IP, collapsing every user onto one rate-limit bucket
+  // (see the full comment in index.ts before changing this).
 
   // LINE Messaging API
   LINE_CHANNEL_ID: z.string().min(1),

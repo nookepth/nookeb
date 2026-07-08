@@ -20,11 +20,11 @@ interface LineProfileResponse {
   pictureUrl?: string;
 }
 
-// Audit finding (rate-limit bypass): with the old `trustProxy: true`, the
-// per-IP limiter on POST /auth/line keyed off a client-spoofable X-Forwarded-For
-// entry. After switching to `trustProxy: 1` (see index.ts), log the resolved
-// request.ip once (info level) so it is easy to confirm in Railway logs that the
-// limiter now sees the REAL client IP, not a forged `X-Forwarded-For` value.
+// One-time log of the resolved request.ip so Railway logs can confirm the
+// per-IP limiter keys on a real client address, not a shared proxy address.
+// (trustProxy MUST stay `true` — see the comment in index.ts: `trustProxy: 1`
+// resolves every Vercel-proxied dashboard request to Vercel's shared egress IP
+// and the /auth/line 10/min + ban:5 limiter then bans ALL users at once.)
 let loggedFirstRequestIp = false;
 
 const authRoutes: FastifyPluginAsync = async (app) => {
@@ -49,7 +49,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     // See the audit-finding note above: confirm the resolved client IP once.
     if (!loggedFirstRequestIp) {
       loggedFirstRequestIp = true;
-      app.log.info({ resolvedClientIp: request.ip }, 'auth: resolved request.ip for first /auth/line request (trustProxy=1)');
+      app.log.info({ resolvedClientIp: request.ip }, 'auth: resolved request.ip for first /auth/line request (trustProxy=true)');
     }
 
     const bodySchema = z.object({
