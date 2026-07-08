@@ -144,6 +144,76 @@ export function deleteFile(fileId: string): Promise<void> {
   return apiFetch<void>(`/files/${fileId}`, { method: 'DELETE' });
 }
 
+/* ============================================================
+   File sharing (public links) — migration 027 / routes/share.ts
+   ============================================================ */
+
+export type ShareExpiresIn = '1h' | '24h' | '7d' | 'never';
+
+export interface ShareDto {
+  id: string;
+  token: string;
+  shareUrl: string;
+  expiresAt: string | null;
+  maxViews: number | null;
+  viewCount: number;
+  createdAt: string;
+}
+
+/** Public metadata + short-lived presigned URLs returned by GET /share/:token. */
+export interface SharePreview {
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  previewUrl: string;
+  downloadUrl: string;
+  expiresAt: string | null;
+}
+
+export function createShare(fileId: string, expiresIn: ShareExpiresIn): Promise<ShareDto> {
+  return apiFetch<ShareDto>(`/files/${fileId}/shares`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expiresIn }),
+  });
+}
+
+export function getShares(fileId: string): Promise<{ shares: ShareDto[] }> {
+  return apiFetch(`/files/${fileId}/shares`);
+}
+
+export function deleteShare(fileId: string, shareId: string): Promise<void> {
+  return apiFetch<void>(`/files/${fileId}/shares/${shareId}`, { method: 'DELETE' });
+}
+
+/**
+ * Public share viewer fetch — used by the /share/[token] page for logged-out
+ * visitors. Goes straight to the API (no auth needed); a 410 means the link
+ * expired, a 404 means it never existed. Never routes through apiFetch, which
+ * would clear the session on a 401 (irrelevant here) — the viewer has no session.
+ */
+export async function getSharePreview(token: string): Promise<SharePreview> {
+  const res = await fetch(`${API_URL}/share/${encodeURIComponent(token)}`);
+  if (res.status === 410) throw new ApiError(410, 'expired');
+  if (!res.ok) throw new ApiError(res.status, `API error ${res.status}`);
+  return (await res.json()) as SharePreview;
+}
+
+/**
+ * Re-fetches a fresh presigned download URL on demand (public, no auth). The URL
+ * from getSharePreview has a short TTL and 403s if the viewer waited before
+ * clicking download; this mints a new 1-hour URL at click time. A 410 means the
+ * link expired between page load and the click.
+ */
+export async function getShareDownloadUrl(
+  token: string,
+): Promise<{ downloadUrl: string; fileName: string }> {
+  const res = await fetch(`${API_URL}/share/${encodeURIComponent(token)}/download`);
+  if (res.status === 410) throw new ApiError(410, 'expired');
+  if (!res.ok) throw new ApiError(res.status, `API error ${res.status}`);
+  return (await res.json()) as { downloadUrl: string; fileName: string };
+}
+
 export function listFolders(spaceId: string): Promise<{ folders: FolderDto[] }> {
   return apiFetch(`/folders?spaceId=${encodeURIComponent(spaceId)}`);
 }

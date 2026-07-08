@@ -97,11 +97,16 @@ export async function uploadStream(
   return { size };
 }
 
-/** Presigned GET — expires in 1 hour. Downloads never proxy through the API. */
+/**
+ * Presigned GET — expires in 1 hour by default (`expiresIn` overrides, e.g. the
+ * short-lived 60s URLs handed to public share viewers). Downloads never proxy
+ * through the API.
+ */
 export async function presignedGetUrl(
   r2: S3Client,
   key: string,
   downloadName?: string,
+  expiresIn: number = PRESIGNED_URL_TTL_SECONDS,
 ): Promise<string> {
   const command = new GetObjectCommand({
     Bucket: config.R2_BUCKET_NAME,
@@ -110,7 +115,7 @@ export async function presignedGetUrl(
       ? { ResponseContentDisposition: `attachment; filename*=UTF-8''${encodeURIComponent(downloadName)}` }
       : {}),
   });
-  return getSignedUrl(r2, command, { expiresIn: PRESIGNED_URL_TTL_SECONDS });
+  return getSignedUrl(r2, command, { expiresIn });
 }
 
 export async function deleteObject(r2: S3Client, key: string): Promise<void> {

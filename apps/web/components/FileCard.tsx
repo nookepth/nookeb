@@ -12,7 +12,8 @@ import {
 } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
 import { typeBadge } from '@/lib/filetype';
-import { DotsIcon, DownloadIcon, EyeIcon } from './icons';
+import { DotsIcon, DownloadIcon, EyeIcon, ShareIcon } from './icons';
+import { ShareModal } from './ShareModal';
 
 const STATUS_LABEL: Record<FileDto['status'], string> = {
   pending: 'รอคิว',
@@ -72,6 +73,7 @@ export function FileCard({
   onToggleSelect,
 }: FileCardProps) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const fileTags = tags.filter((t) => (file.tagIds ?? []).includes(t.id));
   const badge = typeBadge(file);
@@ -209,11 +211,27 @@ export function FileCard({
           ดาวน์โหลด
         </button>
       )}
+      {file.status === 'ready' && (
+        <button
+          type="button"
+          className="btn secondary small"
+          disabled={busy}
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen(false);
+            setShareOpen(true);
+          }}
+        >
+          <ShareIcon /> แชร์
+        </button>
+      )}
       <button className="btn danger small" disabled={busy} onClick={handleDelete}>
         ลบไฟล์
       </button>
     </div>
   );
+
+  const shareModal = shareOpen && <ShareModal file={file} onClose={() => setShareOpen(false)} />;
 
   /* ---------- list view ---------- */
 
@@ -256,12 +274,24 @@ export function FileCard({
               >
                 <DownloadIcon />
               </button>
+              <button
+                type="button"
+                className="icon-btn"
+                aria-label="แชร์"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShareOpen(true);
+                }}
+              >
+                <ShareIcon />
+              </button>
             </>
           )}
           <button className="icon-btn" aria-label="เมนูจัดการไฟล์" onClick={() => setMenuOpen((v) => !v)}>
             <DotsIcon />
           </button>
         </div>
+        {shareModal}
       </div>
     );
   }
@@ -275,6 +305,19 @@ export function FileCard({
           {file.status === 'ready' && (
             <button className="icon-btn" aria-label="ดูไฟล์" onClick={() => onPreview?.(file)}>
               <EyeIcon />
+            </button>
+          )}
+          {file.status === 'ready' && (
+            <button
+              type="button"
+              className="icon-btn"
+              aria-label="แชร์"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShareOpen(true);
+              }}
+            >
+              <ShareIcon />
             </button>
           )}
           <button className="icon-btn" aria-label="เมนูจัดการไฟล์" onClick={() => setMenuOpen((v) => !v)}>
@@ -301,6 +344,7 @@ export function FileCard({
         <div className="meta">{metaText}</div>
         {menu}
       </div>
+      {shareModal}
     </div>
   );
 }
