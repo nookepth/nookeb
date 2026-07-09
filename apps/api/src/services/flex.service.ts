@@ -247,6 +247,64 @@ export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
   };
 }
 
+/**
+ * "ระบบแปลงไฟล์" (convert-to-Word) start card — same kilo-bubble structure as
+ * {@link buildMergeFlexMessage} ('opened'): brand-red header title bar, bold
+ * headline + muted detail body, cancel button footer. Content is the same
+ * instruction text the command used to send as plain text.
+ */
+export function buildDocxConvertFlexMessage(): FlexMessage {
+  const header = {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '16px',
+    contents: [
+      { type: 'text', text: 'ระบบแปลงไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+    ],
+  };
+  const styles = { header: { backgroundColor: DOCX_HEADER }, body: { backgroundColor: '#FFFFFF' } };
+
+  return {
+    type: 'flex',
+    altText: 'เปิดโหมดแปลงไฟล์แล้วน้า',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header,
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          {
+            type: 'text',
+            text: 'ส่งรูปหรือไฟล์ PDF มาได้เลยน้า หนูจะแปลงเป็นไฟล์ Word (.docx) ให้',
+            weight: 'bold',
+            size: 'md',
+            color: INK,
+            wrap: true,
+          },
+          {
+            type: 'text',
+            text: '• เอกสารพิมพ์ชัดๆ ถ่ายตรงๆ จะได้ผลดีที่สุดน้า\n• ลายมือหรือรูปเบลออาจอ่านไม่ค่อยออกน้า\n• เปลี่ยนใจพิมพ์ "ยกเลิก" ได้เลย (โหมดนี้ค้างไว้ 10 นาทีน้า)',
+            size: 'sm',
+            color: '#333333',
+            wrap: true,
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [cancelButton()],
+      },
+      styles,
+    },
+  };
+}
+
 const SCAN_BLUE = '#1E88E5'; // scan-mode card header — distinct from the merge (red) card
 
 /** Which "ระบบสแกน" (scan-to-PDF) card to build. Mirrors {@link MergeCardVariant}. */
