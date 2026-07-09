@@ -3093,7 +3093,8 @@ button:active,
 }
 
 .diary-polaroid-card {
-  flex: 0 0 150px;
+  flex: 0 0 120px;
+  width: 120px;
   background: #fff;
   border: 1px solid var(--color-border);
   border-radius: 4px;
@@ -3115,8 +3116,8 @@ button:active,
 }
 
 .diary-polaroid-card img {
-  width: 100%;
-  aspect-ratio: 3 / 4;
+  width: 120px;
+  height: 160px;
   object-fit: cover;
   object-position: center top;
   display: block;
