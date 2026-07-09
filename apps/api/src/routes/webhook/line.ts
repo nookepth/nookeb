@@ -458,6 +458,7 @@ async function handleTextCommand(
     if (!inGroup) {
       buttons.push({ label: 'รวมรูป', text: 'หนูเก็บรวมรูป' });
       buttons.push({ label: 'สแกน PDF', text: 'หนูเก็บสแกน' });
+      buttons.push({ label: 'แปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' });
     }
     buttons.push(
       inGroup
