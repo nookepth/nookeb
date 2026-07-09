@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { FileDto, FolderDto, TagDto } from '@nookeb/shared';
 import {
   attachTag,
@@ -231,7 +232,9 @@ export function FileCard({
     </div>
   );
 
-  const shareModal = shareOpen && <ShareModal file={file} onClose={() => setShareOpen(false)} />;
+  const shareModal =
+    shareOpen &&
+    createPortal(<ShareModal file={file} onClose={() => setShareOpen(false)} />, document.body);
 
   /* ---------- list view ---------- */
 
