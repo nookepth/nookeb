@@ -3116,8 +3116,9 @@ button:active,
 
 .diary-polaroid-card img {
   width: 100%;
-  height: 120px;
+  aspect-ratio: 3 / 4;
   object-fit: cover;
+  object-position: center top;
   display: block;
 }
 
