@@ -83,6 +83,30 @@ export interface ConvertToDocxJob {
   replyToken?: string | null;
 }
 
+/**
+ * Job: download a diary photo from LINE CDN → validate (jpg/png/webp, size cap)
+ * → store in R2 `diary/{userId}/...` → insert diary_entries row (one per
+ * Bangkok day) → 400px thumbnail → REPLY a result card. Retried via BullMQ
+ * attempts (LINE CDN ~1h TTL); the handler dedups by line_message_id and the
+ * one-live-entry-per-day unique index (migration 028), so a retry never
+ * double-stores or double-charges.
+ */
+export interface CreateDiaryEntryJob {
+  type: 'create_diary_entry';
+  lineMessageId: string;
+  lineUserId: string;
+  /** caption typed while diary mode was armed ('' = photo only) */
+  caption: string;
+  /** Bangkok calendar day the entry belongs to, fixed at webhook time */
+  entryDate: string;
+  /**
+   * The source event's reply token, saved at webhook time (reply-only
+   * messaging — no pushes). The worker replies the result/error card with it
+   * when the job is quick; spent/expired tokens defer to pending-notify.
+   */
+  replyToken?: string | null;
+}
+
 /** One upload collected during a user's debounce window. */
 export interface BatchItem {
   lineMessageId: string;
@@ -121,4 +145,5 @@ export type FileJob =
   | AddScanPageJob
   | FinalizeScanJob
   | PurgeDeletedJob
-  | ConvertToDocxJob;
+  | ConvertToDocxJob
+  | CreateDiaryEntryJob;

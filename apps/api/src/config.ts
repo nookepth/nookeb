@@ -112,6 +112,10 @@ const envSchema = z.object({
   // ~50 MB, but conversion buffers the source in worker memory — keep it small.
   DOCX_CONVERT_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
 
+  // ไดอารี่ 365 วัน — per-photo size cap (bytes). Diary photos are buffered in
+  // worker memory for validation + thumbnailing, so keep this small. 10 MB.
+  DIARY_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
+
   // Storage warning thresholds (% of the uploader's storage_limit)
   STORAGE_WARN_THRESHOLD_LOW: z.coerce.number().int().min(1).max(100).default(80),
   STORAGE_WARN_THRESHOLD_HIGH: z.coerce.number().int().min(1).max(100).default(95),

@@ -10,6 +10,7 @@ import {
   type AddScanPageJob,
   type BatchItem,
   type ConvertToDocxJob,
+  type CreateDiaryEntryJob,
   type FileJob,
   type FileRecord,
   type FinalizeScanJob,
@@ -54,7 +55,7 @@ import {
   incrementTeamStorage,
   StorageQuotaError,
 } from '../services/team.service';
-import { purgeDeletedFiles, purgeOrphanScanTemp } from '../services/purge.service';
+import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeOrphanScanTemp } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
 import {
   countPages,
@@ -71,7 +72,17 @@ import { processScanPage, plainNormalize, buildScanPdf, MSG_PDF_FAILED } from '.
 import { extractText, terminateOcr } from '../services/ocr.service';
 import { isMistralOcrConfigured, mistralOcr, MistralOcrRejectedError } from '../services/mistral-ocr.service';
 import { buildDocxFromMarkdown, detectDocumentType } from '../services/docx-builder.service';
-import { buildConvertToDocxResultCard } from '../services/flex.service';
+import { formatThaiBuddhistDate } from '../services/docx-thai-components';
+import { buildConvertToDocxResultCard, buildDiaryResultCard } from '../services/flex.service';
+import {
+  buildDiaryImageKey,
+  buildDiaryThumbnailKey,
+  countEntries,
+  getEntryByDate,
+  getEntryByLineMessageId,
+  insertEntry,
+  setEntryThumbnail,
+} from '../services/diary.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -1246,6 +1257,215 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
   );
 }
 
+// ---------------------------------------------------------------------------
+// create_diary_entry — ไดอารี่ 365 วัน: photo → R2 diary/ → diary_entries row
+// ---------------------------------------------------------------------------
+
+// Same copy as the webhook's arm-time check (webhook/line.ts) — kept separate
+// there because importing this module would boot the worker's queue/clients.
+const MSG_DIARY_DUPLICATE = 'บันทึกวันนี้แล้วนะ 🌸 มาพรุ่งนี้อีกครั้งได้เลย';
+const MSG_DIARY_TOO_LARGE = `รูปใหญ่เกิน ${Math.round(config.DIARY_MAX_IMAGE_BYTES / MB)}MB น้า ไดอารี่รับได้แค่นี้ก่อน ลองย่อรูปแล้วส่งใหม่น้า`;
+const MSG_DIARY_UNSUPPORTED = 'ไดอารี่รับเฉพาะรูปภาพ (JPG / PNG / WebP) น้า ลองส่งใหม่อีกทีน้า';
+const MSG_DIARY_FAILED = 'บันทึกไดอารี่ไม่สำเร็จน้า ขอโทษนะคะ พิมพ์ "ไดอารี่" แล้วลองส่งรูปใหม่อีกทีน้า';
+
+/** Grid thumbnails are 400×400 center-cropped (Section: 365-day grid view). */
+const DIARY_THUMBNAIL_SIZE = 400;
+
+/** Magic-byte sniff for diary photos — images only, falling back to the CDN type. */
+function detectDiaryImage(buf: Buffer, declared: string): { mime: string; ext: string } | null {
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xd8) return { mime: 'image/jpeg', ext: 'jpg' };
+  if (buf.length >= 4 && buf[0] === 0x89 && buf.subarray(1, 4).toString('latin1') === 'PNG')
+    return { mime: 'image/png', ext: 'png' };
+  if (
+    buf.length >= 12 &&
+    buf.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    buf.subarray(8, 12).toString('latin1') === 'WEBP'
+  )
+    return { mime: 'image/webp', ext: 'webp' };
+  const base = (declared.split(';')[0] ?? '').trim().toLowerCase();
+  if (base === 'image/jpeg') return { mime: base, ext: 'jpg' };
+  if (base === 'image/png') return { mime: base, ext: 'png' };
+  if (base === 'image/webp') return { mime: base, ext: 'webp' };
+  return null;
+}
+
+/** '2026-07-09' → '9 กรกฎาคม 2569' without timezone drift (parse as plain parts). */
+function thaiDateOf(entryDate: string): string {
+  const [y, m, d] = entryDate.split('-').map(Number);
+  return formatThaiBuddhistDate(new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1));
+}
+
+/**
+ * create_diary_entry (BullMQ attempts: 3 — LINE CDN content survives retries
+ * for ~1h). Retry safety mirrors convert_to_docx: the row carries the source
+ * line_message_id under a live-rows unique index (migration 028), so a
+ * completed store short-circuits the retry with a re-send of the result card,
+ * and the one-live-entry-per-day index makes a concurrent duplicate resolve to
+ * a friendly "already saved today" notice instead of a second store/charge.
+ * User-visible outcomes go through notifyUser with the reply token the webhook
+ * saved into the payload (reply-only messaging — never a push).
+ */
+async function processCreateDiaryEntry(job: CreateDiaryEntryJob, isLastAttempt: boolean): Promise<void> {
+  const diaryUrl = `${config.WEB_URL}/dashboard/diary`;
+
+  // Retry recovery: a previous attempt already stored this photo.
+  const already = await getEntryByLineMessageId(supabase, job.lineMessageId);
+  if (already) {
+    await notifyUser(
+      job.lineUserId,
+      [
+        buildDiaryResultCard({
+          dayNumber: already.day_number ?? 1,
+          dateThai: thaiDateOf(already.entry_date),
+          caption: already.caption,
+          diaryUrl,
+        }),
+      ],
+      job.replyToken,
+    );
+    return;
+  }
+
+  const { user } = await ensureUserAndSpace(supabase, job.lineUserId);
+
+  // One entry per Bangkok calendar day. The webhook already checked at arm
+  // time; this re-check covers the gap, and the unique index is the backstop.
+  const existing = await getEntryByDate(supabase, user.id, job.entryDate);
+  if (existing) {
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DIARY_DUPLICATE }], job.replyToken);
+    return;
+  }
+
+  // Download from LINE CDN, capped — diary photos are buffered for validation
+  // and thumbnailing (cap is 10 MB, not the 1 GB upload cap).
+  const cap = config.DIARY_MAX_IMAGE_BYTES;
+  const content = await getMessageContent(job.lineMessageId);
+  if (content.contentLength !== null && content.contentLength > cap) {
+    content.stream.destroy();
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DIARY_TOO_LARGE }], job.replyToken);
+    return;
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of content.stream) {
+    total += (chunk as Buffer).length;
+    if (total > cap) {
+      content.stream.destroy();
+      await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DIARY_TOO_LARGE }], job.replyToken);
+      return;
+    }
+    chunks.push(chunk as Buffer);
+  }
+  const source = Buffer.concat(chunks);
+
+  const detected = detectDiaryImage(source, content.contentType);
+  if (!detected) {
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DIARY_UNSUPPORTED }], job.replyToken);
+    return;
+  }
+
+  // Reserve quota before storing (same pattern as convert_to_docx; diary is
+  // personal-only, so there is no team branch). The buffered size is exact, so
+  // no settle step is needed after the store.
+  const reservation = await incrementPersonalStorage(supabase, user.id, source.length, { enforce: true });
+  if (reservation.overLimit) {
+    await notifyUser(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }], job.replyToken);
+    return;
+  }
+  const releaseReservation = async (): Promise<void> => {
+    await incrementPersonalStorage(supabase, user.id, -source.length, { enforce: false }).catch((err) => {
+      console.error(`[create_diary_entry] failed to release reservation (${user.id}):`, err);
+    });
+  };
+
+  const entryId = randomUUID();
+  const imageKey = buildDiaryImageKey(user.id, job.entryDate, entryId, detected.ext);
+  let record;
+  try {
+    await uploadStream(r2, imageKey, Readable.from(source), detected.mime);
+
+    const dayNumber = (await countEntries(supabase, user.id)) + 1;
+    const inserted = await insertEntry(supabase, {
+      id: entryId,
+      userId: user.id,
+      entryDate: job.entryDate,
+      imageKey,
+      mimeType: detected.mime,
+      fileSize: source.length,
+      caption: job.caption ?? '',
+      dayNumber,
+      lineMessageId: job.lineMessageId,
+    });
+    if (inserted.deduped) {
+      // A concurrent run (or an earlier entry for the same day) won the insert
+      // race and owns the store + charge — clean up ours.
+      await releaseReservation();
+      await deleteObject(r2, imageKey).catch(() => undefined);
+      const winner = inserted.record;
+      if (winner.line_message_id === job.lineMessageId) {
+        await notifyUser(
+          job.lineUserId,
+          [
+            buildDiaryResultCard({
+              dayNumber: winner.day_number ?? 1,
+              dateThai: thaiDateOf(winner.entry_date),
+              caption: winner.caption,
+              diaryUrl,
+            }),
+          ],
+          job.replyToken,
+        );
+      } else {
+        await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DIARY_DUPLICATE }], job.replyToken);
+      }
+      return;
+    }
+    record = inserted.record;
+  } catch (err) {
+    // Store/insert failed — release the reservation and remove any stored
+    // object so a BullMQ retry starts from a clean slate.
+    await releaseReservation();
+    await deleteObject(r2, imageKey).catch(() => undefined);
+    if (!isLastAttempt) throw err;
+    console.error(`[create_diary_entry] msg=${job.lineMessageId} store exhausted:`, err);
+    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DIARY_FAILED }], job.replyToken);
+    return;
+  }
+
+  // Entry is stored + charged — the job is done. Everything below is
+  // best-effort and must never throw (a retry would hit the dedup path anyway,
+  // but it would also waste the reply token on a duplicate card).
+
+  // 400×400 center-cropped grid thumbnail. Async relative to the user (the
+  // entry is already saved); a failure just makes the grid fall back to the
+  // presigned full image.
+  try {
+    const thumb = await sharp(source)
+      .rotate()
+      .resize(DIARY_THUMBNAIL_SIZE, DIARY_THUMBNAIL_SIZE, { fit: 'cover' })
+      .webp({ quality: 80 })
+      .toBuffer();
+    const thumbKey = buildDiaryThumbnailKey(user.id, job.entryDate, entryId);
+    await uploadStream(r2, thumbKey, Readable.from(thumb), 'image/webp');
+    await setEntryThumbnail(supabase, record.id, thumbKey);
+  } catch (err) {
+    console.error(`[create_diary_entry] thumbnail failed for ${record.id} (non-fatal):`, err);
+  }
+
+  await notifyUser(
+    job.lineUserId,
+    [
+      buildDiaryResultCard({
+        dayNumber: record.day_number ?? 1,
+        dateThai: thaiDateOf(record.entry_date),
+        caption: record.caption,
+        diaryUrl,
+      }),
+    ],
+    job.replyToken,
+  );
+}
+
 /**
  * purge_deleted job (repeatable, daily): remove R2 objects of files soft-deleted
  * past the retention window. DB rows are kept as tombstones.
@@ -1267,6 +1487,22 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
       `swept ${scanSweep.sessionsSwept} session(s), removed ${scanSweep.objectsDeleted} R2 object(s), ` +
       `errors ${scanSweep.errors}`,
   );
+
+  // Diary photos follow the same soft-delete → retention → R2 purge lifecycle
+  // as files (rule 6); rows stay as tombstones. Best-effort: a failure here
+  // must not fail the files purge above (it already committed its log line).
+  try {
+    const diarySweep = await purgeDeletedDiaryEntries(supabase, r2, {
+      retentionDays: config.PURGE_RETENTION_DAYS,
+      apply: true,
+    });
+    console.log(
+      `[upload.worker] purge: diary scanned ${diarySweep.scanned} entrie(s), ` +
+        `removed ${diarySweep.objectsDeleted} R2 object(s), errors ${diarySweep.errors}`,
+    );
+  } catch (err) {
+    console.error('[upload.worker] purge: diary sweep failed:', err);
+  }
 }
 
 /** Register the daily purge as a BullMQ repeatable job (idempotent by repeat key). */
@@ -1342,6 +1578,26 @@ export function createUploadWorker(): Worker<FileJob> {
             await notifyUser(
               data.lineUserId,
               [{ type: 'text', text: 'แปลงไฟล์เป็น Word ไม่สำเร็จน้า ขอโทษนะคะ ลองส่งใหม่อีกทีน้า' }],
+              data.replyToken,
+            );
+          }
+          break;
+        }
+        case 'create_diary_entry': {
+          // Same narrowing capture + last-attempt netting as convert_to_docx.
+          const data = job.data;
+          const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+          try {
+            await processCreateDiaryEntry(data, isLastAttempt);
+          } catch (err) {
+            if (!isLastAttempt) throw err;
+            console.error(
+              `[upload.worker] create_diary_entry exhausted job=${job.id} msg=${data.lineMessageId}:`,
+              err,
+            );
+            await notifyUser(
+              data.lineUserId,
+              [{ type: 'text', text: MSG_DIARY_FAILED }],
               data.replyToken,
             );
           }

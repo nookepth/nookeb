@@ -1,4 +1,8 @@
 import type {
+  DiaryEntryDto,
+  DiaryNotificationSettingsDto,
+  DiaryStreakResponse,
+  DiaryTodayStatusResponse,
   FileDto,
   FileListResponse,
   FolderDto,
@@ -359,6 +363,56 @@ export function loginWithLineCode(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ code, redirectUri }),
+  });
+}
+
+/* ============================================================
+   ไดอารี่ 365 วัน (My Diary) — routes/diary.ts, migration 028
+   ============================================================ */
+
+export interface DiaryEntriesResponse {
+  entries: DiaryEntryDto[];
+  year: number;
+  total: number;
+}
+
+/** Single-entry detail incl. presigned full image + page-flip neighbours. */
+export interface DiaryEntryDetail extends DiaryEntryDto {
+  imageUrl: string;
+  prevDate: string | null;
+  nextDate: string | null;
+}
+
+export function listDiaryEntries(year?: number): Promise<DiaryEntriesResponse> {
+  const qs = year ? `?year=${year}` : '';
+  return apiFetch(`/diary/entries${qs}`);
+}
+
+export function getDiaryEntry(date: string): Promise<DiaryEntryDetail> {
+  return apiFetch(`/diary/entry/${encodeURIComponent(date)}`);
+}
+
+export function getDiaryStreak(): Promise<DiaryStreakResponse> {
+  return apiFetch(`/diary/streak`);
+}
+
+export function getDiaryTodayStatus(): Promise<DiaryTodayStatusResponse> {
+  return apiFetch(`/diary/today-status`);
+}
+
+export function deleteDiaryEntry(entryId: string): Promise<void> {
+  return apiFetch<void>(`/diary/entry/${entryId}`, { method: 'DELETE' });
+}
+
+export function updateDiaryNotification(settings: DiaryNotificationSettingsDto): Promise<void> {
+  return apiFetch<void>(`/diary/notification`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      notify_time: settings.notifyTime,
+      is_enabled: settings.isEnabled,
+      timezone: settings.timezone,
+    }),
   });
 }
 

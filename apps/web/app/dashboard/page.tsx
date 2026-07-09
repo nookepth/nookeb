@@ -28,6 +28,7 @@ import { FileGrid } from '@/components/FileGrid';
 import { FilePreviewModal } from '@/components/FilePreviewModal';
 import { Navbar, type NavbarUser } from '@/components/Navbar';
 import { BottomNav, type BottomTab } from '@/components/BottomNav';
+import { DiaryReminderBanner } from '@/components/DiaryReminderBanner';
 import { RecentStrip } from '@/components/RecentStrip';
 import { ReferralCard } from '@/components/ReferralCard';
 import { UsageBar } from '@/components/UsageBar';
@@ -335,6 +336,9 @@ export default function DashboardPage() {
       />
 
       <main className="container">
+        {/* ไดอารี่ reminder (in-app notification — Option C, reply-only project) */}
+        <DiaryReminderBanner />
+
         {/* ---------- quick stats ---------- */}
         {files !== null && (
           <div className="stats-row">

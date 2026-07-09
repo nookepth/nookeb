@@ -94,6 +94,69 @@ export async function purgeDeletedFiles(
   return result;
 }
 
+export interface DiaryPurgeResult {
+  cutoff: string;
+  scanned: number;
+  objectsDeleted: number;
+  errors: number;
+}
+
+/**
+ * Diary counterpart of purgeDeletedFiles (migration 028): remove the R2 objects
+ * (photo + thumbnail) of diary entries soft-deleted more than `retentionDays`
+ * ago, stamp `purged_at`, and redact the caption (it IS the entry's content).
+ * Rows are kept as tombstones. Idempotent for the same reasons as the files
+ * purge. `apply=false` only reports.
+ */
+export async function purgeDeletedDiaryEntries(
+  supabase: SupabaseClient,
+  r2: S3Client,
+  opts: { retentionDays: number; apply: boolean },
+): Promise<DiaryPurgeResult> {
+  const cutoff = new Date(Date.now() - opts.retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('diary_entries')
+    .select('id, image_key, thumbnail_key')
+    .not('deleted_at', 'is', null)
+    .is('purged_at', null)
+    .lt('deleted_at', cutoff);
+  if (error) throw error;
+
+  const rows = (data ?? []) as { id: string; image_key: string; thumbnail_key: string | null }[];
+  const result: DiaryPurgeResult = { cutoff, scanned: rows.length, objectsDeleted: 0, errors: 0 };
+  const purgedIds: string[] = [];
+
+  for (const row of rows) {
+    const keys = [row.image_key, row.thumbnail_key].filter((k): k is string => Boolean(k));
+    if (!opts.apply) {
+      result.objectsDeleted += keys.length;
+      continue;
+    }
+    let ok = true;
+    for (const key of keys) {
+      try {
+        await deleteObject(r2, key);
+        result.objectsDeleted += 1;
+      } catch {
+        result.errors += 1;
+        ok = false;
+      }
+    }
+    if (ok) purgedIds.push(row.id);
+  }
+
+  if (opts.apply && purgedIds.length > 0) {
+    const { error: markErr } = await supabase
+      .from('diary_entries')
+      .update({ purged_at: new Date().toISOString(), caption: '[deleted]' })
+      .in('id', purgedIds);
+    if (markErr) throw markErr;
+  }
+
+  return result;
+}
+
 export interface ScanTempSweepResult {
   cutoff: string;
   /** collecting sessions past their TTL that this run flipped to 'cancelled' */

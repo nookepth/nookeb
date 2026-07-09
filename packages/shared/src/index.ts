@@ -5,4 +5,5 @@ export * from './types/scan';
 export * from './types/user';
 export * from './types/space';
 export * from './types/team';
+export * from './types/diary';
 export * from './types/jobs';

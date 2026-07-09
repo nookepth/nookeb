@@ -945,3 +945,145 @@ export function buildConvertToDocxResultCard(params: {
     },
   };
 }
+
+// ── ไดอารี่ 365 วัน (My Diary) ───────────────────────────────────────────────
+// Pink header zone to match the diary's scrapbook aesthetic on the web
+// (classic_pink template). Same kilo-bubble structure as every other card.
+const DIARY_PINK = '#E85D8A';
+const DIARY_PINK_SOFT = '#FDF0F5';
+
+/**
+ * Diary prompt card — replied when "ไดอารี่" arms diary mode. Explains the
+ * one-shot flow (optional caption text first, then ONE photo) and carries a
+ * cancel button that sends the shared "ยกเลิก" trigger.
+ */
+export function buildDiaryPromptCard(params: {
+  /** Thai Buddhist date of today (Bangkok) */
+  dateThai: string;
+  /** the day number this entry will get, "วันที่ X/365" */
+  nextDayNumber: number;
+}): FlexMessage {
+  return {
+    type: 'flex',
+    altText: `บันทึกไดอารี่วันที่ ${params.dateThai} — ส่งรูป 1 รูปมาได้เลยน้า`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'xs',
+        backgroundColor: DIARY_PINK,
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'บันทึกไดอารี่วันนี้', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: params.dateThai, size: 'xs', color: '#FCE7F0', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          iconRow(DIARY_PINK, 'ส่งรูปภาพวันนี้มา 1 รูป'),
+          iconRow(TEAL, 'อยากใส่ข้อความ พิมพ์ก่อนแล้วค่อยส่งรูปน้า'),
+          { type: 'text', text: 'หรือส่งแค่รูปเลยก็ได้นะ', size: 'sm', color: '#333333', wrap: true },
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: DIARY_PINK_SOFT,
+            cornerRadius: '8px',
+            paddingAll: '10px',
+            contents: [
+              {
+                type: 'text',
+                text: `รูปนี้จะเป็นวันที่ ${params.nextDayNumber}/365 ของไดอารี่`,
+                size: 'xs',
+                color: DIARY_PINK,
+                weight: 'bold',
+                align: 'center',
+                wrap: true,
+              },
+            ],
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [cancelButton()],
+      },
+      styles: { header: { backgroundColor: DIARY_PINK }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
+/**
+ * Diary result card (create_diary_entry worker). "บันทึกแล้ว! วันที่ X/365"
+ * plus the caption (when any) and a button to the My Diary dashboard.
+ */
+export function buildDiaryResultCard(params: {
+  dayNumber: number;
+  dateThai: string;
+  caption: string;
+  diaryUrl: string;
+}): FlexMessage {
+  const bodyContents: Record<string, unknown>[] = [
+    iconRow(LINE_GREEN, `วันที่ ${params.dayNumber}/365 เรียบร้อย`),
+    { type: 'text', text: params.dateThai, size: 'xs', color: MUTED },
+  ];
+  const caption = stripEmoji(params.caption).trim();
+  if (caption) {
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: DIARY_PINK_SOFT,
+      cornerRadius: '8px',
+      paddingAll: '10px',
+      margin: 'sm',
+      contents: [{ type: 'text', text: caption, size: 'sm', color: '#4B5563', wrap: true }],
+    });
+  }
+  return {
+    type: 'flex',
+    altText: `บันทึกไดอารี่แล้ว! วันที่ ${params.dayNumber}/365 เรียบร้อย`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: DIARY_PINK,
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'บันทึกไดอารี่แล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'sm',
+        paddingAll: '16px',
+        contents: bodyContents,
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          params.diaryUrl.startsWith('https://')
+            ? {
+                type: 'button',
+                style: 'primary',
+                color: DIARY_PINK,
+                action: { type: 'uri', label: 'ดูไดอารี่ของฉัน', uri: params.diaryUrl },
+              }
+            : { type: 'text', text: `ดูไดอารี่ของฉัน: ${params.diaryUrl}`, size: 'xs', color: DIARY_PINK, wrap: true },
+        ],
+      },
+      styles: { header: { backgroundColor: DIARY_PINK }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}

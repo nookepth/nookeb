@@ -1,9 +1,16 @@
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify';
 import { sanitizeJobId } from '@nookeb/shared';
-import type { AddScanPageJob, ConvertToDocxJob, LineSource, ScanMode } from '@nookeb/shared';
+import type {
+  AddScanPageJob,
+  ConvertToDocxJob,
+  CreateDiaryEntryJob,
+  LineSource,
+  ScanMode,
+} from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
 import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
 import {
+  buildDiaryPromptCard,
   buildFinalizingFlexMessage,
   buildInviteFlexMessage,
   buildMergeFlexMessage,
@@ -42,6 +49,13 @@ import {
 } from '../../services/scan.service';
 import { addPendingNotify, drainPendingNotify } from '../../services/pending-notify.service';
 import { armDocxConvert, consumeDocxConvert } from '../../services/docx-convert.service';
+import {
+  armDiaryMode,
+  consumeDiaryMode,
+  setDiaryCaption,
+} from '../../services/diary-mode.service';
+import { bangkokDateString, countEntries, getEntryByDate } from '../../services/diary.service';
+import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { config } from '../../config';
 
@@ -245,6 +259,7 @@ const HELP_TEXT = `วิธีใช้หนูเก็บน้า
 • พิมพ์ "หนูเก็บรวมรูป" ถ้าอยากรวมรูปหลายหน้าเป็น PDF 
 • พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" ถ้าอยากสแกนเป็น PDF แบบสีหรือขาวดำ
 • พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF ถ้าอยากแปลงเป็นไฟล์ Word แก้ไขต่อได้
+• พิมพ์ "หนูเก็บไดอารี่" แล้วส่งรูป 1 รูป บันทึกไดอารี่ 365 วันของคุณ
 • เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ https://nookeb-web.vercel.app/dashboard เลยน้า`;
 
 // Rich-menu "แนะนำตัว" cell → the bot's self-introduction (message action, since the
@@ -276,7 +291,10 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บสแกนขาวดำ 
 
 📝 แปลงไฟล์เป็น Word
-หนูเก็บแปลงไฟล์ 
+หนูเก็บแปลงไฟล์
+
+📔 ไดอารี่ 365 วัน
+หนูเก็บไดอารี่
 
 👥 ทีม (ใช้ในกลุ่ม)
 หนูเก็บผูกทีม 
@@ -441,6 +459,30 @@ async function handleTextCommand(
     if (!prefixed && !isCmd(text, 'menu', 'เมนู') && !isBindTeam) return;
   }
 
+  // ไดอารี่ caption capture: unprefixed text typed while diary mode is armed
+  // becomes the pending entry's caption (1-on-1 only — the mode can only be
+  // armed there). setDiaryCaption uses SET XX, so this is a single cheap Redis
+  // call that no-ops (false) for everyone not in diary mode. Escape hatches:
+  // "ยกเลิก"/"cancel" still cancels, a re-tapped "ไดอารี่" falls through to its
+  // handler, and any "หนูเก็บ…"-prefixed command works normally while armed.
+  if (
+    source.type === 'user' &&
+    !prefixed &&
+    text.length > 0 &&
+    !isCmd(text, 'ยกเลิก', 'cancel', 'ไดอารี่', 'ไดอารี่วันนี้', 'diary')
+  ) {
+    let captured = false;
+    try {
+      captured = await setDiaryCaption(app.redis, lineUserId, text.slice(0, 500));
+    } catch (err) {
+      app.log.warn({ err, lineUserId }, 'diary caption capture failed — treating as normal text');
+    }
+    if (captured) {
+      await reply(event, 'จดข้อความไว้แล้วน้า ส่งรูปมาได้เลย 🌸');
+      return;
+    }
+  }
+
   // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
   // LINE quick-reply buttons — the last one only makes sense inside a group.
   if (isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) {
@@ -460,6 +502,7 @@ async function handleTextCommand(
       buttons.push({ label: 'รวมรูป', text: 'หนูเก็บรวมรูป' });
       buttons.push({ label: 'สแกน PDF', text: 'หนูเก็บสแกน' });
       buttons.push({ label: 'แปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' });
+      buttons.push({ label: 'ไดอารี่วันนี้', text: 'หนูเก็บไดอารี่' });
     }
     buttons.push(
       inGroup
@@ -769,6 +812,52 @@ async function handleTextCommand(
     return;
   }
 
+  // ไดอารี่ 365 วัน ("หนูเก็บไดอารี่") — arms a one-shot Redis flag like
+  // แปลงไฟล์: the NEXT image this user sends becomes today's diary entry
+  // (optionally captioned by text typed while armed — see the capture block at
+  // the top). Personal-chat only; one entry per Bangkok calendar day, checked
+  // here at arm time so the user learns immediately instead of after sending a
+  // photo (the worker + unique index re-check as backstops).
+  if (isCmd(text, 'ไดอารี่', 'ไดอารี่วันนี้', 'diary')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ไดอารี่ใช้ได้เฉพาะแชทส่วนตัวน้า');
+      return;
+    }
+    try {
+      const profile = await getProfile(lineUserId).catch(() => undefined);
+      const { user } = await ensureUserAndSpace(
+        app.supabase,
+        lineUserId,
+        profile?.displayName,
+        profile?.pictureUrl,
+      );
+      const today = bangkokDateString();
+      const existing = await getEntryByDate(app.supabase, user.id, today);
+      if (existing) {
+        await replyWithQuickReply(event, 'บันทึกวันนี้แล้วนะ 🌸 มาพรุ่งนี้อีกครั้งได้เลย', [
+          { label: 'ดูไดอารี่ของฉัน', uri: `${config.WEB_URL}/dashboard/diary` },
+        ]);
+        return;
+      }
+      await armDiaryMode(app.redis, lineUserId);
+      const nextDayNumber = (await countEntries(app.supabase, user.id)) + 1;
+      const [y, m, d] = today.split('-').map(Number);
+      await replyFlex(
+        event,
+        buildDiaryPromptCard({
+          dateThai: formatThaiBuddhistDate(new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1)),
+          nextDayNumber,
+        }),
+      );
+    } catch (err) {
+      // Same silent-fail guard as /redeem: a DB/Redis error must produce an
+      // apology reply, never nothing.
+      app.log.error({ err, lineUserId }, 'diary: arm handler error');
+      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+    }
+    return;
+  }
+
   // Convert-to-Word ("หนูเก็บแปลงไฟล์") — arms a one-shot Redis flag; the NEXT
   // image/PDF this user sends is OCR'd (Mistral) and rebuilt as an editable
   // .docx instead of being archived as-is. Personal-chat only, like scan (a
@@ -823,13 +912,16 @@ async function handleTextCommand(
     return;
   }
 
-  // Cancel merge session / convert-to-Word mode
+  // Cancel merge session / convert-to-Word mode / diary mode
   if (isCmd(text, 'ยกเลิก', 'cancel')) {
-    // Disarm the convert flag unconditionally (harmless no-op when not armed).
+    // Disarm both one-shot flags unconditionally (harmless no-ops when not armed).
     const wasArmed = await consumeDocxConvert(app.redis, lineUserId);
+    const diaryWasArmed = (await consumeDiaryMode(app.redis, lineUserId)) !== null;
     if (session) {
       await cancelSession(app.supabase, session.id);
       await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะคะ');
+    } else if (diaryWasArmed) {
+      await reply(event, 'ยกเลิกโหมดไดอารี่ให้แล้วน้า');
     } else if (wasArmed) {
       await reply(event, 'ยกเลิกโหมดแปลงไฟล์ให้แล้วน้า');
     } else {
@@ -970,6 +1062,35 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     message.type === 'video' ||
     message.type === 'audio';
   if (!supported) return;
+
+  // Diary one-shot (armed by "ไดอารี่"). Checked FIRST among the image claims:
+  // it's the most recently/explicitly armed intent, consumed atomically
+  // (GETDEL) so exactly one image becomes today's entry — subsequent images in
+  // the same burst fall through to the docx/scan/normal-upload paths below.
+  // 1-on-1 only (matching where the command can arm it). The Bangkok calendar
+  // day is fixed HERE, so an entry can't slip to the next day while the job
+  // waits in the queue.
+  if (source.type === 'user' && message.type === 'image') {
+    const diary = await consumeDiaryMode(app.redis, lineUserId);
+    if (diary) {
+      const job: CreateDiaryEntryJob = {
+        type: 'create_diary_entry',
+        lineMessageId: message.id,
+        lineUserId,
+        caption: (diary.caption ?? '').slice(0, 500),
+        entryDate: bangkokDateString(),
+        // Reply-only messaging: the token is NOT spent on an ack — the worker
+        // replies the result card with it (same pattern as convert_to_docx);
+        // a spent/expired token falls back to pending-notify, never a push.
+        replyToken: event.replyToken ?? null,
+      };
+      await app.fileQueue.add('create_diary_entry', job, {
+        jobId: sanitizeJobId('diary', message.id),
+        ...RETRY_OPTS,
+      });
+      return;
+    }
+  }
 
   // Convert-to-Word one-shot (armed by "แปลงไฟล์"). Checked BEFORE the scan
   // session below: the flag is armed explicitly and consumed atomically

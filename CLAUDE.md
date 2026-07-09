@@ -114,6 +114,17 @@ If replyToken is expired or missing:
   webhook does NOT spend it on an ack); if the token is expired/spent, the card is deferred
   via `pending-notify.service` to the user's next interaction. The flag check runs BEFORE
   the scan-session image check.
+- `ไดอารี่` / `diary` — 365-day photo-diary mode (personal chat only, migration 028). Same
+  one-shot Redis flag pattern as แปลงไฟล์ (`diary-mode.service`, TTL 10 min, cleared by
+  `ยกเลิก`): the NEXT image becomes today's (Bangkok calendar day) diary entry — stored via
+  `create_diary_entry` under R2 `diary/{user_id}/{year}/...` (OUTSIDE the files table:
+  `diary_entries`, quota-charged, one live entry per user+day enforced by partial unique
+  index + arm-time/worker checks). Unprefixed text typed while armed is captured as the
+  entry's caption (SET XX KEEPTTL — ยกเลิก and "หนูเก็บ…" commands still work). Result Flex
+  card replies with the saved token (pending-notify fallback). Diary flag check runs BEFORE
+  the docx-convert and scan-session image checks. Web: `/dashboard/diary` (365-grid +
+  streak + scrapbook viewer). Reminders are Option-C IN-APP banners only (no push, ever) —
+  `diary_notification_settings` stores the user's time; the web compares client-side.
 - `หนูเก็บปิดแจ้งเตือน` / `หนูเก็บเปิดแจ้งเตือน` — group/room only: toggles the per-upload
   "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
   `group-settings.service`). Open to any member (Messaging API can't expose
@@ -127,8 +138,12 @@ If replyToken is expired or missing:
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
 .docx; attempts: 3, retry-safe via a `docx-<lineMessageId>` line_message_id marker row —
-a failed store soft-deletes its row so the retry can re-insert) · `purge_deleted` (daily
-repeatable, scheduled on worker startup via `scheduleRepeatableJobs`). (The legacy `upload_file` handler was removed — it had
+a failed store soft-deletes its row so the retry can re-insert) · `create_diary_entry`
+(ไดอารี่ photo → validate jpg/png/webp ≤10MB → R2 `diary/…` → `diary_entries` row +
+400px thumb; attempts: 3, retry-safe via the live-rows unique indexes on
+`line_message_id` and user+entry_date — migration 028) · `purge_deleted` (daily
+repeatable, scheduled on worker startup via `scheduleRepeatableJobs`; also sweeps
+soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries`). (The legacy `upload_file` handler was removed — it had
 no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
 Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
 enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
@@ -170,6 +185,11 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     group/room id: per-group toggle for the upload confirmation reply (default ON).
     NOT auto-applied; code fails open (notify=TRUE) if the table is missing, so it's
     safe to deploy the code before applying this one.
+  - `028_diary.sql` — `diary_entries` + `diary_notification_settings` (ไดอารี่ 365 วัน).
+    One LIVE entry per user+Bangkok-day via partial unique index (soft-deleted rows don't
+    block a redo); `line_message_id` live unique index backs worker retry dedup; R2 KEYS
+    stored (never URLs — rule 5). NOT auto-applied; apply BEFORE deploying the diary code
+    (the ไดอารี่ command errors politely without it).
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -177,7 +197,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 - `apps/api` — Fastify API + LINE webhook + BullMQ workers
   - `src/routes/` — `webhook/line`, `auth`, `files`, `folders`, `tags`, `spaces`,
     `analytics`, `admin`, `referral`, `team.router` (mounted at `/api/teams`),
-    `progress` (upload-progress view + JSON), `static`
+    `progress` (upload-progress view + JSON), `diary` (ไดอารี่ entries/streak/
+    today-status/notification — user-scoped, no space membership), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
@@ -187,13 +208,16 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     fallback: workers queue here instead of pushing; the webhook drains it on the user's
     next 1-on-1 text/postback and prepends the messages to that reply),
     `mistral-ocr` (Mistral OCR REST client), `docx-builder` (markdown → editable .docx,
-    pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag)
+    pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag),
+    `diary` (diary_entries data access + Bangkok-day/streak helpers), `diary-mode`
+    (diary one-shot Redis flag; caption piggybacks on the flag value)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
   - `scripts/` — `setup-rich-menu`(`-large`), `backfill-quota`, `backfill-referral-codes`,
     `purge-deleted` (dry-run by default), `upload-greeting-image`
-- `apps/web` — Next.js dashboard (`/dashboard`, `/admin`, `/join`, `/auth/callback`)
+- `apps/web` — Next.js dashboard (`/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook
+  viewer), `/admin`, `/join`, `/auth/callback`)
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 
@@ -265,6 +289,7 @@ and `supabase/backfills/` for specifics.
 - `ADMIN_LINE_USER_IDS` — comma-separated LINE user ids granted admin access (no DB column)
 - `MISTRAL_API_KEY` / `MISTRAL_OCR_MODEL` / `DOCX_CONVERT_MAX_SOURCE_BYTES` — convert-to-Word
   ("แปลงไฟล์"); feature is OFF (command replies "not available") until the key is set
+- `DIARY_MAX_IMAGE_BYTES` — ไดอารี่ per-photo cap (default 10 MB; jpg/png/webp only)
 
 ## Status (built)
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.
