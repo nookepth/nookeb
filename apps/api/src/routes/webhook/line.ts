@@ -7,6 +7,7 @@ import {
   buildFinalizingFlexMessage,
   buildInviteFlexMessage,
   buildMergeFlexMessage,
+  buildDocxConvertFlexMessage,
   buildOnboardingCarouselMessage,
   buildRedeemSuccessFlexMessage,
   buildScanFlexMessage,
@@ -783,10 +784,7 @@ async function handleTextCommand(
       return;
     }
     await armDocxConvert(app.redis, lineUserId);
-    await reply(
-      event,
-      'ส่งรูปหรือไฟล์ PDF มาได้เลยน้า หนูจะแปลงเป็นไฟล์ Word (.docx) ให้\n\n• เอกสารพิมพ์ชัดๆ ถ่ายตรงๆ จะได้ผลดีที่สุดน้า\n• ลายมือหรือรูปเบลออาจอ่านไม่ค่อยออกน้า\n• เปลี่ยนใจพิมพ์ "ยกเลิก" ได้เลย (โหมดนี้ค้างไว้ 10 นาทีน้า)',
-    );
+    await replyFlex(event, buildDocxConvertFlexMessage());
     return;
   }
 
