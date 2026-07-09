@@ -2845,6 +2845,17 @@ button:active,
   padding: 4px;
 }
 
+/* Dashboard diary entry card — same look as the banner but a full-card link. */
+.diary-entry-card {
+  text-decoration: none;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.diary-entry-card:hover {
+  filter: brightness(0.98);
+  transform: translateY(-1px);
+}
+
 /* ---------- diary dashboard ---------- */
 
 .diary-container {

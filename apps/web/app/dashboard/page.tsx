@@ -29,6 +29,7 @@ import { FilePreviewModal } from '@/components/FilePreviewModal';
 import { Navbar, type NavbarUser } from '@/components/Navbar';
 import { BottomNav, type BottomTab } from '@/components/BottomNav';
 import { DiaryReminderBanner } from '@/components/DiaryReminderBanner';
+import { DiaryEntryCard } from '@/components/DiaryEntryCard';
 import { RecentStrip } from '@/components/RecentStrip';
 import { ReferralCard } from '@/components/ReferralCard';
 import { UsageBar } from '@/components/UsageBar';
@@ -397,6 +398,8 @@ export default function DashboardPage() {
         )}
 
         {usage && <UsageBar usage={usage} />}
+
+        <DiaryEntryCard />
 
         <ReferralCard />
 
