@@ -160,7 +160,7 @@ function buildAreas(dashboardUri: string): RichMenuArea[] {
     },
     {
       bounds: { x: x2, y: y1, width: COL_W, height: ROW_H },
-      action: { type: 'message', text: 'หนูเก็บช่วยเหลือ', label: 'ช่วยเหลือ' },
+      action: { type: 'message', text: 'contact_support', label: 'ช่วยเหลือ' },
     },
   ];
 }
