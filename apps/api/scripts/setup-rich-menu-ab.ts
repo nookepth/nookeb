@@ -83,7 +83,7 @@ const MENU_A = {
   chatBarText: 'เมนูหนูเก็บ',
   areas: [
     cell(0, 0, { type: 'uri', uri: 'https://nookeb-web.vercel.app/dashboard', label: 'ล็อกเกอร์' }),
-    cell(1, 0, msg('หนูเก็บแนะนำตัว', 'แนะนำตัว')),
+    cell(1, 0, { type: 'uri', uri: 'https://nookeb-web.vercel.app/', label: 'แนะนำตัว' }),
     cell(2, 0, msg('หนูเก็บ', 'เรียกหนูเก็บ')),
     cell(0, 1, msg('หนูเก็บวิธีใช้', 'วิธีใช้งาน')),
     cell(1, 1, msg('ติดต่อหนูเก็บ', 'ติดต่อหนูเก็บ')),
