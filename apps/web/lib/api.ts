@@ -351,6 +351,69 @@ export function setUserQuota(userId: string, storageLimit: number): Promise<{ id
   });
 }
 
+/* ---- Admin product analytics (migration 029 / usage_events) ---- */
+
+export interface AdminOverview {
+  totalUsers: number;
+  newUsers7: number;
+  newUsers30: number;
+  dau: number;
+  wau: number;
+  mau: number;
+  stickiness: number; // DAU/MAU %
+  quotaBlocks7: number;
+  retention: { cohort_size: number; d1_returned: number; d7_returned: number };
+}
+
+export interface AdminTimeseriesPoint {
+  day: string;
+  activeUsers: number;
+  events: number;
+  newUsers: number;
+}
+
+export interface AdminFeatureRow {
+  eventType: string;
+  uniqueUsers: number;
+  eventCount: number;
+}
+
+export interface AdminFunnel {
+  name: string;
+  started: number;
+  completed: number;
+  completionRate: number | null;
+}
+
+export interface AdminPowerUser {
+  userId: string;
+  displayName: string | null;
+  storageUsed: number;
+  storageLimit: number;
+  totalEvents: number;
+  quotaBlocks: number;
+  docxConverts: number;
+  lastActive: string;
+}
+
+export function getAdminOverview(): Promise<AdminOverview> {
+  return apiFetch(`/admin/overview`);
+}
+
+export function getAdminTimeseries(days = 30): Promise<{ days: number; series: AdminTimeseriesPoint[] }> {
+  return apiFetch(`/admin/timeseries?days=${days}`);
+}
+
+export function getAdminFeatures(
+  days = 30,
+): Promise<{ days: number; features: AdminFeatureRow[]; funnels: AdminFunnel[] }> {
+  return apiFetch(`/admin/features?days=${days}`);
+}
+
+export function getAdminPowerUsers(days = 30): Promise<{ days: number; users: AdminPowerUser[] }> {
+  return apiFetch(`/admin/power-users?days=${days}`);
+}
+
 export function getMe(): Promise<UserDto & { defaultSpaceId: string | null; isAdmin: boolean }> {
   return apiFetch(`/auth/me`);
 }

@@ -4,8 +4,9 @@
 LINE-integrated file archiving SaaS. Users send files via LINE OA → stored permanently
 in Cloudflare R2 → accessible via Next.js Web Dashboard. Supports folders/tags/search,
 multi-page scan-to-PDF, LINE group shared spaces, team invites, image OCR, storage
-quota + analytics, and an admin panel. (Google Drive export was removed — see
-migration 017; rebuild securely later if ever needed.)
+quota + analytics, and an admin panel. A public SEO landing page lives at `/` (see
+`apps/web` below). (Google Drive export was removed — see migration 017; rebuild
+securely later if ever needed.)
 
 ## Tech Stack (FIXED — do not change without asking)
 - API: Node.js + TypeScript + Fastify 4.x
@@ -129,10 +130,25 @@ If replyToken is expired or missing:
   "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
   `group-settings.service`). Open to any member (Messaging API can't expose
   group-admin role). Default ON; OFF stores files silently (no reply at all).
+- `ช่วยเหลือ` / `support` / `contact_support` / `ติดต่อหนูเก็บ` — replies with the contact-
+  support text (links to `https://lin.ee/Z0ewNYb`). All four aliases hit the same handler.
 - The webhook handles `message`, `join`/`follow`, and `postback` events. The postback
   handler exists for the onboarding-carousel taps — it routes each tap's `data` (a
-  "หนูเก็บ…" text command) through the same `handleTextCommand` path as typed text.
-  Rich-menu buttons still use `type: 'message'` actions (see `scripts/setup-rich-menu.ts`).
+  "หนูเก็บ…" text command) through the same `handleTextCommand` path as typed text. The
+  A/B rich-menu switch taps also arrive as postbacks (`data: "switch"`) but are unprefixed/
+  unrecognized, so they fall through to the quiet-chatter rule (silently ignored — the menu
+  swap itself is done client-side by the LINE `richmenuswitch` action, no server work).
+  Rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu-ab.ts`).
+
+## Rich Menu Policy (do NOT change without explicit approval)
+Fixed two-page A/B design (2500×1686 each), registered ONLY by `scripts/setup-rich-menu-ab.ts`:
+- Menu A = `richmenu_1.jpg` (หน้าแรก) — the default for all users; Menu B = `richmenu_2.jpg`
+  (หน้าคำสั่ง). Linked via aliases `richmenu-alias-a` / `richmenu-alias-b` + `richmenuswitch`
+  actions (the switch happens client-side; the postback `data: "switch"` is ignored server-side).
+- NEVER run `setup-rich-menu-large.ts` (or `-menu.ts`) — they delete ALL menus, which once
+  destroyed the A/B pair. Old-menu deletion in the A/B script is opt-in only (`CLEANUP_OLD_MENUS=1`).
+- Every button's `message` text must map to a real handler in `webhook/line.ts` — keep in sync.
+- Do not add/remove/rearrange button areas without approval.
 
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
@@ -190,6 +206,16 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     block a redo); `line_message_id` live unique index backs worker retry dedup; R2 KEYS
     stored (never URLs — rule 5). NOT auto-applied; apply BEFORE deploying the diary code
     (the ไดอารี่ command errors politely without it).
+  - `029_usage_events.sql` — product-analytics event log: one append-only `usage_events`
+    table (fixed-vocab `event_type` + numeric-only `metadata`, NO PII/file names) + `admin_*`
+    aggregate RPCs (DAU/WAU/MAU, feature adoption, funnels, retention, power-users). Powers
+    the revamped `/admin` dashboard. Events are written fire-and-forget via
+    `services/events.service.ts` `logEvent()` (NEVER throws — protects the 1s webhook budget
+    and worker retry-safety): intent events in `webhook/line.ts` (`classifyIntent`), outcome
+    events in `upload.worker.ts` (upload/scan/docx/diary done + `feature_blocked_quota`),
+    `web_login` in `auth.ts`. NOT auto-applied; the admin endpoints fail soft to empty when
+    the RPCs are missing, so it's safe to deploy code first — analytics just stays blank
+    until the migration is applied.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -214,10 +240,35 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
-  - `scripts/` — `setup-rich-menu`(`-large`), `backfill-quota`, `backfill-referral-codes`,
-    `purge-deleted` (dry-run by default), `upload-greeting-image`
-- `apps/web` — Next.js dashboard (`/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook
-  viewer), `/admin`, `/join`, `/auth/callback`)
+  - `scripts/` — `setup-rich-menu-ab` (CURRENT: two-page A/B menu — see rich-menu policy
+    below), `setup-rich-menu`(`-large`) (LEGACY — do NOT run `-large`, it deletes ALL menus),
+    `backfill-quota`, `backfill-referral-codes`, `purge-deleted` (dry-run by default),
+    `upload-greeting-image`
+- `apps/web` — Next.js dashboard + public landing page.
+  - Landing page at `/` (`app/page.tsx` + scoped `app/page.module.css`, ~1,300 lines) —
+    public SEO/marketing page that replaced the old redirect-to-dashboard. The rich menu
+    deep-links straight to `/dashboard`, so keep `/` public — do NOT turn it back into a
+    redirect. Sections: hero with LINE-chat mockup, 6 feature cards, polaroid gallery of the
+    brand card images (`public/landing/card-1..7.jpg`), 3-step how-to, 1→10 GB referral
+    ladder, trust strip, FAQ, locker CTA.
+  - Landing content rules: every claim must pass the brand playbook's "เคลมได้/ห้ามเคลม"
+    table (marketing/, ส่วนที่ 2) · NO emoji anywhere on the page (inline SVG icons only) ·
+    NEVER generate new mascot art — official artwork only (`public/logo.png` IS the mascot,
+    transparent PNG). FAQ text and the FAQPage JSON-LD render from the same `FAQS` array in
+    `page.tsx`, so they cannot drift — keep it that way.
+  - Scroll-reveal via `components/landing/Reveal.tsx` has a 3-layer safety net so content can
+    never be stuck invisible: hidden state only inside `@media (scripting: enabled)`, an
+    inline hydration-independent 4s failsafe `<script>` in `page.tsx`, and a `<noscript>`
+    override — do NOT remove any layer (a blank page was observed when JS arrived late).
+  - SEO: `app/robots.ts` (disallows `/dashboard`, `/admin`, `/auth/`, `/join`, `/share/`,
+    `/api-proxy/`) + `app/sitemap.ts` (lists only `/`) + OpenGraph image
+    `public/landing/og.jpg` + `metadataBase` in `app/layout.tsx` (origin defaults to the
+    Vercel domain; override with `NEXT_PUBLIC_SITE_URL` when a custom domain lands).
+  - All outbound links/handles live ONLY in `lib/site.ts` (SITE_URL, LINE_ADD_FRIEND_URL,
+    LINE_ID, INSTAGRAM_URL, TIKTOK_URL) — that file is the current canon; the playbook's
+    ภาคผนวก A still lists an older lin.ee link, so reconcile the playbook when touching links.
+  - Dashboard routes: `/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook viewer),
+    `/dashboard/teams` (+ `/[teamId]`), `/admin`, `/join`, `/auth/callback`, `/share/[token]`
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 
@@ -230,6 +281,9 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
 - LINE needs a public HTTPS webhook (tunnel or deploy). Set the webhook URL to
   `<public>/webhook/line`, enable "Use webhook", and turn OFF LINE auto-reply/greeting.
 - Redis: use the Upstash `rediss://` URL (TLS). Plain `redis://` to Upstash fails.
+- Never run `npm run build` for the web while its dev server is running — both write
+  `.next/`, the dev server's runtime chunks get clobbered and every page 500s with
+  "Cannot find module './NNN.js'" until the dev server is restarted.
 
 ## Deployment (Production)
 Three platforms. The web (Vercel) never talks to the API cross-origin — it calls the API

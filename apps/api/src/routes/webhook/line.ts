@@ -57,6 +57,7 @@ import {
 import { bangkokDateString, countEntries, getEntryByDate } from '../../services/diary.service';
 import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
+import { logEvent, type EventType } from '../../services/events.service';
 import { config } from '../../config';
 
 interface LineEventSource {
@@ -348,6 +349,24 @@ function isCmd(text: string, ...matches: string[]): boolean {
   return matches.some((m) => t === normalizeCmd(m));
 }
 
+/**
+ * Map a (prefix-stripped) command to its analytics intent event — the TOP of
+ * each feature funnel (paired with the worker's outcome events). Returns null
+ * for unrecognized chatter so we don't log noise. Best-effort only; used purely
+ * for the admin dashboard (events.service).
+ */
+function classifyIntent(text: string): EventType | null {
+  if (isCmd(text, 'สแกน', 'scan')) return 'cmd_scan';
+  if (isCmd(text, 'รวมรูป', 'merge')) return 'cmd_merge';
+  if (isCmd(text, 'เสร็จ', 'done')) return 'cmd_done';
+  if (isCmd(text, 'ยกเลิก', 'cancel')) return 'cmd_cancel';
+  if (isCmd(text, 'แปลงไฟล์', 'word')) return 'cmd_convert_arm';
+  if (isCmd(text, 'ไดอารี่', 'ไดอารี่วันนี้', 'diary')) return 'cmd_diary_arm';
+  if (isCmd(text, 'วิธีใช้', 'help')) return 'cmd_help';
+  if (isCmd(text, 'ช่วยเหลือ', 'support', 'contact_support', 'ติดต่อหนูเก็บ')) return 'cmd_support';
+  return null;
+}
+
 /** The bot's address prefix. "หนูเก็บ<cmd>" is an alias for every bare command. */
 const BOT_PREFIX = 'หนูเก็บ';
 
@@ -482,6 +501,23 @@ async function handleTextCommand(
     if (captured) {
       await reply(event, 'จดข้อความไว้แล้วน้า ส่งรูปมาได้เลย 🌸');
       return;
+    }
+  }
+
+  // Analytics: record the command INTENT (funnel top). Fire-and-forget, never
+  // awaited on the 1s webhook path; unrecognized chatter classifies to null and
+  // isn't logged. user_id is left null here (resolving it would add a DB hit to
+  // every message) — funnels use event counts, and DAU is driven by the
+  // worker-outcome + web-login events which do carry user_id.
+  {
+    const intent = classifyIntent(text);
+    if (intent) {
+      void logEvent(app.supabase, {
+        eventType: intent,
+        source: 'line',
+        spaceId: null,
+        metadata: { chatType: source.type },
+      });
     }
   }
 

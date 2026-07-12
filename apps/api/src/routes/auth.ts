@@ -8,6 +8,7 @@ import {
   signAppToken,
 } from '../middleware/auth';
 import { ensureUserAndSpace } from '../services/file.service';
+import { logEvent } from '../services/events.service';
 
 interface LineTokenResponse {
   access_token: string;
@@ -128,6 +129,12 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       sameSite: 'lax',
       path: '/',
       maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
+    });
+    // Analytics: dashboard login (web DAU signal). Best-effort — see events.service.
+    void logEvent(app.supabase, {
+      eventType: 'web_login',
+      userId: user.id,
+      source: 'web',
     });
     // accessToken stays in the body for backward compatibility with web
     // bundles deployed before the cookie rollout (they still use Bearer auth).

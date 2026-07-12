@@ -83,6 +83,7 @@ import {
   insertEntry,
   setEntryThumbnail,
 } from '../services/diary.service';
+import { logEvent } from '../services/events.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -545,6 +546,17 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // and surface on the uploader's next 1-on-1 interaction — even for group
     // batches (a group has no personal drain; the uploader still learns why
     // nothing was stored). notifyUser never throws.
+    if (overLimit) {
+      // Buy signal: a user hit a storage wall. Logged once per batch (not per
+      // file). Best-effort — see events.service.
+      void logEvent(supabase, {
+        eventType: 'feature_blocked_quota',
+        userId: user.id,
+        spaceId: space.id,
+        source: 'worker',
+        metadata: { feature: 'upload', scope: team ? 'team' : 'personal' },
+      });
+    }
     if (overLimit && team) {
       await notifyUser(job.lineUserId, [{ type: 'text', text: teamFullMessage(team) }]);
     } else if (overLimit && !team) {
@@ -608,6 +620,18 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
       `[upload.worker] batch ${job.batchId} done for ${username ?? '[profile unavailable]'}: ` +
         `stored ${files.length}, failed ${failed}`,
     );
+
+    // Analytics: upload funnel outcome. Only counts a batch that actually stored
+    // something (files.length > 0). Best-effort — see events.service.
+    if (files.length > 0) {
+      void logEvent(supabase, {
+        eventType: 'upload_done',
+        userId: user.id,
+        spaceId: space.id,
+        source: 'worker',
+        metadata: { stored: files.length, failed, chatType: job.lineSource },
+      });
+    }
   } catch (err) {
     // Setup failed (profile/space resolution). Nothing to reply to (no fresh
     // token in the worker) — the progress card already told the user we're on it,
@@ -1004,6 +1028,15 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   await finishSession(supabase, session.id, record.id, pages.length);
   log('done');
 
+  // Analytics: scan/merge → PDF funnel outcome. Best-effort — see events.service.
+  void logEvent(supabase, {
+    eventType: 'scan_done',
+    userId: session.user_id,
+    spaceId: session.space_id,
+    source: 'worker',
+    metadata: { pages: pages.length, kind, bytes: pdfBytes.length },
+  });
+
   // Clean up temporary page images (best-effort)
   for (const page of pages) {
     try {
@@ -1220,6 +1253,15 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
       await incrementPersonalStorage(supabase, user.id, drift, { enforce: false }).catch(() => undefined);
     }
     await checkStorageAlert(supabase, user.id, space.id).catch(() => undefined);
+    // Analytics: convert-to-Word funnel outcome (success). This feature has a
+    // real per-page Mistral cost, so its usage is a prime paid-plan signal.
+    void logEvent(supabase, {
+      eventType: 'docx_done',
+      userId: user.id,
+      spaceId: space.id,
+      source: 'worker',
+      metadata: { pages: pagesMarkdown.length, bytes: docxBuf.length },
+    });
   } catch (err) {
     // Release the reservation and soft-delete the 'processing' row so the
     // marker dedup (live rows only) lets the NEXT attempt re-insert cleanly.
@@ -1231,6 +1273,13 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
       .then(undefined, () => undefined);
     if (!isLastAttempt) throw err;
     console.error(`[convert_to_docx] msg=${job.lineMessageId} store exhausted:`, err);
+    // Analytics: convert failed after all retries (funnel drop-off).
+    void logEvent(supabase, {
+      eventType: 'docx_failed',
+      userId: user.id,
+      spaceId: space.id,
+      source: 'worker',
+    });
     await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }], job.replyToken);
     return;
   }
@@ -1421,6 +1470,14 @@ async function processCreateDiaryEntry(job: CreateDiaryEntryJob, isLastAttempt: 
       return;
     }
     record = inserted.record;
+    // Analytics: diary funnel outcome. day_number tells us how deep into the
+    // 365-day habit the user is — a strong retention signal. Best-effort.
+    void logEvent(supabase, {
+      eventType: 'diary_done',
+      userId: user.id,
+      source: 'worker',
+      metadata: { dayNumber, hasCaption: (job.caption ?? '').length > 0 },
+    });
   } catch (err) {
     // Store/insert failed — release the reservation and remove any stored
     // object so a BullMQ retry starts from a clean slate.
