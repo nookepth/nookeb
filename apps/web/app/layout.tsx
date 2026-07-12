@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import { IBM_Plex_Sans_Thai } from 'next/font/google';
 import './globals.css';
+import { SITE_URL } from '@/lib/site';
 
 const ibmPlexSansThai = IBM_Plex_Sans_Thai({
   subsets: ['thai', 'latin'],
@@ -10,6 +11,7 @@ const ibmPlexSansThai = IBM_Plex_Sans_Thai({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: 'หนูเก็บ — คลังไฟล์จาก LINE',
   description: 'ส่งไฟล์ผ่าน LINE เก็บถาวร เปิดดูได้ทุกที่',
   openGraph: {
