@@ -34,13 +34,12 @@ import type { Redis } from 'ioredis';
 const GB = 1024 ** 3;
 const BONUS = 512 * 1024 * 1024;
 
-// Mirrors migration 013's corrected thresholds: 0→1, 3→3, 5→5, 7→7, 10→10 GB.
+// Mirrors migration 030's thresholds: 0→1, 3→2.5, 5→4 GB. 5 is the top tier —
+// there is no 10-referral cap; higher counts just stay on the 4 GB tier.
 const TIERS = [
   { min_referrals: 0, storage_limit_gb: 1 },
-  { min_referrals: 3, storage_limit_gb: 3 },
-  { min_referrals: 5, storage_limit_gb: 5 },
-  { min_referrals: 7, storage_limit_gb: 7 },
-  { min_referrals: 10, storage_limit_gb: 10 },
+  { min_referrals: 3, storage_limit_gb: 2.5 },
+  { min_referrals: 5, storage_limit_gb: 4 },
 ];
 
 interface FakeUser {
@@ -99,8 +98,13 @@ function fakeSupabase(users: FakeUser[]): SupabaseClient {
       referee.storage_limit += bonus;
       referrer.referral_count += 1;
       const tier = [...TIERS].reverse().find((t) => t.min_referrals <= referrer.referral_count)!;
-      referrer.storage_limit =
-        tier.storage_limit_gb * GB + (referrer.referred_by_id !== null ? bonus : 0);
+      // GREATEST + ROUND mirror migrations 024 and 030: redeem may only RAISE a
+      // limit, and a fractional tier (2.5 GB) isn't a whole number of bytes.
+      referrer.storage_limit = Math.max(
+        referrer.storage_limit,
+        Math.round(tier.storage_limit_gb * GB) +
+          (referrer.referred_by_id !== null ? bonus : 0),
+      );
       return { data: referee.storage_limit, error: null };
     },
   } as unknown as SupabaseClient;
@@ -194,7 +198,7 @@ test('redeemCode: referrer at 0 referrals ends at count 1, still 1 GB (below 3-r
   assert.equal(referrer.storage_limit, 1 * GB);
 });
 
-test('redeemCode: referrer reaching 3 referrals lands on the 3 GB tier', async () => {
+test('redeemCode: referrer reaching 3 referrals lands on the 2.5 GB tier', async () => {
   const { redeemCode } = await service;
   const users = [
     user({ id: 'A', referral_code: 'AAAA1111', referral_count: 2, storage_limit: 1 * GB }),
@@ -203,7 +207,44 @@ test('redeemCode: referrer reaching 3 referrals lands on the 3 GB tier', async (
   const result = await redeemCode(fakeSupabase(users), fakeRedis(), 'AAAA1111', 'B');
   assert.equal(result.ok, true);
   assert.equal(users[0]!.referral_count, 3);
-  assert.equal(users[0]!.storage_limit, 3 * GB);
+  assert.equal(users[0]!.storage_limit, 2.5 * GB);
+});
+
+test('redeemCode: referrer reaching 5 referrals lands on the top 4 GB tier', async () => {
+  const { redeemCode } = await service;
+  const users = [
+    user({ id: 'A', referral_code: 'AAAA1111', referral_count: 4, storage_limit: 2.5 * GB }),
+    user({ id: 'B' }),
+  ];
+  const result = await redeemCode(fakeSupabase(users), fakeRedis(), 'AAAA1111', 'B');
+  assert.equal(result.ok, true);
+  assert.equal(users[0]!.referral_count, 5);
+  assert.equal(users[0]!.storage_limit, 4 * GB);
+});
+
+test('redeemCode: past the top tier the count rises but storage stays at 4 GB', async () => {
+  const { redeemCode } = await service;
+  // No 10-referral cap — a referrer at 9 still redeems fine, just earns nothing more.
+  const users = [
+    user({ id: 'A', referral_code: 'AAAA1111', referral_count: 9, storage_limit: 4 * GB }),
+    user({ id: 'B' }),
+  ];
+  const result = await redeemCode(fakeSupabase(users), fakeRedis(), 'AAAA1111', 'B');
+  assert.equal(result.ok, true);
+  assert.equal(users[0]!.referral_count, 10);
+  assert.equal(users[0]!.storage_limit, 4 * GB);
+});
+
+test('redeemCode: a referrer above the tier value keeps their higher limit', async () => {
+  const { redeemCode } = await service;
+  // Admin override / legacy 10 GB tier — GREATEST() must never lower it (migration 024).
+  const users = [
+    user({ id: 'A', referral_code: 'AAAA1111', referral_count: 4, storage_limit: 10 * GB }),
+    user({ id: 'B' }),
+  ];
+  const result = await redeemCode(fakeSupabase(users), fakeRedis(), 'AAAA1111', 'B');
+  assert.equal(result.ok, true);
+  assert.equal(users[0]!.storage_limit, 10 * GB);
 });
 
 test('redeemCode: referee storage increases by REFERRAL_BONUS_BYTES', async () => {
@@ -218,22 +259,22 @@ test('redeemCode: referee storage increases by REFERRAL_BONUS_BYTES', async () =
   assert.equal(users[1]!.storage_limit, 1 * GB + BONUS);
 });
 
-test('getStorageTierBytes: all 5 tiers return the right byte values', async () => {
+test('getStorageTierBytes: all 3 tiers return the right byte values', async () => {
   const { getStorageTierBytes } = await service;
   const supabase = fakeSupabase([]);
   const redis = fakeRedis();
   const expected: [number, number][] = [
     [0, 1 * GB],
-    [3, 3 * GB],
-    [5, 5 * GB],
-    [7, 7 * GB],
-    [10, 10 * GB],
+    [3, 2.5 * GB],
+    [5, 4 * GB],
   ];
   for (const [count, bytes] of expected) {
     assert.equal(await getStorageTierBytes(supabase, redis, count), bytes, `tier for ${count}`);
   }
   // in-between counts snap to the tier below
   assert.equal(await getStorageTierBytes(supabase, redis, 2), 1 * GB);
-  assert.equal(await getStorageTierBytes(supabase, redis, 4), 3 * GB);
-  assert.equal(await getStorageTierBytes(supabase, redis, 12), 10 * GB);
+  assert.equal(await getStorageTierBytes(supabase, redis, 4), 2.5 * GB);
+  // no cap — everything past the top tier stays on it
+  assert.equal(await getStorageTierBytes(supabase, redis, 12), 4 * GB);
+  assert.equal(await getStorageTierBytes(supabase, redis, 500), 4 * GB);
 });

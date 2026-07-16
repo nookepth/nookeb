@@ -184,7 +184,15 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `009_session_version.sql` — `users.session_version`; bumping it revokes outstanding JWTs
     (see `middleware/auth.ts`, revocation check + 60s Redis cache).
   - `010_referrals.sql` · `012_reset_quota.sql` · `013_fix_tiers.sql` — referral codes +
-    storage tiers (`referral.service`).
+    storage tiers (`referral.service`). Tier thresholds superseded by 030.
+  - `030_referral_tiers_fractional.sql` — current referral ladder: 0→1, 3→2.5, 5→4 GB.
+    Widens `referral_tiers.storage_limit_gb` INTEGER → NUMERIC(6,2) (2.5 doesn't fit an
+    int) and recreates `redeem_referral` so its `v_tier_gb` local is NUMERIC too —
+    otherwise SELECT…INTO silently rounds 2.5 → 3. 5 is the TOP tier and there is no
+    referral cap: `referral_count` keeps rising past it, it just stops unlocking storage.
+    Keeps 024's GREATEST() guard, so users on the retired 3/5/7/10 GB tiers never get
+    lowered. NOT auto-applied; apply BEFORE the API/worker deploy (code reading the old
+    int column against fractional rows would round rewards up).
   - `014_personal_quota_enforcement.sql` · `015_add_charged_to_column.sql` ·
     `016_unique_space_constraints.sql` — atomic per-file personal quota enforcement, the
     `charged_to` ledger column (correct quota refunds), and unique constraints closing a
@@ -249,7 +257,7 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     public SEO/marketing page that replaced the old redirect-to-dashboard. The rich menu
     deep-links straight to `/dashboard`, so keep `/` public — do NOT turn it back into a
     redirect. Sections: hero with LINE-chat mockup, 6 feature cards, polaroid gallery of the
-    brand card images (`public/landing/card-1..7.jpg`), 3-step how-to, 1→10 GB referral
+    brand card images (`public/landing/card-1..7.jpg`), 3-step how-to, 1→4 GB referral
     ladder, trust strip, FAQ, locker CTA.
   - Landing content rules: every claim must pass the brand playbook's "เคลมได้/ห้ามเคลม"
     table (marketing/, ส่วนที่ 2) · NO emoji anywhere on the page (inline SVG icons only) ·
@@ -350,7 +358,7 @@ and `supabase/backfills/` for specifics.
 - Phase 2 — Organize: folders, tags, rename/move, name+OCR search, thumbnails, rich menu.
 - Phase 3 — Scan & Team: scan-to-PDF, LINE group shared spaces, team invites, image OCR.
 - Phase 4 — SaaS (minus billing): storage quota + enforcement (1 GB free tier, referral
-  tiers up to 10 GB — migration 010, `referral.service`), analytics/usage, admin panel,
+  tiers up to 4 GB — migrations 010/030, `referral.service`), analytics/usage, admin panel,
   daily R2 purge of long-deleted files. (Google Drive export removed — migration 017.)
 
 ## Deferred / NOT built

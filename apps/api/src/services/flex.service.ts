@@ -500,34 +500,25 @@ function progressBar(percent: number): Record<string, unknown> {
 }
 
 /**
- * Dynamic motivational line keyed by the EXACT referral count (0–10+), matched to
- * the new 3/5/7/10 tier thresholds. The web ReferralCard keeps an identical copy
- * (getMotivationalText) — keep the two in sync when editing.
+ * Dynamic motivational line keyed by the EXACT referral count, matched to the
+ * 3/5 tier thresholds (migration 030). The web ReferralCard keeps an identical
+ * copy (getMotivationalText) — keep the two in sync when editing.
+ * 5 is the top tier, so everything past it shares the default line.
  */
 export function referralMotivationalText(count: number): string {
   switch (count) {
     case 0:
       return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! ❤️';
     case 1:
-      return 'อีก 2 คน ได้ 3 GB เลยน้า ❤️';
+      return 'อีก 2 คน ได้ 2.5 GB เลยน้า ❤️';
     case 2:
-      return 'ขาดแค่คนเดียวจะได้ 3 GB แล้วววว 🔥';
+      return 'ขาดแค่คนเดียวจะได้ 2.5 GB แล้วววว 🔥';
     case 3:
-      return 'ได้ 3 GB แล้ว! ชวนต่อได้อีกนะ อีก 2 คน ได้ 5 GB 📂';
+      return 'ได้ 2.5 GB แล้ว! ชวนต่อได้อีกนะ อีก 2 คน ได้ 4 GB 📂';
     case 4:
-      return 'อีกคนเดียว! ได้ 5 GB เลยยย 💪';
-    case 5:
-      return 'ได้ 5 GB แล้ว เก่งมาก! อีก 2 คน ได้ 7 GB ⭐';
-    case 6:
-      return 'อีกคนเดียวได้ 7 GB แล้วนะ สู้ๆ 🌟';
-    case 7:
-      return 'ได้ 7 GB แล้ว! ยอดเยี่ยมมาก อีก 3 คน รับ 10 GB เลย';
-    case 8:
-      return 'อีก 2 คน ได้ 10 GB เต็มๆ เลย! 🏆';
-    case 9:
-      return 'อีกคนเดียวเท่านั้น! 10 GB รออยู่นะ 👑';
+      return 'อีกคนเดียว! ได้ 4 GB เลยยย 💪';
     default:
-      return 'เจ๋งที่สุดไปเลยย! ได้ 10 GB เต็มๆ แล้ว 🏆📁';
+      return 'เจ๋งที่สุดไปเลยย! ได้ 4 GB เต็มๆ แล้ว 🏆📁';
   }
 }
 
@@ -598,19 +589,19 @@ export interface ReferralProgressParams {
 
 /**
  * Milestone copy per referral count — title (with "หนูเก็บ: " prefix) + body line.
- * The 1/4/7/10 texts are exact spec'd copy; everything else gets the generic
- * progress line. Exported for the web ReferralCard teaser to reuse.
+ * Keyed to the 3/5 ladder (migration 030): 1 and 4 are the "one/two more to go"
+ * nudges, 5 is the top tier. Everything else (including counts past 5, which keep
+ * rising with no further grant) gets the generic progress line.
+ * Exported for the web ReferralCard teaser to reuse.
  */
 export function referralMilestoneText(p: ReferralProgressParams): { title: string; line: string } {
   switch (p.referralCount) {
     case 1:
-      return { title: 'หนูเก็บ: มีคนกรอกโค้ดคุณแล้วน้า! 📁', line: '3 คนแย้วน้า 🥳 อีกหน่อยได้ 3 GB แน่ๆ!' };
+      return { title: 'หนูเก็บ: มีคนกรอกโค้ดคุณแล้วน้า! 📁', line: '1 คนแย้วน้า 🥳 อีก 2 คน ได้ 2.5 GB แน่ๆ!' };
     case 4:
-      return { title: 'หนูเก็บ: เพื่อนเยอะมากเลย! 🔥', line: '5 คนแย้วสู้ๆ 💪 ใกล้ได้ 5 GB แล้ว!' };
-    case 7:
-      return { title: 'หนูเก็บ: เก่งมากๆ เลยนะ! ⭐', line: '7 คนแย้วเจ๋งมาก 🌟 อีกนิดเดียว!' };
-    case 10:
-      return { title: 'หนูเก็บ: ทำได้สุดยอดมากเลย! 👑', line: '10 คนแย้วสุดเจ๋ง 🏆 ได้ 10 GB เต็มๆ แล้ว!' };
+      return { title: 'หนูเก็บ: เพื่อนเยอะมากเลย! 🔥', line: '4 คนแย้วสู้ๆ 💪 อีกคนเดียวได้ 4 GB แล้ว!' };
+    case 5:
+      return { title: 'หนูเก็บ: ทำได้สุดยอดมากเลย! 👑', line: '5 คนแย้วสุดเจ๋ง 🏆 ได้ 4 GB เต็มๆ แล้ว!' };
     default:
       return {
         title: `หนูเก็บ: ${p.referralCount} คนกรอกโค้ดของคุณแล้วนะ 💛`,

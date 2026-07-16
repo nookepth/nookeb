@@ -151,10 +151,8 @@ const STEPS: { title: string; desc: string; quote?: string }[] = [
 
 const RUNGS: { gb: string; label: string; top?: boolean }[] = [
   { gb: '1 GB', label: 'เริ่มเลย ฟรี' },
-  { gb: '3 GB', label: 'ชวนเพื่อน 3 คน' },
-  { gb: '5 GB', label: 'ชวนเพื่อน 5 คน' },
-  { gb: '7 GB', label: 'ชวนเพื่อน 7 คน' },
-  { gb: '10 GB', label: 'ชวนเพื่อน 10 คน', top: true },
+  { gb: '2.5 GB', label: 'ชวนเพื่อน 3 คน' },
+  { gb: '4 GB', label: 'ชวนเพื่อน 5 คน', top: true },
 ];
 
 const TRUST: { icon: React.ReactNode; title: string; desc: string }[] = [
@@ -178,7 +176,7 @@ const TRUST: { icon: React.ReactNode; title: string; desc: string }[] = [
 const FAQS: { q: string; a: string }[] = [
   {
     q: 'หนูเก็บฟรีจริงไหม? มีเก็บเงินทีหลังหรือเปล่า?',
-    a: 'ตอนนี้ทุกฟีเจอร์ใช้ฟรี เริ่มต้นได้ 1 GB โดยไม่ต้องผูกบัตรหรือกรอกข้อมูลจ่ายเงินใด ๆ อยากได้พื้นที่เพิ่มก็ชวนเพื่อนมาใช้ด้วยกัน — ชวนครบ 10 คนได้ 10 GB ถาวร ยังไม่มีแพ็กเกจเสียเงินในระบบเลยน้า',
+    a: 'ตอนนี้ทุกฟีเจอร์ใช้ฟรี เริ่มต้นได้ 1 GB โดยไม่ต้องผูกบัตรหรือกรอกข้อมูลจ่ายเงินใด ๆ อยากได้พื้นที่เพิ่มก็ชวนเพื่อนมาใช้ด้วยกัน — ชวนครบ 5 คนได้ 4 GB ถาวร ยังไม่มีแพ็กเกจเสียเงินในระบบเลยน้า',
   },
   {
     q: 'ต้องโหลดแอปเพิ่มไหม?',
@@ -512,7 +510,7 @@ export default function Home() {
                   <IcoSparkle size={18} />
                   พื้นที่ฟรี
                 </p>
-                <h2 id="free-title" className={styles.sectionTitle}>ฟรี 1 GB — ชวนเพื่อนขยายได้ถึง 10 GB</h2>
+                <h2 id="free-title" className={styles.sectionTitle}>ฟรี 1 GB — ชวนเพื่อนขยายได้ถึง 4 GB</h2>
               </div>
             </Reveal>
             <Reveal className={styles.reveal} delay={120}>
@@ -548,7 +546,7 @@ export default function Home() {
                     </p>
                     <p className={styles.freeNote}>
                       <IcoCheck size={16} />
-                      ชวนสำเร็จ 3 · 5 · 7 · 10 คน พื้นที่รวมเป็น 3 · 5 · 7 · 10 GB ถาวร
+                      ชวนสำเร็จ 3 · 5 คน พื้นที่รวมเป็น 2.5 · 4 GB ถาวร
                     </p>
                     <p className={styles.freeNote}>
                       <IcoCheck size={16} />

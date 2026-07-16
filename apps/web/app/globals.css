@@ -1494,7 +1494,7 @@ button:active,
   transition: width 0.6s ease;
 }
 
-/* milestone dots at 3/5/7/10 referrals (30%/50%/70%/100%) */
+/* milestone dots at 3/5 referrals (60%/100% of the 0→5 bar) */
 /* Milestone anchor: a zero-width point on the track at left:{pos}%.
    Its label AND dot both center on this same point via translateX(-50%),
    so the label always sits exactly above its dot. */

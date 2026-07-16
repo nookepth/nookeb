@@ -8,44 +8,37 @@ import {
   type ReferralStatusResponse,
 } from '@/lib/api';
 
-/** Milestone dots: 3/5/7/10 referrals at 30%/50%/70%/100% of the 0→10 bar. */
-const MILESTONES = [3, 5, 7, 10] as const;
-const MILESTONE_POS: Record<number, number> = { 3: 30, 5: 50, 7: 70, 10: 100 };
+/** Referrals for the top tier — the scale the bar is drawn against. NOT a cap:
+ * the count keeps rising past it, it just stops unlocking storage. Mirrors
+ * TOP_TIER_REFERRALS in the API's referral.service.ts. */
+const TOP_TIER_REFERRALS = 5;
+
+/** Milestone dots: 3/5 referrals at 60%/100% of the 0→5 bar. */
+const MILESTONES = [3, 5] as const;
+const MILESTONE_POS: Record<number, number> = { 3: 60, 5: 100 };
 
 /** Label rendered ABOVE each milestone dot (\n → line breaks via pre-line). */
 const MILESTONE_LABEL: Record<number, string> = {
-  3: 'ครบ 3 คน\nรับ 3 GB',
-  5: 'ครบ 5 คน\nได้ 5 GB',
-  7: 'ครบ 7 คน\nรับ 7 GB',
-  10: 'เจ๋งที่สุด\nรับ 10 GB',
+  3: 'ครบ 3 คน\nรับ 2.5 GB',
+  5: 'ครบ 5 คน\nได้ 4 GB',
 };
 
-/** Dynamic motivational line keyed by the EXACT referral count (0–10+).
+/** Dynamic motivational line keyed by the EXACT referral count.
  * Must stay in sync with flex.service.ts `referralMotivationalText`. */
 function getMotivationalText(count: number): string {
   switch (count) {
     case 0:
       return 'เริ่มชวนเพื่อนรับรางวัลพิเศษไปเลย! ❤️';
     case 1:
-      return 'อีก 2 คน ได้ 3 GB เลยน้า ❤️';
+      return 'อีก 2 คน ได้ 2.5 GB เลยน้า ❤️';
     case 2:
-      return 'ขาดแค่คนเดียวจะได้ 3 GB แล้วววว 🔥';
+      return 'ขาดแค่คนเดียวจะได้ 2.5 GB แล้วววว 🔥';
     case 3:
-      return 'ได้ 3 GB แล้ว! ชวนต่อได้อีกนะ อีก 2 คน ได้ 5 GB 📂';
+      return 'ได้ 2.5 GB แล้ว! ชวนต่อได้อีกนะ อีก 2 คน ได้ 4 GB 📂';
     case 4:
-      return 'อีกคนเดียว! ได้ 5 GB เลยยย 💪';
-    case 5:
-      return 'ได้ 5 GB แล้ว เก่งมาก! อีก 2 คน ได้ 7 GB ⭐';
-    case 6:
-      return 'อีกคนเดียวได้ 7 GB แล้วนะ สู้ๆ 🌟';
-    case 7:
-      return 'ได้ 7 GB แล้ว! ยอดเยี่ยมมาก อีก 3 คน รับ 10 GB เลย';
-    case 8:
-      return 'อีก 2 คน ได้ 10 GB เต็มๆ เลย! 🏆';
-    case 9:
-      return 'อีกคนเดียวเท่านั้น! 10 GB รออยู่นะ 👑';
+      return 'อีกคนเดียว! ได้ 4 GB เลยยย 💪';
     default:
-      return 'เจ๋งที่สุดไปเลยย! ได้ 10 GB เต็มๆ แล้ว 🏆📁';
+      return 'เจ๋งที่สุดไปเลยย! ได้ 4 GB เต็มๆ แล้ว 🏆📁';
   }
 }
 
@@ -70,7 +63,9 @@ export function ReferralCard() {
     setStatus(s);
     // next frame so the 0-width bar paints first, then animates to the value
     requestAnimationFrame(() =>
-      requestAnimationFrame(() => setBarPct(Math.min(100, (s.referralCount / 10) * 100))),
+      requestAnimationFrame(() =>
+        setBarPct(Math.min(100, (s.referralCount / TOP_TIER_REFERRALS) * 100)),
+      ),
     );
   }
 
@@ -146,7 +141,6 @@ export function ReferralCard() {
     );
   }
 
-  const atMax = status.nextTierGB === null;
   const alreadyRedeemed = status.referredById !== null;
 
   return (
@@ -206,41 +200,37 @@ export function ReferralCard() {
         </div>
       )}
 
-      {atMax ? (
-        <p className="referral-max">🏆 เต็มแล้ว! คุณได้พื้นที่สูงสุด 10 GB แล้ว!</p>
-      ) : (
-        <>
-          <div className="referral-bar-row">
-            <div className="referral-track">
-              <div className="referral-fill" style={{ width: `${barPct}%` }} />
-              {/* Each milestone: label + dot share ONE left:% anchor so the
-                  label centers exactly above its dot (both use translateX(-50%)). */}
-              {MILESTONES.map((m) => (
-                <div
-                  key={m}
-                  className="referral-milestone"
-                  style={{ left: `${MILESTONE_POS[m]}%` }}
-                >
-                  <span
-                    className={`referral-label ${status.referralCount >= m ? 'reached' : ''}`}
-                  >
-                    {MILESTONE_LABEL[m]}
-                  </span>
-                  <span
-                    className={`referral-marker ${status.referralCount >= m ? 'passed' : ''}`}
-                  />
-                </div>
-              ))}
-              {/* Current referral count marker */}
-              <span className="referral-cursor" style={{ left: `${barPct}%` }} />
+      {/* The bar is always rendered — there is no referral cap. Past the top
+          tier (5) it simply stays full while the count keeps climbing. */}
+      <div className="referral-bar-row">
+        <div className="referral-track">
+          <div className="referral-fill" style={{ width: `${barPct}%` }} />
+          {/* Each milestone: label + dot share ONE left:% anchor so the
+              label centers exactly above its dot (both use translateX(-50%)). */}
+          {MILESTONES.map((m) => (
+            <div
+              key={m}
+              className="referral-milestone"
+              style={{ left: `${MILESTONE_POS[m]}%` }}
+            >
+              <span
+                className={`referral-label ${status.referralCount >= m ? 'reached' : ''}`}
+              >
+                {MILESTONE_LABEL[m]}
+              </span>
+              <span
+                className={`referral-marker ${status.referralCount >= m ? 'passed' : ''}`}
+              />
             </div>
-            <span className="referral-count">{status.referralCount}/10 คน</span>
-          </div>
+          ))}
+          {/* Current referral count marker */}
+          <span className="referral-cursor" style={{ left: `${barPct}%` }} />
+        </div>
+        <span className="referral-count">{status.referralCount} คน</span>
+      </div>
 
-          {/* Fix 2 — dynamic motivational text below the bar */}
-          <p className="referral-motivation">{getMotivationalText(status.referralCount)}</p>
-        </>
-      )}
+      {/* Fix 2 — dynamic motivational text below the bar */}
+      <p className="referral-motivation">{getMotivationalText(status.referralCount)}</p>
     </div>
   );
 }

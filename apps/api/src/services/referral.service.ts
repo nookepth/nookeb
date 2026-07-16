@@ -10,11 +10,17 @@ const MAX_CODE_ATTEMPTS = 10;
 const TIER_CACHE_KEY = 'referral:tiers';
 const TIER_CACHE_TTL_SECONDS = 3600; // 1 hour
 
+/** Referrals needed for the top tier (5 → 4 GB, migration 030) — the scale both
+ * progress bars are drawn against. NOT a cap: referral_count keeps counting
+ * past it, it just stops unlocking storage. */
+const TOP_TIER_REFERRALS = 5;
+
 // Postgres unique_violation — also raised by the redeem_referral RPC on double-redeem
 const PG_UNIQUE_VIOLATION = '23505';
 
 interface ReferralTier {
   min_referrals: number;
+  /** May be fractional (2.5) — the column is NUMERIC since migration 030. */
   storage_limit_gb: number;
 }
 
@@ -45,7 +51,7 @@ export interface ReferralStatus {
   nextTierGB: number | null;
   /** referrals still needed to reach the next tier (0 when at top) */
   neededForNext: number;
-  /** overall progress toward the top tier (10 referrals), 0–100 */
+  /** overall progress toward the top tier (5 referrals), 0–100 */
   progressPercent: number;
   /** the user this account redeemed a code from — null if they never redeemed */
   referredById: string | null;
@@ -108,7 +114,12 @@ async function getTiers(supabase: SupabaseClient, redis: Redis): Promise<Referra
     .order('min_referrals', { ascending: true });
   if (error) throw error;
 
-  const tiers = (data ?? []) as ReferralTier[];
+  // storage_limit_gb is NUMERIC (030) — PostgREST may serialize it as a string,
+  // so coerce here rather than let "2.5" reach the GB multiplication.
+  const tiers = ((data ?? []) as ReferralTier[]).map((t) => ({
+    min_referrals: Number(t.min_referrals),
+    storage_limit_gb: Number(t.storage_limit_gb),
+  }));
   await redis.set(TIER_CACHE_KEY, JSON.stringify(tiers), 'EX', TIER_CACHE_TTL_SECONDS);
   return tiers;
 }
@@ -124,7 +135,9 @@ export async function getStorageTierBytes(
   for (const tier of tiers) {
     if (tier.min_referrals <= referralCount) matched = tier; // sorted asc — last match wins
   }
-  return matched ? matched.storage_limit_gb * GB : config.DEFAULT_STORAGE_LIMIT;
+  // Round: a fractional tier (2.5 GB) isn't a whole number of bytes — matches the
+  // ROUND() the redeem_referral RPC applies when it writes storage_limit.
+  return matched ? Math.round(matched.storage_limit_gb * GB) : config.DEFAULT_STORAGE_LIMIT;
 }
 
 /** Business-rule checks before a redemption (the DB constraints are the backstop). */
@@ -237,9 +250,10 @@ export async function getReferralStatus(
   const referralCount = (user.referral_count as number | null) ?? 0;
   const referredById = (user.referred_by_id as string | null) ?? null;
 
-  // Overall progress toward the top tier (10 referrals) — shared by the web bar
-  // and the LINE Flex progress bar so both read the same scale.
-  const overallPercent = Math.min(100, Math.round((referralCount / 10) * 100));
+  // Overall progress toward the top tier — shared by the web bar and the LINE
+  // Flex progress bar so both read the same scale. Clamped at 100: past the top
+  // tier the count keeps rising but the bar just stays full.
+  const overallPercent = Math.min(100, Math.round((referralCount / TOP_TIER_REFERRALS) * 100));
 
   const tiers = await getTiers(supabase, redis);
   let current: ReferralTier | null = null;
