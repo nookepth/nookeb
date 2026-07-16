@@ -70,5 +70,3 @@ WHERE c.id = u.id
 -- )
 -- SELECT * FROM computed
 -- WHERE storage_used IS DISTINCT FROM files_bytes + vault_bytes;
-</content>
-</invoke>
