@@ -34,7 +34,9 @@ import { DiaryEntryCard } from '@/components/DiaryEntryCard';
 import { RecentStrip } from '@/components/RecentStrip';
 import { ReferralCard } from '@/components/ReferralCard';
 import { UsageBar } from '@/components/UsageBar';
-import { BoxIcon, DatabaseIcon, DocIcon, FolderIcon, GridIcon, ImageIcon, ListIcon } from '@/components/icons';
+import { VaultEntryCard } from '@/components/VaultEntryCard';
+import { useVaultSummary } from '@/lib/useVaultSummary';
+import { BoxIcon, DatabaseIcon, DocIcon, FolderIcon, GridIcon, ImageIcon, ListIcon, LockIcon } from '@/components/icons';
 
 type TypeFilter = 'all' | FileGroup;
 type SortKey = 'newest' | 'oldest' | 'name' | 'size';
@@ -69,6 +71,7 @@ export default function DashboardPage() {
   const [spaces, setSpaces] = useState<SpaceDto[]>([]);
   const [spaceId, setSpaceId] = useState<string | null>(null);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
+  const { status: vaultStatus, stats: vaultStats } = useVaultSummary();
   const [user, setUser] = useState<NavbarUser | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [trashCount, setTrashCount] = useState(0);
@@ -402,10 +405,37 @@ export default function DashboardPage() {
                 </span>
               </div>
             )}
+            {/* ห้องนิรภัย — an <a>, not a filter button like the chips before it:
+                the vault is a separate store, so it navigates instead of
+                filtering this space's grid. The count shows only while the
+                vault is unlocked (privacy — see useVaultSummary).
+                A null status means the vault is unreachable (most often 503,
+                the feature being dormant without VAULT_MASTER_KEY) — hide the
+                chip rather than link to a page that cannot load. */}
+            {vaultStatus && (
+              <a className="stat-chip" href="/dashboard/vault">
+                <span className="stat-icon">
+                  <LockIcon />
+                </span>
+                <span>
+                  <span className="stat-num">
+                    {vaultStatus.isUnlocked && vaultStats
+                      ? vaultStats.fileCount
+                      : vaultStatus.hasPin
+                        ? '🔒'
+                        : 'ตั้งค่า'}
+                  </span>
+                  <br />
+                  <span className="stat-label">ห้องนิรภัย</span>
+                </span>
+              </a>
+            )}
           </div>
         )}
 
         {usage && <UsageBar usage={usage} />}
+
+        <VaultEntryCard status={vaultStatus} stats={vaultStats} />
 
         <DiaryEntryCard />
 

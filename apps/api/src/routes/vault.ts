@@ -27,9 +27,11 @@ import {
   peekVaultSession,
   recordFailedAttempt,
 } from '../services/vault-session.service';
+import { adjustStorageUsed } from '../services/file.service';
 import {
   buildVaultKey,
   getVaultFile,
+  getVaultStats,
   insertVaultFile,
   listVaultFiles,
   softDeleteVaultFile,
@@ -316,8 +318,9 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const fileSize = cipherSize - GCM_TAG_BYTES;
+    let row;
     try {
-      const row = await insertVaultFile(app.supabase, {
+      row = await insertVaultFile(app.supabase, {
         id: fileId,
         userId,
         r2Key,
@@ -327,19 +330,53 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
         dekEncrypted: wrapDek(userKey, dek),
         iv: fileIv.toString('base64'),
       });
-      void logEvent(app.supabase, {
-        eventType: 'vault_upload_done',
-        userId,
-        source: 'web',
-        metadata: { bytes: fileSize, mime: mp.mimetype },
-      });
-      return reply.code(201).send(toVaultFileDto(row));
     } catch (err) {
       // No DB row → the object is unreachable; remove it rather than leak storage.
+      // Scoped to the insert ALONE: past this point a live row owns the object,
+      // and deleting it would leave a file that lists but 500s on view.
       await deleteObject(app.r2, r2Key).catch(() => {});
       throw err;
     }
+
+    // Vault files share the user's single storage_used pool (they are NOT a
+    // separate quota). Charged AFTER the row exists, so a failed insert can't
+    // bill for bytes the user can't see; the matching refund happens at hard
+    // purge, not soft delete — a soft-deleted file still occupies R2. Atomic
+    // per rule 8. No spaceId: the vault is outside the space model, so the
+    // storage-monitor alert has no space to report against.
+    //
+    // Best-effort: the file is already stored and listable, so a failed charge
+    // must not fail the upload (the user would retry and store it twice). It
+    // undercounts instead — the safe direction, and repairable by re-running
+    // supabase/backfills/backfill_vault_storage.sql.
+    //
+    // Deliberately NOT enforcing the limit: the bytes are already in R2 by this
+    // point, so a rejection here would have to delete-and-refund. A vault upload
+    // can therefore push storage_used past storage_limit; the multipart fileSize
+    // limit is its only hard cap. Accepted for now — LINE uploads reserve quota
+    // up front (incrementPersonalStorage with enforce) and the vault should too,
+    // once its UI can render a quota-exceeded state.
+    try {
+      await adjustStorageUsed(app.supabase, userId, fileSize);
+    } catch (err) {
+      request.log.error({ err, userId, fileId, fileSize }, 'vault: storage charge failed');
+    }
+
+    void logEvent(app.supabase, {
+      eventType: 'vault_upload_done',
+      userId,
+      source: 'web',
+      metadata: { bytes: fileSize, mime: mp.mimetype },
+    });
+    return reply.code(201).send(toVaultFileDto(row));
   });
+
+  // GET /vault/stats — totals for the dashboard's vault card. Behind the same
+  // guard chain as every other vault read, so a locked vault leaks no counts
+  // (the web calls this only when session-status says isUnlocked).
+  app.get('/vault/stats', guarded, async (request) =>
+    getVaultStats(app.supabase, request.authUser!.userId),
+  );
 
   // GET /vault/files — the grid listing. NEVER returns r2_key/dek_encrypted/iv
   // (toVaultFileDto is the only shape that leaves the API).
