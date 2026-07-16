@@ -121,6 +121,15 @@ export function BoxIcon({ size = 18 }: IconProps) {
   );
 }
 
+export function LockIcon({ size = 18 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <rect x="4" y="10" width="16" height="11" rx="2" />
+      <path d="M8 10V7a4 4 0 0 1 8 0v3" />
+    </svg>
+  );
+}
+
 export function EyeIcon({ size = 16 }: IconProps) {
   return (
     <svg {...base(size)}>

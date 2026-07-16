@@ -92,6 +92,55 @@ export async function listVaultFiles(
   return { rows: (data ?? []) as VaultFileRecord[], total: count ?? 0 };
 }
 
+export interface VaultStats {
+  fileCount: number;
+  storageUsed: number;
+  imageCount: number;
+  videoCount: number;
+  pdfCount: number;
+}
+
+/**
+ * Per-user vault totals for the dashboard card. Aggregated from the live rows
+ * only (soft-deleted files still occupy quota until the purge, but they are
+ * gone from the user's point of view — the breakdown must match the grid).
+ *
+ * Selects just the two columns it counts on rather than `*`: this runs on every
+ * dashboard load and the row shape carries the wrapped DEK.
+ *
+ * NOTE: PostgREST caps a plain select at 1000 rows, so a vault past 1000 live
+ * files would undercount here. Acceptable for now — VAULT_MAX_FILE_SIZE_MB
+ * (100 MB default) against a 1–4 GB quota caps a vault at ~40 files. Move to an
+ * aggregate RPC (see `usage_by_mime`) if the quota ever grows past that.
+ */
+export async function getVaultStats(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<VaultStats> {
+  const { data, error } = await supabase
+    .from('vault_files')
+    .select('mime_type, file_size')
+    .eq('user_id', userId)
+    .is('deleted_at', null);
+  if (error) throw error;
+
+  const rows = (data ?? []) as { mime_type: string; file_size: number }[];
+  const stats: VaultStats = {
+    fileCount: rows.length,
+    storageUsed: 0,
+    imageCount: 0,
+    videoCount: 0,
+    pdfCount: 0,
+  };
+  for (const row of rows) {
+    stats.storageUsed += Number(row.file_size);
+    if (row.mime_type.startsWith('image/')) stats.imageCount += 1;
+    else if (row.mime_type.startsWith('video/')) stats.videoCount += 1;
+    else if (row.mime_type === 'application/pdf') stats.pdfCount += 1;
+  }
+  return stats;
+}
+
 /** Live row, only if owned by `userId` — the ownership check for every view. */
 export async function getVaultFile(
   supabase: SupabaseClient,

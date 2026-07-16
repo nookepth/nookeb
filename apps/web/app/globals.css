@@ -2856,6 +2856,36 @@ button:active,
   transform: translateY(-1px);
 }
 
+/* ============================================================
+   ห้องนิรภัย (Vault) dashboard entry
+   ============================================================ */
+
+/* Reuses .diary-banner's geometry (same card shape, per spec) and recolours it
+   — a vault is not a diary, and one palette for both would read as one feature. */
+.vault-entry-card {
+  --vault-ink: #4a5b8c;
+  text-decoration: none;
+  background: linear-gradient(135deg, #f1f3fb, #fafbff);
+  border-color: #ccd3ea;
+  transition: filter 0.15s ease, transform 0.15s ease;
+}
+
+.vault-entry-card:hover {
+  filter: brightness(0.98);
+  transform: translateY(-1px);
+}
+
+.vault-entry-card .diary-banner-btn {
+  background: var(--vault-ink);
+}
+
+/* The vault stat chip is an <a>, unlike the filter <button>s beside it — reset
+   the link styling so the row stays visually uniform. */
+a.stat-chip {
+  text-decoration: none;
+  color: inherit;
+}
+
 /* ---------- diary dashboard ---------- */
 
 .diary-container {

@@ -174,11 +174,30 @@ LINE-webhook/worker write path, unreachable from every share/team/space flow.
   (`VAULT_LOCKED` / `VAULT_PREMIUM_REQUIRED`), NOT 401 (web treats 401 = logout).
 - Premium: `users.vault_plan` manual flag; setup-pin self-grants 'premium'
   until billing lands (so the setup state precedes the paywall CTA on the web).
-- Vault files are NOT charged to `users.storage_used` (own cap instead:
-  `VAULT_MAX_FILE_SIZE_MB`, default 100) — revisit when billing defines quota.
+- Vault files ARE charged to `users.storage_used` — they share the single
+  personal pool, NOT a separate quota. (Reversed an earlier decision to keep
+  them uncharged.) `VAULT_MAX_FILE_SIZE_MB` (default 100) remains the PER-FILE
+  cap. Charged in `POST /vault/upload` via `adjustStorageUsed` AFTER the row
+  insert, best-effort (a failed charge logs + undercounts rather than failing an
+  upload whose bytes are already in R2). NOT enforced: the bytes land before the
+  charge, so a vault upload can exceed `storage_limit` — unlike LINE uploads,
+  which reserve via `incrementPersonalStorage(enforce)`. Refunded at HARD purge,
+  not soft delete (a soft-deleted vault file still occupies R2), so for vault
+  rows "row exists" ⟺ "charged". Repair drift by re-running
+  `supabase/backfills/backfill_vault_storage.sql` (idempotent full recompute;
+  also the one-time backfill for files predating the charge).
 - Delete: soft-delete, then the daily purge HARD-deletes row + R2 object after
   `VAULT_PURGE_RETENTION_DAYS` (30) — vault-scoped deviation from rule 6
-  (a vault filename is itself sensitive; nothing needs the tombstone).
+  (a vault filename is itself sensitive; nothing needs the tombstone). The purge
+  is also where vault bytes are refunded to `users.storage_used`; the refund runs
+  AFTER the row delete commits, so a crash mid-sweep can only undercount the
+  refund, never double-refund (which would hand out free quota on every retry).
+- Dashboard: `GET /vault/stats` (guarded — premium + unlock, so a locked vault
+  leaks no counts) feeds the vault stat chip + entry card on `/dashboard`. The
+  web calls it ONLY when `/vault/session-status` reports `isUnlocked`
+  (`lib/useVaultSummary.ts`). Note the aggregate size still leaks via the shared
+  `storage_used` in `GET /me/usage`, which is ungated — inherent to the shared
+  pool, not an oversight.
 - Upload is the app's ONLY web multipart endpoint (`@fastify/multipart`,
   registered only in the vault route scope).
 
@@ -192,7 +211,8 @@ a failed store soft-deletes its row so the retry can re-insert) · `create_diary
 `line_message_id` and user+entry_date — migration 028) · `purge_deleted` (daily
 repeatable, scheduled on worker startup via `scheduleRepeatableJobs`; also sweeps
 soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries` and
-hard-purges soft-deleted vault files via `purgeDeletedVaultFiles`). (The legacy `upload_file` handler was removed — it had
+hard-purges soft-deleted vault files via `purgeDeletedVaultFiles`, which also refunds
+their bytes to `users.storage_used`). (The legacy `upload_file` handler was removed — it had
 no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
 Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
 enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
