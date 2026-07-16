@@ -150,6 +150,38 @@ Fixed two-page A/B design (2500×1686 each), registered ONLY by `scripts/setup-r
 - Every button's `message` text must map to a real handler in `webhook/line.ts` — keep in sync.
 - Do not add/remove/rearrange button areas without approval.
 
+## ห้องนิรภัย (Vault) — web-only, migration 031
+PIN-protected, view-only, per-user ENCRYPTED file store at `/dashboard/vault`
+(routes `apps/api/src/routes/vault.ts`). Structurally isolated like the diary:
+own table (`vault_files`), own R2 prefix (`vault/{user_id}/{uuid}.enc`), no
+LINE-webhook/worker write path, unreachable from every share/team/space flow.
+- Crypto (`services/vault-crypto.ts`, unit-tested): AES-256-GCM per-file DEK,
+  wrapped under a per-user scrypt key derived from `VAULT_MASTER_KEY` (env,
+  32-byte hex — LOSING/ROTATING IT MAKES ALL VAULT FILES UNREADABLE). Files are
+  stream-encrypted before R2 (rule 3 holds; ciphertext = plaintext + 16B tag).
+- Access: DELIBERATE deviation from rule 5 — NO presigned URLs, NO download
+  endpoint, ever. All bytes stream through `GET /vault/files/:id/view`, which
+  re-checks ownership + unlock per request. Images are re-encoded with a tiled
+  viewer-name+timestamp watermark (traceability — screenshots can't be blocked);
+  video/GIF stream with Range support (GCM can't seek: decrypt-from-0 + slice,
+  tag unverified on partial reads); PDF streams inline (TODO rasterize).
+- PIN: 6 digits, argon2id in `users.vault_pin_hash`; a second factor ON TOP of
+  the JWT session, safe only because of the per-USER (never per-IP) lockout:
+  5 fails → 15-min lock, doubling per repeat within 24h (`vault-session.service`).
+  Unlock opens a 15-min sliding Redis session bound to the JWT's session_version
+  (bumping it kills open vaults too). DELETE re-verifies the PIN. No PIN
+  change/reset flow yet — deliberate. Lock states are 403 + `code`
+  (`VAULT_LOCKED` / `VAULT_PREMIUM_REQUIRED`), NOT 401 (web treats 401 = logout).
+- Premium: `users.vault_plan` manual flag; setup-pin self-grants 'premium'
+  until billing lands (so the setup state precedes the paywall CTA on the web).
+- Vault files are NOT charged to `users.storage_used` (own cap instead:
+  `VAULT_MAX_FILE_SIZE_MB`, default 100) — revisit when billing defines quota.
+- Delete: soft-delete, then the daily purge HARD-deletes row + R2 object after
+  `VAULT_PURGE_RETENTION_DAYS` (30) — vault-scoped deviation from rule 6
+  (a vault filename is itself sensitive; nothing needs the tombstone).
+- Upload is the app's ONLY web multipart endpoint (`@fastify/multipart`,
+  registered only in the vault route scope).
+
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
@@ -159,7 +191,8 @@ a failed store soft-deletes its row so the retry can re-insert) · `create_diary
 400px thumb; attempts: 3, retry-safe via the live-rows unique indexes on
 `line_message_id` and user+entry_date — migration 028) · `purge_deleted` (daily
 repeatable, scheduled on worker startup via `scheduleRepeatableJobs`; also sweeps
-soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries`). (The legacy `upload_file` handler was removed — it had
+soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries` and
+hard-purges soft-deleted vault files via `purgeDeletedVaultFiles`). (The legacy `upload_file` handler was removed — it had
 no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
 Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
 enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
@@ -224,6 +257,10 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     `web_login` in `auth.ts`. NOT auto-applied; the admin endpoints fail soft to empty when
     the RPCs are missing, so it's safe to deploy code first — analytics just stays blank
     until the migration is applied.
+  - `031_vault.sql` — ห้องนิรภัย (Vault): `users.vault_pin_hash` / `users.vault_plan`
+    + `vault_files` (encrypted per-user store — see the Vault section). NOT
+    auto-applied; apply BEFORE deploying the vault code (the /vault routes
+    error without these columns; everything else is unaffected).
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -232,7 +269,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `src/routes/` — `webhook/line`, `auth`, `files`, `folders`, `tags`, `spaces`,
     `analytics`, `admin`, `referral`, `team.router` (mounted at `/api/teams`),
     `progress` (upload-progress view + JSON), `diary` (ไดอารี่ entries/streak/
-    today-status/notification — user-scoped, no space membership), `static`
+    today-status/notification — user-scoped, no space membership), `vault`
+    (ห้องนิรภัย — PIN + encrypted view-only store, see the Vault section), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
@@ -244,7 +282,10 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     `mistral-ocr` (Mistral OCR REST client), `docx-builder` (markdown → editable .docx,
     pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag),
     `diary` (diary_entries data access + Bangkok-day/streak helpers), `diary-mode`
-    (diary one-shot Redis flag; caption piggybacks on the flag value)
+    (diary one-shot Redis flag; caption piggybacks on the flag value),
+    `vault-crypto` (envelope encryption, pure/unit-tested), `vault-session`
+    (Redis unlock sessions + per-user PIN lockout), `vault` (vault_files data
+    access + view watermarking)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
@@ -276,7 +317,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     LINE_ID, INSTAGRAM_URL, TIKTOK_URL) — that file is the current canon; the playbook's
     ภาคผนวก A still lists an older lin.ee link, so reconcile the playbook when touching links.
   - Dashboard routes: `/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook viewer),
-    `/dashboard/teams` (+ `/[teamId]`), `/admin`, `/join`, `/auth/callback`, `/share/[token]`
+    `/dashboard/vault` (ห้องนิรภัย), `/dashboard/teams` (+ `/[teamId]`), `/admin`,
+    `/join`, `/auth/callback`, `/share/[token]`
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 
@@ -352,6 +394,9 @@ and `supabase/backfills/` for specifics.
 - `MISTRAL_API_KEY` / `MISTRAL_OCR_MODEL` / `DOCX_CONVERT_MAX_SOURCE_BYTES` — convert-to-Word
   ("แปลงไฟล์"); feature is OFF (command replies "not available") until the key is set
 - `DIARY_MAX_IMAGE_BYTES` — ไดอารี่ per-photo cap (default 10 MB; jpg/png/webp only)
+- `VAULT_MASTER_KEY` / `VAULT_MAX_FILE_SIZE_MB` / `VAULT_PURGE_RETENTION_DAYS` —
+  ห้องนิรภัย (Vault); routes reply 503 until the key (32-byte hex) is set.
+  NEVER rotate/lose the key — existing vault files become unreadable.
 
 ## Status (built)
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.

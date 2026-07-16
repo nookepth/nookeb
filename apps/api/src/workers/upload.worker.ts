@@ -55,7 +55,7 @@ import {
   incrementTeamStorage,
   StorageQuotaError,
 } from '../services/team.service';
-import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeOrphanScanTemp } from '../services/purge.service';
+import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeDeletedVaultFiles, purgeOrphanScanTemp } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
 import {
   countPages,
@@ -1559,6 +1559,23 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
     );
   } catch (err) {
     console.error('[upload.worker] purge: diary sweep failed:', err);
+  }
+
+  // Vault files (migration 031): after their own longer retention window the
+  // R2 ciphertext AND the row are removed (vault-scoped deviation from rule 6
+  // — see purgeDeletedVaultFiles). Best-effort like the diary sweep.
+  try {
+    const vaultSweep = await purgeDeletedVaultFiles(supabase, r2, {
+      retentionDays: config.VAULT_PURGE_RETENTION_DAYS,
+      apply: true,
+    });
+    console.log(
+      `[upload.worker] purge: vault scanned ${vaultSweep.scanned} file(s), ` +
+        `removed ${vaultSweep.objectsDeleted} R2 object(s) + ${vaultSweep.rowsDeleted} row(s), ` +
+        `errors ${vaultSweep.errors}`,
+    );
+  } catch (err) {
+    console.error('[upload.worker] purge: vault sweep failed:', err);
   }
 }
 

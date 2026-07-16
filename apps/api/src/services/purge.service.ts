@@ -157,6 +157,70 @@ export async function purgeDeletedDiaryEntries(
   return result;
 }
 
+export interface VaultPurgeResult {
+  cutoff: string;
+  scanned: number;
+  objectsDeleted: number;
+  rowsDeleted: number;
+  errors: number;
+}
+
+/**
+ * Vault counterpart (migration 031): after the retention window, delete the R2
+ * ciphertext of soft-deleted vault files AND hard-delete the row. The hard
+ * delete is a deliberate, vault-scoped deviation from rule 6's tombstones —
+ * a vault row's filename is itself sensitive content, and vault files are
+ * outside quota accounting, so nothing needs the tombstone. The row is only
+ * removed once its R2 delete succeeded (order matters: object first, then row —
+ * a crash in between just means a retry next run). `apply=false` only reports.
+ */
+export async function purgeDeletedVaultFiles(
+  supabase: SupabaseClient,
+  r2: S3Client,
+  opts: { retentionDays: number; apply: boolean },
+): Promise<VaultPurgeResult> {
+  const cutoff = new Date(Date.now() - opts.retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('vault_files')
+    .select('id, r2_key')
+    .not('deleted_at', 'is', null)
+    .lt('deleted_at', cutoff);
+  if (error) throw error;
+
+  const rows = (data ?? []) as { id: string; r2_key: string }[];
+  const result: VaultPurgeResult = {
+    cutoff,
+    scanned: rows.length,
+    objectsDeleted: 0,
+    rowsDeleted: 0,
+    errors: 0,
+  };
+
+  const purgedIds: string[] = [];
+  for (const row of rows) {
+    if (!opts.apply) {
+      result.objectsDeleted += 1;
+      continue;
+    }
+    try {
+      await deleteObject(r2, row.r2_key);
+      result.objectsDeleted += 1;
+      purgedIds.push(row.id);
+    } catch {
+      result.errors += 1;
+    }
+  }
+
+  if (opts.apply && purgedIds.length > 0) {
+    const { error: delErr } = await supabase.from('vault_files').delete().in('id', purgedIds);
+    if (delErr) throw delErr;
+    result.rowsDeleted = purgedIds.length;
+  }
+
+  return result;
+}
+
 export interface ScanTempSweepResult {
   cutoff: string;
   /** collecting sessions past their TTL that this run flipped to 'cancelled' */

@@ -11,7 +11,7 @@
     "start:worker": "node dist/workers/index.js",
     "typecheck": "tsc --noEmit",
     "postinstall": "node scripts/download-tessdata.js || exit 0",
-    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts src/services/docx-builder.service.test.ts",
+    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts src/services/docx-builder.service.test.ts src/services/vault-crypto.test.ts",
     "setup:rich-menu": "tsx --env-file=../../.env scripts/setup-rich-menu-large.ts"
   },
   "dependencies": {
@@ -19,12 +19,14 @@
     "@aws-sdk/lib-storage": "^3.600.0",
     "@aws-sdk/s3-request-presigner": "^3.600.0",
     "@fastify/cookie": "^9.4.0",
+    "@fastify/multipart": "^8.3.1",
     "@fastify/rate-limit": "^9.1.0",
     "@google-cloud/documentai": "^8.0.0",
     "@nookeb/shared": "*",
     "@pdf-lib/fontkit": "^1.1.1",
     "@supabase/supabase-js": "^2.44.0",
     "@techstark/opencv-js": "^5.0.0-release.1",
+    "argon2": "^0.41.1",
     "bullmq": "^5.8.0",
     "docx": "^9.7.1",
     "fastify": "^4.28.0",

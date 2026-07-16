@@ -44,7 +44,11 @@ export type EventType =
   // --- Web ---
   | 'web_login' // dashboard login succeeded
   | 'web_search' // dashboard file search
-  | 'file_download'; // file downloaded (web)
+  | 'file_download' // file downloaded (web)
+  // --- Vault (ห้องนิรภัย — web-only, migration 031) ---
+  | 'vault_setup' // PIN set for the first time (vault activated)
+  | 'vault_unlock_failed' // wrong PIN (metadata.locked = this failure triggered a lockout)
+  | 'vault_upload_done'; // vault file stored (metadata: bytes, mime)
 
 export type EventSource = 'line' | 'web' | 'worker';
 

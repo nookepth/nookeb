@@ -116,6 +116,20 @@ const envSchema = z.object({
   // worker memory for validation + thumbnailing, so keep this small. 10 MB.
   DIARY_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
 
+  // ห้องนิรภัย (Vault) — PIN-protected encrypted file store (migration 031).
+  // The feature is DISABLED (routes reply 503) until the master key is set.
+  // Generate with: openssl rand -hex 32. ROTATING/LOSING THIS KEY MAKES EVERY
+  // EXISTING VAULT FILE PERMANENTLY UNREADABLE — treat it like a database.
+  VAULT_MASTER_KEY: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, 'must be 32 bytes hex (openssl rand -hex 32)')
+    .optional(),
+  // Per-file upload cap for vault (MB). Vault images are buffered in API
+  // memory once per view for watermarking, so keep this sane.
+  VAULT_MAX_FILE_SIZE_MB: z.coerce.number().int().positive().default(100),
+  // Soft-deleted vault files are hard-purged (R2 object + DB row) after N days.
+  VAULT_PURGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
+
   // Storage warning thresholds (% of the uploader's storage_limit)
   STORAGE_WARN_THRESHOLD_LOW: z.coerce.number().int().min(1).max(100).default(80),
   STORAGE_WARN_THRESHOLD_HIGH: z.coerce.number().int().min(1).max(100).default(95),

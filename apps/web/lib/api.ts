@@ -78,6 +78,8 @@ export class ApiError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** Machine-readable error code from the API body (e.g. 'VAULT_LOCKED'). */
+    public code?: string,
   ) {
     super(message);
   }
@@ -476,6 +478,161 @@ export function updateDiaryNotification(settings: DiaryNotificationSettingsDto):
       is_enabled: settings.isEnabled,
       timezone: settings.timezone,
     }),
+  });
+}
+
+/* ============================================================
+   ห้องนิรภัย (Vault) — routes/vault.ts, migration 031.
+   Lock states arrive as 403 + code ('VAULT_LOCKED' /
+   'VAULT_PREMIUM_REQUIRED'), NOT 401 — 401 from the vault means the whole
+   LINE session is gone. A wrong PIN is 401 + code 'VAULT_PIN_INCORRECT'
+   (must NOT clear the session hint), so vaultFetch parses the body before
+   deciding what a 401 means.
+   ============================================================ */
+
+export interface VaultStatus {
+  hasPin: boolean;
+  isPremium: boolean;
+  isUnlocked: boolean;
+  expiresIn: number | null;
+}
+
+export interface VaultFileDto {
+  id: string;
+  originalFilename: string;
+  mimeType: string;
+  fileSize: number;
+  createdAt: string;
+}
+
+export interface VaultListResponse {
+  files: VaultFileDto[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export class VaultPinError extends ApiError {
+  constructor(
+    status: number,
+    message: string,
+    code: string | undefined,
+    /** Wrong-PIN attempts left before lockout (undefined when locked out). */
+    public attemptsRemaining?: number,
+    /** Present when locked out (or when this attempt triggered the lockout). */
+    public retryAfterSeconds?: number,
+  ) {
+    super(status, message, code);
+  }
+}
+
+async function vaultFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}/vault${path}`, init);
+  const body = (await res.json().catch(() => null)) as
+    | (Record<string, unknown> & { error?: string; code?: string })
+    | null;
+
+  if (res.ok) return body as T;
+
+  const code = typeof body?.code === 'string' ? body.code : undefined;
+  const message = typeof body?.error === 'string' ? body.error : `API error ${res.status}`;
+
+  if (code === 'VAULT_PIN_INCORRECT' || code === 'VAULT_PIN_LOCKED_OUT') {
+    throw new VaultPinError(
+      res.status,
+      message,
+      code,
+      typeof body?.attemptsRemaining === 'number' ? body.attemptsRemaining : undefined,
+      typeof body?.retryAfterSeconds === 'number' ? body.retryAfterSeconds : undefined,
+    );
+  }
+  if (res.status === 401) {
+    // A codeless vault 401 means the LINE session itself is gone.
+    clearSession();
+    throw new ApiError(401, 'Unauthorized');
+  }
+  throw new ApiError(res.status, message, code);
+}
+
+export function getVaultStatus(): Promise<VaultStatus> {
+  return vaultFetch(`/session-status`);
+}
+
+export function setupVaultPin(pin: string): Promise<{ success: boolean }> {
+  return vaultFetch(`/setup-pin`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+}
+
+export function unlockVault(pin: string): Promise<{ success: boolean; expiresIn: number }> {
+  return vaultFetch(`/unlock`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+}
+
+export function lockVault(): Promise<{ success: boolean }> {
+  return vaultFetch(`/lock`, { method: 'POST' });
+}
+
+export function listVaultFiles(page = 1, limit = 20): Promise<VaultListResponse> {
+  return vaultFetch(`/files?page=${page}&limit=${limit}`);
+}
+
+export function deleteVaultFile(fileId: string, pin: string): Promise<{ success: boolean }> {
+  return vaultFetch(`/files/${fileId}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
+}
+
+/**
+ * View URL for <img>/<video>/<iframe> — same-origin through /api-proxy, so the
+ * browser attaches the session cookie itself. The API re-checks ownership +
+ * unlock state on every request; there is deliberately NO download variant.
+ */
+export function vaultViewUrl(fileId: string): string {
+  return `${API_URL}/vault/files/${fileId}/view`;
+}
+
+/**
+ * Multipart upload with progress (XHR — fetch has no upload progress events).
+ * Server re-validates type + size; the client-side checks are UX only.
+ */
+export function uploadVaultFile(
+  file: File,
+  onProgress?: (percent: number) => void,
+): Promise<VaultFileDto> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/vault/upload`);
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'Network error'));
+    xhr.onload = () => {
+      const body = xhr.response as (Record<string, unknown> & { error?: string; code?: string }) | null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as unknown as VaultFileDto);
+        return;
+      }
+      if (xhr.status === 401) clearSession();
+      reject(
+        new ApiError(
+          xhr.status,
+          typeof body?.error === 'string' ? body.error : `API error ${xhr.status}`,
+          typeof body?.code === 'string' ? body.code : undefined,
+        ),
+      );
+    };
+    const form = new FormData();
+    form.append('file', file);
+    xhr.send(form);
   });
 }
 

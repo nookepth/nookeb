@@ -31,7 +31,15 @@ const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? 'http://localhost:3001'
  */
 const csp = Object.entries({
   'default-src': ["'self'"],
-  'script-src': ["'self'", "'unsafe-inline'"],
+  // 'unsafe-eval' is DEV-ONLY: next dev serves webpack eval-source-map chunks,
+  // which this CSP otherwise blocks — scripts load but never execute, so every
+  // page renders its SSR shell and silently never hydrates. Production builds
+  // don't use eval and don't get the relaxation.
+  'script-src': [
+    "'self'",
+    "'unsafe-inline'",
+    ...(process.env.NODE_ENV === 'development' ? ["'unsafe-eval'"] : []),
+  ],
   'style-src': ["'self'", "'unsafe-inline'"],
   'img-src': ["'self'", 'data:', 'blob:', 'https:'],
   'font-src': ["'self'", 'data:'],

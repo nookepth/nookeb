@@ -8,6 +8,9 @@ import type { FileJob } from '@nookeb/shared';
 export interface AuthUser {
   userId: string;
   lineUserId: string;
+  /** users.session_version the JWT carried — already verified current by
+   *  `authenticate`. The vault unlock session binds to it (vault-session.service). */
+  sessionVersion: number;
 }
 
 declare module 'fastify' {

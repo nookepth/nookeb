@@ -104,6 +104,10 @@ export default fp(async (app) => {
       return;
     }
 
-    request.authUser = { userId: user.userId, lineUserId: user.lineUserId };
+    request.authUser = {
+      userId: user.userId,
+      lineUserId: user.lineUserId,
+      sessionVersion: user.sessionVersion,
+    };
   });
 });
