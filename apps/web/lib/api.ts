@@ -512,6 +512,15 @@ export interface VaultListResponse {
   limit: number;
 }
 
+/** Totals for the dashboard vault card. Only fetchable while unlocked. */
+export interface VaultStats {
+  fileCount: number;
+  storageUsed: number;
+  imageCount: number;
+  videoCount: number;
+  pdfCount: number;
+}
+
 export class VaultPinError extends ApiError {
   constructor(
     status: number,
@@ -580,6 +589,15 @@ export function lockVault(): Promise<{ success: boolean }> {
 
 export function listVaultFiles(page = 1, limit = 20): Promise<VaultListResponse> {
   return vaultFetch(`/files?page=${page}&limit=${limit}`);
+}
+
+/**
+ * Vault totals for the dashboard card. Guarded server-side (premium + unlock),
+ * so call it only when getVaultStatus() reports isUnlocked — a locked vault
+ * throws 403 VAULT_LOCKED rather than leaking counts.
+ */
+export function getVaultStats(): Promise<VaultStats> {
+  return vaultFetch(`/stats`);
 }
 
 export function deleteVaultFile(fileId: string, pin: string): Promise<{ success: boolean }> {

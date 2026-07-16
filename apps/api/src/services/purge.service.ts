@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { S3Client } from '@aws-sdk/client-s3';
+import { adjustStorageUsed } from './file.service';
 import { deleteObject } from './r2.service';
 import { deleteScanTempObjects } from './scan.service';
 
@@ -162,6 +163,8 @@ export interface VaultPurgeResult {
   scanned: number;
   objectsDeleted: number;
   rowsDeleted: number;
+  /** bytes refunded to users.storage_used for the rows this run hard-deleted */
+  bytesRefunded: number;
   errors: number;
 }
 
@@ -169,10 +172,20 @@ export interface VaultPurgeResult {
  * Vault counterpart (migration 031): after the retention window, delete the R2
  * ciphertext of soft-deleted vault files AND hard-delete the row. The hard
  * delete is a deliberate, vault-scoped deviation from rule 6's tombstones —
- * a vault row's filename is itself sensitive content, and vault files are
- * outside quota accounting, so nothing needs the tombstone. The row is only
- * removed once its R2 delete succeeded (order matters: object first, then row —
- * a crash in between just means a retry next run). `apply=false` only reports.
+ * a vault row's filename is itself sensitive content, so nothing needs the
+ * tombstone. The row is only removed once its R2 delete succeeded (order
+ * matters: object first, then row — a crash in between just means a retry next
+ * run). `apply=false` only reports.
+ *
+ * This is also where vault bytes are refunded to users.storage_used. The refund
+ * belongs HERE and not at soft-delete time: until the object is actually gone
+ * from R2 the user is still occupying the storage they were charged for.
+ *
+ * Refund ordering matters — it runs AFTER the row delete commits, so a crash
+ * mid-run can only ever undercount the refund (the row is gone, its bytes stay
+ * charged) and never double-refund (which would understate usage and hand out
+ * free quota on every retry). The drift is repairable by re-running
+ * supabase/backfills/backfill_vault_storage.sql.
  */
 export async function purgeDeletedVaultFiles(
   supabase: SupabaseClient,
@@ -183,21 +196,27 @@ export async function purgeDeletedVaultFiles(
 
   const { data, error } = await supabase
     .from('vault_files')
-    .select('id, r2_key')
+    .select('id, r2_key, user_id, file_size')
     .not('deleted_at', 'is', null)
     .lt('deleted_at', cutoff);
   if (error) throw error;
 
-  const rows = (data ?? []) as { id: string; r2_key: string }[];
+  const rows = (data ?? []) as {
+    id: string;
+    r2_key: string;
+    user_id: string;
+    file_size: number;
+  }[];
   const result: VaultPurgeResult = {
     cutoff,
     scanned: rows.length,
     objectsDeleted: 0,
     rowsDeleted: 0,
+    bytesRefunded: 0,
     errors: 0,
   };
 
-  const purgedIds: string[] = [];
+  const purged: typeof rows = [];
   for (const row of rows) {
     if (!opts.apply) {
       result.objectsDeleted += 1;
@@ -206,16 +225,39 @@ export async function purgeDeletedVaultFiles(
     try {
       await deleteObject(r2, row.r2_key);
       result.objectsDeleted += 1;
-      purgedIds.push(row.id);
+      purged.push(row);
     } catch {
       result.errors += 1;
     }
   }
 
-  if (opts.apply && purgedIds.length > 0) {
-    const { error: delErr } = await supabase.from('vault_files').delete().in('id', purgedIds);
+  if (opts.apply && purged.length > 0) {
+    const { error: delErr } = await supabase
+      .from('vault_files')
+      .delete()
+      .in(
+        'id',
+        purged.map((r) => r.id),
+      );
     if (delErr) throw delErr;
-    result.rowsDeleted = purgedIds.length;
+    result.rowsDeleted = purged.length;
+
+    // One RPC call per user, not per file. increment_storage_used clamps at 0
+    // server-side (rule 8's atomic path), which is the GREATEST(0, ...) guard.
+    const bytesByUser = new Map<string, number>();
+    for (const row of purged) {
+      bytesByUser.set(row.user_id, (bytesByUser.get(row.user_id) ?? 0) + Number(row.file_size));
+    }
+    for (const [userId, bytes] of bytesByUser) {
+      try {
+        await adjustStorageUsed(supabase, userId, -bytes);
+        result.bytesRefunded += bytes;
+      } catch {
+        // Never fail the sweep over a refund — the objects are already gone and
+        // the next run won't see these rows. Counts as an error for visibility.
+        result.errors += 1;
+      }
+    }
   }
 
   return result;
