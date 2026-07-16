@@ -504,20 +504,35 @@ async function handleTextCommand(
     }
   }
 
-  // Analytics: record the command INTENT (funnel top). Fire-and-forget, never
-  // awaited on the 1s webhook path; unrecognized chatter classifies to null and
-  // isn't logged. user_id is left null here (resolving it would add a DB hit to
-  // every message) — funnels use event counts, and DAU is driven by the
-  // worker-outcome + web-login events which do carry user_id.
+  // Analytics: record the command INTENT (funnel top). Unrecognized chatter
+  // classifies to null and isn't logged.
+  //
+  // The whole block is fire-and-forget and this handler already runs after the
+  // webhook's 200 (setImmediate), so the lookup inside costs the 1s budget and the
+  // reply latency nothing. It must stay a READ-ONLY findUserId, never
+  // ensureUserAndSpace: creating the user here would race the handler's own
+  // ensureUserAndSpace a few lines down. A first-time sender legitimately has no
+  // row yet — log null and let their first upload create them.
   {
     const intent = classifyIntent(text);
     if (intent) {
-      void logEvent(app.supabase, {
-        eventType: intent,
-        source: 'line',
-        spaceId: null,
-        metadata: { chatType: source.type },
-      });
+      void (async () => {
+        let userId: string | null = null;
+        try {
+          if (lineUserId) userId = await findUserId(app, lineUserId);
+        } catch (err) {
+          // Best-effort: an unattributed event beats a lost one. Debug-level
+          // because this is analytics — it must never look like a user-facing fault.
+          app.log.debug({ err, lineUserId }, 'analytics: intent user lookup failed');
+        }
+        await logEvent(app.supabase, {
+          eventType: intent,
+          userId,
+          source: 'line',
+          spaceId: null,
+          metadata: { chatType: source.type },
+        });
+      })();
     }
   }
 

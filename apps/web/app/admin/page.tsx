@@ -204,13 +204,34 @@ export default function AdminPage() {
                   {features.map((f) => (
                     <tr key={f.eventType}>
                       <td>{EVENT_LABELS[f.eventType] ?? f.eventType}</td>
-                      <td>{f.uniqueUsers.toLocaleString()}</td>
+                      {/* A row only exists when eventCount > 0, so uniqueUsers === 0
+                          can only mean every event in it has a NULL user_id — i.e.
+                          "not attributed", NOT "nobody used it". Rendering the raw 0
+                          read as a measurement of zero and led to a wrong call about
+                          which features were dead. */}
+                      <td>
+                        {f.uniqueUsers === 0 ? (
+                          <span
+                            style={S.unattributed}
+                            title="ยังไม่ได้บันทึกว่าใครเป็นคนทำ — ดูจำนวนครั้งแทน"
+                          >
+                            —
+                          </span>
+                        ) : (
+                          f.uniqueUsers.toLocaleString()
+                        )}
+                      </td>
                       <td>{f.eventCount.toLocaleString()}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+            <p style={S.tableNote}>
+              <strong>—</strong> ในคอลัมน์ &ldquo;ผู้ใช้&rdquo; แปลว่ายังไม่ได้บันทึกว่าใครเป็นคนทำ
+              ไม่ได้แปลว่าไม่มีคนใช้ — ให้อ่านจำนวนครั้งแทน กิจกรรมจากแชทที่เก็บไว้ก่อนหน้านี้
+              ยังไม่ผูกผู้ใช้ และจะทยอยผูกเองตั้งแต่ตอนนี้เป็นต้นไป
+            </p>
 
             {/* Funnels */}
             <SectionTitle>อัตราทำสำเร็จของแต่ละฟีเจอร์ (funnel)</SectionTitle>
@@ -515,6 +536,14 @@ const S: Record<string, React.CSSProperties> = {
     transition: 'width 400ms ease',
   },
   emptyCell: { textAlign: 'center', color: 'var(--color-text-muted)' },
+  /** The "not attributed" dash — muted so it reads as absent data, not as a value. */
+  unattributed: { color: 'var(--color-text-muted)', cursor: 'help' },
+  tableNote: {
+    margin: '8px 2px 0',
+    fontSize: 12,
+    lineHeight: 1.6,
+    color: 'var(--color-text-muted)',
+  },
   badgeWarn: {
     background: 'var(--color-warning-soft)',
     color: 'var(--color-warning-text)',
