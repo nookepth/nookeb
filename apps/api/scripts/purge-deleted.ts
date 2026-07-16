@@ -24,14 +24,23 @@ function argValue(flag: string): string | undefined {
 async function main() {
   const apply = process.argv.includes('--apply');
   const days = Number(argValue('--days') ?? config.PURGE_RETENTION_DAYS);
+  // Pro/team-plan files keep the longer trash retention; --days N still means
+  // "at least N days for everyone" (never shortens the pro window).
+  const daysPro = Math.max(days, config.TRASH_RETENTION_DAYS_PRO);
 
   const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
   const r2 = createR2Client();
 
-  console.log(`${apply ? 'APPLY' : 'DRY-RUN'} — purging files soft-deleted more than ${days} day(s) ago`);
-  const result = await purgeDeletedFiles(supabase, r2, { retentionDays: days, apply });
+  console.log(
+    `${apply ? 'APPLY' : 'DRY-RUN'} — purging files soft-deleted more than ${days} day(s) ago (pro/team: ${daysPro})`,
+  );
+  const result = await purgeDeletedFiles(supabase, r2, {
+    retentionDays: days,
+    retentionDaysPro: daysPro,
+    apply,
+  });
 
   console.log(`cutoff:          ${result.cutoff}`);
   console.log(`files matched:   ${result.scanned}`);

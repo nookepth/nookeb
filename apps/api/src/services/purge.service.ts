@@ -12,51 +12,35 @@ export interface PurgeResult {
   purgedFileIds: string[];
 }
 
+/** The columns a file purge needs — used by both the daily job and manual trash purge. */
+export interface PurgeFileRow {
+  id: string;
+  r2_key: string;
+  thumbnail_key: string | null;
+}
+
 /**
- * Delete the R2 objects (original + thumbnail) of files that were soft-deleted
- * more than `retentionDays` ago. The DB row is kept as a tombstone — the project
- * rule forbids hard-deleting files rows. Idempotent: deleting an already-gone
- * object is a no-op, so re-running is safe.
+ * Purge a specific set of file rows: delete their R2 objects (original +
+ * thumbnail), then stamp `purged_at` and redact user content on the rows whose
+ * R2 deletes ALL succeeded. Rows are kept as tombstones (rule 6). Shared by
+ * the daily purge job and the trash routes (ลบถาวร / ล้างถังขยะ). Idempotent:
+ * deleting an already-gone object is a no-op, so re-running is safe.
  *
- * `apply=false` (default) only reports what would be deleted.
+ * Names and OCR text ARE the file's content (OCR is literally the text inside
+ * the image), so "deleted" must cover them too; id/space_id/file_size/
+ * uploaded_by/deleted_at/purged_at are kept — they carry no content and are
+ * needed for quota accounting and the audit trail. If an object delete failed
+ * we keep the metadata intact so a later run can retry against a consistent row.
  */
-export async function purgeDeletedFiles(
+export async function purgeFileRows(
   supabase: SupabaseClient,
   r2: S3Client,
-  opts: { retentionDays: number; apply: boolean },
-): Promise<PurgeResult> {
-  const cutoff = new Date(Date.now() - opts.retentionDays * 24 * 60 * 60 * 1000).toISOString();
-
-  const { data, error } = await supabase
-    .from('files')
-    .select('id, r2_key, thumbnail_key, deleted_at')
-    .not('deleted_at', 'is', null)
-    .is('purged_at', null) // skip rows whose R2 objects are already gone
-    .lt('deleted_at', cutoff);
-  if (error) throw error;
-
-  const rows = (data ?? []) as {
-    id: string;
-    r2_key: string;
-    thumbnail_key: string | null;
-    deleted_at: string;
-  }[];
-
-  const result: PurgeResult = {
-    cutoff,
-    scanned: rows.length,
-    objectsDeleted: 0,
-    errors: 0,
-    purgedFileIds: [],
-  };
+  rows: PurgeFileRow[],
+): Promise<{ objectsDeleted: number; errors: number; purgedFileIds: string[] }> {
+  const result = { objectsDeleted: 0, errors: 0, purgedFileIds: [] as string[] };
 
   for (const row of rows) {
     const keys = [row.r2_key, row.thumbnail_key].filter((k): k is string => Boolean(k));
-    if (!opts.apply) {
-      result.purgedFileIds.push(row.id);
-      result.objectsDeleted += keys.length;
-      continue;
-    }
     let ok = true;
     for (const key of keys) {
       try {
@@ -70,15 +54,7 @@ export async function purgeDeletedFiles(
     if (ok) result.purgedFileIds.push(row.id);
   }
 
-  // Mark tombstones as purged so the next daily run skips them entirely, and
-  // redact user content from the row at the same time. Only rows whose R2
-  // deletes ALL succeeded reach purgedFileIds — if an object delete failed we
-  // keep the metadata intact so the next run can retry against a consistent row.
-  // Names and OCR text ARE the file's content (OCR is literally the text inside
-  // the image), so "deleted" must cover them too; id/space_id/file_size/
-  // uploaded_by/deleted_at/purged_at are kept — they carry no content and are
-  // needed for quota accounting and the audit trail.
-  if (opts.apply && result.purgedFileIds.length > 0) {
+  if (result.purgedFileIds.length > 0) {
     const { error: markErr } = await supabase
       .from('files')
       .update({
@@ -91,6 +67,72 @@ export async function purgeDeletedFiles(
     if (markErr) throw markErr;
   }
 
+  return result;
+}
+
+/**
+ * Delete the R2 objects (original + thumbnail) of files that were soft-deleted
+ * past their retention window. The DB row is kept as a tombstone — the project
+ * rule forbids hard-deleting files rows. Idempotent: deleting an already-gone
+ * object is a no-op, so re-running is safe.
+ *
+ * Retention is PLAN-AWARE (trash bin, migration 032): free-plan (or ownerless)
+ * files use `retentionDays`; files uploaded by a pro/team-plan user use
+ * `retentionDaysPro` (defaults to `retentionDays` when omitted, restoring the
+ * old single-cutoff behavior). The reported `cutoff` is the free-tier one.
+ *
+ * `apply=false` (default) only reports what would be deleted.
+ */
+export async function purgeDeletedFiles(
+  supabase: SupabaseClient,
+  r2: S3Client,
+  opts: { retentionDays: number; retentionDaysPro?: number; apply: boolean },
+): Promise<PurgeResult> {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const retentionDaysPro = opts.retentionDaysPro ?? opts.retentionDays;
+  const freeCutoff = new Date(Date.now() - opts.retentionDays * dayMs).toISOString();
+  const proCutoff = new Date(Date.now() - retentionDaysPro * dayMs).toISOString();
+  // Query with the LATER cutoff (shorter retention) — a superset of both plans'
+  // eligible rows — then apply each row's own plan cutoff below.
+  const queryCutoff = freeCutoff > proCutoff ? freeCutoff : proCutoff;
+
+  // `uploader` embeds the users row via the files.uploaded_by FK — null for
+  // ownerless (legacy / non-member group) files, which get the free retention.
+  const { data, error } = await supabase
+    .from('files')
+    .select('id, r2_key, thumbnail_key, deleted_at, uploader:users!uploaded_by(plan)')
+    .not('deleted_at', 'is', null)
+    .is('purged_at', null) // skip rows whose R2 objects are already gone
+    .lt('deleted_at', queryCutoff);
+  if (error) throw error;
+
+  const rows = ((data ?? []) as unknown[])
+    .map((r) => r as PurgeFileRow & { deleted_at: string; uploader: { plan: string | null } | null })
+    .filter((row) => {
+      const isPro = row.uploader?.plan === 'pro' || row.uploader?.plan === 'team';
+      return row.deleted_at < (isPro ? proCutoff : freeCutoff);
+    });
+
+  const result: PurgeResult = {
+    cutoff: freeCutoff,
+    scanned: rows.length,
+    objectsDeleted: 0,
+    errors: 0,
+    purgedFileIds: [],
+  };
+
+  if (!opts.apply) {
+    for (const row of rows) {
+      result.purgedFileIds.push(row.id);
+      result.objectsDeleted += [row.r2_key, row.thumbnail_key].filter(Boolean).length;
+    }
+    return result;
+  }
+
+  const applied = await purgeFileRows(supabase, r2, rows);
+  result.objectsDeleted = applied.objectsDeleted;
+  result.errors = applied.errors;
+  result.purgedFileIds = applied.purgedFileIds;
   return result;
 }
 

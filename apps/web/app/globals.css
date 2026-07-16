@@ -3912,3 +3912,144 @@ button:active,
     margin-left: 0;
   }
 }
+
+/* ============================================================
+   ถังขยะ (Trash Bin) — /dashboard/trash
+   ============================================================ */
+
+.trash-container {
+  padding-top: 24px;
+  padding-bottom: 80px;
+  max-width: 960px;
+}
+
+.trash-header {
+  margin-bottom: 16px;
+}
+
+.trash-back {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.trash-back:hover {
+  color: var(--color-primary);
+}
+
+.trash-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: var(--font-size-2xl);
+  margin: 8px 0 4px;
+}
+
+.trash-title-icon {
+  display: inline-flex;
+  color: var(--color-text-secondary);
+}
+
+.trash-pro-badge {
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  color: var(--color-primary);
+  background: var(--color-primary-soft);
+  border-radius: var(--radius-full);
+  padding: 4px 12px;
+}
+
+.trash-hint {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.trash-upsell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: var(--color-surface-2);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  margin-bottom: 16px;
+}
+
+.trash-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.trash-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 64px 16px;
+  text-align: center;
+  color: var(--color-text-secondary);
+}
+
+.trash-empty-icon {
+  color: var(--color-border);
+  margin-bottom: 6px;
+}
+
+.trash-empty-state h2 {
+  color: var(--color-text-primary);
+}
+
+.trash-countdown {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  margin-top: 2px;
+}
+
+.trash-countdown.warn {
+  color: var(--color-error);
+  font-weight: 600;
+}
+
+.trash-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.trash-card-actions .btn {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.trash-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 10000;
+  background: var(--color-text-primary);
+  color: var(--color-surface);
+  border-radius: var(--radius-full);
+  padding: 10px 22px;
+  font-size: var(--font-size-sm);
+  box-shadow: var(--shadow-lg);
+  animation: fadeUp 0.22s ease;
+  max-width: min(90vw, 480px);
+  text-align: center;
+}

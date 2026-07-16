@@ -54,7 +54,12 @@ const envSchema = z.object({
   REFERRAL_BONUS_BYTES: z.coerce.number().int().positive().default(512 * 1024 * 1024),
 
   // Retention — R2 objects of soft-deleted files are purged after this many days
+  // (free tier; this is also how long a file stays restorable in the trash)
   PURGE_RETENTION_DAYS: z.coerce.number().int().positive().default(5),
+
+  // Trash retention for pro/team-plan users (days). The daily purge keeps their
+  // soft-deleted files restorable this much longer than the free default above.
+  TRASH_RETENTION_DAYS_PRO: z.coerce.number().int().positive().default(30),
 
   // Admin — comma-separated LINE user ids that get admin access (no DB column needed)
   ADMIN_LINE_USER_IDS: z.string().optional(),

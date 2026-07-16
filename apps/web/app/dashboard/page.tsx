@@ -18,6 +18,7 @@ import {
   listFolders,
   listSpaces,
   listTags,
+  listTrash,
   type FileStatsResponse,
   type UsageResponse,
 } from '@/lib/api';
@@ -70,6 +71,7 @@ export default function DashboardPage() {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [user, setUser] = useState<NavbarUser | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [trashCount, setTrashCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
 
@@ -141,6 +143,11 @@ export default function DashboardPage() {
       setTags(tagRes.tags);
       setError(null);
       getUsage().then(setUsage).catch(() => {});
+      // Trash badge — total only (limit=1 keeps the payload tiny); refreshes on
+      // every list reload so deleting a file bumps the count immediately.
+      listTrash(1, 1)
+        .then((res) => setTrashCount(res.total))
+        .catch(() => {});
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setNeedsLogin(true);
@@ -329,6 +336,7 @@ export default function DashboardPage() {
         onSearchChange={setSearch}
         user={user}
         onLogout={handleLogout}
+        trashCount={trashCount}
         searchOpen={searchOpen}
         onSearchOpenChange={(open) => {
           setSearchOpen(open);
@@ -609,6 +617,9 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="profile-sheet-actions">
+              <a className="btn secondary" href="/dashboard/trash">
+                ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
+              </a>
               {isAdmin && (
                 <a className="btn secondary" href="/admin">
                   หน้าผู้ดูแล

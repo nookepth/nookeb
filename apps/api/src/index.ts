@@ -10,6 +10,7 @@ import authPlugin from './middleware/auth';
 import lineWebhookRoutes from './routes/webhook/line';
 import authRoutes from './routes/auth';
 import filesRoutes from './routes/files';
+import trashRoutes from './routes/trash';
 import shareRoutes from './routes/share';
 import foldersRoutes from './routes/folders';
 import tagsRoutes from './routes/tags';
@@ -101,6 +102,7 @@ async function main(): Promise<void> {
   await app.register(lineWebhookRoutes);
   await app.register(authRoutes);
   await app.register(filesRoutes);
+  await app.register(trashRoutes);
   await app.register(shareRoutes);
   await app.register(foldersRoutes);
   await app.register(tagsRoutes);

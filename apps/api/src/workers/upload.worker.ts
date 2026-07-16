@@ -1530,6 +1530,8 @@ async function processCreateDiaryEntry(job: CreateDiaryEntryJob, isLastAttempt: 
 async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
   const result = await purgeDeletedFiles(supabase, r2, {
     retentionDays: config.PURGE_RETENTION_DAYS,
+    // Pro/team-plan users' trash keeps files restorable longer (migration 032).
+    retentionDaysPro: config.TRASH_RETENTION_DAYS_PRO,
     apply: true,
   });
   console.log(

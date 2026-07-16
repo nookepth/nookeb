@@ -45,6 +45,9 @@ export type EventType =
   | 'web_login' // dashboard login succeeded
   | 'web_search' // dashboard file search
   | 'file_download' // file downloaded (web)
+  // --- ถังขยะ (Trash Bin — web-only, migration 032) ---
+  | 'file_restored' // file restored from trash (metadata: bytes)
+  | 'file_purged_manual' // user-triggered permanent delete (metadata.files > 1 = empty-trash)
   // --- Vault (ห้องนิรภัย — web-only, migration 031) ---
   | 'vault_setup' // PIN set for the first time (vault activated)
   | 'vault_unlock_failed' // wrong PIN (metadata.locked = this failure triggered a lockout)

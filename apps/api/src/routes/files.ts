@@ -444,9 +444,11 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
     // getAuthorizedFile (row not yet deleted), so gate the soft-delete on
     // deleted_at still being NULL and only refund when THIS request is the one
     // that actually flipped the row. select() lets us see whether a row changed.
+    // trash_origin_folder_id (migration 032) snapshots where the file lived so
+    // POST /trash/:id/restore can put it back (FK nulls it if the folder goes).
     const { data: deletedRows, error } = await app.supabase
       .from('files')
-      .update({ deleted_at: new Date().toISOString() })
+      .update({ deleted_at: new Date().toISOString(), trash_origin_folder_id: file.folder_id })
       .eq('id', file.id)
       .is('deleted_at', null)
       .select('id');

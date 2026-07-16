@@ -60,8 +60,11 @@ If replyToken is expired or missing:
    membership explicitly.
 5. File downloads MUST use presigned URLs (expire 1 hour) — never proxy binary through the API.
 6. Soft-delete only (set `deleted_at`) — never hard DELETE files rows. A daily purge job
-   removes the R2 OBJECTS of files soft-deleted past the retention window, then stamps
-   `files.purged_at` so later runs skip them; the row is kept as a tombstone.
+   removes the R2 OBJECTS of files soft-deleted past the retention window (plan-aware since
+   migration 032: free = `PURGE_RETENTION_DAYS`, pro/team plan = `TRASH_RETENTION_DAYS_PRO`),
+   then stamps `files.purged_at` so later runs skip them; the row is kept as a tombstone.
+   Within that window the file sits in the web trash bin (see ถังขยะ section) and can be
+   restored or manually purged (manual purge stamps the same tombstone — still no hard DELETE).
 7. BullMQ custom `jobId` must NOT contain `:` — sanitize with
    `` `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}` `` (LINE message ids contain `:`).
 8. Storage accounting: adjust `users.storage_used` ONLY via `adjustStorageUsed`, which calls
@@ -182,6 +185,32 @@ LINE-webhook/worker write path, unreachable from every share/team/space flow.
 - Upload is the app's ONLY web multipart endpoint (`@fastify/multipart`,
   registered only in the vault route scope).
 
+## ถังขยะ (Trash Bin) — web-only, migration 032
+`/dashboard/trash` (API routes `apps/api/src/routes/trash.ts`). A "trashed" file is just a
+soft-deleted row whose R2 object the purge hasn't removed yet (`deleted_at IS NOT NULL AND
+purged_at IS NULL`) — no new table; migration 032 only adds `files.trash_origin_folder_id`
+(snapshot of folder_id taken by DELETE /files/:id; FK ON DELETE SET NULL, so restore falls
+back to the space root when the folder is gone).
+- Scope: all /trash routes are UPLOADER-scoped (`uploaded_by = caller`), never space
+  membership — a teammate must not restore/purge someone else's deletions. They use a
+  dedicated `getDeletedFile()` loader (files.ts's `getAuthorizedFile` filters deleted rows out).
+- Restore (`POST /trash/:id/restore`) RE-CHARGES the same quota ledger the soft delete
+  refunded (`charged_to` / `charged_team_id`, team_id legacy fallback — exact mirror of the
+  DELETE /files/:id refund routing) WITH enforcement: over quota → 409 + `code:
+  'QUOTA_EXCEEDED'` + Thai message. Charge-then-flip with the standard affected-rows guard;
+  a lost race rolls the charge back. Restores into `trash_origin_folder_id` if that folder
+  still exists in the same space, else space root.
+- Manual purge (`DELETE /trash/:id/permanent`, `POST /trash/empty` in batches of 20) runs
+  the SAME tombstone path as the daily job (`purgeFileRows` in purge.service: R2 objects
+  deleted → `purged_at` stamped + name/OCR redacted — rule 6 holds, no row deletion, and NO
+  second quota refund: the soft delete already refunded).
+- Retention is plan-aware (`users.plan`): free 5 days (`PURGE_RETENTION_DAYS`), pro/team 30
+  (`TRASH_RETENTION_DAYS_PRO`); `purgeDeletedFiles` applies the per-uploader cutoff.
+  Vault/diary purges are untouched (own functions + retention).
+- Events: `file_restored`, `file_purged_manual` (web source). Web entry: navbar "ถังขยะ"
+  link with count badge + profile sheet.
+- Does NOT cover vault_files or diary_entries (both have their own delete/purge lifecycles).
+
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
@@ -261,6 +290,9 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     + `vault_files` (encrypted per-user store — see the Vault section). NOT
     auto-applied; apply BEFORE deploying the vault code (the /vault routes
     error without these columns; everything else is unaffected).
+  - `032_trash.sql` — ถังขยะ (Trash Bin): `files.trash_origin_folder_id` (origin-folder
+    snapshot for restore; FK ON DELETE SET NULL). NOT auto-applied; apply BEFORE deploying
+    the trash code (DELETE /files/:id writes the column and errors without it).
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -270,7 +302,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     `analytics`, `admin`, `referral`, `team.router` (mounted at `/api/teams`),
     `progress` (upload-progress view + JSON), `diary` (ไดอารี่ entries/streak/
     today-status/notification — user-scoped, no space membership), `vault`
-    (ห้องนิรภัย — PIN + encrypted view-only store, see the Vault section), `static`
+    (ห้องนิรภัย — PIN + encrypted view-only store, see the Vault section), `trash`
+    (ถังขยะ — list/restore/purge soft-deleted files, uploader-scoped), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
@@ -317,8 +350,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     LINE_ID, INSTAGRAM_URL, TIKTOK_URL) — that file is the current canon; the playbook's
     ภาคผนวก A still lists an older lin.ee link, so reconcile the playbook when touching links.
   - Dashboard routes: `/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook viewer),
-    `/dashboard/vault` (ห้องนิรภัย), `/dashboard/teams` (+ `/[teamId]`), `/admin`,
-    `/join`, `/auth/callback`, `/share/[token]`
+    `/dashboard/vault` (ห้องนิรภัย), `/dashboard/trash` (ถังขยะ), `/dashboard/teams`
+    (+ `/[teamId]`), `/admin`, `/join`, `/auth/callback`, `/share/[token]`
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 
@@ -389,7 +422,9 @@ and `supabase/backfills/` for specifics.
   Railway API origin, no trailing slash — login breaks if unset), `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID`
 - `DEFAULT_STORAGE_LIMIT` — free-tier quota in bytes (default 1 GB; raised via referral tiers)
 - `REFERRAL_BONUS_BYTES` — one-time bonus for redeeming a referral code (default 0.5 GB)
-- `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5)
+- `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5;
+  doubles as the free-tier trash-restore window)
+- `TRASH_RETENTION_DAYS_PRO` — trash retention for pro/team-plan users (default 30)
 - `ADMIN_LINE_USER_IDS` — comma-separated LINE user ids granted admin access (no DB column)
 - `MISTRAL_API_KEY` / `MISTRAL_OCR_MODEL` / `DOCX_CONVERT_MAX_SOURCE_BYTES` — convert-to-Word
   ("แปลงไฟล์"); feature is OFF (command replies "not available") until the key is set

@@ -44,6 +44,12 @@ export interface FileRecord {
   charged_to?: 'personal' | 'team' | null;
   /** the team charged when charged_to = 'team'; survives team soft-delete */
   charged_team_id?: string | null;
+  /**
+   * Where the file lived when it was soft-deleted (migration 032) — restore
+   * puts it back here if the folder still exists (FK ON DELETE SET NULL nulls
+   * it when the folder is removed, so restore falls back to the space root).
+   */
+  trash_origin_folder_id?: string | null;
 }
 
 /** File shape returned to the web dashboard (no internal storage keys). */
@@ -68,6 +74,35 @@ export interface FileListResponse {
   total: number;
   page: number;
   limit: number;
+}
+
+/* ---------- ถังขยะ (Trash Bin) — routes/trash.ts, migration 032 ---------- */
+
+/** Trash-view shape of a soft-deleted file (web dashboard /dashboard/trash). */
+export interface TrashFileDto {
+  id: string;
+  spaceId: string;
+  /** origin folder snapshot (null = restores to the space root) */
+  folderId: string | null;
+  name: string;
+  mimeType: string;
+  fileSize: number;
+  deletedAt: string;
+  /** whole days left before the daily purge removes the R2 object (never negative) */
+  daysUntilPurge: number;
+  /** presigned thumbnail URL (images only, expires 1 hour) */
+  thumbnailUrl: string | null;
+}
+
+export interface TrashListResponse {
+  files: TrashFileDto[];
+  total: number;
+  page: number;
+  limit: number;
+  /** trash retention plan bucket — 'pro' covers the 'team' plan too */
+  plan: 'free' | 'pro';
+  /** effective retention window in days for this user's plan */
+  retentionDays: number;
 }
 
 export function toFileDto(f: FileRecord): FileDto {

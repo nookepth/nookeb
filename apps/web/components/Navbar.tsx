@@ -17,6 +17,8 @@ export interface NavbarProps {
   /** Mobile full-width search overlay — state lives in the page so the bottom nav can open it too. */
   searchOpen: boolean;
   onSearchOpenChange: (open: boolean) => void;
+  /** Files currently in the trash — shows a count badge on the ถังขยะ link when > 0. */
+  trashCount?: number;
 }
 
 export function Navbar({
@@ -26,6 +28,7 @@ export function Navbar({
   onLogout,
   searchOpen,
   onSearchOpenChange,
+  trashCount = 0,
 }: NavbarProps) {
   const [scrolled, setScrolled] = useState(false);
   const overlayInputRef = useRef<HTMLInputElement>(null);
@@ -82,6 +85,9 @@ export function Navbar({
         <div className="navbar-right">
           <a className="btn ghost" href="/dashboard/teams">
             ทีม
+          </a>
+          <a className="btn ghost" href="/dashboard/trash">
+            ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
           </a>
           <button
             className="icon-btn search-toggle"

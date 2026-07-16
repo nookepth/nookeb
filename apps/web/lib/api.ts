@@ -6,6 +6,7 @@ import type {
   FileDto,
   FileListResponse,
   FolderDto,
+  TrashListResponse,
   JoinRequestResult,
   SpaceDto,
   SpaceMemberDto,
@@ -148,6 +149,57 @@ export function moveFile(fileId: string, folderId: string | null): Promise<FileD
 
 export function deleteFile(fileId: string): Promise<void> {
   return apiFetch<void>(`/files/${fileId}`, { method: 'DELETE' });
+}
+
+/* ============================================================
+   ถังขยะ (Trash Bin) — routes/trash.ts, migration 032
+   ============================================================ */
+
+/**
+ * Trash calls parse the error body (unlike apiFetch): restore's 409 carries a
+ * user-facing Thai message + a machine `code` ('QUOTA_EXCEEDED' when the quota
+ * blocks the restore) that the page needs to pick the right modal.
+ */
+async function trashFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}/trash${path}`, init);
+  if (res.status === 401) {
+    clearSession();
+    throw new ApiError(401, 'Unauthorized');
+  }
+  const body = (await res.json().catch(() => null)) as
+    | (Record<string, unknown> & { error?: string; code?: string })
+    | null;
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      typeof body?.error === 'string' ? body.error : `API error ${res.status}`,
+      typeof body?.code === 'string' ? body.code : undefined,
+    );
+  }
+  return body as T;
+}
+
+export function listTrash(page = 1, limit = 40): Promise<TrashListResponse> {
+  return trashFetch(`?page=${page}&limit=${limit}`);
+}
+
+export interface RestoreTrashResponse {
+  success: boolean;
+  /** folder the file was restored into (null = space root) */
+  folderId: string | null;
+  folderName: string | null;
+}
+
+export function restoreTrashFile(fileId: string): Promise<RestoreTrashResponse> {
+  return trashFetch(`/${fileId}/restore`, { method: 'POST' });
+}
+
+export function deleteTrashFilePermanently(fileId: string): Promise<{ success: boolean }> {
+  return trashFetch(`/${fileId}/permanent`, { method: 'DELETE' });
+}
+
+export function emptyTrash(): Promise<{ success: boolean; count: number }> {
+  return trashFetch(`/empty`, { method: 'POST' });
 }
 
 /* ============================================================
