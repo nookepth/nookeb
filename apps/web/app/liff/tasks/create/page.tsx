@@ -1,27 +1,28 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../tasks.module.css';
 import { initLiff, queryGroupId } from '../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../lib/taskDraft';
+import { IconClipboard, IconListChecks, IconRepeat } from '../components';
 
-const TYPES: { type: TaskDraft['type']; icon: string; title: string; sub: string }[] = [
+const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: string }[] = [
   {
     type: 'single',
-    icon: '📋',
+    icon: <IconClipboard />,
     title: 'งานเดียว มอบหลายคน',
     sub: 'deadline เดียว หลายคนรับผิดชอบร่วมกัน',
   },
   {
     type: 'multi',
-    icon: '📝',
+    icon: <IconListChecks />,
     title: 'แยกงานเป็นรายการ',
     sub: 'แต่ละข้อเลือกคนรับผิดชอบและ deadline ต่างกันได้',
   },
   {
     type: 'recurring',
-    icon: '🔁',
+    icon: <IconRepeat />,
     title: 'งานประจำ',
     sub: 'ตั้งครั้งเดียว เตือนอัตโนมัติทุกรอบ',
   },

@@ -171,3 +171,60 @@ export async function getProfile(lineUserId: string): Promise<{
   }
   return (await res.json()) as { displayName: string; pictureUrl?: string };
 }
+
+/** LINE chat ids encode their kind in the first character: C=group, R=room. */
+function chatScope(chatId: string): 'group' | 'room' {
+  return chatId.startsWith('R') ? 'room' : 'group';
+}
+
+/**
+ * Group/room-scoped member profile. getProfile (/v2/bot/profile) only resolves
+ * users who FRIENDED the OA — group members who never added the bot come back
+ * 404 there, which is why rosters filled through it end up with NULL names.
+ * This endpoint resolves any current member of a chat the bot is in, and 404s
+ * for non-members (so a success doubles as a membership check). Falls back to
+ * the friend profile; null means "couldn't resolve", never throws.
+ */
+export async function getChatMemberProfile(
+  chatId: string,
+  lineUserId: string,
+): Promise<{ displayName: string; pictureUrl?: string } | null> {
+  try {
+    const res = await fetch(`${LINE_API}/${chatScope(chatId)}/${chatId}/member/${lineUserId}`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(LINE_MESSAGING_TIMEOUT_MS),
+    });
+    if (res.ok) return (await res.json()) as { displayName: string; pictureUrl?: string };
+  } catch {
+    // timeout/network — fall through to the friend profile
+  }
+  return getProfile(lineUserId).catch(() => null);
+}
+
+/**
+ * Every member id of a group/room. LINE gates this endpoint to verified/
+ * premium OAs — a 403 (or any failure) returns null and callers fall back to
+ * the message-driven roster. Paginated via `start`; capped so a huge group
+ * can't stall the request that awaits this.
+ */
+export async function getChatMemberIds(chatId: string, cap = 500): Promise<string[] | null> {
+  const ids: string[] = [];
+  let start: string | undefined;
+  try {
+    do {
+      const url = new URL(`${LINE_API}/${chatScope(chatId)}/${chatId}/members/ids`);
+      if (start) url.searchParams.set('start', start);
+      const res = await fetch(url, {
+        headers: authHeaders,
+        signal: AbortSignal.timeout(LINE_MESSAGING_TIMEOUT_MS),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json()) as { memberIds: string[]; next?: string };
+      ids.push(...body.memberIds);
+      start = body.next;
+    } while (start && ids.length < cap);
+  } catch {
+    return null;
+  }
+  return ids.slice(0, cap);
+}

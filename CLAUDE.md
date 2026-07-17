@@ -342,13 +342,19 @@ sanctioned exception to the reply-only rule (see LINE Messaging section).
   `task_assignees`, `task_reminders`, `group_members`. Tenant key is
   `group_line_id`; `tasks.space_id` is an informational link only. Soft-delete
   only; reminder rows are stamped (`sent_at`/`failed_at`/`cancelled_at`), never deleted.
-- Roster: LINE's API can't list group members, so assignees come from
-  `group_members` — an opt-in roster: teammates type `/register` (or `สมัคร`/
-  `ลงทะเบียน`, unprefixed by design — matched BEFORE the group bot-directed
-  guard in `webhook/line.ts`) and the LIFF self-registers its opener via
-  `POST /groups/:groupId/register`. Profiles always fetched server-side from
-  LINE, never client-supplied. Trust model: the group id is the capability
-  (unguessable, same model as share links).
+- Roster: assignees come from `group_members`, which fills ITSELF — nobody
+  types /register: (1) every group/room message auto-upserts its sender
+  (webhook/line.ts, fire-and-forget); (2) `GET /groups/:groupId/members` runs
+  a Redis-throttled fetch-time sync (`syncGroupRoster`, 10 min/group, always
+  when the roster is empty) via LINE `members/ids` — verified/premium OA only,
+  silently skipped otherwise — and re-resolves NULL display names; (3) task
+  routes auto-enroll the caller (`ensureGroupMember`). Profiles ALWAYS resolve
+  via `getChatMemberProfile` (the group/room-scoped endpoint — works for
+  members who never friended the OA; the friend-only `/v2/bot/profile` was why
+  roster names came back NULL), fetched server-side, never client-supplied.
+  `/register` (`สมัคร`/`ลงทะเบียน`, unprefixed by design — matched BEFORE the
+  group bot-directed guard) remains as a legacy alias. Trust model: the group
+  id is the capability (unguessable, same model as share links).
 - Types: `single` (1 implicit item), `multi` (per-item assignees/deadlines;
   items without their own deadline share ONE task-level reminder round),
   `recurring` (rule in `recurrence_rule` JSONB, Bangkok wall clock via dayjs/tz;
@@ -369,8 +375,11 @@ sanctioned exception to the reply-only rule (see LINE Messaging section).
   carousel postback path), replies confirm; all-assignees-done rolls item →
   task done and cancels remaining reminders.
 - LIFF: pages under `apps/web/app/liff/tasks/` (create 4-step flow + task view
-  with optimistic done). `@line/liff` via npm (no CDN); CSP `connect-src` must
-  keep `https://api.line.me`. Session = LIFF id token exchanged at
+  with optimistic done). UI: brand-red palette tokens + Prompt Thai font
+  (next/font `--font-liff`, set in `liff/tasks/layout.tsx`; LINE Seed isn't
+  redistributable) — both live in `tasks.module.css` `.page`; NO emoji (SVG
+  icons in `components.tsx`). `@line/liff` via npm (no CDN); CSP `connect-src`
+  must keep `https://api.line.me`. Session = LIFF id token exchanged at
   `POST /auth/liff` (verified against LINE, aud = LINE_LOGIN_CHANNEL_ID) for
   the same HttpOnly cookie; the LIFF app must live under the LINE Login
   channel with endpoint `<WEB_URL>/liff/tasks`. Create-flow draft lives in

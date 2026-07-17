@@ -11,7 +11,7 @@ import {
   saveDraft,
   type TaskDraft,
 } from '../../../../../../lib/taskDraft';
-import { AvatarStack, DeadlineChip } from '../../../components';
+import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../components';
 
 interface CreatedTask {
   id: string;
@@ -207,7 +207,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
       <main className={styles.page}>
         <div className={styles.successWrap}>
           <div className={styles.successCircle} aria-hidden>
-            ✓
+            <IconCheck size={32} />
           </div>
           <h1 className={styles.headerTitle}>ส่งงานเข้ากลุ่มแล้วน้า</h1>
           <p className={styles.headerSub}>หนูเก็บจะช่วยตามงานให้เองทุกช่วงก่อนถึงกำหนด</p>
@@ -215,10 +215,16 @@ export default function DetailPage({ params }: { params: { type: string } }) {
         <div className={styles.cardList}>
           <a
             className={styles.secondaryBtn}
-            style={{ textAlign: 'center', textDecoration: 'none', display: 'block' }}
+            style={{
+              textDecoration: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+            }}
             href={`/api-proxy/tasks/${created.id}/ics`}
           >
-            📅 บันทึกลงปฏิทิน
+            <IconCalendar /> บันทึกลงปฏิทิน
           </a>
           <button type="button" className={styles.primaryBtn} onClick={() => closeLiff()}>
             เสร็จแล้ว ปิดหน้านี้

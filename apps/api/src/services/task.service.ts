@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import type { Redis } from 'ioredis';
 import type {
   GroupMemberRecord,
   RemindType,
@@ -9,6 +10,7 @@ import type {
   TaskReminderRecord,
 } from '@nookeb/shared';
 import { toTaskAssigneeDto as assigneeDto } from '@nookeb/shared';
+import { getChatMemberIds, getChatMemberProfile } from './line.service';
 
 /**
  * ระบบตามงาน (Task Manager) data access — migration 036. Soft-delete only
@@ -68,6 +70,93 @@ export async function isGroupMember(
     .maybeSingle();
   if (error) throw error;
   return data !== null;
+}
+
+/**
+ * Membership check that auto-enrolls: when the caller isn't on the roster yet,
+ * ask LINE's group-scoped profile endpoint — it 404s for non-members, so a
+ * successful fetch both proves membership and supplies the authentic profile.
+ * This is what removes the /register step: opening any task page enrolls you.
+ */
+export async function ensureGroupMember(
+  supabase: SupabaseClient,
+  groupLineId: string,
+  lineUid: string,
+): Promise<boolean> {
+  if (await isGroupMember(supabase, groupLineId, lineUid)) return true;
+  const profile = await getChatMemberProfile(groupLineId, lineUid);
+  if (!profile) return false;
+  await upsertGroupMember(
+    supabase,
+    groupLineId,
+    lineUid,
+    profile.displayName,
+    profile.pictureUrl ?? null,
+  );
+  return true;
+}
+
+const ROSTER_SYNC_TTL_SECONDS = 600; // at most one LINE sync per group per 10 min
+const ROSTER_SYNC_MAX_PROFILE_FETCHES = 50;
+const ROSTER_SYNC_CONCURRENCY = 5;
+
+/**
+ * Best-effort roster fill from LINE at read time, so the assignee picker lists
+ * the whole group without anyone typing /register:
+ *  1. members/ids (verified/premium OA) → resolve + upsert every member the
+ *     roster is missing, and re-resolve rows whose display_name is still NULL;
+ *  2. when LINE denies the id list (unverified OA), just re-resolve the
+ *     NULL-name rows via the group-scoped profile endpoint — new members keep
+ *     arriving through the webhook's message-driven auto-upsert.
+ * Throttled per group via Redis, EXCEPT when the roster is empty (a first open
+ * must not stare at a blank list for 10 minutes). Never throws — the picker
+ * still renders whatever the roster already has.
+ */
+export async function syncGroupRoster(
+  supabase: SupabaseClient,
+  redis: Redis,
+  groupLineId: string,
+): Promise<void> {
+  try {
+    const existing = await listGroupMembers(supabase, groupLineId);
+    const throttled =
+      (await redis.set(
+        `task:roster-sync:${groupLineId}`,
+        '1',
+        'EX',
+        ROSTER_SYNC_TTL_SECONDS,
+        'NX',
+      )) === null;
+    if (throttled && existing.length > 0) return;
+
+    const known = new Map(existing.map((m) => [m.line_uid, m]));
+    const ids = await getChatMemberIds(groupLineId);
+    const targets =
+      ids !== null
+        ? ids.filter((uid) => !known.has(uid) || known.get(uid)!.display_name === null)
+        : existing.filter((m) => m.display_name === null).map((m) => m.line_uid);
+
+    const queue = targets.slice(0, ROSTER_SYNC_MAX_PROFILE_FETCHES);
+    for (let i = 0; i < queue.length; i += ROSTER_SYNC_CONCURRENCY) {
+      await Promise.all(
+        queue.slice(i, i + ROSTER_SYNC_CONCURRENCY).map(async (uid) => {
+          const profile = await getChatMemberProfile(groupLineId, uid);
+          // No resolvable profile → leave them off/as-is; a NULL-name row
+          // would only render as a useless "สมาชิก" entry in the picker.
+          if (!profile) return;
+          await upsertGroupMember(
+            supabase,
+            groupLineId,
+            uid,
+            profile.displayName,
+            profile.pictureUrl ?? null,
+          );
+        }),
+      );
+    }
+  } catch (err) {
+    console.warn(`[TASK] roster sync failed for group ${groupLineId}:`, err);
+  }
 }
 
 // ---- tasks ----

@@ -8,7 +8,12 @@ import type {
   ScanMode,
 } from '@nookeb/shared';
 import { verifyLineSignature } from '../../middleware/line-verify';
-import { getProfile, replyMessage, type LineMessage } from '../../services/line.service';
+import {
+  getChatMemberProfile,
+  getProfile,
+  replyMessage,
+  type LineMessage,
+} from '../../services/line.service';
 import {
   buildDiaryPromptCard,
   buildFinalizingFlexMessage,
@@ -1120,7 +1125,10 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     if ((source.type === 'group' || source.type === 'room') && groupId) {
       void (async () => {
         try {
-          const profile = await getProfile(lineUserId).catch(() => null);
+          // Group-scoped profile fetch — the friend-only /v2/bot/profile
+          // endpoint 404s for members who never added the OA, which left
+          // roster rows with NULL names.
+          const profile = await getChatMemberProfile(groupId, lineUserId);
           await upsertGroupMember(
             app.supabase,
             groupId,

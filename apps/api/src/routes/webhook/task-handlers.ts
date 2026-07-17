@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { getProfile, replyMessage } from '../../services/line.service';
+import { getChatMemberProfile, replyMessage } from '../../services/line.service';
 import {
   getTaskWithDetails,
   markAssigneeAccepted,
@@ -112,7 +112,8 @@ export async function handleRegisterCommand(
     return;
   }
   try {
-    const profile = await getProfile(lineUid).catch(() => null);
+    // Group-scoped fetch — resolves members who never friended the OA.
+    const profile = await getChatMemberProfile(groupId, lineUid);
     await upsertGroupMember(
       app.supabase,
       groupId,

@@ -1,19 +1,29 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { toGroupMemberDto } from '@nookeb/shared';
-import { getProfile } from '../services/line.service';
-import { isGroupMember, listGroupMembers, upsertGroupMember } from '../services/task.service';
+import { getChatMemberProfile } from '../services/line.service';
+import {
+  ensureGroupMember,
+  listGroupMembers,
+  syncGroupRoster,
+  upsertGroupMember,
+} from '../services/task.service';
 
 /**
- * ระบบตามงาน group roster (migration 036). LINE's Messaging API cannot list
- * group members, so the assignee picker reads from group_members — an opt-in
- * roster users join by typing "/register" in the group (webhook path) or via
- * the LIFF self-register below.
+ * ระบบตามงาน group roster (migration 036). The roster fills itself three ways
+ * (nobody needs to type /register — that command remains as a legacy alias):
+ *  1. every group message auto-upserts its sender (webhook/line.ts);
+ *  2. GET members below runs a throttled fetch-time sync against LINE's
+ *     members/ids endpoint (verified OA) and re-resolves NULL names via the
+ *     group-scoped profile endpoint (works for members who never friended
+ *     the OA — the friend-only /v2/bot/profile endpoint was why names came
+ *     back NULL before);
+ *  3. opening any task page auto-enrolls the caller (ensureGroupMember).
  *
  * Trust model: a LINE group id is an unguessable capability (same model as
- * share links). Registering requires knowing the group id; the profile stored
- * is always fetched server-side from LINE (never client-supplied), and every
- * task route re-checks this roster before revealing anything.
+ * share links). The profile stored is always fetched server-side from LINE
+ * (never client-supplied), and every task route re-checks this roster before
+ * revealing anything.
  */
 
 const groupIdSchema = z.string().min(1).max(100);
@@ -21,21 +31,24 @@ const groupIdSchema = z.string().min(1).max(100);
 const groupsRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (request, reply) => app.authenticate(request, reply));
 
-  // GET /groups/:groupId/members — the LIFF assignee picker's roster. Only
-  // registered members of the group may read it (403 NOT_REGISTERED tells the
-  // LIFF to show the /register onboarding instead of a blank list).
+  // GET /groups/:groupId/members — the LIFF assignee picker's roster.
+  // Auto-enrolls the caller (LINE's group-scoped profile fetch doubles as a
+  // membership check), then fills the roster from LINE before reading. 403
+  // NOT_REGISTERED only when LINE can't place the caller in the group at all.
   app.get<{ Params: { groupId: string } }>('/groups/:groupId/members', async (request, reply) => {
     const parsed = groupIdSchema.safeParse(request.params.groupId);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid group id' });
+    const groupId = parsed.data;
     const lineUid = request.authUser!.lineUserId;
 
-    if (!(await isGroupMember(app.supabase, parsed.data, lineUid))) {
+    if (!(await ensureGroupMember(app.supabase, groupId, lineUid))) {
       return reply.code(403).send({
-        error: 'ยังไม่ได้ลงทะเบียนในกลุ่มนี้ พิมพ์ /register ในกลุ่มก่อนน้า',
+        error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วกดลองใหม่อีกที',
         code: 'NOT_REGISTERED',
       });
     }
-    const members = await listGroupMembers(app.supabase, parsed.data);
+    await syncGroupRoster(app.supabase, app.redis, groupId);
+    const members = await listGroupMembers(app.supabase, groupId);
     return { members: members.map(toGroupMemberDto) };
   });
 
@@ -51,7 +64,8 @@ const groupsRoutes: FastifyPluginAsync = async (app) => {
 
       // Profile from LINE, not from the request body — the roster's names and
       // avatars end up in group-visible Flex cards, so they must be authentic.
-      const profile = await getProfile(lineUid).catch(() => null);
+      // Group-scoped fetch: resolves members who never friended the OA.
+      const profile = await getChatMemberProfile(parsed.data, lineUid);
       await upsertGroupMember(
         app.supabase,
         parsed.data,

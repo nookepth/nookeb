@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import styles from '../tasks.module.css';
 import { initLiff } from '../../../../lib/liff';
-import { AvatarStack, DeadlineChip, ListSkeleton } from '../components';
+import { AvatarStack, DeadlineChip, IconCalendar, IconCheck, ListSkeleton } from '../components';
 
 interface AssigneeDto {
   id: string;
@@ -125,7 +125,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     return (
       <main className={styles.page}>
         <div className={styles.errorBox}>
-          งานนี้เป็นของกลุ่มที่เรายังไม่ได้ลงทะเบียนน้า — พิมพ์ /register ในกลุ่มนั้นก่อน แล้วเปิดใหม่อีกที
+          งานนี้เป็นของกลุ่มที่เรายังไม่ได้อยู่ด้วยน้า — ลองส่งข้อความในกลุ่มนั้นสักครั้ง แล้วเปิดใหม่อีกที
         </div>
       </main>
     );
@@ -190,7 +190,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                   className={styles.numBadge}
                   style={itemDone ? { background: '#059669' } : undefined}
                 >
-                  {itemDone ? '✓' : i + 1}
+                  {itemDone ? <IconCheck size={13} /> : i + 1}
                 </span>
                 <div className={styles.itemBody}>
                   <p className={styles.itemTitle}>{item.title}</p>
@@ -209,7 +209,12 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 </div>
                 {mine &&
                   (myDone ? (
-                    <span className={styles.doneMark}>✓ เสร็จแล้ว</span>
+                    <span
+                      className={styles.doneMark}
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}
+                    >
+                      <IconCheck size={12} /> เสร็จแล้ว
+                    </span>
                   ) : (
                     <button
                       type="button"
@@ -229,10 +234,16 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
       <section className={styles.section}>
         <a
           className={styles.secondaryBtn}
-          style={{ display: 'block', textAlign: 'center', textDecoration: 'none' }}
+          style={{
+            textDecoration: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: 8,
+          }}
           href={`/api-proxy/tasks/${encodeURIComponent(task.id)}/ics`}
         >
-          📅 บันทึกลงปฏิทิน
+          <IconCalendar /> บันทึกลงปฏิทิน
         </a>
       </section>
 

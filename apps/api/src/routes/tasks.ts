@@ -8,7 +8,7 @@ import {
   createTaskWithItems,
   effectiveDeadline,
   getTaskWithDetails,
-  isGroupMember,
+  ensureGroupMember,
   listGroupMembers,
   markAssigneeDone,
   rollUpCompletion,
@@ -85,10 +85,11 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     const body = parsed.data;
     const lineUid = request.authUser!.lineUserId;
 
-    // Tenant guard: only registered members of the group can create tasks in it.
-    if (!(await isGroupMember(app.supabase, body.groupId, lineUid))) {
+    // Tenant guard: only members of the group can create tasks in it
+    // (auto-enrolls via LINE's group-scoped profile check — no /register).
+    if (!(await ensureGroupMember(app.supabase, body.groupId, lineUid))) {
       return reply.code(403).send({
-        error: 'ยังไม่ได้ลงทะเบียนในกลุ่มนี้ พิมพ์ /register ในกลุ่มก่อนน้า',
+        error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วลองใหม่อีกที',
         code: 'NOT_REGISTERED',
       });
     }
@@ -191,7 +192,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (!task) return reply.code(404).send({ error: 'Task not found' });
 
       const lineUid = request.authUser!.lineUserId;
-      const member = await isGroupMember(app.supabase, task.group_line_id, lineUid);
+      const member = await ensureGroupMember(app.supabase, task.group_line_id, lineUid);
       if (!canView(task, lineUid, member)) {
         return reply.code(403).send({ error: 'Forbidden' });
       }
