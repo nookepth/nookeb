@@ -81,6 +81,20 @@ const nextConfig = {
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },
+  async redirects() {
+    return [
+      // The "สร้างงาน" Flex card links to liff.line.me/{id}/create/{type}. When
+      // that path resolves against the site root instead of the /liff/tasks
+      // LIFF endpoint (endpoint set to the bare origin, or the URL shared
+      // outside LINE), it 404s here — forward it into the real create flow.
+      // Query params (?groupId=…, liff.state) are preserved automatically.
+      {
+        source: '/create/:type(single|multi|recurring)',
+        destination: '/liff/tasks/create/:type',
+        permanent: false,
+      },
+    ];
+  },
   async rewrites() {
     return [
       {
