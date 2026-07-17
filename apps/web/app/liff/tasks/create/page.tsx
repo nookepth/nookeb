@@ -36,6 +36,12 @@ export default function CreateTaskPage() {
   useEffect(() => {
     initLiff()
       .then((liffState) => {
+        // Fail fast on a broken session HERE rather than letting the user pick a
+        // type and hit a wall of 401s on the next (member) step.
+        if (!liffState.authed) {
+          setState('error');
+          return;
+        }
         // initLiff() is memoized — its groupId may predate the client-side
         // redirect that put ?groupId= on THIS URL, so re-read the query here.
         const resolved = liffState.groupId ?? queryGroupId();

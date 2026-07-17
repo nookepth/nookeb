@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import styles from '../tasks.module.css';
-import { initLiff } from '../../../../lib/liff';
+import { apiFetch, initLiff } from '../../../../lib/liff';
 import { AvatarStack, DeadlineChip, IconCalendar, IconCheck, ListSkeleton } from '../components';
 
 interface AssigneeDto {
@@ -46,7 +46,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   const [toast, setToast] = useState<string | null>(null);
 
   const fetchTask = useCallback(async (): Promise<void> => {
-    const res = await fetch(`/api-proxy/tasks/${encodeURIComponent(params.taskId)}`);
+    const res = await apiFetch(`/api-proxy/tasks/${encodeURIComponent(params.taskId)}`);
     if (res.status === 403) {
       setState('forbidden');
       return;
@@ -88,7 +88,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     });
 
     try {
-      const res = await fetch(
+      const res = await apiFetch(
         `/api-proxy/tasks/${encodeURIComponent(task.id)}/items/${encodeURIComponent(item.id)}/done`,
         { method: 'POST' },
       );

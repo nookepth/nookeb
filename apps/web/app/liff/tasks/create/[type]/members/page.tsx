@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../../tasks.module.css';
-import { initLiff } from '../../../../../../lib/liff';
+import { apiFetch, initLiff, resetLiff, type LiffState } from '../../../../../../lib/liff';
 import {
   loadDraft,
   saveDraft,
@@ -38,14 +38,23 @@ export default function MembersPage({ params }: { params: { type: string } }) {
   const [search, setSearch] = useState('');
   const [state, setState] = useState<PageState>('loading');
 
+  // Map an unestablished session to the right notice: a rejected/absent token
+  // is a real "sign in from the group again" case; a transient connect failure
+  // gets the generic retry instead of a misleading "session expired".
+  const applyAuthError = useCallback((s: LiffState): boolean => {
+    if (s.authed) return true;
+    setState(s.authError === 'network' ? 'error' : 'unauth');
+    return false;
+  }, []);
+
   const fetchMembers = useCallback(async (groupId: string): Promise<void> => {
     setState('loading');
     // Belt-and-braces self-register (capability model). The GET below also
     // auto-enrolls via LINE's membership check, so a failure here is fine.
-    await fetch(`/api-proxy/groups/${encodeURIComponent(groupId)}/register`, {
+    await apiFetch(`/api-proxy/groups/${encodeURIComponent(groupId)}/register`, {
       method: 'POST',
     }).catch(() => {});
-    const res = await fetch(`/api-proxy/groups/${encodeURIComponent(groupId)}/members`).catch(
+    const res = await apiFetch(`/api-proxy/groups/${encodeURIComponent(groupId)}/members`).catch(
       () => null,
     );
     if (!res) {
@@ -53,6 +62,8 @@ export default function MembersPage({ params }: { params: { type: string } }) {
       return;
     }
     if (res.status === 401) {
+      // apiFetch already tried to re-auth once — a lingering 401 means the
+      // session genuinely can't be established from here.
       setState('unauth');
       return;
     }
@@ -79,11 +90,24 @@ export default function MembersPage({ params }: { params: { type: string } }) {
     setDraft(stored);
     setSelected(stored.selected);
     initLiff()
-      .then(() => fetchMembers(stored.groupId!))
+      .then((s) => {
+        if (applyAuthError(s)) return fetchMembers(stored.groupId!);
+      })
       .catch(() => setState('error'));
-  }, [router, fetchMembers]);
+  }, [router, fetchMembers, applyAuthError]);
 
-  const retry = () => draft?.groupId && void fetchMembers(draft.groupId);
+  // Retry re-establishes the session first (resetLiff), so a transient auth
+  // failure recovers instead of dead-ending — the old retry re-ran only the
+  // members fetch and could never clear a missing cookie.
+  const retry = () => {
+    if (!draft?.groupId) return;
+    setState('loading');
+    resetLiff()
+      .then((s) => {
+        if (applyAuthError(s)) return fetchMembers(draft.groupId!);
+      })
+      .catch(() => setState('error'));
+  };
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -155,9 +179,10 @@ export default function MembersPage({ params }: { params: { type: string } }) {
       )}
       {state === 'unauth' && (
         <StateNotice
-          title="เซสชันหมดอายุแล้วน้า"
-          body="ปิดหน้านี้แล้วเปิดใหม่จากปุ่มในห้องแชท LINE อีกครั้งน้า"
+          title="ต้องเชื่อมต่อ LINE ก่อนน้า"
+          body="กด 'เชื่อมต่ออีกครั้ง' เพื่อเข้าสู่ระบบด้วย LINE ใหม่น้า ถ้ายังไม่ได้ ลองปิดหน้านี้แล้วเปิดใหม่จากปุ่มในห้องแชทกลุ่มอีกที"
           onRetry={retry}
+          retryLabel="เชื่อมต่ออีกครั้ง"
         />
       )}
       {state === 'error' && (

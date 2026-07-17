@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../../tasks.module.css';
-import { closeLiff, initLiff } from '../../../../../../lib/liff';
+import { apiFetch, closeLiff, initLiff } from '../../../../../../lib/liff';
 import {
   clearDraft,
   loadDraft,
@@ -180,11 +180,15 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 ],
               };
 
-      const res = await fetch('/api-proxy/tasks', {
+      const res = await apiFetch('/api-proxy/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       });
+      if (res.status === 401) {
+        setError('เชื่อมต่อ LINE ไม่สำเร็จ ลองปิดแล้วเปิดใหม่จากปุ่มในกลุ่มอีกทีน้า');
+        return;
+      }
       if (!res.ok) {
         const body = (await res.json().catch(() => null)) as { error?: string } | null;
         setError(body?.error ?? 'ส่งงานไม่สำเร็จ ลองใหม่อีกทีน้า');
