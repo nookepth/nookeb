@@ -85,6 +85,81 @@ function uriButton(label: string, uri: string): Record<string, unknown> {
   return { type: 'button', style: 'secondary', height: 'sm', action: { type: 'uri', label, uri } };
 }
 
+/**
+ * "สร้างงาน" entry card — a 3-bubble carousel (single / multi / recurring), each
+ * opening the LIFF create flow for that type. REPLIED into the chat (fresh
+ * replyToken from the triggering message) — not a push. `liffId` comes from
+ * process.env.LINE_LIFF_ID (config.LINE_LIFF_ID); when it's unset the buttons
+ * fall back to the plain web create URL so the card still works in dev.
+ * NO emoji (brand rule).
+ */
+export function buildCreateTaskCard(liffId: string | undefined, groupId: string): FlexMessage {
+  const gq = `?groupId=${encodeURIComponent(groupId)}`;
+  const createUrl = (type: string): string =>
+    liffId
+      ? `https://liff.line.me/${liffId}/create/${type}`
+      : `${config.WEB_URL}/liff/tasks/create/${type}${gq}`;
+
+  const CARDS: { type: string; title: string; desc: string; color: string }[] = [
+    {
+      type: 'single',
+      title: 'งานเดียว',
+      desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว เหมาะกับงานเร่งด่วนสั้นๆ',
+      color: '#0D9488',
+    },
+    {
+      type: 'multi',
+      title: 'แยกรายการ',
+      desc: 'หลายรายการในงานเดียว แต่ละข้อมอบหมายคนและกำหนดส่งแยกกันได้',
+      color: '#2563EB',
+    },
+    {
+      type: 'recurring',
+      title: 'งานประจำ',
+      desc: 'งานที่ต้องทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เองทุกครั้งที่ถึงกำหนด',
+      color: '#7C3AED',
+    },
+  ];
+
+  const bubble = (card: (typeof CARDS)[number]): Record<string, unknown> => ({
+    type: 'bubble',
+    size: 'micro',
+    header: {
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: card.color,
+      paddingAll: '14px',
+      contents: [{ type: 'text', text: card.title, weight: 'bold', size: 'md', color: '#FFFFFF', wrap: true }],
+    },
+    body: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '14px',
+      contents: [{ type: 'text', text: card.desc, size: 'xs', color: '#555555', wrap: true }],
+    },
+    footer: {
+      type: 'box',
+      layout: 'vertical',
+      paddingAll: '12px',
+      contents: [
+        {
+          type: 'button',
+          style: 'primary',
+          height: 'sm',
+          color: card.color,
+          action: { type: 'uri', label: 'สร้างงานนี้', uri: createUrl(card.type) },
+        },
+      ],
+    },
+  });
+
+  return {
+    type: 'flex',
+    altText: 'สร้างงานใหม่',
+    contents: { type: 'carousel', contents: CARDS.map(bubble) },
+  };
+}
+
 /** Flex pushed into the group right after a task is created from LIFF. */
 export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
   const deadlineText = task.global_deadline

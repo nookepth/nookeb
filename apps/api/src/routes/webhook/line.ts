@@ -59,6 +59,8 @@ import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { logEvent, type EventType } from '../../services/events.service';
 import { handleRegisterCommand, handleTaskPostback } from './task-handlers';
+import { buildCreateTaskCard } from '../../services/lineMessage';
+import { upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
 
 interface LineEventSource {
@@ -481,6 +483,17 @@ async function handleTextCommand(
   // group bot-directed guard below would drop it as ordinary chatter.
   if (isCmd(text, '/register', 'register', 'สมัคร', 'ลงทะเบียน')) {
     await handleRegisterCommand(app, event);
+    return;
+  }
+
+  // ระบบตามงาน "สร้างงาน" entry point — opens the LIFF create flow as a 3-bubble
+  // carousel (single/multi/recurring). Deliberately UNPREFIXED and matched BEFORE
+  // the group bot-directed guard so it works when typed straight into a group.
+  // The roster is populated automatically by the message-event auto-upsert (no
+  // "/register" typing needed), so the card can offer assignees right away.
+  if (isCmd(text, 'สร้างงาน', 'งาน', 'task')) {
+    const groupId = source.groupId ?? source.roomId ?? '';
+    await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, groupId));
     return;
   }
 
@@ -1096,6 +1109,31 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   const { message, source } = event;
   const lineUserId = source.userId;
   if (!lineUserId) return;
+
+  // ระบบตามงาน roster auto-fill: every message event from a group/room opts the
+  // sender into that group's assignee roster (group_members). Replaces the manual
+  // "/register" opt-in — teammates just chat as usual and become assignable. Best-
+  // effort and fire-and-forget: it must never block the reply nor throw into the
+  // 1s webhook path (upsertGroupMember failures are swallowed and logged).
+  {
+    const groupId = source.groupId ?? source.roomId;
+    if ((source.type === 'group' || source.type === 'room') && groupId) {
+      void (async () => {
+        try {
+          const profile = await getProfile(lineUserId).catch(() => null);
+          await upsertGroupMember(
+            app.supabase,
+            groupId,
+            lineUserId,
+            profile?.displayName ?? null,
+            profile?.pictureUrl ?? null,
+          );
+        } catch (err) {
+          app.log.warn({ err, groupId, lineUserId }, 'group member auto-upsert failed');
+        }
+      })();
+    }
+  }
 
   if (message.type === 'text') {
     await drainPendingForEvent(app, event, lineUserId);
