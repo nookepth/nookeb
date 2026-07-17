@@ -50,13 +50,16 @@
   animation: glowPulse 1.6s ease-in-out infinite;
 }
 
-/* ---------- floating stickers (inline SVG, die-cut sticker style) ---------- */
+/* ---------- floating stickers (inline SVG, die-cut sticker style) ----------
+   Decoration only: anchored to the screen corners by StickerField (which sets
+   left/right + top/bottom inline in px) and kept BELOW every content layer —
+   .closedStage / .revealStage sit at z-index 2, the action bar at 5. */
 
 .stickerField {
   position: fixed;
   inset: 0;
   pointer-events: none;
-  z-index: 1;
+  z-index: 0;
   overflow: hidden;
 }
 .sticker {

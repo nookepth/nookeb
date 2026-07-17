@@ -4,7 +4,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LegacyBoxOpenResponse, LegacyBoxTheme } from '@nookeb/shared';
 import { THEMES, getPolaroidTilt } from '@nookeb/shared';
 import { ApiError, getLegacyBoxOpen } from '@/lib/api';
-import { EmptyBoxIcon, GiftIcon, StickerArt } from './StickerArt';
+import { EmptyBoxIcon, GiftIcon } from './StickerArt';
+import { StickerField } from './StickerField';
 import styles from './page.module.css';
 
 /**
@@ -224,27 +225,9 @@ export function BoxReveal({ slug }: { slug: string }) {
 
   return (
     <main className={styles.page} style={themeVars}>
-      {/* seeded floating stickers — present in every phase */}
-      <div className={styles.stickerField} aria-hidden>
-        {box.stickerLayout.map((p, i) => (
-          <span
-            key={i}
-            className={styles.sticker}
-            style={
-              {
-                left: `${p.x}%`,
-                top: `${p.y}%`,
-                zIndex: p.zIndex,
-                '--size': `${Math.round(40 + p.scale * 25)}px`,
-                '--r': `${p.rotation}deg`,
-                '--delay': `${(i * 0.7) % 4}s`,
-              } as React.CSSProperties
-            }
-          >
-            <StickerArt id={p.sticker.id} />
-          </span>
-        ))}
-      </div>
+      {/* seeded corner stickers — present in every phase, never over content
+          (the field measures the [data-safe-margin] elements below) */}
+      <StickerField slug={slug} phase={phase} />
 
       {/* ---------- Phase 1 + 2: the gift box ---------- */}
       {isClosedOrOpening && (
@@ -256,6 +239,7 @@ export function BoxReveal({ slug }: { slug: string }) {
             className={styles.giftButton}
             onClick={openBox}
             aria-label="แตะเพื่อเปิดกล่องของขวัญ"
+            data-safe-margin="60"
           >
             <span className={styles.giftGlow} aria-hidden />
             <span className={styles.giftShadow} aria-hidden />
@@ -277,8 +261,10 @@ export function BoxReveal({ slug }: { slug: string }) {
             </span>
             <span ref={particleLayerRef} className={styles.particleLayer} aria-hidden />
           </button>
-          <h1 className={styles.closedTitle}>{box.title}</h1>
-          <div className={styles.tapHint} aria-hidden>
+          <h1 className={styles.closedTitle} data-safe-margin="40">
+            {box.title}
+          </h1>
+          <div className={styles.tapHint} aria-hidden data-safe-margin="60">
             แตะเพื่อเปิด
             <svg
               className={styles.tapArrow}
@@ -299,13 +285,16 @@ export function BoxReveal({ slug }: { slug: string }) {
 
       {/* ---------- Phase 3: revealed (mounted early, CSS-hidden until open) ---------- */}
       <div className={isClosedOrOpening ? styles.hiddenStage : styles.revealStage}>
-        <h1 className={styles.revealTitle}>{box.title}</h1>
+        <h1 className={styles.revealTitle} data-safe-margin="40">
+          {box.title}
+        </h1>
 
         <div
           className={`${styles.polaroidRow} ${isDragging ? styles.isRowDragging : ''}`}
           ref={rowRef}
           onScroll={onRowScroll}
           onMouseDown={onRowMouseDown}
+          data-safe-margin="24"
         >
           {box.photos.map((photo, i) => (
             <figure
@@ -346,8 +335,12 @@ export function BoxReveal({ slug }: { slug: string }) {
 
         {box.message && (
           <section className={styles.messageSection}>
-            <p className={styles.messageText}>{box.message}</p>
-            <p className={styles.fromLine}>ส่งมาด้วยความคิดถึง</p>
+            <p className={styles.messageText} data-safe-margin="16">
+              {box.message}
+            </p>
+            <p className={styles.fromLine} data-safe-margin="16">
+              ส่งมาด้วยความคิดถึง
+            </p>
           </section>
         )}
 
