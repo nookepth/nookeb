@@ -248,9 +248,28 @@ own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
 - Public endpoint `GET /legacy-box/open/:slug`: no auth, own 30/min per-IP rate limit,
   `X-Robots-Tag: noindex` + `Cache-Control: no-store`, 120s presigned photo URLs
   (regenerated per load), NEVER returns user_id/creator name/any PII. View count ticks
-  via the atomic `increment_box_views` RPC (fire-and-forget). `/box/` is disallowed in
-  robots.ts and the page's OG image is the generic `public/og-legacy-box.png` — never
-  the actual photos.
+  via the atomic `increment_box_views` RPC (fire-and-forget). `?preview=1` is a
+  NON-COUNTING read (same payload, no tick, no `box_viewed`) for the web's
+  generateMetadata, which runs on every request to `/box/:slug` — unfurl bots that never
+  open the box, plus a second time alongside the real client fetch on every genuine
+  open. Counting those would double real views and invent views that never happened.
+  It shares the same rate limit: not counting a view is not a reason to allow probing.
+- OG image (`apps/web/app/api/og/route.tsx`, `next/og` + Satori): takes `?theme=`, NEVER
+  `?slug=`. It renders NO box content — no title, message, photo, or creator — because a
+  gift link pasted in a LINE group unfurls for the whole chat and unfurler bots cache
+  what they fetch; anything in the preview stops being a surprise for whoever taps. The
+  theme colour is the only per-box detail it carries. `/box/` stays disallowed in
+  robots.ts. Keep it slug-free. Notes: `runtime = 'edge'` is REQUIRED on Windows — the
+  vendored `@vercel/og` node build does `fileURLToPath(join(import.meta.url, ...))`,
+  which `path.join` mangles into `file:\D:\...` and throws at module init (Linux/Vercel
+  is unaffected, but local dev 500s). Satori has no `inset` shorthand (a div using it
+  silently renders at zero size) and stringifies `<svg>` children, so sticker art must be
+  a single `<g>` — never a Fragment or a `{cond && ...}`. Fonts: IBM Plex Sans Thai
+  fetched from Google Fonts as TRUETYPE (Satori can't read woff2; requesting css2 with
+  an empty User-Agent is what makes Google serve ttf). The text zone carries a scrim
+  scaled to the accent's relative luminance — butter/mint can't hold white text on their
+  accent (white on `#E6B800` is ~2:1) while rose/lilac/sky/peach don't need it.
+  `public/og-legacy-box.png` is the retired static image; nothing references it now.
 - Reveal page (`app/box/[slug]/` — `BoxReveal.tsx` + CSS module): closed→opening→
   revealed, transform/opacity-only animations, ≤30 burst particles, seeded sticker/
   tilt layout from the slug (`@nookeb/shared` `getStickerLayout`/`getPolaroidTilt` —

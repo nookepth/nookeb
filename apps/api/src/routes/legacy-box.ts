@@ -304,12 +304,20 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // GET /legacy-box/open/:slug — PUBLIC (the recipient's reveal page).
-  app.get<{ Params: { slug: string } }>(
+  //
+  // `?preview=1` is a NON-COUNTING read: same payload, but no view tick and no
+  // box_viewed event. It exists for the web's generateMetadata (OG image theme
+  // lookup), which runs on every request to /box/:slug — including unfurl bots
+  // (LINE/Facebook/iMessage) that never open the box, and once more alongside
+  // the real client fetch on every genuine open. Counting those would double
+  // every real view and invent views that never happened.
+  app.get<{ Params: { slug: string }; Querystring: { preview?: string } }>(
     '/legacy-box/open/:slug',
     {
       config: {
         // Tighter than the 100/min global limit — this is the only unauthenticated
-        // enumeration surface (slug guessing) the feature exposes.
+        // enumeration surface (slug guessing) the feature exposes. preview reads
+        // share this limit: not counting a view is not a reason to allow probing.
         rateLimit: { max: 30, timeWindow: '1 minute' },
       },
     },
@@ -321,18 +329,22 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
       const box = await getBoxBySlug(app.supabase, request.params.slug);
       if (!box) return reply.code(404).send({ error: 'not_found' });
 
-      // Fire-and-forget atomic view count — a failed tick must not block the reveal.
-      void app.supabase
-        .rpc('increment_box_views', { p_box_id: box.id })
-        .then(({ error }) => {
-          if (error) request.log.warn({ err: error }, 'increment_box_views failed');
+      const isPreview = request.query.preview === '1';
+
+      if (!isPreview) {
+        // Fire-and-forget atomic view count — a failed tick must not block the reveal.
+        void app.supabase
+          .rpc('increment_box_views', { p_box_id: box.id })
+          .then(({ error }) => {
+            if (error) request.log.warn({ err: error }, 'increment_box_views failed');
+          });
+        void logEvent(app.supabase, {
+          eventType: 'box_viewed',
+          userId: box.user_id,
+          source: 'web',
+          metadata: { views: box.view_count + 1 },
         });
-      void logEvent(app.supabase, {
-        eventType: 'box_viewed',
-        userId: box.user_id,
-        source: 'web',
-        metadata: { views: box.view_count + 1 },
-      });
+      }
 
       const photos = await listPhotos(app.supabase, box.id);
       const signed = await Promise.all(
@@ -349,7 +361,8 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
         theme: themeIdOf(box),
         photos: signed,
         stickerLayout: getStickerLayout(box.slug),
-        viewCount: box.view_count + 1,
+        // a preview read didn't tick the counter, so don't pretend it did
+        viewCount: isPreview ? box.view_count : box.view_count + 1,
       };
     },
   );
