@@ -6,7 +6,34 @@ import type { LegacyBoxDto } from '@nookeb/shared';
 import { THEMES } from '@nookeb/shared';
 import { deleteLegacyBox, hasSession, listLegacyBoxes } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { BOX_SHARE_COPY, shareOrCopy } from '@/lib/share';
 import styles from './page.module.css';
+
+/**
+ * 'copied' is a second success state, not a failure: a desktop browser has no
+ * share sheet, so แชร์ falls back to the clipboard. Reporting that as
+ * "ส่งแล้ว" would tell the user they sent something they didn't.
+ */
+type ShareState = 'idle' | 'loading' | 'done' | 'copied' | 'error';
+
+const SHARE_FEEDBACK_MS = 2000;
+
+/**
+ * The API builds `shareUrl` from WEB_URL; the fallback is only for a payload
+ * that predates it. Never `window.location.origin` — a recipient must not be
+ * sent to a preview domain (see lib/share.ts).
+ */
+function shareUrlOf(box: LegacyBoxDto): string {
+  return box.shareUrl || `${process.env.NEXT_PUBLIC_WEB_URL ?? ''}/box/${box.slug}`;
+}
+
+function shareLabel(state: ShareState): string {
+  if (state === 'loading') return 'กำลังแชร์...';
+  if (state === 'done') return 'ส่งแล้ว ✓';
+  if (state === 'copied') return 'คัดลอกแล้ว ✓';
+  if (state === 'error') return 'ลองใหม่';
+  return 'แชร์';
+}
 
 /** "3 วันที่แล้ว"-style relative Thai date for the box card. */
 function thaiAgo(iso: string): string {
@@ -24,7 +51,15 @@ export default function LegacyBoxListPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<LegacyBoxDto | null>(null);
   const [deleting, setDeleting] = useState(false);
+  /** per-box share button state, keyed by box id */
+  const [shareState, setShareState] = useState<Record<string, ShareState>>({});
   const toastTimer = useRef<number | null>(null);
+  const shareTimers = useRef<number[]>([]);
+
+  useEffect(() => {
+    const pending = shareTimers.current;
+    return () => pending.forEach((id) => window.clearTimeout(id));
+  }, []);
 
   const load = useCallback(async () => {
     if (!hasSession()) {
@@ -50,9 +85,25 @@ export default function LegacyBoxListPage() {
     toastTimer.current = window.setTimeout(() => setToast(null), 2200);
   }, []);
 
+  async function shareBox(box: LegacyBoxDto): Promise<void> {
+    setShareState((prev) => ({ ...prev, [box.id]: 'loading' }));
+    const outcome = await shareOrCopy(shareUrlOf(box), BOX_SHARE_COPY);
+    if (outcome === 'copied') showToast('คัดลอกลิงก์แล้ว 🎁');
+    setShareState((prev) => ({
+      ...prev,
+      [box.id]: outcome === 'shared' ? 'done' : outcome === 'copied' ? 'copied' : 'error',
+    }));
+    shareTimers.current.push(
+      window.setTimeout(
+        () => setShareState((prev) => ({ ...prev, [box.id]: 'idle' })),
+        SHARE_FEEDBACK_MS,
+      ),
+    );
+  }
+
   async function copyLink(box: LegacyBoxDto): Promise<void> {
     try {
-      await navigator.clipboard.writeText(box.shareUrl);
+      await navigator.clipboard.writeText(shareUrlOf(box));
       showToast('คัดลอกลิงก์แล้ว 🎁');
     } catch {
       showToast('คัดลอกไม่สำเร็จ ลองใหม่อีกทีน้า');
@@ -173,6 +224,14 @@ export default function LegacyBoxListPage() {
                     สร้างเมื่อ {thaiAgo(box.createdAt)}
                   </p>
                   <div className={styles.cardActions}>
+                    <button
+                      type="button"
+                      className={`${styles.cardBtn} ${styles.shareBtn}`}
+                      onClick={() => void shareBox(box)}
+                      disabled={(shareState[box.id] ?? 'idle') === 'loading'}
+                    >
+                      {shareLabel(shareState[box.id] ?? 'idle')}
+                    </button>
                     <button
                       type="button"
                       className={`${styles.cardBtn} ${styles.copyBtn}`}

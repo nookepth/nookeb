@@ -1,15 +1,13 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { BOX_SHARE_COPY, shareOrCopy } from '@/lib/share';
 import styles from './page.module.css';
 
 /**
- * Success-screen share actions for กล่องของขวัญ.
- *
- * The share sheet is the Web Share API — on iOS/Android it already lists LINE,
- * Messages, Instagram etc., so there is nothing to wire per-target. Desktop
- * browsers without it (and any non-cancel failure) degrade to a clipboard copy,
- * which is the same thing the คัดลอกลิงก์ button does.
+ * Success-screen share actions for กล่องของขวัญ. The share/copy behaviour lives
+ * in `lib/share.ts` (shared with the box list card) — this component only maps
+ * its outcome onto button labels.
  *
  * The LINE row is a plain social-plugins URL — deliberately no LINE SDK.
  *
@@ -18,9 +16,6 @@ import styles from './page.module.css';
  */
 
 const FEEDBACK_MS = 2000;
-
-const SHARE_TITLE = 'มีกล่องของขวัญรอคุณอยู่';
-const SHARE_TEXT = 'เปิดดูสิ่งที่ฉันส่งมาให้คุณ 🎁';
 
 type ShareState = 'idle' | 'sent' | 'copied';
 type CopyState = 'idle' | 'copied' | 'error';
@@ -66,33 +61,14 @@ export function ShareActions({ shareUrl }: { shareUrl: string }): JSX.Element {
   }
 
   async function handleShare(): Promise<void> {
-    const data = { title: SHARE_TITLE, text: SHARE_TEXT, url: shareUrl };
-    const canShare =
-      typeof navigator !== 'undefined' &&
-      typeof navigator.share === 'function' &&
-      (typeof navigator.canShare !== 'function' || navigator.canShare(data));
-
-    if (canShare) {
-      try {
-        await navigator.share(data);
-        setShareState('sent');
-        later(() => setShareState('idle'));
-        return;
-      } catch (err) {
-        // The user dismissing the sheet is not a failure — leave the button be.
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        // anything else: fall through to the clipboard
-      }
-    }
-
-    const ok = await copy();
-    if (ok) {
-      setShareState('copied');
-      later(() => setShareState('idle'));
-    } else {
+    const outcome = await shareOrCopy(shareUrl, BOX_SHARE_COPY);
+    if (outcome === 'error') {
       setCopyState('error');
       later(() => setCopyState('idle'));
+      return;
     }
+    setShareState(outcome === 'shared' ? 'sent' : 'copied');
+    later(() => setShareState('idle'));
   }
 
   function shareViaLine(): void {

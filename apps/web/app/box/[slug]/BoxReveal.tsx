@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LegacyBoxOpenResponse, LegacyBoxTheme } from '@nookeb/shared';
-import { DEFAULT_TAGLINE, THEMES, getPolaroidTilt } from '@nookeb/shared';
+import { DEFAULT_TAGLINE, THEMES } from '@nookeb/shared';
 import { ApiError, getLegacyBoxOpen } from '@/lib/api';
 import { EmptyBoxIcon, GiftIcon } from './StickerArt';
 import { StickerField } from './StickerField';
@@ -273,7 +273,7 @@ export function BoxReveal({ slug }: { slug: string }) {
             </span>
             <span ref={particleLayerRef} className={styles.particleLayer} aria-hidden />
           </button>
-          <h1 className={styles.closedTitle} data-safe-margin="40">
+          <h1 className={styles.closedTitle} data-safe-margin="48" data-safe-text>
             {box.title}
           </h1>
           <div className={styles.tapHint} aria-hidden data-safe-margin="60">
@@ -296,8 +296,14 @@ export function BoxReveal({ slug }: { slug: string }) {
       )}
 
       {/* ---------- Phase 3: revealed (mounted early, CSS-hidden until open) ---------- */}
-      <div className={isClosedOrOpening ? styles.hiddenStage : styles.revealStage}>
-        <h1 className={styles.revealTitle} data-safe-margin="40">
+      {/* data-safe-hidden: while this stage is CSS-hidden its children still
+          have layout boxes, so the sticker field would measure them as safe
+          zones for content that isn't on screen and drop stickers for nothing. */}
+      <div
+        className={isClosedOrOpening ? styles.hiddenStage : styles.revealStage}
+        data-safe-hidden={isClosedOrOpening ? '' : undefined}
+      >
+        <h1 className={styles.revealTitle} data-safe-margin="48" data-safe-text>
           {box.title}
         </h1>
 
@@ -306,15 +312,17 @@ export function BoxReveal({ slug }: { slug: string }) {
           ref={rowRef}
           onScroll={onRowScroll}
           onMouseDown={onRowMouseDown}
-          data-safe-margin="24"
         >
           {box.photos.map((photo, i) => (
             <figure
               key={photo.sortOrder}
               className={styles.polaroid}
+              data-safe-margin="32"
               style={
                 {
-                  '--tilt': `${getPolaroidTilt(slug, i)}deg`,
+                  /* alternating "spread on a table" tilt — deterministic by
+                     position, so it matches on every render */
+                  '--tilt': i % 2 === 0 ? '1.5deg' : '-1.5deg',
                   '--index': i,
                 } as React.CSSProperties
               }
@@ -327,9 +335,6 @@ export function BoxReveal({ slug }: { slug: string }) {
                 loading={i < 2 ? 'eager' : 'lazy'}
                 draggable={false}
               />
-              <figcaption className={styles.polaroidCaption}>
-                {String(i + 1).padStart(2, '0')}
-              </figcaption>
             </figure>
           ))}
         </div>
@@ -348,14 +353,18 @@ export function BoxReveal({ slug }: { slug: string }) {
         {/* The sender's voice, between the photos and their closing words.
             Absent on every box without a recording (incl. all pre-035 ones),
             where the API sends audio_url: null. */}
-        {box.audio_url && <VoicePlayer src={box.audio_url} onRefreshSrc={refreshAudioSrc} />}
+        {box.audio_url && (
+          <div className={styles.voiceWrap}>
+            <VoicePlayer src={box.audio_url} onRefreshSrc={refreshAudioSrc} />
+          </div>
+        )}
 
         {box.message && (
           <section className={styles.messageSection}>
-            <p className={styles.messageText} data-safe-margin="16">
+            <p className={styles.messageText} data-safe-margin="48" data-safe-text>
               {box.message}
             </p>
-            <p className={styles.fromLine} data-safe-margin="16">
+            <p className={styles.fromLine} data-safe-margin="48" data-safe-text>
               {/* the sender's closing line; the API already resolved NULL (every
                   pre-034 box) to the default this line used to hardcode */}
               {box.tagline || DEFAULT_TAGLINE}
@@ -371,7 +380,12 @@ export function BoxReveal({ slug }: { slug: string }) {
       {/* ---------- bottom bar (revealed only) ---------- */}
       {phase === 'revealed' && (
         <div className={styles.actionBar}>
-          <button type="button" className={styles.shareBtn} onClick={() => void shareBox()}>
+          <button
+            type="button"
+            className={styles.shareBtn}
+            onClick={() => void shareBox()}
+            data-safe-margin="48"
+          >
             แชร์กล่องนี้
           </button>
           <span className={styles.viewCount}>เปิดแล้ว {box.viewCount} ครั้ง</span>

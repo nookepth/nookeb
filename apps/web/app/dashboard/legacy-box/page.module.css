@@ -170,7 +170,7 @@
 
 .cardActions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-top: 2px;
 }
 .cardBtn {
@@ -178,8 +178,9 @@
   border: none;
   cursor: pointer;
   border-radius: 10px;
-  padding: 9px 10px;
-  font-size: 13.5px;
+  padding: 9px 8px;
+  white-space: nowrap;
+  font-size: 13px;
   font-weight: 600;
   font-family: inherit;
   transition: transform 120ms ease;
@@ -188,13 +189,26 @@
 .cardBtn:active {
   transform: scale(0.95);
 }
-.copyBtn {
+.cardBtn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+/* share is the primary action; คัดลอกลิงก์ steps down to the outline style */
+.shareBtn {
   color: #fff;
   background: var(--card-accent, #e8507a);
 }
-.deleteBtn {
+.copyBtn {
   color: var(--card-accent, #e8507a);
   background: rgba(255, 255, 255, 0.65);
+}
+/* ลบ is one short word — let the two link actions take the room */
+.deleteBtn {
+  flex: 0 0 auto;
+  color: var(--card-accent, #e8507a);
+  background: rgba(255, 255, 255, 0.65);
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 /* ---------- toast ---------- */
