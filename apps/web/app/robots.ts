@@ -9,7 +9,7 @@ export default function robots(): MetadataRoute.Robots {
         userAgent: '*',
         allow: '/',
         // Private, auth-gated, or tokened surfaces — keep out of search results.
-        disallow: ['/dashboard', '/admin', '/auth/', '/join', '/share/', '/box/', '/api-proxy/'],
+        disallow: ['/dashboard', '/admin', '/auth/', '/join', '/share/', '/box/', '/liff/', '/api-proxy/'],
       },
     ],
     sitemap: `${SITE_URL}/sitemap.xml`,

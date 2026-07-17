@@ -101,11 +101,53 @@ export async function replyMessage(replyToken: string, messages: LineMessage[]):
   }
 }
 
-// NOTE: there is deliberately NO pushMessage here. Push messages consume the
-// monthly Messaging API quota and FAIL SILENTLY once it runs out; replies are
-// free and always work. Reply with the event's token, or defer through
-// pending-notify.service for delivery on the user's next interaction — see
-// "LINE Messaging — Critical Rules" in CLAUDE.md.
+// PUSH POLICY: push messages consume the monthly Messaging API quota and FAIL
+// SILENTLY once it runs out; replies are free and always work. Reply with the
+// event's token, or defer through pending-notify.service — see "LINE Messaging
+// — Critical Rules" in CLAUDE.md. The ONE sanctioned exception is the ระบบตามงาน
+// (Task Manager) feature: task announcements originate from a LIFF web submit
+// and reminders from a BullMQ timer, so neither ever has a replyToken to spend.
+// pushMessage below exists for THAT feature only — do not call it from any
+// other flow (file uploads, scans, diary, referral, … all stay reply-only).
+
+export class LinePushError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'LinePushError';
+  }
+}
+
+/**
+ * Task-Manager-only push (see the policy note above). Throws LinePushError on
+ * a non-2xx so the reminder job can retry with backoff (429 = LINE rate limit,
+ * 5xx = transient) or record failed_at (4xx = permanent, e.g. quota exhausted
+ * returns 429 with a monthly-limit message — the caller logs loudly either way
+ * because a silent quota failure is this API's known trap).
+ */
+export async function pushMessage(to: string, messages: LineMessage[]): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch(`${LINE_API}/message/push`, {
+      method: 'POST',
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ to, messages }),
+      signal: AbortSignal.timeout(LINE_MESSAGING_TIMEOUT_MS),
+    });
+  } catch (err) {
+    if (isTimeoutError(err)) {
+      throw new LinePushError(0, `LINE push timed out after ${LINE_MESSAGING_TIMEOUT_MS}ms`);
+    }
+    throw err;
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    console.error(`[LINE-PUSH] failed status=${res.status} detail=${detail.slice(0, 300)}`);
+    throw new LinePushError(res.status, `LINE push failed: ${res.status}`);
+  }
+}
 
 export async function getProfile(lineUserId: string): Promise<{
   displayName: string;

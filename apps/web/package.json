@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@line/liff": "^2.29.1",
     "@nookeb/shared": "*",
     "next": "^14.2.4",
     "react": "^18.3.1",

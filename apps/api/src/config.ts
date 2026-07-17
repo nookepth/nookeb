@@ -22,6 +22,12 @@ const envSchema = z.object({
   LINE_LOGIN_CHANNEL_ID: z.string().optional(),
   LINE_LOGIN_CHANNEL_SECRET: z.string().optional(),
 
+  // LIFF app id for ระบบตามงาน (Task Manager). Created under the LINE Login
+  // channel with endpoint URL `${WEB_URL}/liff/tasks`. Optional: when unset,
+  // task links in LINE messages fall back to plain WEB_URL links (opens the
+  // external browser instead of the in-app LIFF view).
+  LINE_LIFF_ID: z.string().optional(),
+
   // Supabase
   SUPABASE_URL: z.string().url(),
   // Not used by the API (service-role key is used instead). Kept optional for

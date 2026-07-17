@@ -1,8 +1,11 @@
 import { createUploadWorker, closeWorkerQueue, scheduleRepeatableJobs } from './upload.worker';
+import { createTaskReminderWorker } from './taskReminderWorker';
+import { closeTaskQueue } from '../services/taskScheduler';
 import { config } from '../config';
 
 // Worker entry point — run as a separate process (npm run dev:worker / start:worker)
 const uploadWorker = createUploadWorker();
+const taskWorker = createTaskReminderWorker();
 
 // Register recurring maintenance jobs (daily R2 purge of long-deleted files)
 scheduleRepeatableJobs().catch((err) => {
@@ -21,6 +24,8 @@ console.log(
 async function shutdown(): Promise<void> {
   console.log('[worker] shutting down...');
   await uploadWorker.close();
+  await taskWorker.close();
+  await closeTaskQueue();
   await closeWorkerQueue();
   process.exit(0);
 }

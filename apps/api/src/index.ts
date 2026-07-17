@@ -23,6 +23,8 @@ import progressRoutes from './routes/progress';
 import diaryRoutes from './routes/diary';
 import vaultRoutes from './routes/vault';
 import legacyBoxRoutes from './routes/legacy-box';
+import tasksRoutes from './routes/tasks';
+import groupsRoutes from './routes/groups';
 import proInterestRoutes from './routes/pro-interest';
 import staticRoutes from './routes/static';
 import { flushAll } from './services/upload-queue';
@@ -117,6 +119,8 @@ async function main(): Promise<void> {
   await app.register(diaryRoutes);
   await app.register(vaultRoutes);
   await app.register(legacyBoxRoutes);
+  await app.register(tasksRoutes);
+  await app.register(groupsRoutes);
   await app.register(proInterestRoutes);
   await app.register(staticRoutes);
 

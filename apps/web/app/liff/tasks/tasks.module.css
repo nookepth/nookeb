@@ -1,0 +1,642 @@
+/* ระบบตามงาน LIFF pages — shared styles. Mobile-first (LIFF is ~always a
+ * phone webview), system-ui font, teal primary to match the dashboard. */
+
+.page {
+  min-height: 100dvh;
+  background: #f6f7f9;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: #1f2937;
+  padding-bottom: 120px; /* room for the sticky footer */
+}
+
+.header {
+  padding: 20px 20px 16px;
+}
+
+.headerTitle {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.headerSub {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 4px 0 0;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+/* teal gradient header zone (detail page) */
+.heroHeader {
+  background: linear-gradient(135deg, #0d9488, #0f766e);
+  padding: 24px 20px 28px;
+  color: #fff;
+}
+
+.heroLabel {
+  font-size: 12px;
+  color: #99f6e4;
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+.titleInput {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid #5eead4;
+  color: #fff;
+  font-size: 20px;
+  font-weight: 700;
+  padding: 6px 2px;
+  outline: none;
+}
+
+.titleInput::placeholder {
+  color: #99f6e4;
+  font-weight: 500;
+}
+
+.section {
+  padding: 16px 20px 0;
+}
+
+.sectionLabel {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0d9488;
+  margin: 0 0 8px;
+  text-transform: none;
+}
+
+/* ---- cards ---- */
+
+.card {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 16px;
+}
+
+.cardList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 20px 20px;
+}
+
+.typeCard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  padding: 18px 16px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.typeCard:active {
+  border-color: #0d9488;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, 0.15);
+}
+
+.typeIcon {
+  font-size: 26px;
+  width: 48px;
+  height: 48px;
+  border-radius: 12px;
+  background: #f0fdfa;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.typeTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+}
+
+.typeSub {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 2px 0 0;
+}
+
+/* ---- member picker ---- */
+
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 10px 14px;
+  margin: 0 20px 12px;
+}
+
+.searchInput {
+  border: none;
+  outline: none;
+  flex: 1;
+  font-size: 14px;
+  background: transparent;
+}
+
+.memberList {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 16px;
+  margin: 0 20px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+.memberRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #f3f4f6;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.memberRow:last-child {
+  border-bottom: none;
+}
+
+.memberName {
+  flex: 1;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #ccfbf1;
+  color: #0f766e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+  flex-shrink: 0;
+}
+
+.avatarAll {
+  background: #0d9488;
+  color: #fff;
+  font-size: 11px;
+}
+
+.checkmark {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid #d1d5db;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  font-size: 14px;
+  transition: all 0.15s;
+}
+
+.checkmarkOn {
+  background: #0d9488;
+  border-color: #0d9488;
+  color: #fff;
+}
+
+/* selected strip in the sticky footer */
+.selectedStrip {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding: 4px 0 10px;
+}
+
+.selectedChip {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.chipRemove {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #374151;
+  color: #fff;
+  border: none;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---- avatar stack ---- */
+
+.stack {
+  display: flex;
+  align-items: center;
+}
+
+.stackItem {
+  margin-left: -8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+}
+
+.stackItem:first-child {
+  margin-left: 0;
+}
+
+.stackMore {
+  margin-left: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+/* ---- chips / badges ---- */
+
+.deadlineChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #f0fdfa;
+  color: #0f766e;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.deadlineChipOverdue {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.numBadge {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: #0d9488;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.statusBadge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* ---- forms ---- */
+
+.field {
+  margin-bottom: 14px;
+}
+
+.fieldLabel {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+}
+
+.input,
+.textarea,
+.select {
+  width: 100%;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 12px 14px;
+  font-size: 15px;
+  background: #fff;
+  outline: none;
+  font-family: inherit;
+  color: inherit;
+}
+
+.input:focus,
+.textarea:focus,
+.select:focus {
+  border-color: #0d9488;
+}
+
+.textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.inlineFields {
+  display: flex;
+  gap: 10px;
+}
+
+.inlineFields > * {
+  flex: 1;
+}
+
+/* ---- buttons ---- */
+
+.primaryBtn {
+  width: 100%;
+  background: #0d9488;
+  color: #fff;
+  border: none;
+  border-radius: 14px;
+  padding: 15px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primaryBtn:disabled {
+  background: #d1d5db;
+  cursor: default;
+}
+
+.secondaryBtn {
+  background: #fff;
+  color: #0f766e;
+  border: 1px solid #99f6e4;
+  border-radius: 14px;
+  padding: 13px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ghostBtn {
+  background: none;
+  border: none;
+  color: #0d9488;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 8px;
+}
+
+.addItemBtn {
+  width: 100%;
+  border: 2px dashed #99f6e4;
+  background: #f0fdfa;
+  color: #0f766e;
+  border-radius: 14px;
+  padding: 14px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* ---- sticky footer ---- */
+
+.stickyFooter {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #fff;
+  border-top: 1px solid #e5e7eb;
+  padding: 12px 20px calc(12px + env(safe-area-inset-bottom));
+  z-index: 20;
+}
+
+.footerRow {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.footerRow .primaryBtn {
+  flex: 1;
+}
+
+/* ---- bottom sheet ---- */
+
+.sheetOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 30;
+  display: flex;
+  align-items: flex-end;
+}
+
+.sheet {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
+  width: 100%;
+  max-height: 85dvh;
+  overflow-y: auto;
+}
+
+.sheetHandle {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: #e5e7eb;
+  margin: 0 auto 16px;
+}
+
+/* ---- skeleton / empty / states ---- */
+
+.skeletonRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+}
+
+.skeletonCircle {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #e5e7eb;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.skeletonBar {
+  height: 12px;
+  border-radius: 6px;
+  background: #e5e7eb;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+
+.emptyState {
+  text-align: center;
+  padding: 36px 24px;
+}
+
+.emptyTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+
+.emptyText {
+  font-size: 13px;
+  color: #6b7280;
+  margin: 0 0 16px;
+  line-height: 1.6;
+}
+
+.codeBox {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  background: #f3f4f6;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 0 auto;
+  max-width: 260px;
+}
+
+.errorBox {
+  margin: 16px 20px;
+  background: #fef2f2;
+  color: #b91c1c;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 13px;
+}
+
+/* ---- item cards (multi) ---- */
+
+.itemCard {
+  display: flex;
+  gap: 12px;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 14px 16px;
+}
+
+.itemBody {
+  flex: 1;
+  min-width: 0;
+}
+
+.itemTitle {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
+
+.itemMeta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* ---- task view page ---- */
+
+.progressTrack {
+  height: 8px;
+  border-radius: 4px;
+  background: #e5e7eb;
+  overflow: hidden;
+}
+
+.progressFill {
+  height: 100%;
+  border-radius: 4px;
+  background: #0d9488;
+  transition: width 0.4s ease;
+}
+
+.doneBtn {
+  background: #0d9488;
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.doneBtn:disabled {
+  background: #d1d5db;
+}
+
+.doneMark {
+  color: #059669;
+  font-size: 13px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.successWrap {
+  text-align: center;
+  padding: 64px 24px 24px;
+}
+
+.successCircle {
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #0d9488;
+  color: #fff;
+  font-size: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+  animation: pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes pop {
+  0% { transform: scale(0.3); opacity: 0; }
+  100% { transform: scale(1); opacity: 1; }
+}

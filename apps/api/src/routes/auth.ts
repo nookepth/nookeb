@@ -146,6 +146,78 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  // POST /auth/liff — LIFF id-token → app session cookie (ระบบตามงาน pages).
+  // The LIFF SDK hands the page a signed id token; LINE's verify endpoint
+  // checks signature/expiry/audience server-side, so this is as strong as the
+  // authorization-code flow above. The LIFF app must be created under the same
+  // LINE Login channel (aud = LINE_LOGIN_CHANNEL_ID). Same abuse posture as
+  // /auth/line: 10/min per IP + ban.
+  app.post('/auth/liff', {
+    config: {
+      rateLimit: {
+        max: 10,
+        timeWindow: '1 minute',
+        ban: 5,
+        errorResponseBuilder: () => ({
+          statusCode: 429,
+          error: 'Too Many Requests',
+          message: 'Rate limit exceeded',
+        }),
+      },
+    },
+  }, async (request, reply) => {
+    const bodySchema = z.object({ idToken: z.string().min(1) });
+    const parsed = bodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body' });
+    }
+    const loginChannelId = config.LINE_LOGIN_CHANNEL_ID;
+    if (!loginChannelId) {
+      return reply.code(503).send({ error: 'LINE Login is not configured' });
+    }
+
+    let verifyRes: Response;
+    try {
+      verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({ id_token: parsed.data.idToken, client_id: loginChannelId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        app.log.warn('LIFF id-token verify timed out after 15000ms');
+        return reply.code(503).send({ error: 'LINE login temporarily unavailable' });
+      }
+      throw err;
+    }
+    if (!verifyRes.ok) {
+      app.log.warn({ status: verifyRes.status }, 'LIFF id-token verify failed');
+      return reply.code(401).send({ error: 'LIFF login failed' });
+    }
+    const claims = (await verifyRes.json()) as { sub: string; name?: string; picture?: string };
+
+    const { user, space } = await ensureUserAndSpace(
+      app.supabase,
+      claims.sub,
+      claims.name,
+      claims.picture,
+    );
+    const accessToken = signAppToken({
+      sub: user.id,
+      lineUserId: user.line_user_id,
+      sessionVersion: user.session_version ?? 1,
+    });
+    reply.setCookie(SESSION_COOKIE, accessToken, {
+      httpOnly: true,
+      secure: config.NODE_ENV === 'production',
+      sameSite: 'lax',
+      path: '/',
+      maxAge: SESSION_COOKIE_MAX_AGE_SECONDS,
+    });
+    return { user: toUserDto(user), defaultSpaceId: space.id };
+  });
+
   // POST /auth/logout — clear the session cookie. No auth required: clearing a
   // cookie that is missing/expired/invalid must still succeed (the web calls
   // this on any 401 to shed a stale cookie).

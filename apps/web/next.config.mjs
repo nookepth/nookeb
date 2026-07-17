@@ -49,7 +49,10 @@ const csp = Object.entries({
   // photos beside it (img-src https:) loaded fine.
   'media-src': ["'self'", 'blob:', 'https:'],
   'font-src': ["'self'", 'data:'],
-  'connect-src': ["'self'"],
+  // api.line.me: the LIFF SDK (@line/liff, bundled via npm — no CDN script) on
+  // /liff/tasks/* calls LINE's REST endpoints directly from the page (init,
+  // profile). Everything else stays same-origin via /api-proxy.
+  'connect-src': ["'self'", 'https://api.line.me'],
   'object-src': ["'self'", 'https:'],
   'frame-src': ["'self'", 'https:'],
   'base-uri': ["'self'"],

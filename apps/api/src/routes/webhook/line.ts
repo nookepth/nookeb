@@ -58,6 +58,7 @@ import { bangkokDateString, countEntries, getEntryByDate } from '../../services/
 import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { logEvent, type EventType } from '../../services/events.service';
+import { handleRegisterCommand, handleTaskPostback } from './task-handlers';
 import { config } from '../../config';
 
 interface LineEventSource {
@@ -475,6 +476,14 @@ async function handleTextCommand(
   // "หนูเก็บ…"-prefixed, a bare menu word, or the numbered team-pick re-send
   // ("ผูกทีม 2"). 1-on-1 chats also handle bare commands (the tail fallback below
   // only nudges on an UNRECOGNIZED "หนูเก็บ…" message, so random chatter stays quiet).
+  // ระบบตามงาน roster opt-in ("/register" / "สมัคร") — deliberately UNPREFIXED
+  // (ขุนทอง-style: teammates just type it), so it must be matched BEFORE the
+  // group bot-directed guard below would drop it as ordinary chatter.
+  if (isCmd(text, '/register', 'register', 'สมัคร', 'ลงทะเบียน')) {
+    await handleRegisterCommand(app, event);
+    return;
+  }
+
   if (source.type === 'group' || source.type === 'room') {
     const isBindTeam = /^(?:ผูกทีม|bind team)\s+\d+$/i.test(text.trim());
     if (!prefixed && !isCmd(text, 'menu', 'เมนู') && !isBindTeam) return;
@@ -1064,6 +1073,12 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   // text so the taps behave exactly like sending that command.
   if (event.type === 'postback') {
     if (event.source.userId && event.postback?.data) {
+      // ระบบตามงาน Flex buttons (รับงาน / เสร็จแล้ว) carry URL-encoded data, not
+      // a "หนูเก็บ…" text command — route them before the text-command path.
+      if (event.postback.data.startsWith('action=task_')) {
+        await handleTaskPostback(app, event);
+        return;
+      }
       await drainPendingForEvent(app, event, event.source.userId);
       try {
         await handleTextCommand(app, event, event.postback.data);

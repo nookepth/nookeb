@@ -22,7 +22,12 @@ securely later if ever needed.)
 ### NEVER use push messages — use reply only
 - push = costs monthly quota → fails silently when quota runs out
 - reply = always free, always works, no quota consumed
-- This is a hard rule with no exceptions
+- This is a hard rule with ONE sanctioned exception: ระบบตามงาน (Task Manager).
+  Task announcements originate from a LIFF web submit and reminders from a
+  BullMQ timer — neither ever has a replyToken, so they push via `pushMessage`
+  in `line.service.ts` (which exists for THAT feature only; every push failure
+  is logged loudly + recorded in `task_reminders.failed_at`). Everything else
+  (uploads, scans, diary, referral, …) stays reply-only.
 
 ### How reply works in async workers
 When a worker finishes a long job (OCR, convert, scan merge etc.),
@@ -326,6 +331,60 @@ own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
   `box_deleted`. Dashboard entry: `components/LegacyBoxEntryCard.tsx` (diary-banner
   geometry, themed to the newest box).
 
+## ระบบตามงาน (Task Manager) — LIFF + web, migration 036
+Khun-Thong-style group task chasing at `/liff/tasks/*` (API `routes/tasks.ts` +
+`routes/groups.ts`, data access `services/task.service.ts`): tasks are created
+entirely in the LIFF web flow (no LINE typing), announced into the group as a
+Flex PUSH, and chased by scheduled reminder pushes — this feature is the ONE
+sanctioned exception to the reply-only rule (see LINE Messaging section).
+- Tables (all RLS-enabled with NO policies = deny-all backstop; service role
+  bypasses, routes check membership explicitly): `tasks`, `task_items`,
+  `task_assignees`, `task_reminders`, `group_members`. Tenant key is
+  `group_line_id`; `tasks.space_id` is an informational link only. Soft-delete
+  only; reminder rows are stamped (`sent_at`/`failed_at`/`cancelled_at`), never deleted.
+- Roster: LINE's API can't list group members, so assignees come from
+  `group_members` — an opt-in roster: teammates type `/register` (or `สมัคร`/
+  `ลงทะเบียน`, unprefixed by design — matched BEFORE the group bot-directed
+  guard in `webhook/line.ts`) and the LIFF self-registers its opener via
+  `POST /groups/:groupId/register`. Profiles always fetched server-side from
+  LINE, never client-supplied. Trust model: the group id is the capability
+  (unguessable, same model as share links).
+- Types: `single` (1 implicit item), `multi` (per-item assignees/deadlines;
+  items without their own deadline share ONE task-level reminder round),
+  `recurring` (rule in `recurrence_rule` JSONB, Bangkok wall clock via dayjs/tz;
+  first-round deadline computed at create; a self-scheduling `task_recur_next`
+  BullMQ job at deadline+90min resets marks and schedules the next round —
+  recurring tasks never reach status 'done').
+- Reminders (`services/taskScheduler.ts` + `workers/taskReminderWorker.ts`,
+  own queue `nookeb-task-reminders`): 3วัน/1วัน/3ชม before + 1ชม past deadline
+  as BullMQ delayed jobs (jobId `reminder-{reminderRowId}` — row id is the
+  idempotency key; handler re-checks row + task state each attempt, so
+  done/cancelled rounds stand down silently). Delivery = ONE push carrying a
+  textV2 @mention message + urgency-colored Flex card (builders in
+  `services/lineMessage.ts` — NO emoji, per Flex brand rule). attempts:3
+  exponential 10s; final failure stamps `failed_at`. Done/edit cancels or
+  reschedules outstanding rows + jobs.
+- Interactions stay reply-based: Flex buttons post back `action=task_done` /
+  `action=task_accept` (routed in `webhook/task-handlers.ts` BEFORE the
+  carousel postback path), replies confirm; all-assignees-done rolls item →
+  task done and cancels remaining reminders.
+- LIFF: pages under `apps/web/app/liff/tasks/` (create 4-step flow + task view
+  with optimistic done). `@line/liff` via npm (no CDN); CSP `connect-src` must
+  keep `https://api.line.me`. Session = LIFF id token exchanged at
+  `POST /auth/liff` (verified against LINE, aud = LINE_LOGIN_CHANNEL_ID) for
+  the same HttpOnly cookie; the LIFF app must live under the LINE Login
+  channel with endpoint `<WEB_URL>/liff/tasks`. Create-flow draft lives in
+  sessionStorage (LIFF navigations can hard-reload; URL params can't hold a
+  multi task). `LINE_LIFF_ID` (API) / `NEXT_PUBLIC_LIFF_ID` (web) are optional —
+  unset falls back to plain WEB_URL links / LIFF-less dev mode (`?groupId=`).
+- Calendar: `GET /tasks/:id/ics` (ical-generator; VALARM −1440/−180 min; RRULE
+  for recurring) — UNAUTHENTICATED by design (the Flex button opens an external
+  browser with no cookie): task UUID is the capability, own 30/min per-IP
+  limit, noindex + no-store. No Google OAuth, ever — ICS only.
+- Rich menu: NOT touched (policy). The "สร้างงาน" entry point needs a rich-menu
+  change → requires explicit approval + `setup-rich-menu-ab.ts` update; until
+  then the LIFF URL is shared/pinned manually or opened from task cards.
+
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
@@ -426,6 +485,12 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     nothing backfills it — the reveal page just omits the player. NOT auto-applied;
     apply BEFORE the API deploy (POST /legacy-box writes it). Additive — either order
     is safe.
+  - `036_tasks.sql` — ระบบตามงาน (Task Manager): `tasks` + `task_items` +
+    `task_assignees` + `task_reminders` + `group_members` (see the Task Manager
+    section). RLS enabled with no policies (deny-all backstop). NOT auto-applied;
+    apply BEFORE deploying the task code (the /tasks, /groups routes and the
+    "/register" webhook command error without these tables; everything else is
+    unaffected).
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -569,6 +634,10 @@ and `supabase/backfills/` for specifics.
 - `VAULT_MASTER_KEY` / `VAULT_MAX_FILE_SIZE_MB` / `VAULT_PURGE_RETENTION_DAYS` —
   ห้องนิรภัย (Vault); routes reply 503 until the key (32-byte hex) is set.
   NEVER rotate/lose the key — existing vault files become unreadable.
+- `LINE_LIFF_ID` (API) / `NEXT_PUBLIC_LIFF_ID` (web) — ระบบตามงาน LIFF app id
+  (create under the LINE Login channel, endpoint `<WEB_URL>/liff/tasks`).
+  Optional: unset → LINE messages link to plain WEB_URL; LIFF pages run
+  LIFF-less for local dev.
 
 ## Status (built)
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.

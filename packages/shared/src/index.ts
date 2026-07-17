@@ -7,6 +7,7 @@ export * from './types/space';
 export * from './types/team';
 export * from './types/diary';
 export * from './types/jobs';
+export * from './types/task';
 export * from './types/legacy-box';
 export * from './legacy-box-stickers';
 export * from './legacy-box-themes';
