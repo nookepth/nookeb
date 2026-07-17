@@ -2,15 +2,34 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
-import type { LegacyBoxThemeId } from '@nookeb/shared';
-import { THEMES, THEME_IDS } from '@nookeb/shared';
-import { ApiError, createLegacyBox, hasSession } from '@/lib/api';
+import type { LegacyBoxOccasionId, LegacyBoxThemeId } from '@nookeb/shared';
+import {
+  ALL_TAGLINES,
+  MAX_TAGLINE_LENGTH,
+  OCCASIONS,
+  OCCASION_IDS,
+  THEMES,
+  THEME_IDS,
+  defaultTaglineFor,
+  isOccasionId,
+} from '@nookeb/shared';
+import { ApiError, createLegacyBox, hasSession, postProInterest } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { AudioIcon, CheckBadgeIcon, LockIcon, OCCASION_ICONS, VideoIcon } from './OccasionIcons';
+import { VoiceRecorder } from './VoiceRecorder';
 import styles from './page.module.css';
 
 /**
- * สร้างกล่องของขวัญ — 3-step create flow:
- * 1) รูป (1–10, drag/arrow reorder) → 2) ข้อความ → 3) ธีมสี + preview → submit.
+ * สร้างกล่องของขวัญ — 4-step create flow:
+ * 1) โอกาส → 2) รูป (1–10, drag/arrow reorder) → 3) ข้อความ + ประโยคส่งท้าย →
+ * 4) ธีมสี + preview → submit.
+ *
+ * The occasion (step 1) is authoring metadata that seeds the rest: it
+ * pre-selects the theme and the tagline, both of which the creator can still
+ * override in their own step. Seeding happens ONLY in pickOccasion / the
+ * localStorage restore — never in a render-time effect, which would stomp a
+ * manual theme choice every time the creator stepped backwards.
+ *
  * The page background bleeds to the chosen theme (400ms transition) so the
  * creator sees the recipient's mood while building. Upload goes through
  * createLegacyBox (XHR progress — same pattern as the vault).
@@ -21,6 +40,9 @@ const MAX_SOURCE_MB = 20;
 const MAX_TITLE = 60;
 const MAX_MESSAGE = 500;
 
+/** Only the occasion survives a refresh (per spec) — the rest of the draft is in-memory. */
+const OCCASION_STORAGE_KEY = 'nookeb.legacy-box.occasion';
+
 interface PickedPhoto {
   /** stable key for reorder animations */
   key: string;
@@ -28,16 +50,35 @@ interface PickedPhoto {
   previewUrl: string;
 }
 
-type Step = 1 | 2 | 3;
+type Step = 1 | 2 | 3 | 4;
+
+type ProFeature = 'audio' | 'video';
+
+const PRO_FEATURES: { id: ProFeature; label: string; Icon: () => JSX.Element }[] = [
+  { id: 'audio', label: 'เพิ่มเสียง / เพลง', Icon: AudioIcon },
+  { id: 'video', label: 'แนบวิดีโอสั้น', Icon: VideoIcon },
+];
 
 let nextKey = 0;
 
 export default function NewLegacyBoxPage() {
   const [needsLogin, setNeedsLogin] = useState(false);
   const [step, setStep] = useState<Step>(1);
+  const [occasion, setOccasion] = useState<LegacyBoxOccasionId | null>(null);
   const [photos, setPhotos] = useState<PickedPhoto[]>([]);
   const [title, setTitle] = useState('');
   const [message, setMessage] = useState('');
+  /** the chosen chip; '' means "none selected" (the creator is typing a custom one) */
+  const [tagline, setTagline] = useState('');
+  const [customTagline, setCustomTagline] = useState('');
+  const [showAllTaglines, setShowAllTaglines] = useState(false);
+  /**
+   * The committed voice clip, held in memory until submit — nothing is uploaded
+   * while recording or previewing, so abandoning the draft leaves no orphan in R2.
+   */
+  const [voice, setVoice] = useState<Blob | null>(null);
+  const [proModal, setProModal] = useState<ProFeature | null>(null);
+  const [proNotified, setProNotified] = useState<ProFeature[]>([]);
   const [themeId, setThemeId] = useState<LegacyBoxThemeId>('rose');
   const [dragOverZone, setDragOverZone] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -56,6 +97,22 @@ export default function NewLegacyBoxPage() {
     if (!hasSession()) setNeedsLogin(true);
   }, []);
 
+  // Restore the occasion (and re-seed what it implies) after a refresh. Reading
+  // localStorage in an effect rather than a useState initializer keeps the first
+  // client render identical to the server's — otherwise this hydration-mismatches.
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = window.localStorage.getItem(OCCASION_STORAGE_KEY);
+    } catch {
+      // private-mode / blocked storage — the flow works fine without persistence
+    }
+    if (!saved || !isOccasionId(saved)) return;
+    setOccasion(saved);
+    setThemeId(OCCASIONS[saved].theme);
+    setTagline(defaultTaglineFor(saved));
+  }, []);
+
   // Revoke every preview object URL on unmount (not on each photos change —
   // reorders keep the same URLs alive).
   useEffect(
@@ -67,6 +124,61 @@ export default function NewLegacyBoxPage() {
   );
 
   const theme = THEMES[themeId];
+
+  /**
+   * Picking an occasion seeds the theme + tagline. Both are only *defaults*: the
+   * creator can still change either in its own step, and re-picking the same
+   * occasion deliberately resets them (it reads as "start this mood over").
+   */
+  const pickOccasion = useCallback((id: LegacyBoxOccasionId) => {
+    setOccasion(id);
+    setThemeId(OCCASIONS[id].theme);
+    setTagline(defaultTaglineFor(id));
+    setCustomTagline('');
+    setShowAllTaglines(false);
+    try {
+      window.localStorage.setItem(OCCASION_STORAGE_KEY, id);
+    } catch {
+      // non-fatal: persistence is a convenience, not part of the draft
+    }
+  }, []);
+
+  /** Chips and the custom input are one control: choosing either clears the other. */
+  const pickTaglineChip = useCallback((value: string) => {
+    setTagline(value);
+    setCustomTagline('');
+  }, []);
+
+  const onCustomTaglineChange = useCallback((value: string) => {
+    setCustomTagline(value);
+    if (value.trim()) setTagline('');
+  }, []);
+
+  /**
+   * What actually gets sent. A custom line wins; otherwise the selected chip.
+   * Never empty — if the creator clears a half-typed custom line without picking
+   * a chip, this falls back to the occasion's default rather than sending null
+   * and silently landing on a generic tagline they never saw.
+   */
+  const effectiveTagline = customTagline.trim() || tagline || defaultTaglineFor(occasion);
+
+  const visibleTaglines = useMemo(() => {
+    if (showAllTaglines) return ALL_TAGLINES;
+    return occasion ? OCCASIONS[occasion].taglines : OCCASIONS.special.taglines;
+  }, [occasion, showAllTaglines]);
+
+  const notifyPro = useCallback(async (feature: ProFeature) => {
+    // Demand-test tap: the count is the whole point, so a failed POST still
+    // closes the modal happily rather than surfacing an error for a button whose
+    // only promise is "we'll tell you later".
+    try {
+      await postProInterest(feature);
+    } catch {
+      // swallowed on purpose — see above
+    }
+    setProNotified((prev) => (prev.includes(feature) ? prev : [...prev, feature]));
+    setProModal(null);
+  }, []);
 
   const showToast = useCallback((text: string) => {
     setToast(text);
@@ -129,7 +241,10 @@ export default function NewLegacyBoxPage() {
           title: title.trim() || 'กล่องของขวัญ',
           message,
           theme: themeId,
+          occasion,
+          tagline: effectiveTagline,
           photos: photos.map((p) => p.file),
+          voice,
         },
         setProgress,
       );
@@ -221,7 +336,12 @@ export default function NewLegacyBoxPage() {
     );
   }
 
-  const stepLabels: Record<Step, string> = { 1: 'อัพโหลดรูป', 2: 'เขียนข้อความ', 3: 'เลือกธีมสี' };
+  const stepLabels: Record<Step, string> = {
+    1: 'เลือกโอกาส',
+    2: 'อัพโหลดรูป',
+    3: 'เขียนข้อความ',
+    4: 'เลือกธีมสี',
+  };
 
   return (
     <main className={styles.page} style={themeVars}>
@@ -234,8 +354,8 @@ export default function NewLegacyBoxPage() {
         </header>
 
         {/* step indicator */}
-        <div className={styles.steps} aria-label={`ขั้นตอนที่ ${step} จาก 3`}>
-          {([1, 2, 3] as const).map((s, i) => (
+        <div className={styles.steps} aria-label={`ขั้นตอนที่ ${step} จาก 4`}>
+          {([1, 2, 3, 4] as const).map((s, i) => (
             <div key={s} style={{ display: 'contents' }}>
               {i > 0 && <span className={styles.stepLine} aria-hidden />}
               <div
@@ -248,8 +368,57 @@ export default function NewLegacyBoxPage() {
           ))}
         </div>
 
-        {/* ---------- step 1: photos ---------- */}
+        {/* ---------- step 1: occasion ---------- */}
         {step === 1 && (
+          <section className={styles.card}>
+            <h2 className={styles.cardTitle}>กล่องนี้ส่งในโอกาสไหน</h2>
+            <p className={styles.cardHint}>เลือกโอกาสแล้วเราจะจัดธีมสีและประโยคส่งท้ายให้ก่อน เปลี่ยนเองได้ทีหลัง</p>
+
+            <div className={styles.occasionGrid} role="radiogroup" aria-label="โอกาส">
+              {OCCASION_IDS.map((id) => {
+                const item = OCCASIONS[id];
+                const Icon = OCCASION_ICONS[id];
+                const selected = id === occasion;
+                return (
+                  <button
+                    key={id}
+                    type="button"
+                    role="radio"
+                    aria-checked={selected}
+                    className={`${styles.occasionCard} ${selected ? styles.occasionCardActive : ''}`}
+                    onClick={() => pickOccasion(id)}
+                  >
+                    <span className={styles.occasionIcon} aria-hidden>
+                      <Icon />
+                    </span>
+                    <span className={styles.occasionName}>{item.name}</span>
+                    <span className={styles.occasionSub}>{item.subtitle}</span>
+                    {selected && (
+                      <span className={styles.occasionCheck} aria-hidden>
+                        <CheckBadgeIcon />
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className={styles.navRow}>
+              <span />
+              <button
+                type="button"
+                className={`${styles.navBtn} ${styles.nextBtn}`}
+                onClick={() => setStep(2)}
+                disabled={!occasion}
+              >
+                ถัดไป →
+              </button>
+            </div>
+          </section>
+        )}
+
+        {/* ---------- step 2: photos ---------- */}
+        {step === 2 && (
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>เลือกรูปความทรงจำ</h2>
             <p className={styles.cardHint}>ใส่ได้ 1–10 รูป ลากสลับตำแหน่งเพื่อจัดลำดับได้เลย</p>
@@ -369,11 +538,13 @@ export default function NewLegacyBoxPage() {
             {error && <div className={styles.error}>{error}</div>}
 
             <div className={styles.navRow}>
-              <span />
+              <button type="button" className={`${styles.navBtn} ${styles.backBtn}`} onClick={() => setStep(1)}>
+                ← ย้อนกลับ
+              </button>
               <button
                 type="button"
                 className={`${styles.navBtn} ${styles.nextBtn}`}
-                onClick={() => setStep(2)}
+                onClick={() => setStep(3)}
                 disabled={photos.length === 0}
               >
                 ถัดไป →
@@ -382,8 +553,8 @@ export default function NewLegacyBoxPage() {
           </section>
         )}
 
-        {/* ---------- step 2: message ---------- */}
-        {step === 2 && (
+        {/* ---------- step 3: message + tagline + pro placeholder ---------- */}
+        {step === 3 && (
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>เขียนถึงคนพิเศษ</h2>
             <p className={styles.cardHint}>ข้อความจะโชว์หลังเขาเปิดกล่อง (เว้นว่างได้)</p>
@@ -425,19 +596,101 @@ export default function NewLegacyBoxPage() {
               </span>
             </div>
 
+            {/* ---- tagline picker ---- */}
+            <div className={styles.field}>
+              <span className={styles.fieldLabel}>เลือกประโยคส่งท้าย</span>
+              <div className={styles.taglineChips} role="radiogroup" aria-label="ประโยคส่งท้าย">
+                {visibleTaglines.map((line) => {
+                  const selected = !customTagline.trim() && line === tagline;
+                  return (
+                    <button
+                      key={line}
+                      type="button"
+                      role="radio"
+                      aria-checked={selected}
+                      className={`${styles.taglineChip} ${selected ? styles.taglineChipActive : ''}`}
+                      onClick={() => pickTaglineChip(line)}
+                    >
+                      {line}
+                    </button>
+                  );
+                })}
+              </div>
+              {!showAllTaglines && (
+                <button
+                  type="button"
+                  className={styles.taglineMore}
+                  onClick={() => setShowAllTaglines(true)}
+                >
+                  ดูเพิ่มเติม
+                </button>
+              )}
+
+              <label className={styles.customTaglineLabel} htmlFor="box-tagline">
+                หรือพิมพ์เอง...
+              </label>
+              <input
+                id="box-tagline"
+                className={styles.titleInput}
+                type="text"
+                value={customTagline}
+                maxLength={MAX_TAGLINE_LENGTH}
+                placeholder="เขียนประโยคส่งท้ายของคุณเอง..."
+                onChange={(e) => onCustomTaglineChange(e.target.value)}
+              />
+              <span
+                className={`${styles.charCount} ${customTagline.length >= MAX_TAGLINE_LENGTH ? styles.charCountOver : ''}`}
+              >
+                {customTagline.length}/{MAX_TAGLINE_LENGTH}
+              </span>
+              <p className={styles.taglinePreview}>
+                จะขึ้นบนกล่องว่า “<strong>{effectiveTagline}</strong>”
+              </p>
+            </div>
+
+            {/* ---- voice message (optional) ---- */}
+            <VoiceRecorder value={voice} onChange={setVoice} />
+
+            {/* ---- Pro placeholder (demand test — no upload exists) ---- */}
+            <div className={styles.proSection}>
+              <span className={styles.fieldLabel}>ฟีเจอร์พิเศษ (Pro)</span>
+              <div className={styles.proRows}>
+                {PRO_FEATURES.map(({ id, label, Icon }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    className={styles.proRow}
+                    onClick={() => setProModal(id)}
+                  >
+                    <span className={styles.proRowIcon} aria-hidden>
+                      <Icon />
+                    </span>
+                    <span className={styles.proRowLabel}>{label}</span>
+                    {proNotified.includes(id) && <span className={styles.proDone}>จะแจ้งเตือนน้า</span>}
+                    <span className={styles.proBadge}>
+                      <span className={styles.proLock} aria-hidden>
+                        <LockIcon />
+                      </span>
+                      Pro
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+
             <div className={styles.navRow}>
-              <button type="button" className={`${styles.navBtn} ${styles.backBtn}`} onClick={() => setStep(1)}>
+              <button type="button" className={`${styles.navBtn} ${styles.backBtn}`} onClick={() => setStep(2)}>
                 ← ย้อนกลับ
               </button>
-              <button type="button" className={`${styles.navBtn} ${styles.nextBtn}`} onClick={() => setStep(3)}>
+              <button type="button" className={`${styles.navBtn} ${styles.nextBtn}`} onClick={() => setStep(4)}>
                 ถัดไป →
               </button>
             </div>
           </section>
         )}
 
-        {/* ---------- step 3: theme ---------- */}
-        {step === 3 && (
+        {/* ---------- step 4: theme ---------- */}
+        {step === 4 && (
           <section className={styles.card}>
             <h2 className={styles.cardTitle}>เลือกธีมสี</h2>
             <p className={styles.cardHint}>ทั้งหน้าจะเปลี่ยนตามสีที่เลือก ลองกดดูได้เลย</p>
@@ -492,7 +745,7 @@ export default function NewLegacyBoxPage() {
               <button
                 type="button"
                 className={`${styles.navBtn} ${styles.backBtn}`}
-                onClick={() => setStep(2)}
+                onClick={() => setStep(3)}
                 disabled={submitting}
               >
                 ← ย้อนกลับ
@@ -510,6 +763,44 @@ export default function NewLegacyBoxPage() {
           </section>
         )}
       </div>
+
+      {proModal && (
+        <div
+          className={styles.modalOverlay}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="pro-modal-title"
+          onClick={() => setProModal(null)}
+        >
+          {/* stop the backdrop's dismiss from firing on clicks inside the panel */}
+          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+            <span className={styles.modalIcon} aria-hidden>
+              <LockIcon />
+            </span>
+            <h2 className={styles.modalTitle} id="pro-modal-title">
+              ฟีเจอร์นี้อยู่ในแผน Pro
+            </h2>
+            <p className={styles.modalText}>เร็วๆ นี้ — กดแจ้งเตือนเพื่อรับข่าวสาร</p>
+            <div className={styles.modalActions}>
+              <button
+                type="button"
+                className={`${styles.navBtn} ${styles.nextBtn}`}
+                onClick={() => void notifyPro(proModal)}
+              >
+                แจ้งเตือนฉัน
+              </button>
+              <button
+                type="button"
+                className={`${styles.navBtn} ${styles.backBtn}`}
+                onClick={() => setProModal(null)}
+              >
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {toast && <div className={styles.toast}>{toast}</div>}
     </main>
   );

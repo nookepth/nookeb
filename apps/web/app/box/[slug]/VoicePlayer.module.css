@@ -1,0 +1,183 @@
+/* เสียงจากผู้ส่ง — pill player on the reveal page. Uses only theme vars the
+   page already sets (--bx-bg, --bx-card, --bx-accent, --bx-text, --bx-glow);
+   no new colour variables. */
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: min(420px, 100%);
+  margin: 4px auto 0;
+  padding: 14px 16px;
+  border-radius: 999px;
+  background: var(--bx-bg);
+  border: 1.5px solid var(--bx-accent);
+  box-shadow: 0 4px 16px var(--bx-glow);
+  color: var(--bx-text);
+}
+
+/* The pill only reads as a pill while it's one line tall; once the head and the
+   controls stack it needs real corners. */
+@media (max-width: 380px) {
+  .card {
+    border-radius: 22px;
+  }
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.micIcon {
+  display: block;
+  color: var(--bx-accent);
+  flex: 0 0 auto;
+}
+.micIcon svg {
+  display: block;
+}
+.headText {
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.playBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 140ms ease;
+}
+.playBtn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+.playBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.playBtn svg {
+  display: block;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  animation: spin 700ms linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- scrub bar ----
+   The filled portion is painted with a gradient hard-stop at --progress (set
+   inline from React) so the track colours work identically in WebKit and
+   Gecko, which disagree about ::-*-progress pseudo-elements. */
+.scrub {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 5px;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--bx-accent) 0%,
+    var(--bx-accent) var(--progress, 0%),
+    var(--bx-card) var(--progress, 0%),
+    var(--bx-card) 100%
+  );
+  outline: none;
+  cursor: pointer;
+}
+.scrub:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px var(--bx-glow);
+  cursor: pointer;
+}
+.scrub::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px var(--bx-glow);
+  cursor: pointer;
+  border-color: #fff;
+}
+/* Firefox paints its own track over the background gradient above. */
+.scrub::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+.time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+/* ---- error ---- */
+
+.errorRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.errorText {
+  font-size: 13px;
+  opacity: 0.8;
+  margin-right: auto;
+}
+.retryBtn {
+  border: 1.5px solid var(--bx-accent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--bx-text);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: transform 140ms ease;
+}
+.retryBtn:active {
+  transform: scale(0.95);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 1.6s;
+  }
+}

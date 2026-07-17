@@ -316,9 +316,13 @@ export interface LegacyBoxPurgeResult {
 
 /**
  * กล่องของขวัญ counterpart (migration 033): after the retention window, delete
- * the R2 photo objects of soft-deleted boxes, hard-delete their
- * legacy_box_photos rows (child rows carrying only storage keys — nothing
- * needs them once the objects are gone), and stamp `purged_at` on the box row,
+ * the R2 photo objects of soft-deleted boxes AND the box's voice clip if it has
+ * one (migration 035 — the clip's key lives on the box row rather than in a
+ * child table, so it has to be swept explicitly; missing it would leave a
+ * recording of someone's voice in R2 forever after they deleted the box),
+ * hard-delete their legacy_box_photos rows (child rows carrying only storage
+ * keys — nothing needs them once the objects are gone), and stamp `purged_at`
+ * on the box row,
  * which is KEPT as a tombstone (rule 6). NO quota refund here: the box's bytes
  * were already refunded at soft-delete time (DELETE /legacy-box/:id), so a
  * refund in the sweep would double-pay. A box is only stamped once every one
@@ -334,13 +338,13 @@ export async function purgeDeletedBoxes(
 
   const { data, error } = await supabase
     .from('legacy_boxes')
-    .select('id')
+    .select('id, audio_key')
     .not('deleted_at', 'is', null)
     .is('purged_at', null)
     .lt('deleted_at', cutoff);
   if (error) throw error;
 
-  const boxes = (data ?? []) as { id: string }[];
+  const boxes = (data ?? []) as { id: string; audio_key: string | null }[];
   const result: LegacyBoxPurgeResult = {
     cutoff,
     scanned: boxes.length,
@@ -357,15 +361,19 @@ export async function purgeDeletedBoxes(
     if (photoErr) throw photoErr;
     const photos = (photoData ?? []) as { id: string; r2_key: string }[];
 
+    // Every R2 object the box owns: its photos, plus its voice clip (035).
+    const objectKeys = photos.map((p) => p.r2_key);
+    if (box.audio_key) objectKeys.push(box.audio_key);
+
     if (!opts.apply) {
-      result.objectsDeleted += photos.length;
+      result.objectsDeleted += objectKeys.length;
       continue;
     }
 
     let ok = true;
-    for (const photo of photos) {
+    for (const key of objectKeys) {
       try {
-        await deleteObject(r2, photo.r2_key);
+        await deleteObject(r2, key);
         result.objectsDeleted += 1;
       } catch {
         result.errors += 1;
@@ -384,10 +392,17 @@ export async function purgeDeletedBoxes(
     }
 
     // Tombstone: purged_at stamped, title/message redacted (they ARE the
-    // box's content), row kept — never DELETE FROM legacy_boxes.
+    // box's content) and audio_key nulled now that the object behind it is
+    // gone — a dangling key would make later runs re-attempt a delete that can
+    // never succeed. Row kept — never DELETE FROM legacy_boxes.
     const { error: markErr } = await supabase
       .from('legacy_boxes')
-      .update({ purged_at: new Date().toISOString(), title: '[deleted]', message: '' })
+      .update({
+        purged_at: new Date().toISOString(),
+        title: '[deleted]',
+        message: '',
+        audio_key: null,
+      })
       .eq('id', box.id);
     if (markErr) throw markErr;
   }

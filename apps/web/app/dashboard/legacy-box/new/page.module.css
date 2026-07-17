@@ -1,4 +1,7 @@
-/* กล่องของขวัญ — 3-step create flow. Background bleeds to the chosen theme. */
+/* กล่องของขวัญ — 4-step create flow. Background bleeds to the chosen theme.
+   Selection states use --bx-accent (the theme's own accent), never a fixed
+   colour: the whole page re-tints when the theme changes, so a hardcoded
+   highlight would clash with 5 of the 6 themes. */
 
 .page {
   min-height: 100dvh;
@@ -115,7 +118,102 @@
   margin: 0 0 16px;
 }
 
-/* ---------- step 1: photos ---------- */
+/* ---------- step 1: occasion ---------- */
+
+.occasionGrid {
+  display: grid;
+  /* 2 per row on mobile, 3 from tablet up */
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 4px;
+}
+@media (min-width: 560px) {
+  .occasionGrid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+.occasionCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 16px 10px 14px;
+  border: 2px solid rgba(0, 0, 0, 0.07);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+  color: inherit;
+  font-family: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 200ms ease,
+    background 200ms ease,
+    transform 150ms ease,
+    box-shadow 200ms ease;
+}
+.occasionCard:hover {
+  transform: translateY(-2px);
+  background: rgba(255, 255, 255, 0.9);
+}
+.occasionCard:active {
+  transform: scale(0.98);
+}
+.occasionCardActive {
+  border-color: var(--bx-accent);
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 4px 16px var(--bx-glow);
+}
+
+.occasionIcon {
+  width: 30px;
+  height: 30px;
+  opacity: 0.75;
+  transition:
+    opacity 200ms ease,
+    color 200ms ease;
+}
+.occasionIcon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.occasionCardActive .occasionIcon {
+  color: var(--bx-accent);
+  opacity: 1;
+}
+
+.occasionName {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.occasionSub {
+  font-size: 11.5px;
+  opacity: 0.65;
+  line-height: 1.4;
+}
+
+.occasionCheck {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 20px;
+  height: 20px;
+  padding: 3px;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  color: #fff;
+  box-sizing: border-box;
+}
+.occasionCheck svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ---------- step 2: photos ---------- */
 
 .dropZone {
   border: 2px dashed var(--bx-accent);
@@ -315,7 +413,259 @@
   font-weight: 700;
 }
 
-/* ---------- step 3: theme picker ---------- */
+/* ---------- step 3: tagline picker ---------- */
+
+.taglineChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 4px;
+}
+/* On mobile the chips scroll sideways instead of stacking into a tall wall. */
+@media (max-width: 559px) {
+  .taglineChips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    /* bleed to the card edge so the cut-off chip reads as "scrollable" */
+    margin-inline: -20px;
+    padding-inline: 20px;
+    padding-bottom: 4px;
+  }
+  .taglineChips::-webkit-scrollbar {
+    display: none;
+  }
+  .taglineChip {
+    flex: 0 0 auto;
+    scroll-snap-align: start;
+  }
+}
+
+.taglineChip {
+  border: 1.5px solid rgba(0, 0, 0, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: inherit;
+  font-family: inherit;
+  font-size: 13.5px;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 140ms ease;
+}
+.taglineChip:hover {
+  border-color: var(--bx-accent);
+}
+.taglineChip:active {
+  transform: scale(0.96);
+}
+.taglineChipActive {
+  background: var(--bx-accent);
+  border-color: var(--bx-accent);
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 3px 10px var(--bx-glow);
+}
+
+.taglineMore {
+  align-self: flex-start;
+  border: none;
+  background: none;
+  color: var(--bx-accent);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 2px 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.customTaglineLabel {
+  font-size: 13px;
+  opacity: 0.7;
+  margin-top: 8px;
+}
+
+.taglinePreview {
+  font-size: 12.5px;
+  opacity: 0.7;
+  margin: 2px 0 0;
+  line-height: 1.5;
+}
+
+/* ---------- step 3: Pro placeholder (demand test) ---------- */
+
+.proSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(0, 0, 0, 0.07);
+}
+.proRows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Locked, not disabled: the tap IS the feature (it records interest), so these
+   stay focusable and keyboard-reachable. The Pro badge carries the "locked"
+   meaning; the dimmed label carries it visually. */
+.proRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1.5px dashed rgba(0, 0, 0, 0.14);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.45);
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 180ms ease,
+    border-color 180ms ease;
+}
+.proRow:hover {
+  background: rgba(255, 255, 255, 0.7);
+  border-color: var(--bx-accent);
+}
+.proRowIcon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  opacity: 0.5;
+}
+.proRowIcon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.proRowLabel {
+  font-size: 14px;
+  opacity: 0.6;
+}
+.proDone {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--bx-accent);
+  margin-left: auto;
+}
+.proBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  background: var(--bx-accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  flex: 0 0 auto;
+}
+/* when the "จะแจ้งเตือนน้า" note takes the auto margin, the badge must not also */
+.proDone ~ .proBadge {
+  margin-left: 0;
+}
+.proLock {
+  width: 11px;
+  height: 11px;
+}
+.proLock svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+/* ---------- Pro modal ---------- */
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  animation: modalFade 180ms ease;
+}
+.modal {
+  width: 100%;
+  max-width: 340px;
+  border-radius: 22px;
+  background: #fff;
+  padding: 26px 22px 20px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  animation: modalPop 200ms ease;
+}
+.modalIcon {
+  display: block;
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 10px;
+  color: var(--bx-accent);
+}
+.modalIcon svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.modalTitle {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 6px;
+}
+.modalText {
+  font-size: 13.5px;
+  opacity: 0.7;
+  margin: 0 0 18px;
+  line-height: 1.6;
+}
+.modalActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+@keyframes modalFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes modalPop {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .modalOverlay,
+  .modal {
+    animation: none;
+  }
+}
+
+/* ---------- step 4: theme picker ---------- */
 
 .themeLayout {
   display: flex;

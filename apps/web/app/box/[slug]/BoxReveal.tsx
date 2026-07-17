@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LegacyBoxOpenResponse, LegacyBoxTheme } from '@nookeb/shared';
-import { THEMES, getPolaroidTilt } from '@nookeb/shared';
+import { DEFAULT_TAGLINE, THEMES, getPolaroidTilt } from '@nookeb/shared';
 import { ApiError, getLegacyBoxOpen } from '@/lib/api';
 import { EmptyBoxIcon, GiftIcon } from './StickerArt';
 import { StickerField } from './StickerField';
+import { VoicePlayer } from './VoicePlayer';
 import styles from './page.module.css';
 
 /**
@@ -333,13 +334,20 @@ export function BoxReveal({ slug }: { slug: string }) {
           </div>
         )}
 
+        {/* The sender's voice, between the photos and their closing words.
+            Absent on every box without a recording (incl. all pre-035 ones),
+            where the API sends audio_url: null. */}
+        {box.audio_url && <VoicePlayer src={box.audio_url} />}
+
         {box.message && (
           <section className={styles.messageSection}>
             <p className={styles.messageText} data-safe-margin="16">
               {box.message}
             </p>
             <p className={styles.fromLine} data-safe-margin="16">
-              ส่งมาด้วยความคิดถึง
+              {/* the sender's closing line; the API already resolved NULL (every
+                  pre-034 box) to the default this line used to hardcode */}
+              {box.tagline || DEFAULT_TAGLINE}
             </p>
           </section>
         )}

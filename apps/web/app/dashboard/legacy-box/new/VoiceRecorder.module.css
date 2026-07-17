@@ -1,0 +1,338 @@
+/* เพิ่มเสียงพูด — recorder for the create flow's message step.
+   Geometry/《translucent white panel + accent》language is lifted from the
+   tagline and Pro rows in page.module.css so this reads as one card. Colours
+   come only from the theme vars the create page defines (--bx-accent,
+   --bx-glow, --bx-text); --bx-bg/--bx-card exist only on the reveal page. */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.label {
+  font-size: 13.5px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.hint {
+  font-size: 12.5px;
+  opacity: 0.6;
+  margin: 0;
+}
+
+.error {
+  background: rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #a33;
+  margin: 0;
+}
+
+/* ---------- idle ---------- */
+
+.idleRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.recordBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1.5px solid var(--bx-accent);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition:
+    background 180ms ease,
+    transform 140ms ease,
+    box-shadow 180ms ease;
+}
+.recordBtn:hover {
+  background: #fff;
+  box-shadow: 0 3px 10px var(--bx-glow);
+}
+.recordBtn:active {
+  transform: scale(0.96);
+}
+.micIcon {
+  display: block;
+  color: var(--bx-accent);
+}
+.micIcon svg {
+  display: block;
+}
+
+/* ---------- countdown ---------- */
+
+.countdownBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 20px;
+  border: 1.5px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.6);
+}
+
+/* keyed on the number in the JSX, so each tick remounts and replays this */
+.countdownNum {
+  font-size: 44px;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--bx-accent);
+  animation: countPop 900ms ease-out;
+}
+@keyframes countPop {
+  0% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+  30% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+}
+
+/* ---------- recording ---------- */
+
+.recordingBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 18px;
+  border: 1.5px solid var(--bx-accent);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.recordingHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+/* pulsing red dot — CSS only, no GIF */
+.redDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #e5484d;
+  align-self: center;
+  animation: dotPulse 1.2s ease-in-out infinite;
+}
+@keyframes dotPulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.35;
+    transform: scale(0.8);
+  }
+}
+
+.timer {
+  font-size: 22px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--bx-text);
+}
+.limitHint {
+  font-size: 13px;
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 5 bars, each with its own phase + duration so they never march in lockstep */
+.waveform {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 40px;
+}
+.waveBar {
+  width: 5px;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--bx-accent);
+  transform-origin: center;
+  animation: waveBounce calc(680ms + var(--bar) * 130ms) ease-in-out infinite;
+  animation-delay: calc(var(--bar) * -190ms);
+}
+@keyframes waveBounce {
+  0%,
+  100% {
+    transform: scaleY(0.25);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.stopBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  border-radius: 999px;
+  background: var(--bx-accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px 22px;
+  cursor: pointer;
+  transition: transform 140ms ease;
+}
+.stopBtn:active {
+  transform: scale(0.96);
+}
+.stopIcon {
+  display: block;
+}
+.stopIcon svg {
+  display: block;
+}
+
+/* ---------- preview ---------- */
+
+.previewBox {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1.5px solid rgba(0, 0, 0, 0.08);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.7);
+}
+.previewHead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.previewDuration {
+  font-size: 18px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--bx-accent);
+}
+
+.audio {
+  width: 100%;
+  height: 40px;
+}
+
+.previewActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.useBtn {
+  border: none;
+  border-radius: 999px;
+  background: var(--bx-accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  padding: 10px 20px;
+  cursor: pointer;
+  transition:
+    transform 140ms ease,
+    box-shadow 180ms ease;
+}
+.useBtn:hover {
+  box-shadow: 0 3px 10px var(--bx-glow);
+}
+.useBtn:active {
+  transform: scale(0.96);
+}
+
+.redoBtn {
+  border: 1.5px solid rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
+  color: inherit;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 10px 18px;
+  cursor: pointer;
+  transition:
+    border-color 180ms ease,
+    transform 140ms ease;
+}
+.redoBtn:hover {
+  border-color: var(--bx-accent);
+}
+.redoBtn:active {
+  transform: scale(0.96);
+}
+
+/* ---------- saved ---------- */
+
+.savedBox {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1.5px solid var(--bx-accent);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.75);
+}
+.savedIcon {
+  display: block;
+  color: var(--bx-accent);
+  flex: 0 0 auto;
+}
+.savedIcon svg {
+  display: block;
+}
+.savedText {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 700;
+  margin-right: auto;
+}
+.savedDuration {
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The waveform/countdown/dot are decorative motion — hold them still for
+   anyone who asked for less of it (matches the reveal page's policy). */
+@media (prefers-reduced-motion: reduce) {
+  .waveBar,
+  .redDot,
+  .countdownNum {
+    animation: none;
+  }
+  .waveBar {
+    transform: scaleY(0.55);
+  }
+}

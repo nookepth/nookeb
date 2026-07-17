@@ -230,17 +230,56 @@ back to the space root when the folder is gone).
   link with count badge + profile sheet.
 - Does NOT cover vault_files or diary_entries (both have their own delete/purge lifecycles).
 
-## กล่องของขวัญ (Legacy Box) — web-only, migration 033
+## กล่องของขวัญ (Legacy Box) — web-only, migrations 033 + 034 + 035
 Shareable digital gift boxes at `/dashboard/legacy-box` (API `routes/legacy-box.ts`,
 data access `services/legacy-box.service.ts`): 1–10 photos + a ≤500-char message behind
 a public slug URL (`/box/{slug}` — DB-generated token, same trust model as share links),
-opened by the recipient with an animated CSS gift-box reveal. Isolated like diary/vault:
+opened by the recipient with an animated CSS gift-box reveal.
+- Create flow (`/dashboard/legacy-box/new`) is 4 steps: โอกาส → รูป → ข้อความ +
+  ประโยคส่งท้าย → ธีมสี. The occasion (7 fixed ids in
+  `packages/shared/src/legacy-box-occasions.ts`, in sync with the 034 CHECK) is
+  authoring metadata only — nothing about access/lifecycle keys off it. Picking one
+  SEEDS the theme + tagline; seeding happens only in `pickOccasion`/the localStorage
+  restore, never in a render-time effect (that would stomp a manual theme choice on
+  every back-step). Only the occasion persists across refresh (localStorage).
+- `occasion`/`tagline` are both NULLABLE with no default: every pre-034 box is
+  occasion = NULL / tagline = NULL forever, and nothing backfills them. The API
+  resolves a NULL tagline to `DEFAULT_TAGLINE` ('ส่งมาด้วยความคิดถึง' — the string the
+  reveal page hardcoded until 034), so old boxes render unchanged. Resolution lives in
+  `taglineOf()`, not the component.
+- `POST /api/pro-interest` (`routes/pro-interest.ts`) is a demand test for two locked
+  Pro rows in step 3 — no audio/video upload and no billing exist. UNAUTHENTICATED by
+  spec, so: it records only THAT someone tapped (feature + timestamp, no user_id/IP/
+  session), returns an identical `{success:true}` to everyone, and carries its own
+  10/min per-IP limit — it is the app's only unauthenticated INSERT, and without that
+  limit the 100/min global cap is the only thing between it and row spam. Counts are
+  directional interest, NOT per-user truth — never build anything identity-bearing on
+  `pro_interest_log`. Isolated like diary/vault:
 own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
 (`legacy-box/{user_id}/{box_id}/{uuid}.webp`), no LINE-webhook/worker write path.
 - Photos: web multipart (registered in the route scope, like the vault) — max 10 files
   × 20 MB source; each is re-encoded through sharp (≤1600px, webp q82) BEFORE storage,
   which strips EXIF/GPS (never `.withMetadata()`). Max 10 live boxes per user (429).
-- Quota: exact webp bytes RESERVED up front via `incrementPersonalStorage(enforce)` →
+- Voice message (035, optional): `เพิ่มเสียงพูด` in step 3 records in-browser via
+  MediaRecorder (`new/VoiceRecorder.tsx`; idle→countdown→recording→preview→saved,
+  60s auto-stop) and the Blob rides the SAME `POST /legacy-box` multipart as the
+  photos — there is deliberately NO presigned-PUT/upload-URL endpoint. Uploading
+  at submit through the API is what makes the 5 MB cap and the quota reservation
+  real (a presigned PUT lands bytes the API never sees, so both would be
+  advisory) and leaves nothing to orphan. Duration is NOT server-enforceable (no
+  decoder) — the recorder's auto-stop is the only duration guard; `MAX_VOICE_BYTES`
+  is the real backstop. Container is decided by `sniffVoiceContainer()` (magic
+  bytes), never the client's Content-Type, and the key is built server-side under
+  the box's own prefix (`legacy-box/{user_id}/{box_id}/voice-{uuid}.{ext}`) — the
+  client never supplies a key. Constants/helpers in
+  `packages/shared/src/legacy-box-voice.ts`. Two React traps this hit, both fixed
+  and easy to reintroduce: side effects inside a `setState` UPDATER get
+  double-invoked by StrictMode (ran the recorder twice → timer at 2x, 60s cap
+  firing at 30s), and `fetch()` on a `blob:` URL is blocked by the page CSP (hold
+  the Blob in a ref instead). Reveal: `box/[slug]/VoicePlayer.tsx`, never
+  autoplays, and has NO sender name — the open payload carries no creator PII.
+- Quota: exact webp bytes + the voice clip's bytes RESERVED up front via
+  `incrementPersonalStorage(enforce)` →
   409 `QUOTA_EXCEEDED`; any later failure rolls back objects + row + reservation.
   Refund happens at SOFT delete (unlike vault-at-purge): a deleted box is instantly
   unreachable and non-restorable, so quota returns immediately; the purge must NOT
@@ -277,9 +316,12 @@ own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
   cross-fades straight to the reveal; revealed content mounts hidden in the DOM at load
   + a 2s failsafe timer, so it can never be stuck invisible. 6 fixed themes in
   `packages/shared/src/legacy-box-themes.ts` (ids must stay in sync with the DB CHECK).
-- Purge: soft-deleted boxes older than 7 days (fixed const, not env) → R2 objects +
-  `legacy_box_photos` rows deleted, box row tombstoned (`purged_at` + title/message
-  redacted — rule 6 holds) via `purgeDeletedBoxes` in the daily `purge_deleted` job.
+- Purge: soft-deleted boxes older than 7 days (fixed const, not env) → R2 objects
+  (photos AND the box's `audio_key` object — that key lives on the box row, not in
+  `legacy_box_photos`, so it must be swept explicitly or a recording of someone's
+  voice outlives the box forever) + `legacy_box_photos` rows deleted, box row
+  tombstoned (`purged_at` + title/message redacted, `audio_key` nulled — rule 6
+  holds) via `purgeDeletedBoxes` in the daily `purge_deleted` job.
 - Events: `box_created`, `box_viewed` (user_id = box OWNER, not the viewer),
   `box_deleted`. Dashboard entry: `components/LegacyBoxEntryCard.tsx` (diary-banner
   geometry, themed to the newest box).
@@ -373,6 +415,17 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     section). Theme CHECK must stay in sync with `packages/shared/src/legacy-box-themes.ts`.
     NOT auto-applied; apply BEFORE deploying the legacy-box code (the /legacy-box
     routes error without these tables; everything else is unaffected).
+  - `034_legacy_box_occasion_tagline.sql` — `legacy_boxes.occasion` (VARCHAR(50), CHECK
+    in sync with `legacy-box-occasions.ts`) + `legacy_boxes.tagline` (VARCHAR(60)), both
+    nullable/no default; plus `pro_interest_log` (anonymous Pro demand test). NOT
+    auto-applied; apply BEFORE the API deploy (POST /legacy-box writes both columns).
+    Additive only — the currently-deployed code keeps working once applied but before
+    the new code ships, so either order is safe.
+  - `035_legacy_box_audio.sql` — `legacy_boxes.audio_key` (TEXT, nullable/no default;
+    CHECK pins it to the `legacy-box/` prefix). NULL forever on every pre-035 box and
+    nothing backfills it — the reveal page just omits the player. NOT auto-applied;
+    apply BEFORE the API deploy (POST /legacy-box writes it). Additive — either order
+    is safe.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 

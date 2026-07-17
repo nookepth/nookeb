@@ -4,12 +4,25 @@ import type { FastifyPluginAsync } from 'fastify';
 import multipart from '@fastify/multipart';
 import sharp from 'sharp';
 import { z } from 'zod';
-import type { LegacyBoxThemeId, LegacyBoxOpenResponse, LegacyBoxListResponse } from '@nookeb/shared';
-import { getStickerLayout, isThemeId } from '@nookeb/shared';
+import type {
+  LegacyBoxThemeId,
+  LegacyBoxOccasionId,
+  LegacyBoxOpenResponse,
+  LegacyBoxListResponse,
+} from '@nookeb/shared';
+import {
+  getStickerLayout,
+  isThemeId,
+  isOccasionId,
+  MAX_TAGLINE_LENGTH,
+  MAX_VOICE_BYTES,
+  voiceExtensionFor,
+} from '@nookeb/shared';
 import { logEvent } from '../services/events.service';
 import { presignedGetUrl, uploadStream, deleteObject } from '../services/r2.service';
 import { adjustStorageUsed, incrementPersonalStorage } from '../services/file.service';
 import {
+  buildLegacyBoxAudioKey,
   buildLegacyBoxPhotoKey,
   countLiveBoxes,
   deleteBoxRow,
@@ -21,7 +34,10 @@ import {
   listBoxes,
   listPhotos,
   listPhotosForBoxes,
+  occasionIdOf,
+  sniffVoiceContainer,
   softDeleteBox,
+  taglineOf,
   themeIdOf,
   toLegacyBoxDto,
 } from '../services/legacy-box.service';
@@ -42,6 +58,15 @@ import {
  * and refunded at SOFT delete (unlike the vault): a deleted box's photos are
  * unreachable from that moment — nothing can restore it — so the user gets
  * their quota back immediately while the purge sweep lags up to 7 days.
+ *
+ * Voice message (migration 035): an OPTIONAL single `voice` part on this same
+ * multipart create — not a separate upload endpoint. The recorder holds the Blob
+ * in memory until the creator submits, so the clip and the photos arrive in one
+ * request. That is what makes the byte cap and the quota reservation real
+ * (a presigned PUT would land bytes the API never sees, leaving both
+ * unenforceable) and it means there is no pre-submit upload to abandon, hence no
+ * orphaned objects to sweep. Its bytes join total_bytes and follow the photos'
+ * lifecycle exactly: same reservation, same rollback, same refund-at-soft-delete.
  */
 
 const MAX_BOXES_PER_USER = 10;
@@ -51,13 +76,37 @@ const MAX_SOURCE_BYTES = 20 * 1024 * 1024; // per original photo, pre-compressio
 const COVER_PRESIGN_TTL_SECONDS = 60;
 /** presigned TTL for the public open page — short on purpose; regenerated per load */
 const OPEN_PRESIGN_TTL_SECONDS = 120;
+/**
+ * Voice URLs get the standard 1h instead of the photos' 120s. The photos are
+ * fetched by the browser the moment the payload lands, but the clip is only
+ * requested when the recipient taps play — which is the whole point of not
+ * autoplaying, and can be many minutes after the page loaded. A 120s URL would
+ * 403 exactly for the recipient who sat with the box a while before listening.
+ */
+const OPEN_AUDIO_PRESIGN_TTL_SECONDS = 3600;
 
 const ALLOWED_SOURCE_MIME = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+
+/**
+ * Multipart text fields. `occasion`/`tagline` (migration 034) are optional and
+ * nullable — a box without them is valid, and the reveal page falls back to
+ * DEFAULT_TAGLINE. FormData has no null, so both normalize '' → null rather than
+ * storing an empty string the reveal page would then have to treat as "unset".
+ */
+const emptyToNull = (v: unknown) => (typeof v === 'string' && v.trim() === '' ? null : v);
 
 const fieldsSchema = z.object({
   title: z.string().trim().min(1).max(60).default('กล่องของขวัญ'),
   message: z.string().max(500).default(''),
   theme: z.string().refine(isThemeId, 'unknown theme').default('rose'),
+  occasion: z.preprocess(
+    emptyToNull,
+    z.string().refine(isOccasionId, 'unknown occasion').nullable().default(null),
+  ),
+  tagline: z.preprocess(
+    emptyToNull,
+    z.string().trim().max(MAX_TAGLINE_LENGTH).nullable().default(null),
+  ),
 });
 
 const idParamSchema = z.string().uuid();
@@ -69,7 +118,14 @@ const reorderBodySchema = z.object({
 const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
   // Multipart is scoped to this plugin, same as the vault's registration.
   await app.register(multipart, {
-    limits: { fileSize: MAX_SOURCE_BYTES, files: MAX_PHOTOS_PER_BOX, fields: 5 },
+    // fields: title, message, theme, occasion, tagline — headroom above the 5 we
+    // read so adding one more never silently trips the limit mid-stream.
+    // files: the photo cap + 1 for the optional voice part. `fileSize` is the
+    // per-file ceiling for PHOTOS; the voice part is held to the much smaller
+    // MAX_VOICE_BYTES by an explicit length check below (multipart can't express
+    // a per-field size limit), so this only bounds how much a client can make us
+    // buffer before that check runs.
+    limits: { fileSize: MAX_SOURCE_BYTES, files: MAX_PHOTOS_PER_BOX + 1, fields: 8 },
   });
 
   // Auth on every route EXCEPT the public open endpoint (the slug is the credential).
@@ -97,11 +153,43 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
     // needs the whole image — and bounded by the 20 MB per-file multipart limit.
     const fields: Record<string, string> = {};
     const photos: { webp: Buffer }[] = [];
+    let voice: { buf: Buffer; mime: string; ext: string } | null = null;
     for await (const part of request.parts()) {
       if (part.type === 'field') {
         if (typeof part.value === 'string') fields[part.fieldname] = part.value;
         continue;
       }
+
+      // The optional voice message — one clip per box; a second `voice` part is
+      // a malformed request, not something to silently pick a winner from.
+      if (part.fieldname === 'voice') {
+        if (voice) {
+          return reply.code(400).send({ error: 'ส่งเสียงพูดได้ครั้งละ 1 ไฟล์', code: 'DUPLICATE_VOICE' });
+        }
+        const buf = await part.toBuffer();
+        if (part.file.truncated || buf.length > MAX_VOICE_BYTES) {
+          return reply.code(413).send({
+            error: `ไฟล์เสียงใหญ่เกิน ${Math.floor(MAX_VOICE_BYTES / (1024 * 1024))} MB น้า`,
+            code: 'VOICE_TOO_LARGE',
+          });
+        }
+        if (buf.length === 0) {
+          return reply.code(400).send({ error: 'ไฟล์เสียงว่างเปล่า', code: 'VOICE_EMPTY' });
+        }
+        // Trust the bytes, not the declared Content-Type: the container decides
+        // both what we agree to store and the extension we give the key.
+        const sniffed = sniffVoiceContainer(buf);
+        const ext = sniffed ? voiceExtensionFor(sniffed) : null;
+        if (!sniffed || !ext) {
+          return reply.code(415).send({
+            error: 'รองรับเฉพาะไฟล์เสียง WebM, MP4 หรือ Ogg',
+            code: 'UNSUPPORTED_VOICE_TYPE',
+          });
+        }
+        voice = { buf, mime: sniffed, ext };
+        continue;
+      }
+
       if (photos.length >= MAX_PHOTOS_PER_BOX) {
         part.file.resume(); // drain past the cap (multipart's own files limit backstops)
         continue;
@@ -146,13 +234,16 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
         .code(400)
         .send({ error: 'ข้อมูลกล่องไม่ถูกต้อง', issues: parsedFields.error.issues });
     }
-    const { title, message } = parsedFields.data;
+    const { title, message, tagline } = parsedFields.data;
     const theme = parsedFields.data.theme as LegacyBoxThemeId;
+    const occasion = parsedFields.data.occasion as LegacyBoxOccasionId | null;
 
     // RESERVE quota before anything hits R2 (rule 8's atomic path, enforced) —
-    // exact bytes, since the webp buffers already exist. Everything after this
-    // point refunds on failure.
-    const totalBytes = photos.reduce((sum, p) => sum + p.webp.length, 0);
+    // exact bytes, since the webp buffers (and the voice clip) already exist.
+    // The clip is charged like any other byte the feature stores, so a box's
+    // total_bytes stays the single number the soft-delete refund pays back.
+    const totalBytes =
+      photos.reduce((sum, p) => sum + p.webp.length, 0) + (voice?.buf.length ?? 0);
     const reservation = await incrementPersonalStorage(app.supabase, userId, totalBytes, {
       enforce: true,
     });
@@ -183,12 +274,24 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
           sort_order: i,
         });
       }
+      // The voice clip rides the same try block as the photos, so a failure here
+      // hits the same full rollback (objects + row + reservation) below.
+      let audioKey: string | null = null;
+      if (voice) {
+        audioKey = buildLegacyBoxAudioKey(userId, boxId, randomUUID(), voice.ext);
+        await uploadStream(app.r2, audioKey, Readable.from(voice.buf), voice.mime);
+        uploadedKeys.push(audioKey);
+      }
+
       const box = await insertBox(app.supabase, {
         id: boxId,
         userId,
         title,
         message,
         theme,
+        occasion,
+        tagline,
+        audioKey,
         totalBytes,
       });
       boxRowCreated = true;
@@ -198,7 +301,8 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
         eventType: 'box_created',
         userId,
         source: 'web',
-        metadata: { photos: photos.length, bytes: totalBytes },
+        // numeric-only metadata (029) — hasVoice as 1/0, never the clip itself
+        metadata: { photos: photos.length, bytes: totalBytes, hasVoice: voice ? 1 : 0 },
       });
       return reply.code(201).send({ id: box.id, slug: box.slug, shareUrl: legacyBoxShareUrl(box.slug) });
     } catch (err) {
@@ -354,12 +458,22 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
         })),
       );
 
+      // Signed only when the box actually has a clip; a box without one returns
+      // an explicit null so the reveal page can skip the player outright.
+      const audioUrl = box.audio_key
+        ? await presignedGetUrl(app.r2, box.audio_key, undefined, OPEN_AUDIO_PRESIGN_TTL_SECONDS)
+        : null;
+
       // NO user_id / creator name / PII — the response is exactly this shape.
       return {
         title: box.title,
         message: box.message,
         theme: themeIdOf(box),
+        occasion: occasionIdOf(box),
+        // resolved server-side, so the reveal page never renders an empty line
+        tagline: taglineOf(box),
         photos: signed,
+        audio_url: audioUrl,
         stickerLayout: getStickerLayout(box.slug),
         // a preview read didn't tick the counter, so don't pretend it did
         viewCount: isPreview ? box.view_count : box.view_count + 1,

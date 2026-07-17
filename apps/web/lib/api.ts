@@ -759,7 +759,17 @@ export interface CreateLegacyBoxInput {
   title: string;
   message: string;
   theme: string;
+  /** occasion id, or null when the creator skipped step 1 */
+  occasion: string | null;
+  /** chosen or custom closing line; null lets the server apply DEFAULT_TAGLINE */
+  tagline: string | null;
   photos: File[];
+  /**
+   * Recorded voice message, or null. Held in memory by the recorder until this
+   * submit — there is no pre-submit upload, so an abandoned draft leaves nothing
+   * behind. The server re-validates the container and size and charges its bytes.
+   */
+  voice?: Blob | null;
 }
 
 export interface CreateLegacyBoxResponse {
@@ -803,9 +813,30 @@ export function createLegacyBox(
     form.append('title', input.title);
     form.append('message', input.message);
     form.append('theme', input.theme);
+    // FormData has no null — omit the field entirely so the server's default
+    // (null) applies, rather than sending the string "null".
+    if (input.occasion) form.append('occasion', input.occasion);
+    if (input.tagline) form.append('tagline', input.tagline);
     for (const photo of input.photos) form.append('photos', photo);
+    // The filename is cosmetic — the server derives the real extension from the
+    // clip's own container bytes, never from this or from the Blob's type.
+    if (input.voice) form.append('voice', input.voice, 'voice');
     xhr.send(form);
   });
+}
+
+/**
+ * Pro-tier demand test — records that someone tapped "แจ้งเตือนฉัน" on a locked
+ * feature. Unauthenticated and anonymous (see routes/pro-interest.ts); never
+ * routed through apiFetch, which would clear the session hint on 401.
+ */
+export async function postProInterest(feature: 'audio' | 'video'): Promise<void> {
+  const res = await fetch(`${API_URL}/api/pro-interest`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ feature }),
+  });
+  if (!res.ok) throw new ApiError(res.status, `API error ${res.status}`);
 }
 
 /**

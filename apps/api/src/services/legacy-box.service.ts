@@ -1,6 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
-import type { LegacyBoxRecord, LegacyBoxPhotoRecord, LegacyBoxDto, LegacyBoxThemeId } from '@nookeb/shared';
-import { isThemeId, DEFAULT_THEME } from '@nookeb/shared';
+import type {
+  LegacyBoxRecord,
+  LegacyBoxPhotoRecord,
+  LegacyBoxDto,
+  LegacyBoxThemeId,
+  LegacyBoxOccasionId,
+} from '@nookeb/shared';
+import { isThemeId, DEFAULT_THEME, isOccasionId, DEFAULT_TAGLINE } from '@nookeb/shared';
 import { config } from '../config';
 
 /**
@@ -13,13 +19,67 @@ export function buildLegacyBoxPhotoKey(userId: string, boxId: string, photoId: s
   return `legacy-box/${userId}/${boxId}/${photoId}.webp`;
 }
 
+/**
+ * Voice message key (migration 035) — deliberately under the SAME per-user,
+ * per-box prefix as the photos rather than a flat `voice/` one, so a box's
+ * bytes stay one prefix (the purge and any future lifecycle rule can reason
+ * about a box as a unit) and every key encodes its owner. `ext` comes from
+ * voiceExtensionFor(), never from a client-supplied filename.
+ */
+export function buildLegacyBoxAudioKey(
+  userId: string,
+  boxId: string,
+  audioId: string,
+  ext: string,
+): string {
+  return `legacy-box/${userId}/${boxId}/voice-${audioId}.${ext}`;
+}
+
 export function legacyBoxShareUrl(slug: string): string {
   return `${config.WEB_URL}/box/${slug}`;
+}
+
+/**
+ * Identify a voice clip's real container from its leading bytes, independent of
+ * the multipart Content-Type (which the client chooses and we therefore can't
+ * trust to decide an extension or what we agree to store). Photos get this for
+ * free — sharp rejects anything that isn't an image it can decode — but audio is
+ * stored as an opaque blob, so nothing else would ever look inside it.
+ *
+ * Returns the base MIME of the detected container, or null if it's not one of
+ * the three MediaRecorder produces.
+ */
+export function sniffVoiceContainer(buf: Buffer): string | null {
+  // EBML header — WebM and Matroska share it; MediaRecorder only emits WebM.
+  if (buf.length >= 4 && buf.readUInt32BE(0) === 0x1a45dfa3) return 'audio/webm';
+  // 'OggS' capture pattern
+  if (buf.length >= 4 && buf.toString('ascii', 0, 4) === 'OggS') return 'audio/ogg';
+  // ISO-BMFF: a 4-byte box size, then the 'ftyp' box type
+  if (buf.length >= 8 && buf.toString('ascii', 4, 8) === 'ftyp') return 'audio/mp4';
+  return null;
 }
 
 /** Coerce a stored theme string to a known theme id (schema drift safety). */
 export function themeIdOf(box: Pick<LegacyBoxRecord, 'theme'>): LegacyBoxThemeId {
   return isThemeId(box.theme) ? box.theme : DEFAULT_THEME;
+}
+
+/**
+ * Stored occasion → known id, or null. Unlike the theme there is no fallback
+ * value: NULL is a real, common state (every pre-034 box), so an unrecognized
+ * string degrades to "no occasion" rather than being coerced into a wrong one.
+ */
+export function occasionIdOf(box: Pick<LegacyBoxRecord, 'occasion'>): LegacyBoxOccasionId | null {
+  return box.occasion && isOccasionId(box.occasion) ? box.occasion : null;
+}
+
+/**
+ * The tagline the recipient sees. Resolving the NULL → DEFAULT_TAGLINE fallback
+ * here (not in the reveal component) keeps it in one place for both the open
+ * endpoint and the owner list.
+ */
+export function taglineOf(box: Pick<LegacyBoxRecord, 'tagline'>): string {
+  return box.tagline?.trim() || DEFAULT_TAGLINE;
 }
 
 export async function countLiveBoxes(supabase: SupabaseClient, userId: string): Promise<number> {
@@ -34,7 +94,18 @@ export async function countLiveBoxes(supabase: SupabaseClient, userId: string): 
 
 export async function insertBox(
   supabase: SupabaseClient,
-  input: { id: string; userId: string; title: string; message: string; theme: LegacyBoxThemeId; totalBytes: number },
+  input: {
+    id: string;
+    userId: string;
+    title: string;
+    message: string;
+    theme: LegacyBoxThemeId;
+    occasion: LegacyBoxOccasionId | null;
+    tagline: string | null;
+    /** R2 key of the voice message, or null — see buildLegacyBoxAudioKey */
+    audioKey: string | null;
+    totalBytes: number;
+  },
 ): Promise<LegacyBoxRecord> {
   // slug comes from the DB default (gen_random_bytes) — never generated app-side.
   const { data, error } = await supabase
@@ -45,6 +116,9 @@ export async function insertBox(
       title: input.title,
       message: input.message,
       theme: input.theme,
+      occasion: input.occasion,
+      tagline: input.tagline,
+      audio_key: input.audioKey,
       total_bytes: input.totalBytes,
     })
     .select('*')
@@ -180,6 +254,8 @@ export function toLegacyBoxDto(
     title: box.title,
     message: box.message,
     theme: themeIdOf(box),
+    occasion: occasionIdOf(box),
+    tagline: box.tagline,
     photoCount,
     totalBytes: Number(box.total_bytes),
     viewCount: box.view_count,

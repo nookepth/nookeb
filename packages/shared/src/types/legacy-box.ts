@@ -1,4 +1,5 @@
 import type { LegacyBoxThemeId } from '../legacy-box-themes';
+import type { LegacyBoxOccasionId } from '../legacy-box-occasions';
 import type { StickerPlacement } from '../legacy-box-stickers';
 
 /**
@@ -16,6 +17,16 @@ export interface LegacyBoxRecord {
   title: string;
   message: string;
   theme: string;
+  /** authoring metadata (migration 034) — NULL on every box created before it */
+  occasion: string | null;
+  /** sender's closing line; NULL falls back to DEFAULT_TAGLINE on the reveal page */
+  tagline: string | null;
+  /**
+   * R2 key of the sender's voice message (migration 035), or NULL when the box
+   * has none — the common case, and permanent for every pre-035 box. Server-built
+   * only; never accepted from a client and never sent to one.
+   */
+  audio_key: string | null;
   total_bytes: number;
   view_count: number;
   created_at: string;
@@ -42,6 +53,8 @@ export interface LegacyBoxDto {
   title: string;
   message: string;
   theme: LegacyBoxThemeId;
+  occasion: LegacyBoxOccasionId | null;
+  tagline: string | null;
   photoCount: number;
   totalBytes: number;
   viewCount: number;
@@ -62,7 +75,19 @@ export interface LegacyBoxOpenResponse {
   title: string;
   message: string;
   theme: LegacyBoxThemeId;
+  /** authoring metadata — safe to expose: it says nothing about WHO sent the box */
+  occasion: LegacyBoxOccasionId | null;
+  /** already resolved to DEFAULT_TAGLINE by the API when the box has none */
+  tagline: string;
   photos: { url: string; sortOrder: number }[];
+  /**
+   * Presigned GET for the sender's voice message (1h), or null when the box has
+   * none. Presigned rather than public for the same reason the photos are: the
+   * slug is the credential, and a recording of someone's voice must not be
+   * reachable by anyone who didn't get the link. Carries no PII — the API never
+   * reveals who recorded it (see the senderName note on VoicePlayer).
+   */
+  audio_url?: string | null;
   stickerLayout: StickerPlacement[];
   viewCount: number;
 }
