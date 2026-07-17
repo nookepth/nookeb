@@ -83,6 +83,9 @@ export function Navbar({
         </div>
 
         <div className="navbar-right">
+          <a className="btn ghost" href="/dashboard/tasks">
+            งานของฉัน
+          </a>
           <a className="btn ghost" href="/dashboard/teams">
             ทีม
           </a>

@@ -15,6 +15,10 @@ import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../com
 
 interface CreatedTask {
   id: string;
+  /** false when the group announcement push failed (e.g. push quota) — the
+   * task IS saved + scheduled, but the card never reached the group, so the
+   * success screen must not claim otherwise. */
+  announced: boolean;
 }
 
 const WEEKDAYS = ['อาทิตย์', 'จันทร์', 'อังคาร', 'พุธ', 'พฤหัส', 'ศุกร์', 'เสาร์'];
@@ -194,9 +198,9 @@ export default function DetailPage({ params }: { params: { type: string } }) {
         setError(body?.error ?? 'ส่งงานไม่สำเร็จ ลองใหม่อีกทีน้า');
         return;
       }
-      const body = (await res.json()) as { task: CreatedTask };
+      const body = (await res.json()) as { task: { id: string }; announced?: boolean };
       clearDraft();
-      setCreated(body.task);
+      setCreated({ id: body.task.id, announced: body.announced !== false });
     } catch {
       setError('ส่งงานไม่สำเร็จ ลองใหม่อีกทีน้า');
     } finally {
@@ -213,10 +217,37 @@ export default function DetailPage({ params }: { params: { type: string } }) {
           <div className={styles.successCircle} aria-hidden>
             <IconCheck size={32} />
           </div>
-          <h1 className={styles.headerTitle}>ส่งงานเข้ากลุ่มแล้วน้า</h1>
-          <p className={styles.headerSub}>หนูเก็บจะช่วยตามงานให้เองทุกช่วงก่อนถึงกำหนด</p>
+          {created.announced ? (
+            <>
+              <h1 className={styles.headerTitle}>ส่งงานเข้ากลุ่มแล้วน้า</h1>
+              <p className={styles.headerSub}>หนูเก็บจะช่วยตามงานให้เองทุกช่วงก่อนถึงกำหนด</p>
+            </>
+          ) : (
+            <>
+              <h1 className={styles.headerTitle}>บันทึกงานแล้วน้า</h1>
+              <p className={styles.headerSub}>
+                หนูตั้งเตือนให้เรียบร้อย แต่ส่งการ์ดเข้ากลุ่มไม่สำเร็จ (โควตาข้อความอาจเต็ม)
+                — เปิดดูงานหรือแชร์ลิงก์ให้เพื่อนได้จากปุ่ม &quot;ดูงาน&quot; ด้านล่างน้า
+              </p>
+            </>
+          )}
         </div>
         <div className={styles.cardList}>
+          {!created.announced && (
+            <a
+              className={styles.secondaryBtn}
+              style={{
+                textDecoration: 'none',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
+              href={`/liff/tasks/${created.id}`}
+            >
+              ดูงาน
+            </a>
+          )}
           <a
             className={styles.secondaryBtn}
             style={{

@@ -18,6 +18,7 @@ import type {
   TeamJoinRequestDto,
   TeamLineGroupDto,
   TeamMemberDto,
+  TaskDto,
   UserDto,
 } from '@nookeb/shared';
 
@@ -978,4 +979,24 @@ export async function startDownload(fileId: string, mimeType?: string): Promise<
   });
   const downloadUrl = `${API_URL}/files/${fileId}/download?dl_token=${encodeURIComponent(token)}`;
   window.location.assign(downloadUrl);
+}
+
+// ---- ระบบตามงาน (Task Manager) — dashboard "งานของฉัน" ----
+
+export interface MyTasksResponse {
+  tasks: TaskDto[];
+  viewerLineUid: string;
+}
+
+/** Every task the logged-in user created or is assigned to, across all groups. */
+export function listMyTasks(): Promise<MyTasksResponse> {
+  return apiFetch<MyTasksResponse>('/tasks/mine');
+}
+
+/** Mark the viewer's own part of a task item done (rolls the item/task up). */
+export function markTaskItemDone(
+  taskId: string,
+  itemId: string,
+): Promise<{ task: TaskDto; taskDone: boolean }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/done`, { method: 'POST' });
 }

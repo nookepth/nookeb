@@ -303,6 +303,65 @@ export async function getTaskWithDetails(
   };
 }
 
+/**
+ * Every non-deleted task the user has a stake in — either they created it, or
+ * they're an assignee of one of its items — across ALL their groups. Powers the
+ * web dashboard "งานของฉัน" view (user-scoped, no single group boundary).
+ * Capped so a heavy user can't make this unbounded; newest deadline first.
+ */
+export async function listTasksForUser(
+  supabase: SupabaseClient,
+  lineUid: string,
+  cap = 100,
+): Promise<TaskWithDetails[]> {
+  // Tasks the user created.
+  const { data: createdRows, error: createdErr } = await supabase
+    .from('tasks')
+    .select('id')
+    .eq('created_by_line_uid', lineUid)
+    .is('deleted_at', null);
+  if (createdErr) throw createdErr;
+
+  // Tasks the user is assigned to (assignee → item → task).
+  const { data: assigneeRows, error: assigneeErr } = await supabase
+    .from('task_assignees')
+    .select('task_item_id')
+    .eq('line_uid', lineUid);
+  if (assigneeErr) throw assigneeErr;
+
+  const itemIds = [...new Set((assigneeRows ?? []).map((r) => (r as { task_item_id: string }).task_item_id))];
+  let assignedTaskIds: string[] = [];
+  if (itemIds.length > 0) {
+    const { data: itemRows, error: itemErr } = await supabase
+      .from('task_items')
+      .select('task_id')
+      .in('id', itemIds)
+      .is('deleted_at', null);
+    if (itemErr) throw itemErr;
+    assignedTaskIds = (itemRows ?? []).map((r) => (r as { task_id: string }).task_id);
+  }
+
+  const taskIds = [
+    ...new Set([
+      ...(createdRows ?? []).map((r) => (r as { id: string }).id),
+      ...assignedTaskIds,
+    ]),
+  ].slice(0, cap);
+  if (taskIds.length === 0) return [];
+
+  const details = await Promise.all(taskIds.map((id) => getTaskWithDetails(supabase, id)));
+  const tasks = details.filter((t): t is TaskWithDetails => t !== null);
+
+  // Newest activity first: nearest live deadline, then created_at.
+  tasks.sort((a, b) => {
+    const da = a.global_deadline ? new Date(a.global_deadline).getTime() : Infinity;
+    const db = b.global_deadline ? new Date(b.global_deadline).getTime() : Infinity;
+    if (da !== db) return da - db;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+  return tasks;
+}
+
 export async function updateTask(
   supabase: SupabaseClient,
   taskId: string,

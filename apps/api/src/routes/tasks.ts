@@ -10,6 +10,7 @@ import {
   getTaskWithDetails,
   ensureGroupMember,
   listGroupMembers,
+  listTasksForUser,
   markAssigneeDone,
   rollUpCompletion,
   toTaskDto,
@@ -179,6 +180,15 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
     const dto: TaskDto = toTaskDto(task);
     return reply.code(201).send({ task: dto, announced });
+  });
+
+  // ---- GET /tasks/mine — every task the caller created or is assigned to ----
+  // User-scoped (across all their groups), for the web dashboard "งานของฉัน"
+  // view. Static path — Fastify matches it before the `/tasks/:id` param route.
+  app.get('/tasks/mine', { preHandler: app.authenticate }, async (request) => {
+    const lineUid = request.authUser!.lineUserId;
+    const tasks = await listTasksForUser(app.supabase, lineUid);
+    return { tasks: tasks.map(toTaskDto), viewerLineUid: lineUid };
   });
 
   // ---- GET /tasks/:id — detail (group member / creator / assignee only) ----
