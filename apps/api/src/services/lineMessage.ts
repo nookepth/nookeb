@@ -20,8 +20,15 @@ dayjs.extend(timezone);
  * the BullMQ timer; neither has a replyToken.
  */
 
+// Brand palette — same tokens as flex.service.ts. Task cards use ONLY these
+// (plus the semantic urgency ramp on reminder cards below).
+const BRAND_RED = '#B53A32';
+const LINE_GREEN = '#06C755';
+const INK = '#111111';
+const MUTED = '#8C8C8C';
+
 const URGENCY_COLOR: Record<RemindType, string> = {
-  '3_days': '#00B900',
+  '3_days': LINE_GREEN,
   '1_day': '#FF9800',
   '3_hours': '#FF5722',
   overdue: '#F44336',
@@ -95,58 +102,68 @@ function uriButton(label: string, uri: string): Record<string, unknown> {
  */
 export function buildCreateTaskCard(liffId: string | undefined, groupId: string): FlexMessage {
   const gq = `?groupId=${encodeURIComponent(groupId)}`;
+  // groupId rides BOTH link forms. liff.getContext() loses the chat context in
+  // real in-group cases (LINE Desktop, login round trips, forwarded/pinned
+  // links), so the query param is the reliable capability — same trust model
+  // as share links; the API still verifies group membership on every call.
   const createUrl = (type: string): string =>
     liffId
-      ? `https://liff.line.me/${liffId}/create/${type}`
+      ? `https://liff.line.me/${liffId}/create/${type}${gq}`
       : `${config.WEB_URL}/liff/tasks/create/${type}${gq}`;
 
-  const CARDS: { type: string; title: string; desc: string; color: string }[] = [
+  const CARDS: { type: string; title: string; desc: string }[] = [
     {
       type: 'single',
       title: 'งานเดียว',
       desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว เหมาะกับงานเร่งด่วนสั้นๆ',
-      color: '#0D9488',
     },
     {
       type: 'multi',
       title: 'แยกรายการ',
       desc: 'หลายรายการในงานเดียว แต่ละข้อมอบหมายคนและกำหนดส่งแยกกันได้',
-      color: '#2563EB',
     },
     {
       type: 'recurring',
       title: 'งานประจำ',
       desc: 'งานที่ต้องทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เองทุกครั้งที่ถึงกำหนด',
-      color: '#7C3AED',
     },
   ];
 
+  // Equal-weight bubbles: one brand-red accent bar + title in ink, description
+  // in muted gray, brand-red CTA. No per-type colors — the choice is the copy.
   const bubble = (card: (typeof CARDS)[number]): Record<string, unknown> => ({
     type: 'bubble',
     size: 'micro',
     header: {
       type: 'box',
       layout: 'vertical',
-      backgroundColor: card.color,
-      paddingAll: '14px',
-      contents: [{ type: 'text', text: card.title, weight: 'bold', size: 'md', color: '#FFFFFF', wrap: true }],
+      backgroundColor: BRAND_RED,
+      height: '6px',
+      paddingAll: '0px',
+      contents: [],
     },
     body: {
       type: 'box',
       layout: 'vertical',
-      paddingAll: '14px',
-      contents: [{ type: 'text', text: card.desc, size: 'xs', color: '#555555', wrap: true }],
+      backgroundColor: '#FFFFFF',
+      paddingAll: '16px',
+      spacing: 'sm',
+      contents: [
+        { type: 'text', text: card.title, weight: 'bold', size: 'lg', color: INK, wrap: true },
+        { type: 'text', text: card.desc, size: 'xs', color: MUTED, wrap: true },
+      ],
     },
     footer: {
       type: 'box',
       layout: 'vertical',
+      backgroundColor: '#FFFFFF',
       paddingAll: '12px',
       contents: [
         {
           type: 'button',
           style: 'primary',
           height: 'sm',
-          color: card.color,
+          color: BRAND_RED,
           action: { type: 'uri', label: 'สร้างงานนี้', uri: createUrl(card.type) },
         },
       ],
@@ -182,6 +199,7 @@ export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
             text: task.type === 'multi' ? `${i + 1}. ${item.title}` : item.title,
             weight: 'bold',
             size: 'sm',
+            color: INK,
             wrap: true,
             flex: 1,
           },
@@ -193,7 +211,7 @@ export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
           assigneeNames(item.assignees) +
           (item.deadline ? ` • ${formatThaiDeadline(item.deadline)}` : ''),
         size: 'xs',
-        color: '#888888',
+        color: MUTED,
         wrap: true,
       },
     ],
@@ -208,7 +226,7 @@ export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
       header: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: '#0D9488',
+        backgroundColor: BRAND_RED,
         paddingAll: '16px',
         spacing: 'xs',
         contents: [
@@ -221,24 +239,25 @@ export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
                 type: 'text',
                 text: TYPE_LABEL[task.type] ?? task.type,
                 size: 'xs',
-                color: '#CCFBF1',
+                color: '#FFFFFF',
                 flex: 0,
               },
             ],
           },
           { type: 'text', text: task.title, weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
-          { type: 'text', text: deadlineText, size: 'sm', color: '#CCFBF1' },
+          { type: 'text', text: deadlineText, size: 'sm', color: '#FFFFFF' },
         ],
       },
       body: {
         type: 'box',
         layout: 'vertical',
+        backgroundColor: '#FFFFFF',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'มอบหมายให้', size: 'xs', color: '#0D9488', weight: 'bold' },
+          { type: 'text', text: 'มอบหมายให้', size: 'xs', color: BRAND_RED, weight: 'bold' },
           ...itemRows,
           ...(task.items.length > 10
-            ? [{ type: 'text', text: `และอีก ${task.items.length - 10} รายการ`, size: 'xs', color: '#888888', margin: 'md' }]
+            ? [{ type: 'text', text: `และอีก ${task.items.length - 10} รายการ`, size: 'xs', color: MUTED, margin: 'md' }]
             : []),
         ],
       },
@@ -249,7 +268,7 @@ export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
         paddingAll: '12px',
         contents: [
           uriButton('ดูงาน', taskPageUrl(`/${task.id}`)),
-          postbackButton('รับงาน', `action=task_accept&taskId=${task.id}`, '#0D9488'),
+          postbackButton('รับงาน', `action=task_accept&taskId=${task.id}`, BRAND_RED),
         ],
       },
     },
@@ -290,8 +309,8 @@ export function buildReminderFlex(
               layout: 'vertical',
               flex: 1,
               contents: [
-                { type: 'text', text: i.title, size: 'sm', weight: 'bold', wrap: true },
-                { type: 'text', text: assigneeNames(pending), size: 'xs', color: '#888888', wrap: true },
+                { type: 'text', text: i.title, size: 'sm', weight: 'bold', color: INK, wrap: true },
+                { type: 'text', text: assigneeNames(pending), size: 'xs', color: MUTED, wrap: true },
               ],
             },
           ],
@@ -324,7 +343,7 @@ export function buildReminderFlex(
         layout: 'vertical',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'ยังค้างอยู่', size: 'xs', color: '#888888', weight: 'bold' },
+          { type: 'text', text: 'ยังค้างอยู่', size: 'xs', color: MUTED, weight: 'bold' },
           ...pendingRows,
         ],
       },

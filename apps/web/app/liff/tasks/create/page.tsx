@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../tasks.module.css';
-import { initLiff } from '../../../../lib/liff';
+import { initLiff, queryGroupId } from '../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../lib/taskDraft';
 
 const TYPES: { type: TaskDraft['type']; icon: string; title: string; sub: string }[] = [
@@ -35,11 +35,14 @@ export default function CreateTaskPage() {
   useEffect(() => {
     initLiff()
       .then((liffState) => {
-        if (!liffState.groupId) {
+        // initLiff() is memoized — its groupId may predate the client-side
+        // redirect that put ?groupId= on THIS URL, so re-read the query here.
+        const resolved = liffState.groupId ?? queryGroupId();
+        if (!resolved) {
           setState('no-group');
           return;
         }
-        setGroupId(liffState.groupId);
+        setGroupId(resolved);
         setState('ready');
       })
       .catch(() => setState('error'));

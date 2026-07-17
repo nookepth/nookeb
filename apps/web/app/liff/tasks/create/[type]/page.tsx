@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../tasks.module.css';
-import { initLiff } from '../../../../../lib/liff';
+import { initLiff, queryGroupId } from '../../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../../lib/taskDraft';
 
 /**
@@ -32,12 +32,15 @@ export default function CreateTypeEntryPage({ params }: { params: { type: string
     const type = params.type;
     initLiff()
       .then((liffState) => {
-        if (!liffState.groupId) {
+        // initLiff() is memoized — its groupId may predate the client-side
+        // redirect that put ?groupId= on THIS URL, so re-read the query here.
+        const groupId = liffState.groupId ?? queryGroupId();
+        if (!groupId) {
           setState('no-group');
           return;
         }
         const draft = emptyDraft(type);
-        draft.groupId = liffState.groupId;
+        draft.groupId = groupId;
         saveDraft(draft);
         router.replace(`/liff/tasks/create/${type}/members`);
       })

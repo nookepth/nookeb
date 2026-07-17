@@ -27,7 +27,12 @@ export function initLiff(): Promise<LiffState> {
   return ready;
 }
 
-function queryGroupId(): string | null {
+/**
+ * ?groupId= read at the CURRENT URL. Exported because initLiff() is memoized:
+ * its stored groupId can predate a client-side redirect that added the query
+ * (the endpoint-root fallback), so pages re-read this at consume time.
+ */
+export function queryGroupId(): string | null {
   return new URLSearchParams(window.location.search).get('groupId');
 }
 
@@ -58,13 +63,20 @@ async function doInit(): Promise<LiffState> {
     }
   }
 
+  // Chat context is authoritative but NOT reliable: LINE Desktop, the login
+  // round trips above, and forwarded/pinned links all open the LIFF with
+  // type 'external'/'none' — no groupId — even when the tap happened inside
+  // the group. The สร้างงาน card therefore carries the group id in ?groupId=
+  // (a capability, same trust model as share links; the API still verifies
+  // membership), so ALWAYS fall back to the query when context has no chat.
   const ctx = liff.getContext();
-  const groupId =
+  const ctxGroupId =
     ctx?.type === 'group'
       ? (ctx.groupId ?? null)
       : ctx?.type === 'room'
         ? ((ctx as { roomId?: string }).roomId ?? null)
-        : queryGroupId();
+        : null;
+  const groupId = ctxGroupId ?? queryGroupId();
 
   let profile: LiffState['profile'] = null;
   try {
