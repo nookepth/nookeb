@@ -60,7 +60,12 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
   const [duration, setDuration] = useState(0);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** preview playback — see the custom player note above the preview block */
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [scrubbing, setScrubbing] = useState(false);
 
+  const previewAudioRef = useRef<HTMLAudioElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<BlobPart[]>([]);
@@ -157,6 +162,9 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
       recordedBlobRef.current = blob;
       if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
       setPreviewUrl(URL.createObjectURL(blob));
+      // A re-record reuses the preview player — start its transport from zero.
+      setPlaying(false);
+      setCurrent(0);
       setState('preview');
     };
     // A recorder that dies mid-take must not strand the UI in 'recording'.
@@ -226,6 +234,33 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
     if (recorderRef.current?.state === 'recording') recorderRef.current.stop();
   }, []);
 
+  /**
+   * Preview transport. The total time comes from our own tick counter
+   * (`duration`), never from previewAudioRef.current.duration: MediaRecorder's
+   * WebM carries no duration in its header, so Chrome/Firefox report Infinity
+   * here until the clip is seeked to the end. The reveal-page player has to do
+   * that probe because all it ever gets is a URL — we already counted the
+   * seconds as they happened, so the scrub bar just uses them.
+   */
+  const togglePreview = useCallback(() => {
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+    if (audio.paused) {
+      // play() rejects when the browser blocks it or the blob is gone — don't
+      // leave that as an unhandled rejection.
+      void audio.play().catch(() => setError('เล่นเสียงไม่ได้ ลองอัดใหม่อีกทีน้า'));
+    } else {
+      audio.pause();
+    }
+  }, []);
+
+  const seekPreview = useCallback((value: number) => {
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+    audio.currentTime = value;
+    setCurrent(value);
+  }, []);
+
   const discard = useCallback(() => {
     if (previewUrlRef.current) URL.revokeObjectURL(previewUrlRef.current);
     setPreviewUrl(null);
@@ -233,6 +268,8 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
     setDuration(0);
     setElapsed(0);
     elapsedRef.current = 0;
+    setPlaying(false);
+    setCurrent(0);
     onChange(null);
     setState('idle');
   }, [onChange]);
@@ -311,11 +348,66 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
       {state === 'preview' && previewUrl && (
         <div className={styles.previewBox}>
           <div className={styles.previewHead}>
-            <span className={styles.previewDuration}>{formatVoiceDuration(duration)}</span>
             <span className={styles.hint}>ฟังก่อนได้น้า</span>
           </div>
+
+          {/* No `controls`: the native player renders differently on every
+              browser/OS (and adds a cast button on iOS). This is the same
+              transport the reveal page uses, driven from the ref below. */}
           {/* eslint-disable-next-line jsx-a11y/media-has-caption -- a personal voice message has no transcript */}
-          <audio className={styles.audio} src={previewUrl} controls preload="metadata" />
+          <audio
+            ref={previewAudioRef}
+            src={previewUrl}
+            preload="metadata"
+            onPlay={() => setPlaying(true)}
+            onPause={() => setPlaying(false)}
+            onTimeUpdate={() => {
+              // While the user drags, the bar belongs to them, not to playback.
+              const audio = previewAudioRef.current;
+              if (audio && !scrubbing) setCurrent(audio.currentTime);
+            }}
+            onEnded={() => {
+              setPlaying(false);
+              setCurrent(0);
+            }}
+          />
+
+          <div className={styles.playerRow}>
+            <button
+              type="button"
+              className={styles.playBtn}
+              onClick={togglePreview}
+              aria-label={playing ? 'หยุดเสียงชั่วคราว' : 'เล่นเสียง'}
+            >
+              {playing ? <PauseIcon /> : <PlayIcon />}
+            </button>
+
+            <input
+              className={styles.scrub}
+              type="range"
+              min={0}
+              max={duration || 0}
+              step={0.1}
+              value={current}
+              disabled={duration === 0}
+              style={
+                {
+                  '--progress': `${duration > 0 ? (current / duration) * 100 : 0}%`,
+                } as React.CSSProperties
+              }
+              onChange={(e) => seekPreview(Number(e.target.value))}
+              onPointerDown={() => setScrubbing(true)}
+              onPointerUp={() => setScrubbing(false)}
+              onKeyDown={() => setScrubbing(true)}
+              onKeyUp={() => setScrubbing(false)}
+              aria-label="เลื่อนตำแหน่งเสียง"
+            />
+
+            <span className={styles.time}>
+              {formatVoiceDuration(current)} / {formatVoiceDuration(duration)}
+            </span>
+          </div>
+
           <div className={styles.previewActions}>
             <button type="button" className={styles.useBtn} onClick={commit}>
               ใช้เสียงนี้
@@ -369,6 +461,23 @@ function StopIcon() {
   return (
     <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden>
       <rect x="6" y="6" width="12" height="12" rx="2" />
+    </svg>
+  );
+}
+
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+      <path d="M8 5.14v13.72a1 1 0 0 0 1.54.84l10.5-6.86a1 1 0 0 0 0-1.68L9.54 4.3A1 1 0 0 0 8 5.14z" />
+    </svg>
+  );
+}
+
+function PauseIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden>
+      <rect x="6" y="5" width="4" height="14" rx="1.5" />
+      <rect x="14" y="5" width="4" height="14" rx="1.5" />
     </svg>
   );
 }

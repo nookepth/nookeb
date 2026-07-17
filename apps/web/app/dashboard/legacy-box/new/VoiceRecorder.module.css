@@ -230,16 +230,110 @@
   align-items: baseline;
   gap: 10px;
 }
-.previewDuration {
-  font-size: 18px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-  color: var(--bx-accent);
+/* ---- custom transport ----
+   Mirrors the reveal page's VoicePlayer rather than using <audio controls>,
+   which renders as a different grey bar on every browser/OS. Colours come from
+   the create page's theme vars only. */
+
+.playerRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+  background: #fff;
 }
 
-.audio {
-  width: 100%;
-  height: 40px;
+.playBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  color: #fff;
+  cursor: pointer;
+  transition: transform 140ms ease;
+}
+.playBtn:active {
+  transform: scale(0.92);
+}
+.playBtn svg {
+  display: block;
+}
+
+/* The filled portion is a gradient hard-stop at --progress (set inline from
+   React), so the track paints identically in WebKit and Gecko — the two
+   disagree about the ::-*-progress pseudo-elements. */
+.scrub {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 5px;
+  appearance: none;
+  -webkit-appearance: none;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--bx-accent) 0%,
+    var(--bx-accent) var(--progress, 0%),
+    rgba(0, 0, 0, 0.1) var(--progress, 0%),
+    rgba(0, 0, 0, 0.1) 100%
+  );
+  outline: none;
+  cursor: pointer;
+}
+.scrub:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.scrub::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px var(--bx-glow);
+  cursor: pointer;
+}
+.scrub::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--bx-accent);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px var(--bx-glow);
+  border-color: #fff;
+  cursor: pointer;
+}
+/* Firefox paints its own track over the background gradient above. */
+.scrub::-moz-range-track {
+  height: 5px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+/* Touch has no hover to reveal the thumb and a 13px target is unhittable
+   anyway — the bar reads as a progress indicator there, and the transport is
+   the play button. */
+@media (pointer: coarse) {
+  .scrub::-webkit-slider-thumb {
+    opacity: 0;
+  }
+  .scrub::-moz-range-thumb {
+    opacity: 0;
+  }
+}
+
+.time {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
 }
 
 .previewActions {

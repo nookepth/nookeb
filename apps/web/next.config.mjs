@@ -42,6 +42,12 @@ const csp = Object.entries({
   ],
   'style-src': ["'self'", "'unsafe-inline'"],
   'img-src': ["'self'", 'data:', 'blob:', 'https:'],
+  // media-src must exist in its own right: <audio>/<video> fall back to
+  // default-src ('self'), which blocks BOTH of the legacy-box voice sources —
+  // the recorder's blob: preview URL and the reveal page's presigned R2 https
+  // URL. Omitting it is why the player showed "ไม่สามารถโหลดเสียงได้" while the
+  // photos beside it (img-src https:) loaded fine.
+  'media-src': ["'self'", 'blob:', 'https:'],
   'font-src': ["'self'", 'data:'],
   'connect-src': ["'self'"],
   'object-src': ["'self'", 'https:'],
@@ -58,7 +64,12 @@ const securityHeaders = [
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
-  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+  // microphone=(self): the legacy-box voice recorder needs getUserMedia on our
+  // own origin. `microphone=()` disables it for the whole origin, so the browser
+  // rejects with NotAllowedError WITHOUT ever prompting — the recorder then
+  // renders its permission error on the first tap, looking like a denial the
+  // user never made. Keep camera/geolocation fully off; nothing uses them.
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(self), geolocation=()' },
 ];
 
 /** @type {import('next').NextConfig} */
