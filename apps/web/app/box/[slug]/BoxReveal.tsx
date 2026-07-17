@@ -1,0 +1,288 @@
+'use client';
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { LegacyBoxOpenResponse, LegacyBoxTheme } from '@nookeb/shared';
+import { THEMES, getPolaroidTilt } from '@nookeb/shared';
+import { ApiError, getLegacyBoxOpen } from '@/lib/api';
+import styles from './page.module.css';
+
+/**
+ * กล่องของขวัญ reveal — the recipient experience. Three phases:
+ * closed (floating gift box) → opening (lid flies, burst, box shrinks) →
+ * revealed (polaroid strip + message). Animation is transform/opacity only
+ * (LINE in-app browser rule); prefers-reduced-motion cross-fades straight to
+ * the reveal. The revealed content is mounted in the DOM as soon as data
+ * arrives (hidden with CSS), plus a hard setTimeout failsafe flips to the
+ * revealed state even if a CSS transition never fires — content can never be
+ * stuck invisible.
+ */
+
+type Phase = 'loading' | 'notfound' | 'closed' | 'opening' | 'revealed';
+
+const OPEN_BURST_AT_MS = 300;
+const OPEN_REVEAL_AT_MS = 800;
+/** hard failsafe: whatever happens, show the content */
+const OPEN_FAILSAFE_MS = 2000;
+const PARTICLE_COUNT = 30; // LINE in-app browser budget — keep ≤ 30
+
+function spawnParticles(container: HTMLElement, theme: LegacyBoxTheme): void {
+  const particles = Array.from({ length: PARTICLE_COUNT }, (_, i) => {
+    const el = document.createElement('div');
+    const angle = (i / PARTICLE_COUNT) * Math.PI * 2;
+    const distance = 80 + Math.random() * 120;
+    el.className = styles.particle!;
+    el.style.setProperty('--dx', `${Math.cos(angle) * distance}px`);
+    el.style.setProperty('--dy', `${Math.sin(angle) * distance}px`);
+    el.style.setProperty('--delay', `${Math.random() * 200}ms`);
+    el.style.setProperty('--shape', i % 4 === 0 ? '2px' : '50%');
+    el.style.setProperty(
+      '--color',
+      i % 3 === 0 ? theme.accent : i % 3 === 1 ? theme.ribbon : '#fff',
+    );
+    return el;
+  });
+  particles.forEach((p) => container.appendChild(p));
+  setTimeout(() => particles.forEach((p) => p.remove()), 1200);
+}
+
+export function BoxReveal({ slug }: { slug: string }) {
+  const [phase, setPhase] = useState<Phase>('loading');
+  const [box, setBox] = useState<LegacyBoxOpenResponse | null>(null);
+  const [activeDot, setActiveDot] = useState(0);
+  const [toast, setToast] = useState<string | null>(null);
+  const particleLayerRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const timersRef = useRef<number[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    getLegacyBoxOpen(slug)
+      .then((data) => {
+        if (!active) return;
+        setBox(data);
+        setPhase('closed');
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        void err;
+        setPhase('notfound');
+      });
+    return () => {
+      active = false;
+      timersRef.current.forEach((t) => window.clearTimeout(t));
+    };
+  }, [slug]);
+
+  const theme: LegacyBoxTheme = THEMES[box?.theme ?? 'rose'];
+
+  const openBox = useCallback(() => {
+    if (!box || phase !== 'closed') return;
+
+    const prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (prefersReduced) {
+      setPhase('revealed');
+      return;
+    }
+
+    setPhase('opening');
+    const at = (ms: number, fn: () => void) =>
+      timersRef.current.push(window.setTimeout(fn, ms));
+    at(OPEN_BURST_AT_MS, () => {
+      if (particleLayerRef.current) spawnParticles(particleLayerRef.current, theme);
+    });
+    at(OPEN_REVEAL_AT_MS, () => setPhase('revealed'));
+    at(OPEN_FAILSAFE_MS, () => setPhase('revealed'));
+  }, [box, phase, theme]);
+
+  const onRowScroll = useCallback(() => {
+    const row = rowRef.current;
+    if (!row || !box) return;
+    const cards = row.querySelectorAll(`.${styles.polaroid}`);
+    const center = row.scrollLeft + row.clientWidth / 2;
+    let best = 0;
+    let bestDist = Infinity;
+    cards.forEach((card, i) => {
+      const el = card as HTMLElement;
+      const cardCenter = el.offsetLeft + el.offsetWidth / 2;
+      const dist = Math.abs(cardCenter - center);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    });
+    setActiveDot(best);
+  }, [box]);
+
+  const shareBox = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setToast('คัดลอกแล้ว! 🎉');
+    } catch {
+      setToast('คัดลอกไม่สำเร็จ ลองใหม่อีกทีน้า');
+    }
+    timersRef.current.push(window.setTimeout(() => setToast(null), 2000));
+  }, []);
+
+  const themeVars = {
+    '--bx-bg': theme.bg,
+    '--bx-card': theme.card,
+    '--bx-accent': theme.accent,
+    '--bx-text': theme.text,
+    '--bx-ribbon': theme.ribbon,
+    '--bx-box': theme.boxColor,
+    '--bx-box-accent': theme.boxAccent,
+    '--bx-glow': theme.glow,
+    '--bx-gradient': theme.gradient,
+  } as React.CSSProperties;
+
+  if (phase === 'loading') {
+    return (
+      <main className={styles.page} style={themeVars}>
+        <div className={styles.centerState}>
+          <span className={`${styles.centerEmoji} ${styles.loadingPulse}`} aria-hidden>
+            🎁
+          </span>
+          <p>กำลังห่อของขวัญ…</p>
+        </div>
+      </main>
+    );
+  }
+
+  if (phase === 'notfound' || !box) {
+    return (
+      <main className={styles.page} style={themeVars}>
+        <div className={styles.centerState}>
+          <span className={styles.centerEmoji} aria-hidden>
+            🕊️
+          </span>
+          <h1>ไม่พบกล่องของขวัญนี้</h1>
+          <p>ลิงก์อาจไม่ถูกต้อง หรือกล่องถูกลบไปแล้วน้า</p>
+        </div>
+      </main>
+    );
+  }
+
+  const isClosedOrOpening = phase === 'closed' || phase === 'opening';
+
+  return (
+    <main className={styles.page} style={themeVars}>
+      {/* seeded floating stickers — present in every phase */}
+      <div className={styles.stickerField} aria-hidden>
+        {box.stickerLayout.map((p, i) => (
+          <span
+            key={i}
+            className={styles.sticker}
+            style={
+              {
+                left: `${p.x}%`,
+                top: `${p.y}%`,
+                zIndex: p.zIndex,
+                '--size': `${Math.round(40 + p.scale * 25)}px`,
+                '--r': `${p.rotation}deg`,
+                '--delay': `${(i * 0.7) % 4}s`,
+              } as React.CSSProperties
+            }
+          >
+            {p.sticker.emoji}
+          </span>
+        ))}
+      </div>
+
+      {/* ---------- Phase 1 + 2: the gift box ---------- */}
+      {isClosedOrOpening && (
+        <div
+          className={`${styles.closedStage} ${phase === 'opening' ? styles.isOpening : ''}`}
+        >
+          <button
+            type="button"
+            className={styles.giftButton}
+            onClick={openBox}
+            aria-label="แตะเพื่อเปิดกล่องของขวัญ"
+          >
+            <span className={styles.giftGlow} aria-hidden />
+            <span className={styles.giftWrapper}>
+              <span className={styles.giftLid}>
+                <span className={styles.giftBow} aria-hidden>
+                  <span className={styles.giftBowKnot} />
+                </span>
+              </span>
+              <span className={styles.giftBody} />
+            </span>
+            <span ref={particleLayerRef} className={styles.particleLayer} aria-hidden />
+          </button>
+          <h1 className={styles.closedTitle}>{box.title}</h1>
+          <div className={styles.tapHint} aria-hidden>
+            แตะเพื่อเปิด
+            <span className={styles.tapArrow}>↓</span>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- Phase 3: revealed (mounted early, CSS-hidden until open) ---------- */}
+      <div className={isClosedOrOpening ? styles.hiddenStage : styles.revealStage}>
+        <h1 className={styles.revealTitle}>{box.title}</h1>
+
+        <div className={styles.polaroidRow} ref={rowRef} onScroll={onRowScroll}>
+          {box.photos.map((photo, i) => (
+            <figure
+              key={photo.sortOrder}
+              className={styles.polaroid}
+              style={
+                {
+                  '--tilt': `${getPolaroidTilt(slug, i)}deg`,
+                  '--index': i,
+                } as React.CSSProperties
+              }
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element -- presigned R2 URL, not a static asset */}
+              <img
+                className={styles.polaroidImg}
+                src={photo.url}
+                alt={`รูปที่ ${i + 1}`}
+                loading={i < 2 ? 'eager' : 'lazy'}
+                draggable={false}
+              />
+              <figcaption className={styles.polaroidCaption}>
+                {String(i + 1).padStart(2, '0')}
+              </figcaption>
+            </figure>
+          ))}
+        </div>
+
+        {box.photos.length > 1 && (
+          <div className={styles.dots} aria-hidden>
+            {box.photos.map((_, i) => (
+              <span
+                key={i}
+                className={`${styles.dot} ${i === activeDot ? styles.dotActive : ''}`}
+              />
+            ))}
+          </div>
+        )}
+
+        {box.message && (
+          <section className={styles.messageSection}>
+            <p className={styles.messageText}>{box.message}</p>
+            <p className={styles.fromLine}>จาก ✨</p>
+          </section>
+        )}
+
+        <p className={styles.poweredBy}>
+          ส่งความทรงจำด้วย <a href="/">หนูเก็บ</a>
+        </p>
+      </div>
+
+      {/* ---------- bottom bar (revealed only) ---------- */}
+      {phase === 'revealed' && (
+        <div className={styles.actionBar}>
+          <button type="button" className={styles.shareBtn} onClick={() => void shareBox()}>
+            แชร์กล่องนี้
+          </button>
+          <span className={styles.viewCount}>เปิดแล้ว {box.viewCount} ครั้ง</span>
+        </div>
+      )}
+
+      {toast && <div className={styles.toast}>{toast}</div>}
+    </main>
+  );
+}

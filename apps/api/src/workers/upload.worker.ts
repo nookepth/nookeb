@@ -55,7 +55,7 @@ import {
   incrementTeamStorage,
   StorageQuotaError,
 } from '../services/team.service';
-import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeDeletedVaultFiles, purgeOrphanScanTemp } from '../services/purge.service';
+import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeDeletedVaultFiles, purgeDeletedBoxes, purgeOrphanScanTemp } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
 import {
   countPages,
@@ -1579,7 +1579,28 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
   } catch (err) {
     console.error('[upload.worker] purge: vault sweep failed:', err);
   }
+
+  // Legacy boxes (migration 033): fixed 7-day retention — R2 photo objects +
+  // child photo rows removed, box row tombstoned. NO refund here (soft delete
+  // already refunded). Best-effort like the diary/vault sweeps.
+  try {
+    const boxSweep = await purgeDeletedBoxes(supabase, r2, {
+      retentionDays: LEGACY_BOX_RETENTION_DAYS,
+      apply: true,
+    });
+    console.log(
+      `[upload.worker] purge: legacy-box scanned ${boxSweep.scanned} box(es), ` +
+        `removed ${boxSweep.objectsDeleted} R2 object(s) + ${boxSweep.photoRowsDeleted} photo row(s), ` +
+        `errors ${boxSweep.errors}`,
+    );
+  } catch (err) {
+    console.error('[upload.worker] purge: legacy-box sweep failed:', err);
+  }
 }
+
+// กล่องของขวัญ retention — fixed, not env-tunable: a deleted box was already
+// refunded and unshared at soft-delete time, so the window only bounds R2 cleanup.
+const LEGACY_BOX_RETENTION_DAYS = 7;
 
 /** Register the daily purge as a BullMQ repeatable job (idempotent by repeat key). */
 export async function scheduleRepeatableJobs(): Promise<void> {

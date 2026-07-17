@@ -51,7 +51,11 @@ export type EventType =
   // --- Vault (ห้องนิรภัย — web-only, migration 031) ---
   | 'vault_setup' // PIN set for the first time (vault activated)
   | 'vault_unlock_failed' // wrong PIN (metadata.locked = this failure triggered a lockout)
-  | 'vault_upload_done'; // vault file stored (metadata: bytes, mime)
+  | 'vault_upload_done' // vault file stored (metadata: bytes, mime)
+  // --- กล่องของขวัญ (Legacy Box — web-only, migration 033) ---
+  | 'box_created' // legacy box published (metadata: photos, bytes)
+  | 'box_viewed' // public open page loaded (user_id = the box OWNER, not the viewer)
+  | 'box_deleted'; // legacy box soft-deleted by its owner (metadata: bytes)
 
 export type EventSource = 'line' | 'web' | 'worker';
 

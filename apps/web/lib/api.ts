@@ -7,6 +7,8 @@ import type {
   FileListResponse,
   FolderDto,
   TrashListResponse,
+  LegacyBoxListResponse,
+  LegacyBoxOpenResponse,
   JoinRequestResult,
   SpaceDto,
   SpaceMemberDto,
@@ -704,6 +706,118 @@ export function uploadVaultFile(
     form.append('file', file);
     xhr.send(form);
   });
+}
+
+/* ============================================================
+   กล่องของขวัญ (Legacy Box) — routes/legacy-box.ts, migration 033
+   ============================================================ */
+
+/**
+ * Legacy-box calls parse the error body (like trashFetch): create's 409 carries
+ * 'QUOTA_EXCEEDED', 429 carries 'BOX_LIMIT_REACHED' — the create flow switches
+ * on the code to show the right message.
+ */
+async function boxFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(`${API_URL}/legacy-box${path}`, init);
+  if (res.status === 401) {
+    clearSession();
+    throw new ApiError(401, 'Unauthorized');
+  }
+  const body = (await res.json().catch(() => null)) as
+    | (Record<string, unknown> & { error?: string; code?: string })
+    | null;
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      typeof body?.error === 'string' ? body.error : `API error ${res.status}`,
+      typeof body?.code === 'string' ? body.code : undefined,
+    );
+  }
+  return body as T;
+}
+
+export function listLegacyBoxes(): Promise<LegacyBoxListResponse> {
+  return boxFetch(``);
+}
+
+export function deleteLegacyBox(boxId: string): Promise<{ success: boolean }> {
+  return boxFetch(`/${boxId}`, { method: 'DELETE' });
+}
+
+export function reorderLegacyBoxPhotos(
+  boxId: string,
+  photoIds: string[],
+): Promise<{ success: boolean }> {
+  return boxFetch(`/${boxId}/reorder`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ photoIds }),
+  });
+}
+
+export interface CreateLegacyBoxInput {
+  title: string;
+  message: string;
+  theme: string;
+  photos: File[];
+}
+
+export interface CreateLegacyBoxResponse {
+  id: string;
+  slug: string;
+  shareUrl: string;
+}
+
+/**
+ * Multipart create with upload progress (XHR — same pattern as the vault).
+ * Server re-validates everything; client-side checks are UX only.
+ */
+export function createLegacyBox(
+  input: CreateLegacyBoxInput,
+  onProgress?: (percent: number) => void,
+): Promise<CreateLegacyBoxResponse> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${API_URL}/legacy-box`);
+    xhr.responseType = 'json';
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(Math.round((e.loaded / e.total) * 100));
+    };
+    xhr.onerror = () => reject(new ApiError(0, 'Network error'));
+    xhr.onload = () => {
+      const body = xhr.response as (Record<string, unknown> & { error?: string; code?: string }) | null;
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(body as unknown as CreateLegacyBoxResponse);
+        return;
+      }
+      if (xhr.status === 401) clearSession();
+      reject(
+        new ApiError(
+          xhr.status,
+          typeof body?.error === 'string' ? body.error : `API error ${xhr.status}`,
+          typeof body?.code === 'string' ? body.code : undefined,
+        ),
+      );
+    };
+    const form = new FormData();
+    form.append('title', input.title);
+    form.append('message', input.message);
+    form.append('theme', input.theme);
+    for (const photo of input.photos) form.append('photos', photo);
+    xhr.send(form);
+  });
+}
+
+/**
+ * PUBLIC open-page fetch — used by /box/[slug] for recipients (no session).
+ * Never routes through apiFetch, which would clear the session hint on 401.
+ */
+export async function getLegacyBoxOpen(slug: string): Promise<LegacyBoxOpenResponse> {
+  const res = await fetch(`${API_URL}/legacy-box/open/${encodeURIComponent(slug)}`, {
+    cache: 'no-store',
+  });
+  if (!res.ok) throw new ApiError(res.status, `API error ${res.status}`);
+  return (await res.json()) as LegacyBoxOpenResponse;
 }
 
 /* ============================================================

@@ -305,6 +305,96 @@ export async function purgeDeletedVaultFiles(
   return result;
 }
 
+export interface LegacyBoxPurgeResult {
+  cutoff: string;
+  scanned: number;
+  objectsDeleted: number;
+  /** legacy_box_photos rows removed (child rows — hard delete is fine for them) */
+  photoRowsDeleted: number;
+  errors: number;
+}
+
+/**
+ * กล่องของขวัญ counterpart (migration 033): after the retention window, delete
+ * the R2 photo objects of soft-deleted boxes, hard-delete their
+ * legacy_box_photos rows (child rows carrying only storage keys — nothing
+ * needs them once the objects are gone), and stamp `purged_at` on the box row,
+ * which is KEPT as a tombstone (rule 6). NO quota refund here: the box's bytes
+ * were already refunded at soft-delete time (DELETE /legacy-box/:id), so a
+ * refund in the sweep would double-pay. A box is only stamped once every one
+ * of its objects deleted cleanly, so a partial failure retries next run.
+ * `apply=false` only reports.
+ */
+export async function purgeDeletedBoxes(
+  supabase: SupabaseClient,
+  r2: S3Client,
+  opts: { retentionDays: number; apply: boolean },
+): Promise<LegacyBoxPurgeResult> {
+  const cutoff = new Date(Date.now() - opts.retentionDays * 24 * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('legacy_boxes')
+    .select('id')
+    .not('deleted_at', 'is', null)
+    .is('purged_at', null)
+    .lt('deleted_at', cutoff);
+  if (error) throw error;
+
+  const boxes = (data ?? []) as { id: string }[];
+  const result: LegacyBoxPurgeResult = {
+    cutoff,
+    scanned: boxes.length,
+    objectsDeleted: 0,
+    photoRowsDeleted: 0,
+    errors: 0,
+  };
+
+  for (const box of boxes) {
+    const { data: photoData, error: photoErr } = await supabase
+      .from('legacy_box_photos')
+      .select('id, r2_key')
+      .eq('box_id', box.id);
+    if (photoErr) throw photoErr;
+    const photos = (photoData ?? []) as { id: string; r2_key: string }[];
+
+    if (!opts.apply) {
+      result.objectsDeleted += photos.length;
+      continue;
+    }
+
+    let ok = true;
+    for (const photo of photos) {
+      try {
+        await deleteObject(r2, photo.r2_key);
+        result.objectsDeleted += 1;
+      } catch {
+        result.errors += 1;
+        ok = false;
+      }
+    }
+    if (!ok) continue; // leave the box unstamped so the next run retries
+
+    if (photos.length > 0) {
+      const { error: delErr } = await supabase
+        .from('legacy_box_photos')
+        .delete()
+        .eq('box_id', box.id);
+      if (delErr) throw delErr;
+      result.photoRowsDeleted += photos.length;
+    }
+
+    // Tombstone: purged_at stamped, title/message redacted (they ARE the
+    // box's content), row kept — never DELETE FROM legacy_boxes.
+    const { error: markErr } = await supabase
+      .from('legacy_boxes')
+      .update({ purged_at: new Date().toISOString(), title: '[deleted]', message: '' })
+      .eq('id', box.id);
+    if (markErr) throw markErr;
+  }
+
+  return result;
+}
+
 export interface ScanTempSweepResult {
   cutoff: string;
   /** collecting sessions past their TTL that this run flipped to 'cancelled' */

@@ -230,6 +230,41 @@ back to the space root when the folder is gone).
   link with count badge + profile sheet.
 - Does NOT cover vault_files or diary_entries (both have their own delete/purge lifecycles).
 
+## กล่องของขวัญ (Legacy Box) — web-only, migration 033
+Shareable digital gift boxes at `/dashboard/legacy-box` (API `routes/legacy-box.ts`,
+data access `services/legacy-box.service.ts`): 1–10 photos + a ≤500-char message behind
+a public slug URL (`/box/{slug}` — DB-generated token, same trust model as share links),
+opened by the recipient with an animated CSS gift-box reveal. Isolated like diary/vault:
+own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
+(`legacy-box/{user_id}/{box_id}/{uuid}.webp`), no LINE-webhook/worker write path.
+- Photos: web multipart (registered in the route scope, like the vault) — max 10 files
+  × 20 MB source; each is re-encoded through sharp (≤1600px, webp q82) BEFORE storage,
+  which strips EXIF/GPS (never `.withMetadata()`). Max 10 live boxes per user (429).
+- Quota: exact webp bytes RESERVED up front via `incrementPersonalStorage(enforce)` →
+  409 `QUOTA_EXCEEDED`; any later failure rolls back objects + row + reservation.
+  Refund happens at SOFT delete (unlike vault-at-purge): a deleted box is instantly
+  unreachable and non-restorable, so quota returns immediately; the purge must NOT
+  refund again.
+- Public endpoint `GET /legacy-box/open/:slug`: no auth, own 30/min per-IP rate limit,
+  `X-Robots-Tag: noindex` + `Cache-Control: no-store`, 120s presigned photo URLs
+  (regenerated per load), NEVER returns user_id/creator name/any PII. View count ticks
+  via the atomic `increment_box_views` RPC (fire-and-forget). `/box/` is disallowed in
+  robots.ts and the page's OG image is the generic `public/og-legacy-box.png` — never
+  the actual photos.
+- Reveal page (`app/box/[slug]/` — `BoxReveal.tsx` + CSS module): closed→opening→
+  revealed, transform/opacity-only animations, ≤30 burst particles, seeded sticker/
+  tilt layout from the slug (`@nookeb/shared` `getStickerLayout`/`getPolaroidTilt` —
+  server and client derive the same layout, nothing stored). prefers-reduced-motion
+  cross-fades straight to the reveal; revealed content mounts hidden in the DOM at load
+  + a 2s failsafe timer, so it can never be stuck invisible. 6 fixed themes in
+  `packages/shared/src/legacy-box-themes.ts` (ids must stay in sync with the DB CHECK).
+- Purge: soft-deleted boxes older than 7 days (fixed const, not env) → R2 objects +
+  `legacy_box_photos` rows deleted, box row tombstoned (`purged_at` + title/message
+  redacted — rule 6 holds) via `purgeDeletedBoxes` in the daily `purge_deleted` job.
+- Events: `box_created`, `box_viewed` (user_id = box OWNER, not the viewer),
+  `box_deleted`. Dashboard entry: `components/LegacyBoxEntryCard.tsx` (diary-banner
+  geometry, themed to the newest box).
+
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
@@ -239,9 +274,10 @@ a failed store soft-deletes its row so the retry can re-insert) · `create_diary
 400px thumb; attempts: 3, retry-safe via the live-rows unique indexes on
 `line_message_id` and user+entry_date — migration 028) · `purge_deleted` (daily
 repeatable, scheduled on worker startup via `scheduleRepeatableJobs`; also sweeps
-soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries` and
+soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries`,
 hard-purges soft-deleted vault files via `purgeDeletedVaultFiles`, which also refunds
-their bytes to `users.storage_used`). (The legacy `upload_file` handler was removed — it had
+their bytes to `users.storage_used`, and purges 7-day-old deleted legacy boxes via
+`purgeDeletedBoxes` — NO refund there, the box's soft delete already refunded). (The legacy `upload_file` handler was removed — it had
 no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
 Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
 enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
@@ -313,6 +349,11 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
   - `032_trash.sql` — ถังขยะ (Trash Bin): `files.trash_origin_folder_id` (origin-folder
     snapshot for restore; FK ON DELETE SET NULL). NOT auto-applied; apply BEFORE deploying
     the trash code (DELETE /files/:id writes the column and errors without it).
+  - `033_legacy_boxes.sql` — กล่องของขวัญ (Legacy Box): `legacy_boxes` +
+    `legacy_box_photos` + atomic `increment_box_views` RPC (see the Legacy Box
+    section). Theme CHECK must stay in sync with `packages/shared/src/legacy-box-themes.ts`.
+    NOT auto-applied; apply BEFORE deploying the legacy-box code (the /legacy-box
+    routes error without these tables; everything else is unaffected).
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -323,7 +364,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     `progress` (upload-progress view + JSON), `diary` (ไดอารี่ entries/streak/
     today-status/notification — user-scoped, no space membership), `vault`
     (ห้องนิรภัย — PIN + encrypted view-only store, see the Vault section), `trash`
-    (ถังขยะ — list/restore/purge soft-deleted files, uploader-scoped), `static`
+    (ถังขยะ — list/restore/purge soft-deleted files, uploader-scoped), `legacy-box`
+    (กล่องของขวัญ — shareable gift boxes, see the Legacy Box section), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
@@ -338,7 +380,8 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     (diary one-shot Redis flag; caption piggybacks on the flag value),
     `vault-crypto` (envelope encryption, pure/unit-tested), `vault-session`
     (Redis unlock sessions + per-user PIN lockout), `vault` (vault_files data
-    access + view watermarking)
+    access + view watermarking), `legacy-box` (legacy_boxes/photos data access +
+    R2 key builder + DTO mapper)
   - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
@@ -363,15 +406,17 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     inline hydration-independent 4s failsafe `<script>` in `page.tsx`, and a `<noscript>`
     override — do NOT remove any layer (a blank page was observed when JS arrived late).
   - SEO: `app/robots.ts` (disallows `/dashboard`, `/admin`, `/auth/`, `/join`, `/share/`,
-    `/api-proxy/`) + `app/sitemap.ts` (lists only `/`) + OpenGraph image
+    `/box/`, `/api-proxy/`) + `app/sitemap.ts` (lists only `/`) + OpenGraph image
     `public/landing/og.jpg` + `metadataBase` in `app/layout.tsx` (origin defaults to the
     Vercel domain; override with `NEXT_PUBLIC_SITE_URL` when a custom domain lands).
   - All outbound links/handles live ONLY in `lib/site.ts` (SITE_URL, LINE_ADD_FRIEND_URL,
     LINE_ID, INSTAGRAM_URL, TIKTOK_URL) — that file is the current canon; the playbook's
     ภาคผนวก A still lists an older lin.ee link, so reconcile the playbook when touching links.
   - Dashboard routes: `/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook viewer),
-    `/dashboard/vault` (ห้องนิรภัย), `/dashboard/trash` (ถังขยะ), `/dashboard/teams`
-    (+ `/[teamId]`), `/admin`, `/join`, `/auth/callback`, `/share/[token]`
+    `/dashboard/vault` (ห้องนิรภัย), `/dashboard/trash` (ถังขยะ),
+    `/dashboard/legacy-box` (+ `/new` create flow), `/dashboard/teams`
+    (+ `/[teamId]`), `/admin`, `/join`, `/auth/callback`, `/share/[token]`,
+    `/box/[slug]` (PUBLIC gift reveal — noindex, generic OG image)
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 

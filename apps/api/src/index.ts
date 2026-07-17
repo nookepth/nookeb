@@ -22,6 +22,7 @@ import adminRoutes from './routes/admin';
 import progressRoutes from './routes/progress';
 import diaryRoutes from './routes/diary';
 import vaultRoutes from './routes/vault';
+import legacyBoxRoutes from './routes/legacy-box';
 import staticRoutes from './routes/static';
 import { flushAll } from './services/upload-queue';
 
@@ -114,6 +115,7 @@ async function main(): Promise<void> {
   await app.register(progressRoutes);
   await app.register(diaryRoutes);
   await app.register(vaultRoutes);
+  await app.register(legacyBoxRoutes);
   await app.register(staticRoutes);
 
   await app.listen({ port: config.PORT, host: '0.0.0.0' });

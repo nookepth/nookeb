@@ -31,6 +31,7 @@ import { Navbar, type NavbarUser } from '@/components/Navbar';
 import { BottomNav, type BottomTab } from '@/components/BottomNav';
 import { DiaryReminderBanner } from '@/components/DiaryReminderBanner';
 import { DiaryEntryCard } from '@/components/DiaryEntryCard';
+import { LegacyBoxEntryCard } from '@/components/LegacyBoxEntryCard';
 import { RecentStrip } from '@/components/RecentStrip';
 import { ReferralCard } from '@/components/ReferralCard';
 import { UsageBar } from '@/components/UsageBar';
@@ -438,6 +439,8 @@ export default function DashboardPage() {
         <VaultEntryCard status={vaultStatus} stats={vaultStats} />
 
         <DiaryEntryCard />
+
+        <LegacyBoxEntryCard />
 
         <ReferralCard />
 
