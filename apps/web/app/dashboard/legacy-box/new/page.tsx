@@ -16,6 +16,7 @@ import {
 import { ApiError, createLegacyBox, hasSession, postProInterest } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { AudioIcon, CheckBadgeIcon, LockIcon, OCCASION_ICONS, VideoIcon } from './OccasionIcons';
+import { ShareActions } from './ShareActions';
 import { VoiceRecorder } from './VoiceRecorder';
 import styles from './page.module.css';
 
@@ -264,16 +265,6 @@ export default function NewLegacyBoxPage() {
     }
   }
 
-  async function copyShareUrl(): Promise<void> {
-    if (!created) return;
-    try {
-      await navigator.clipboard.writeText(created.shareUrl);
-      showToast('คัดลอกลิงก์แล้ว 🎁');
-    } catch {
-      showToast('คัดลอกไม่สำเร็จ ลองใหม่อีกทีน้า');
-    }
-  }
-
   // seeded-ish gentle tilts for the preview polaroids (visual only)
   const tilts = useMemo(() => photos.map((_, i) => ((i * 137) % 7) - 3), [photos]);
 
@@ -314,21 +305,7 @@ export default function NewLegacyBoxPage() {
             <p className={styles.successText}>
               ส่งลิงก์นี้ให้คนพิเศษของคุณ แล้วรอเขาแตะเปิดกล่องได้เลย
             </p>
-            <div className={styles.successActions}>
-              <button
-                type="button"
-                className={`${styles.navBtn} ${styles.nextBtn}`}
-                onClick={() => void copyShareUrl()}
-              >
-                คัดลอกลิงก์ 🎉
-              </button>
-              <a className={`${styles.navBtn} ${styles.backBtn}`} href={created.shareUrl}>
-                ดูตัวอย่าง
-              </a>
-              <a className={`${styles.navBtn} ${styles.backBtn}`} href="/dashboard/legacy-box">
-                กลับหน้ากล่อง
-              </a>
-            </div>
+            <ShareActions shareUrl={created.shareUrl} />
           </div>
         </div>
         {toast && <div className={styles.toast}>{toast}</div>}

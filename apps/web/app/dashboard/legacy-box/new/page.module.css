@@ -920,12 +920,51 @@
   opacity: 0.75;
   margin: 0;
 }
-.successActions {
+.shareActions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  max-width: 380px;
+  margin-top: 6px;
+}
+.shareRow {
   display: flex;
   gap: 10px;
-  flex-wrap: wrap;
+}
+.shareRow > * {
+  flex: 1;
+  text-align: center;
+}
+.outlineBtn {
+  background: transparent;
+  color: var(--bx-text);
+  border: 1.5px solid var(--bx-accent);
+}
+.okBtn {
+  color: #128a4a;
+  border-color: #128a4a;
+}
+.ghostBtn {
+  background: transparent;
+  color: var(--bx-text);
+  opacity: 0.75;
+  font-weight: 600;
+}
+.lineBtn {
+  display: inline-flex;
+  align-items: center;
   justify-content: center;
-  margin-top: 6px;
+  gap: 8px;
+  width: 100%;
+  background: #06c755;
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(6, 199, 85, 0.3);
+}
+.lineLogo {
+  width: 20px;
+  height: 20px;
+  flex: none;
 }
 
 .toast {
