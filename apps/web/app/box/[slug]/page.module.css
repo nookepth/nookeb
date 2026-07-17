@@ -11,7 +11,8 @@
   position: relative;
   overflow-x: hidden;
   font-family:
-    'Noto Sans Thai', 'Sukhumvit Set', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    var(--font-ibm-plex-sans-thai), 'IBM Plex Sans Thai', 'Noto Sans Thai', 'Sukhumvit Set',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 /* ---------- loading / error ---------- */
@@ -35,15 +36,21 @@
   opacity: 0.75;
   font-size: 15px;
 }
-.centerEmoji {
-  font-size: 56px;
+.centerIcon {
+  width: 72px;
+  height: 72px;
+  display: inline-flex;
   filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+}
+.centerIcon svg {
+  width: 100%;
+  height: 100%;
 }
 .loadingPulse {
   animation: glowPulse 1.6s ease-in-out infinite;
 }
 
-/* ---------- floating stickers ---------- */
+/* ---------- floating stickers (inline SVG, die-cut sticker style) ---------- */
 
 .stickerField {
   position: fixed;
@@ -54,11 +61,13 @@
 }
 .sticker {
   position: absolute;
-  font-size: var(--size, 48px);
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+  width: var(--size, 48px);
+  height: var(--size, 48px);
+  filter: drop-shadow(0 3px 5px rgba(0, 0, 0, 0.16));
   animation: stickerFloat 4s ease-in-out infinite;
   animation-delay: var(--delay, 0s);
   transform: rotate(var(--r, 0deg));
+  opacity: 0.92;
   user-select: none;
   pointer-events: none;
 }
@@ -72,7 +81,10 @@
   }
 }
 
-/* ---------- Phase 1: closed gift box ---------- */
+/* ---------- Phase 1: closed gift box ----------
+   Built from layered gradients so it reads as a real, dimensional box:
+   light falls from the top-left, the lid overhangs the body, the ribbon has a
+   satin center-highlight, and a ground shadow breathes as the box floats. */
 
 .closedStage {
   position: relative;
@@ -89,7 +101,7 @@
 .giftButton {
   background: none;
   border: none;
-  padding: 40px;
+  padding: 48px 40px 40px;
   cursor: pointer;
   position: relative;
   -webkit-tap-highlight-color: transparent;
@@ -102,9 +114,9 @@
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 300px;
-  height: 300px;
-  margin: -150px 0 0 -150px;
+  width: 320px;
+  height: 320px;
+  margin: -160px 0 0 -160px;
   border-radius: 50%;
   background: radial-gradient(circle, var(--bx-glow) 0%, transparent 70%);
   animation: glowPulse 3s ease-in-out infinite;
@@ -119,6 +131,31 @@
   50% {
     opacity: 0.7;
     transform: scale(1.1);
+  }
+}
+
+/* ground shadow — shrinks + fades while the box is at the top of its float */
+.giftShadow {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  width: 190px;
+  height: 26px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(30, 15, 25, 0.28), transparent 78%);
+  animation: shadowBreathe 3s ease-in-out infinite;
+  pointer-events: none;
+  transition: opacity 400ms ease;
+}
+@keyframes shadowBreathe {
+  0%,
+  100% {
+    transform: translateX(-50%) scale(1);
+    opacity: 0.55;
+  }
+  50% {
+    transform: translateX(-50%) scale(0.76);
+    opacity: 0.3;
   }
 }
 
@@ -141,94 +178,212 @@
   }
 }
 
+/* ----- lid ----- */
 .giftLid {
-  width: 220px;
-  height: 50px;
-  background: var(--bx-box-accent);
-  border-radius: 8px;
-  margin-bottom: -4px;
+  width: 232px;
+  height: 48px;
   position: relative;
   z-index: 2;
-  box-shadow: 0 4px 12px var(--bx-glow);
+  margin-bottom: -6px;
+  border-radius: 10px 10px 5px 5px;
+  background: var(--bx-box-accent);
+  background: linear-gradient(
+    172deg,
+    color-mix(in srgb, var(--bx-box-accent), #fff 42%) 0%,
+    color-mix(in srgb, var(--bx-box-accent), #fff 10%) 45%,
+    var(--bx-box-accent) 70%,
+    color-mix(in srgb, var(--bx-box-accent), #3a2030 18%) 100%
+  );
+  box-shadow:
+    0 12px 18px -10px rgba(40, 20, 35, 0.35),
+    inset 0 2px 0 rgba(255, 255, 255, 0.45),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.12);
   transition:
     transform 500ms cubic-bezier(0.34, 0.9, 0.4, 1),
     opacity 500ms ease;
 }
-
-.giftBow {
+/* ribbon running over the lid, continuing the body's vertical band */
+.giftLid::before {
+  content: '';
   position: absolute;
   top: 0;
+  bottom: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 34px;
+  background: var(--bx-ribbon);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 22%) 0%,
+    var(--bx-ribbon) 18%,
+    color-mix(in srgb, var(--bx-ribbon), #fff 55%) 50%,
+    var(--bx-ribbon) 82%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 22%) 100%
+  );
+  border-radius: 2px 2px 0 0;
+}
+/* darker lip along the lid's underside — the overhang */
+.giftLidFace {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 10px;
+  border-radius: 0 0 5px 5px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.22));
+  pointer-events: none;
+}
+
+/* ----- bow (loops + knot + trailing tails), anchored to lid center ----- */
+.giftBow {
+  position: absolute;
+  top: 2px;
   left: 50%;
   width: 0;
   height: 0;
 }
-.giftBow::before,
-.giftBow::after {
-  content: '';
+.giftBowLoop {
   position: absolute;
-  width: 36px;
-  height: 24px;
-  background: var(--bx-ribbon);
-  border-radius: 50%;
-  top: -12px;
+  top: 0;
   left: 0;
-  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.08);
+  width: 62px;
+  height: 40px;
+  /* teardrop loop: pointed inner end (meets the knot), round outer end */
+  border-radius: 20% 80% 75% 25% / 50% 55% 45% 50%;
+  background: var(--bx-ribbon);
+  background: radial-gradient(
+    135% 135% at 68% 22%,
+    color-mix(in srgb, var(--bx-ribbon), #fff 55%) 0%,
+    var(--bx-ribbon) 54%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 24%) 100%
+  );
+  box-shadow:
+    inset -4px -6px 10px rgba(60, 25, 45, 0.22),
+    inset 4px 5px 9px rgba(255, 255, 255, 0.5);
 }
-.giftBow::before {
-  transform: translateX(-110%) rotate(-30deg);
+.giftBowLoopL {
+  transform: translate(-97%, -74%) rotate(14deg) scaleX(-1);
+  background: radial-gradient(
+    135% 135% at 68% 22%,
+    color-mix(in srgb, var(--bx-ribbon), #fff 55%) 0%,
+    var(--bx-ribbon) 54%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 24%) 100%
+  );
 }
-.giftBow::after {
-  transform: translateX(10%) rotate(30deg);
+.giftBowLoopR {
+  transform: translate(-3%, -74%) rotate(-14deg);
+  background: radial-gradient(
+    135% 135% at 32% 22%,
+    color-mix(in srgb, var(--bx-ribbon), #fff 55%) 0%,
+    var(--bx-ribbon) 54%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 24%) 100%
+  );
+}
+.giftBowTail {
+  position: absolute;
+  top: 4px;
+  left: 0;
+  width: 20px;
+  height: 44px;
+  background: var(--bx-ribbon);
+  background: linear-gradient(
+    180deg,
+    var(--bx-ribbon) 0%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 24%) 100%
+  );
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%);
+}
+.giftBowTailL {
+  transform: translate(-128%, 6%) rotate(22deg);
+}
+.giftBowTailR {
+  transform: translate(28%, 6%) rotate(-22deg);
 }
 .giftBowKnot {
   position: absolute;
-  top: -16px;
-  left: -8px;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--bx-box-accent);
-  border: 2px solid var(--bx-ribbon);
+  top: 0;
+  left: 0;
+  width: 27px;
+  height: 23px;
+  transform: translate(-50%, -62%);
+  border-radius: 8px;
+  background: var(--bx-ribbon);
+  background: linear-gradient(
+    155deg,
+    color-mix(in srgb, var(--bx-ribbon), #fff 22%) 0%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 12%) 55%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 34%) 100%
+  );
+  box-shadow:
+    inset 0 2px 3px rgba(255, 255, 255, 0.45),
+    inset 0 -3px 5px rgba(60, 25, 45, 0.3),
+    0 2px 5px rgba(40, 20, 35, 0.25);
 }
 
+/* ----- body ----- */
 .giftBody {
   width: 200px;
-  height: 160px;
-  background: var(--bx-box);
-  border-radius: 12px;
-  border: 3px solid var(--bx-box-accent);
-  box-shadow:
-    0 8px 32px var(--bx-glow),
-    inset 0 2px 0 rgba(255, 255, 255, 0.4);
+  height: 156px;
   position: relative;
   overflow: hidden;
+  border-radius: 5px 5px 14px 14px;
+  background: var(--bx-box);
+  background: linear-gradient(
+    168deg,
+    color-mix(in srgb, var(--bx-box), #fff 50%) 0%,
+    color-mix(in srgb, var(--bx-box), #fff 14%) 36%,
+    var(--bx-box) 62%,
+    color-mix(in srgb, var(--bx-box), #3a2030 16%) 100%
+  );
+  box-shadow:
+    inset 0 3px 2px -2px rgba(255, 255, 255, 0.55),
+    inset 14px 0 24px -14px rgba(255, 255, 255, 0.55),
+    inset -18px -8px 30px -14px rgba(60, 25, 45, 0.3),
+    0 22px 44px -14px var(--bx-glow);
   transition:
     transform 400ms cubic-bezier(0.5, 0, 0.75, 0.4),
     opacity 400ms ease,
     filter 400ms ease;
 }
-.giftBody::before {
-  content: '';
+/* satin vertical ribbon with a center highlight + soft cast shadows */
+.giftRibbonV {
   position: absolute;
-  width: 24px;
   top: 0;
   bottom: 0;
   left: 50%;
   transform: translateX(-50%);
+  width: 34px;
   background: var(--bx-ribbon);
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 22%) 0%,
+    var(--bx-ribbon) 18%,
+    color-mix(in srgb, var(--bx-ribbon), #fff 55%) 50%,
+    var(--bx-ribbon) 82%,
+    color-mix(in srgb, var(--bx-ribbon), #3a2030 22%) 100%
+  );
+  box-shadow:
+    -5px 0 8px -4px rgba(60, 25, 45, 0.18),
+    5px 0 8px -4px rgba(60, 25, 45, 0.18);
 }
-.giftBody::after {
-  content: '';
+/* diagonal sheen sweeping across the wrap */
+.giftSheen {
   position: absolute;
-  height: 24px;
-  left: 0;
-  right: 0;
-  top: 50%;
-  transform: translateY(-50%);
-  background: var(--bx-ribbon);
+  top: -30%;
+  left: -35%;
+  width: 55%;
+  height: 160%;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.32) 50%,
+    transparent 100%
+  );
+  transform: rotate(4deg);
+  pointer-events: none;
 }
 
-/* opening: lid flies off, body shrinks away */
+/* opening: lid (with bow) flies off, body shrinks away */
 .isOpening .giftWrapper {
   animation: none;
 }
@@ -246,6 +401,10 @@
   animation: none;
   opacity: 0;
   transition: opacity 600ms ease;
+}
+.isOpening .giftShadow {
+  animation: none;
+  opacity: 0;
 }
 
 .closedTitle {
@@ -268,7 +427,6 @@
   transition: opacity 300ms ease;
 }
 .tapArrow {
-  font-size: 18px;
   animation: arrowPulse 1.4s ease-in-out infinite;
 }
 @keyframes arrowPulse {
@@ -358,9 +516,12 @@
   gap: 20px;
   overflow-x: auto;
   scroll-snap-type: x mandatory;
-  padding: 32px 24px;
+  padding: 32px 24px 40px;
   scrollbar-width: none;
   -webkit-overflow-scrolling: touch;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
 }
 .polaroidRow::-webkit-scrollbar {
   display: none;
@@ -370,6 +531,19 @@
 .polaroidRow::after {
   content: '';
   flex: 0 0 calc(50vw - 150px);
+}
+/* while mouse-dragging or wheel-scrolling: follow the pointer 1:1
+   (snap re-engages on release so cards settle centered) */
+.isRowDragging,
+.freeScroll {
+  scroll-snap-type: none;
+  scroll-behavior: auto;
+}
+.isRowDragging {
+  cursor: grabbing;
+}
+.isRowDragging .polaroid {
+  pointer-events: none;
 }
 
 .polaroid {
@@ -424,6 +598,7 @@
   border-radius: 2px;
   display: block;
   background: var(--bx-card);
+  -webkit-user-drag: none;
 }
 .polaroidCaption {
   position: absolute;
@@ -431,9 +606,11 @@
   left: 0;
   right: 0;
   text-align: center;
-  font-family: 'Segoe Print', 'Comic Sans MS', cursive;
-  font-size: 14px;
-  color: #555;
+  /* film-strip frame numbers — deliberately monospace, not the page font */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, 'Courier New', monospace;
+  letter-spacing: 0.14em;
+  font-size: 13px;
+  color: #666;
 }
 
 /* dot indicator */
@@ -598,6 +775,7 @@
 @media (prefers-reduced-motion: reduce) {
   .giftWrapper,
   .giftGlow,
+  .giftShadow,
   .tapArrow,
   .sticker,
   .loadingPulse {

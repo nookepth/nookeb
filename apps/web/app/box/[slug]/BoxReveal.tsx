@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { LegacyBoxOpenResponse, LegacyBoxTheme } from '@nookeb/shared';
 import { THEMES, getPolaroidTilt } from '@nookeb/shared';
 import { ApiError, getLegacyBoxOpen } from '@/lib/api';
+import { EmptyBoxIcon, GiftIcon, StickerArt } from './StickerArt';
 import styles from './page.module.css';
 
 /**
@@ -50,9 +51,12 @@ export function BoxReveal({ slug }: { slug: string }) {
   const [box, setBox] = useState<LegacyBoxOpenResponse | null>(null);
   const [activeDot, setActiveDot] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const particleLayerRef = useRef<HTMLDivElement>(null);
   const rowRef = useRef<HTMLDivElement>(null);
   const timersRef = useRef<number[]>([]);
+  const dragRef = useRef({ startX: 0, startLeft: 0, moved: false });
+  const wheelSnapTimerRef = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -113,10 +117,64 @@ export function BoxReveal({ slug }: { slug: string }) {
     setActiveDot(best);
   }, [box]);
 
+  /* ---- desktop drag-to-scroll for the polaroid row (touch already works
+     natively; this covers mouse users, where a hidden scrollbar left no way
+     to scroll at all). While dragging, CSS disables scroll-snap so the row
+     follows the cursor 1:1, then re-snaps on release. ---- */
+  const onRowMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const row = rowRef.current;
+    if (!row || e.button !== 0) return;
+    dragRef.current = { startX: e.pageX, startLeft: row.scrollLeft, moved: false };
+    setIsDragging(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+    const onMove = (e: MouseEvent) => {
+      const row = rowRef.current;
+      if (!row) return;
+      const dx = e.pageX - dragRef.current.startX;
+      if (Math.abs(dx) > 4) dragRef.current.moved = true;
+      row.scrollLeft = dragRef.current.startLeft - dx;
+      e.preventDefault();
+    };
+    const onUp = () => setIsDragging(false);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, [isDragging]);
+
+  /* mouse wheel → horizontal scroll (non-passive so we can keep the page
+     from scrolling vertically while the cursor is over the row) */
+  useEffect(() => {
+    const row = rowRef.current;
+    if (!row || !box) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return; // trackpad h-scroll works natively
+      const max = row.scrollWidth - row.clientWidth;
+      if (max <= 0) return;
+      e.preventDefault();
+      row.classList.add(styles.freeScroll!);
+      row.scrollLeft += e.deltaY;
+      window.clearTimeout(wheelSnapTimerRef.current);
+      wheelSnapTimerRef.current = window.setTimeout(() => {
+        row.classList.remove(styles.freeScroll!);
+      }, 250);
+    };
+    row.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      row.removeEventListener('wheel', onWheel);
+      window.clearTimeout(wheelSnapTimerRef.current);
+    };
+  }, [box]);
+
   const shareBox = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
-      setToast('คัดลอกแล้ว! 🎉');
+      setToast('คัดลอกลิงก์แล้ว!');
     } catch {
       setToast('คัดลอกไม่สำเร็จ ลองใหม่อีกทีน้า');
     }
@@ -139,8 +197,8 @@ export function BoxReveal({ slug }: { slug: string }) {
     return (
       <main className={styles.page} style={themeVars}>
         <div className={styles.centerState}>
-          <span className={`${styles.centerEmoji} ${styles.loadingPulse}`} aria-hidden>
-            🎁
+          <span className={`${styles.centerIcon} ${styles.loadingPulse}`} aria-hidden>
+            <GiftIcon />
           </span>
           <p>กำลังห่อของขวัญ…</p>
         </div>
@@ -152,8 +210,8 @@ export function BoxReveal({ slug }: { slug: string }) {
     return (
       <main className={styles.page} style={themeVars}>
         <div className={styles.centerState}>
-          <span className={styles.centerEmoji} aria-hidden>
-            🕊️
+          <span className={styles.centerIcon} aria-hidden>
+            <EmptyBoxIcon />
           </span>
           <h1>ไม่พบกล่องของขวัญนี้</h1>
           <p>ลิงก์อาจไม่ถูกต้อง หรือกล่องถูกลบไปแล้วน้า</p>
@@ -183,7 +241,7 @@ export function BoxReveal({ slug }: { slug: string }) {
               } as React.CSSProperties
             }
           >
-            {p.sticker.emoji}
+            <StickerArt id={p.sticker.id} />
           </span>
         ))}
       </div>
@@ -200,20 +258,41 @@ export function BoxReveal({ slug }: { slug: string }) {
             aria-label="แตะเพื่อเปิดกล่องของขวัญ"
           >
             <span className={styles.giftGlow} aria-hidden />
+            <span className={styles.giftShadow} aria-hidden />
             <span className={styles.giftWrapper}>
               <span className={styles.giftLid}>
                 <span className={styles.giftBow} aria-hidden>
+                  <span className={`${styles.giftBowTail} ${styles.giftBowTailL}`} />
+                  <span className={`${styles.giftBowTail} ${styles.giftBowTailR}`} />
+                  <span className={`${styles.giftBowLoop} ${styles.giftBowLoopL}`} />
+                  <span className={`${styles.giftBowLoop} ${styles.giftBowLoopR}`} />
                   <span className={styles.giftBowKnot} />
                 </span>
+                <span className={styles.giftLidFace} aria-hidden />
               </span>
-              <span className={styles.giftBody} />
+              <span className={styles.giftBody}>
+                <span className={styles.giftRibbonV} aria-hidden />
+                <span className={styles.giftSheen} aria-hidden />
+              </span>
             </span>
             <span ref={particleLayerRef} className={styles.particleLayer} aria-hidden />
           </button>
           <h1 className={styles.closedTitle}>{box.title}</h1>
           <div className={styles.tapHint} aria-hidden>
             แตะเพื่อเปิด
-            <span className={styles.tapArrow}>↓</span>
+            <svg
+              className={styles.tapArrow}
+              viewBox="0 0 24 24"
+              width="20"
+              height="20"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M12 4v14m0 0l-6-6m6 6l6-6" />
+            </svg>
           </div>
         </div>
       )}
@@ -222,7 +301,12 @@ export function BoxReveal({ slug }: { slug: string }) {
       <div className={isClosedOrOpening ? styles.hiddenStage : styles.revealStage}>
         <h1 className={styles.revealTitle}>{box.title}</h1>
 
-        <div className={styles.polaroidRow} ref={rowRef} onScroll={onRowScroll}>
+        <div
+          className={`${styles.polaroidRow} ${isDragging ? styles.isRowDragging : ''}`}
+          ref={rowRef}
+          onScroll={onRowScroll}
+          onMouseDown={onRowMouseDown}
+        >
           {box.photos.map((photo, i) => (
             <figure
               key={photo.sortOrder}
@@ -263,7 +347,7 @@ export function BoxReveal({ slug }: { slug: string }) {
         {box.message && (
           <section className={styles.messageSection}>
             <p className={styles.messageText}>{box.message}</p>
-            <p className={styles.fromLine}>จาก ✨</p>
+            <p className={styles.fromLine}>ส่งมาด้วยความคิดถึง</p>
           </section>
         )}
 

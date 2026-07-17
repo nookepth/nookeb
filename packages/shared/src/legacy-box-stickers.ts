@@ -1,10 +1,11 @@
 /**
  * กล่องของขวัญ (Legacy Box) — sticker decoration system (migration 033).
  *
- * Stickers are Unicode emoji rendered as absolutely-positioned <span>s with a
- * drop-shadow, sized 40–80px so they read as physical sticker overlays — 100%
- * self-contained (no CDN, no image assets; emoji render natively everywhere,
- * including the LINE in-app browser).
+ * Stickers are hand-drawn-style INLINE SVGs (no emoji — system emoji render
+ * differently on every OS and clash with the curated look). This shared module
+ * only defines the sticker IDs + the seeded layout math; the actual SVG art
+ * lives client-side in `apps/web/app/box/[slug]/StickerArt.tsx`, keyed by id.
+ * 100% self-contained (no CDN, no image assets).
  *
  * Placement is SEEDED off the box slug: the same slug always produces the same
  * layout, so the box a recipient opens today looks identical next month, and
@@ -12,27 +13,20 @@
  */
 
 export const STICKERS = [
-  { id: 'heart', emoji: '🤍', label: 'heart' },
-  { id: 'star', emoji: '⭐', label: 'star' },
-  { id: 'sparkle', emoji: '✨', label: 'sparkle' },
-  { id: 'ribbon', emoji: '🎀', label: 'ribbon' },
-  { id: 'flower', emoji: '🌸', label: 'flower' },
-  { id: 'daisy', emoji: '🌼', label: 'daisy' },
-  { id: 'camera', emoji: '📷', label: 'camera' },
-  { id: 'letter', emoji: '💌', label: 'letter' },
-  { id: 'balloon', emoji: '🎈', label: 'balloon' },
-  { id: 'gem', emoji: '💎', label: 'gem' },
-  { id: 'butterfly', emoji: '🦋', label: 'butterfly' },
-  { id: 'cherry', emoji: '🍒', label: 'cherry' },
-  { id: 'moon', emoji: '🌙', label: 'moon' },
-  { id: 'rose', emoji: '🌹', label: 'rose' },
-  { id: 'bow', emoji: '🎗️', label: 'bow' },
-  { id: 'clover', emoji: '🍀', label: 'clover' },
-  { id: 'candy', emoji: '🍬', label: 'candy' },
-  { id: 'cloud', emoji: '☁️', label: 'cloud' },
+  { id: 'heart', label: 'heart' },
+  { id: 'star', label: 'star' },
+  { id: 'sparkle', label: 'sparkle' },
+  { id: 'bow', label: 'bow' },
+  { id: 'flower', label: 'flower' },
+  { id: 'camera', label: 'camera' },
+  { id: 'letter', label: 'love letter' },
+  { id: 'balloon', label: 'balloon' },
+  { id: 'moon', label: 'moon' },
+  { id: 'cloud', label: 'cloud' },
 ] as const;
 
 export type Sticker = (typeof STICKERS)[number];
+export type StickerId = Sticker['id'];
 
 export interface StickerPlacement {
   sticker: Sticker;
