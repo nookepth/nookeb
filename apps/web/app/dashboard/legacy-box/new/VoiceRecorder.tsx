@@ -54,7 +54,14 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
    * yet", which renders nothing — the same as the server.
    */
   const [supported, setSupported] = useState<boolean | null>(null);
-  const [state, setState] = useState<RecorderState>('idle');
+  /**
+   * Seeded from the parent's committed clip, not hardcoded to 'idle': this
+   * component only exists while step 3 is on screen, so stepping to 4 and back
+   * REMOUNTS it while the parent still holds the Blob. Mounting at 'idle' then
+   * showed "เริ่มอัด" over a clip that was still going to be submitted, and left
+   * no way to remove it — discard is only reachable from preview/saved.
+   */
+  const [state, setState] = useState<RecorderState>(value ? 'saved' : 'idle');
   const [countdown, setCountdown] = useState(COUNTDOWN_FROM);
   const [elapsed, setElapsed] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -76,7 +83,9 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
    * connect-src (it fails outright under ours), and the object URL is only ever
    * a handle to this same Blob anyway.
    */
-  const recordedBlobRef = useRef<Blob | null>(null);
+  // Seeded from the parent for the same remount reason as `state` above, so a
+  // remounted 'saved' recorder holds the clip it claims to have.
+  const recordedBlobRef = useRef<Blob | null>(value);
   const previewUrlRef = useRef<string | null>(null);
   previewUrlRef.current = previewUrl;
   /**
@@ -89,6 +98,8 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
    */
   const elapsedRef = useRef(0);
   const countdownRef = useRef(COUNTDOWN_FROM);
+  /** re-entry guard for startCountdown — see the note there */
+  const startingRef = useRef(false);
 
   useEffect(() => {
     setSupported(
@@ -195,6 +206,12 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
   }, [clearTimers, stopStream]);
 
   const startCountdown = useCallback(async () => {
+    // The button stays mounted in 'idle' across the getUserMedia await, so a
+    // double-tap opened a SECOND stream and overwrote streamRef — orphaning the
+    // first, which nothing could then stop (mic stays hot for the tab's life).
+    // One start at a time; streamRef is non-null whenever a stream is already open.
+    if (startingRef.current || streamRef.current) return;
+    startingRef.current = true;
     setError(null);
     // Permission is requested on the tap, per spec — never on mount.
     let stream: MediaStream;
@@ -210,9 +227,11 @@ export function VoiceRecorder({ value, onChange }: VoiceRecorderProps) {
         setError('กรุณาอนุญาตการใช้ไมโครโฟนในการตั้งค่า browser');
       }
       setState('idle');
+      startingRef.current = false;
       return;
     }
     streamRef.current = stream;
+    startingRef.current = false;
 
     countdownRef.current = COUNTDOWN_FROM;
     setCountdown(COUNTDOWN_FROM);

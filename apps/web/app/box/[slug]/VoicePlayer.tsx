@@ -19,7 +19,17 @@ import styles from './VoicePlayer.module.css';
 
 type PlayerState = 'loading' | 'ready' | 'error';
 
-export function VoicePlayer({ src }: { src: string }) {
+export function VoicePlayer({
+  src,
+  onRefreshSrc,
+}: {
+  src: string;
+  /**
+   * Fetch a freshly presigned URL for this clip. Optional, but without it a
+   * retry can only re-request `src` — see the note on `retry` below.
+   */
+  onRefreshSrc?: () => Promise<string | null>;
+}) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [state, setState] = useState<PlayerState>('loading');
   const [playing, setPlaying] = useState(false);
@@ -28,7 +38,13 @@ export function VoicePlayer({ src }: { src: string }) {
   const [scrubbing, setScrubbing] = useState(false);
   /** bumped by the retry button to force the <audio> to re-request the URL */
   const [reloadKey, setReloadKey] = useState(0);
+  /** the URL actually loaded: `src`, or a re-signed replacement after a retry */
+  const [resolvedSrc, setResolvedSrc] = useState(src);
+  const [retrying, setRetrying] = useState(false);
   const durationFixRef = useRef(false);
+
+  // A fresh payload from the parent supersedes anything we re-signed ourselves.
+  useEffect(() => setResolvedSrc(src), [src]);
 
   // A new URL (or a retry) starts over from the loading state.
   useEffect(() => {
@@ -37,7 +53,7 @@ export function VoicePlayer({ src }: { src: string }) {
     setCurrent(0);
     setDuration(0);
     durationFixRef.current = false;
-  }, [src, reloadKey]);
+  }, [resolvedSrc, reloadKey]);
 
   /**
    * MediaRecorder's WebM output has no duration in its header, so a clip
@@ -97,7 +113,33 @@ export function VoicePlayer({ src }: { src: string }) {
     setCurrent(value);
   }, []);
 
-  const retry = useCallback(() => setReloadKey((k) => k + 1), []);
+  /**
+   * Retry. The clip's URL is presigned for an hour, but we only ever request it
+   * when the recipient taps play — which is the point of not autoplaying, and
+   * can be hours after the page loaded. So the likely failure here is EXPIRY,
+   * not a network blip, and re-requesting the same URL (what this used to do)
+   * 403s forever. Ask the parent to re-sign first; only fall back to a plain
+   * re-request when there's no refresher or it fails.
+   */
+  const retry = useCallback(async () => {
+    if (retrying) return;
+    if (!onRefreshSrc) {
+      setReloadKey((k) => k + 1);
+      return;
+    }
+    setRetrying(true);
+    try {
+      const fresh = await onRefreshSrc();
+      // An identical URL wouldn't re-trigger the load effect — bump the key so
+      // the retry still does something.
+      if (fresh && fresh !== resolvedSrc) setResolvedSrc(fresh);
+      else setReloadKey((k) => k + 1);
+    } catch {
+      setReloadKey((k) => k + 1);
+    } finally {
+      setRetrying(false);
+    }
+  }, [onRefreshSrc, resolvedSrc, retrying]);
 
   const progress = duration > 0 ? (current / duration) * 100 : 0;
 
@@ -106,9 +148,10 @@ export function VoicePlayer({ src }: { src: string }) {
       <audio
         // Remounting on retry is what makes the browser re-fetch a URL it has
         // already failed on; audio.load() alone can serve the cached failure.
-        key={reloadKey}
+        // Keyed on the URL too, so a re-signed one always gets a fresh element.
+        key={`${resolvedSrc}|${reloadKey}`}
         ref={audioRef}
-        src={src}
+        src={resolvedSrc}
         preload="metadata"
         onLoadedMetadata={onLoadedMetadata}
         onDurationChange={onDurationChange}
@@ -132,8 +175,13 @@ export function VoicePlayer({ src }: { src: string }) {
       {state === 'error' ? (
         <div className={styles.errorRow}>
           <span className={styles.errorText}>ไม่สามารถโหลดเสียงได้</span>
-          <button type="button" className={styles.retryBtn} onClick={retry}>
-            ลองใหม่
+          <button
+            type="button"
+            className={styles.retryBtn}
+            onClick={() => void retry()}
+            disabled={retrying}
+          >
+            {retrying ? 'กำลังลองใหม่…' : 'ลองใหม่'}
           </button>
         </div>
       ) : (

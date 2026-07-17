@@ -173,6 +173,17 @@ export function BoxReveal({ slug }: { slug: string }) {
     };
   }, [box]);
 
+  /**
+   * Re-sign the voice clip for the player's retry. Its presigned URL lasts an
+   * hour and is only requested when the recipient taps play, so an open box left
+   * sitting outlives it. preview=1: this is the same recipient on the box they
+   * already opened — re-reading it must not tick the view counter again.
+   */
+  const refreshAudioSrc = useCallback(async () => {
+    const data = await getLegacyBoxOpen(slug, { preview: true });
+    return data.audio_url ?? null;
+  }, [slug]);
+
   const shareBox = useCallback(async () => {
     try {
       await navigator.clipboard.writeText(window.location.href);
@@ -337,7 +348,7 @@ export function BoxReveal({ slug }: { slug: string }) {
         {/* The sender's voice, between the photos and their closing words.
             Absent on every box without a recording (incl. all pre-035 ones),
             where the API sends audio_url: null. */}
-        {box.audio_url && <VoicePlayer src={box.audio_url} />}
+        {box.audio_url && <VoicePlayer src={box.audio_url} onRefreshSrc={refreshAudioSrc} />}
 
         {box.message && (
           <section className={styles.messageSection}>

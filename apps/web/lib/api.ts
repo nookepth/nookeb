@@ -843,8 +843,15 @@ export async function postProInterest(feature: 'audio' | 'video'): Promise<void>
  * PUBLIC open-page fetch — used by /box/[slug] for recipients (no session).
  * Never routes through apiFetch, which would clear the session hint on 401.
  */
-export async function getLegacyBoxOpen(slug: string): Promise<LegacyBoxOpenResponse> {
-  const res = await fetch(`${API_URL}/legacy-box/open/${encodeURIComponent(slug)}`, {
+export async function getLegacyBoxOpen(
+  slug: string,
+  opts?: { preview?: boolean },
+): Promise<LegacyBoxOpenResponse> {
+  // preview=1 is the API's NON-COUNTING read. Used when re-reading a box the
+  // recipient already opened (re-signing an expired voice URL), where ticking
+  // the counter again would invent a view that never happened.
+  const query = opts?.preview ? '?preview=1' : '';
+  const res = await fetch(`${API_URL}/legacy-box/open/${encodeURIComponent(slug)}${query}`, {
     cache: 'no-store',
   });
   if (!res.ok) throw new ApiError(res.status, `API error ${res.status}`);
