@@ -12,6 +12,7 @@ import {
   type TaskDraft,
 } from '../../../../../../lib/taskDraft';
 import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../components';
+import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface CreatedTask {
   id: string;
@@ -226,13 +227,19 @@ export default function DetailPage({ params }: { params: { type: string } }) {
           {created.announced ? (
             <>
               <h1 className={styles.headerTitle}>ส่งงานเข้ากลุ่มแล้วน้า</h1>
-              <p className={styles.headerSub}>หนูเก็บจะช่วยตามงานให้เองทุกช่วงก่อนถึงกำหนด</p>
+              {/* Only promise the reminder chase while push is enabled. */}
+              <p className={styles.headerSub}>
+                {TASK_NOTIFICATIONS_ENABLED
+                  ? 'หนูเก็บจะช่วยตามงานให้เองทุกช่วงก่อนถึงกำหนด'
+                  : 'ส่งการ์ดงานเข้ากลุ่มเรียบร้อยแล้วน้า'}
+              </p>
             </>
           ) : (
             <>
               <h1 className={styles.headerTitle}>บันทึกงานแล้วน้า</h1>
               <p className={styles.headerSub}>
-                หนูตั้งเตือนให้เรียบร้อย แต่ส่งการ์ดเข้ากลุ่มไม่สำเร็จ (โควตาข้อความอาจเต็ม)
+                {TASK_NOTIFICATIONS_ENABLED ? 'หนูตั้งเตือนให้เรียบร้อย แต่ส่งการ์ดเข้ากลุ่มไม่สำเร็จ' : 'บันทึกงานแล้ว แต่ส่งการ์ดเข้ากลุ่มไม่สำเร็จ'}
+                {' '}(โควตาข้อความอาจเต็ม)
                 — เปิดดูงานหรือแชร์ลิงก์ให้เพื่อนได้จากปุ่ม &quot;ดูงาน&quot; ด้านล่างน้า
               </p>
             </>

@@ -12,6 +12,7 @@ import {
 } from '../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../lib/taskDraft';
 import { IconClipboard, IconListChecks, IconRepeat, StateNotice } from '../components';
+import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: string }[] = [
   {
@@ -30,7 +31,8 @@ const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: str
     type: 'recurring',
     icon: <IconRepeat />,
     title: 'งานประจำ',
-    sub: 'ตั้งครั้งเดียว เตือนอัตโนมัติทุกรอบ',
+    // Don't promise auto-reminders while notification pushes are soft-disabled.
+    sub: TASK_NOTIFICATIONS_ENABLED ? 'ตั้งครั้งเดียว เตือนอัตโนมัติทุกรอบ' : 'ตั้งครั้งเดียว วนซ้ำให้ทุกรอบ',
   },
 ];
 

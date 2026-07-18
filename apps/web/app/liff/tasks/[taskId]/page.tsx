@@ -20,6 +20,7 @@ import {
   MemberRow,
   StateNotice,
 } from '../components';
+import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface AssigneeDto {
   id: string;
@@ -312,7 +313,10 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     if (ok) setEditOpen(false);
   };
   const doCancel = async () => {
-    if (!window.confirm(`ยกเลิกงาน "${task.title}" ใช่ไหมน้า? หนูจะหยุดเตือนและบอกกลุ่มให้`)) return;
+    const cancelPrompt = TASK_NOTIFICATIONS_ENABLED
+      ? `ยกเลิกงาน "${task.title}" ใช่ไหมน้า? หนูจะหยุดเตือนและบอกกลุ่มให้`
+      : `ยกเลิกงาน "${task.title}" ใช่ไหมน้า? หนูจะบอกกลุ่มให้`;
+    if (!window.confirm(cancelPrompt)) return;
     await mutate('', { method: 'DELETE' }, 'ยกเลิกงานแล้วน้า');
   };
   const openAssigneeEditor = async (item: ItemDto) => {

@@ -1,6 +1,7 @@
 import { Worker, type Job } from 'bullmq';
 import { createClient } from '@supabase/supabase-js';
 import {
+  TASK_NOTIFICATIONS_ENABLED,
   TASK_QUEUE,
   type TaskJob,
   type TaskRecurNextJob,
@@ -52,6 +53,14 @@ function roundItems(task: TaskWithDetails, itemId: string | null) {
 
 async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
   const { taskId, itemId, remindType, reminderId } = job.data;
+
+  // SOFT-DISABLE (push not ready): stand down silently without pushing. Belt-
+  // and-braces for reminder jobs that were queued BEFORE the flag flipped —
+  // scheduleReminders no longer creates new ones. The row is left unstamped
+  // (not marked sent/failed) so no false delivery is recorded. Flip
+  // TASK_NOTIFICATIONS_ENABLED back on and freshly-created tasks schedule and
+  // deliver reminders normally again.
+  if (!TASK_NOTIFICATIONS_ENABLED) return;
 
   // Row-level idempotency: a retried/late job whose row was already resolved
   // (sent, cancelled by done/reschedule, failed) must never push again.

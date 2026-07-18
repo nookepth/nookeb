@@ -13,3 +13,4 @@ export * from './legacy-box-stickers';
 export * from './legacy-box-themes';
 export * from './legacy-box-occasions';
 export * from './legacy-box-voice';
+export * from './task-notifications';

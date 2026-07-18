@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   REMIND_OFFSETS_MINUTES,
+  TASK_NOTIFICATIONS_ENABLED,
   TASK_QUEUE,
   type RemindType,
   type TaskJob,
@@ -102,37 +103,45 @@ export async function scheduleReminders(
   task: TaskWithDetails,
 ): Promise<void> {
   const now = Date.now();
-  const rows: ReminderInsert[] = [];
-  const delays = new Map<string, number>(); // key: `${itemId ?? 'task'}|${type}` → delay ms
-
-  for (const target of reminderTargets(task)) {
-    const deadlineMs = dayjs(target.deadline).valueOf();
-    for (const type of REMIND_TYPES) {
-      const remindAtMs = deadlineMs + REMIND_OFFSETS_MINUTES[type] * 60_000;
-      if (remindAtMs <= now + 5_000) continue; // already past — skip
-      rows.push({
-        task_id: task.id,
-        task_item_id: target.itemId,
-        remind_type: type,
-        remind_at: new Date(remindAtMs).toISOString(),
-      });
-      delays.set(`${target.itemId ?? 'task'}|${type}`, remindAtMs - now);
-    }
-  }
-
-  const inserted = await insertReminders(supabase, rows);
   const q = getTaskQueue();
-  for (const row of inserted) {
-    const delay = delays.get(`${row.task_item_id ?? 'task'}|${row.remind_type}`);
-    if (delay === undefined) continue;
-    const job: TaskReminderJob = {
-      type: 'task_reminder',
-      taskId: task.id,
-      itemId: row.task_item_id,
-      remindType: row.remind_type,
-      reminderId: row.id,
-    };
-    await q.add('task_reminder', job, { jobId: reminderJobId(row.id), delay });
+
+  // SOFT-DISABLE (push not ready): skip creating the reminder rows/jobs (the
+  // "อย่าลืมงาน" shots), but STILL schedule the recurring rollover below so
+  // recurrence keeps advancing rounds. This is the one choke point for create /
+  // reschedule / rollover, so flipping TASK_NOTIFICATIONS_ENABLED back on
+  // re-enables reminders everywhere. Existing task_reminders rows are untouched.
+  if (TASK_NOTIFICATIONS_ENABLED) {
+    const rows: ReminderInsert[] = [];
+    const delays = new Map<string, number>(); // key: `${itemId ?? 'task'}|${type}` → delay ms
+
+    for (const target of reminderTargets(task)) {
+      const deadlineMs = dayjs(target.deadline).valueOf();
+      for (const type of REMIND_TYPES) {
+        const remindAtMs = deadlineMs + REMIND_OFFSETS_MINUTES[type] * 60_000;
+        if (remindAtMs <= now + 5_000) continue; // already past — skip
+        rows.push({
+          task_id: task.id,
+          task_item_id: target.itemId,
+          remind_type: type,
+          remind_at: new Date(remindAtMs).toISOString(),
+        });
+        delays.set(`${target.itemId ?? 'task'}|${type}`, remindAtMs - now);
+      }
+    }
+
+    const inserted = await insertReminders(supabase, rows);
+    for (const row of inserted) {
+      const delay = delays.get(`${row.task_item_id ?? 'task'}|${row.remind_type}`);
+      if (delay === undefined) continue;
+      const job: TaskReminderJob = {
+        type: 'task_reminder',
+        taskId: task.id,
+        itemId: row.task_item_id,
+        remindType: row.remind_type,
+        reminderId: row.id,
+      };
+      await q.add('task_reminder', job, { jobId: reminderJobId(row.id), delay });
+    }
   }
 
   if (task.type === 'recurring' && task.global_deadline) {
