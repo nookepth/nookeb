@@ -6,10 +6,11 @@ import type {
   TaskAssigneeRecord,
   TaskDto,
   TaskItemRecord,
+  TaskLinkRecord,
   TaskRecord,
   TaskReminderRecord,
 } from '@nookeb/shared';
-import { toTaskAssigneeDto as assigneeDto } from '@nookeb/shared';
+import { toTaskAssigneeDto as assigneeDto, toTaskLinkDto as linkDto } from '@nookeb/shared';
 import { getChatMemberIds, getChatMemberProfile } from './line.service';
 
 /**
@@ -201,6 +202,7 @@ export interface TaskItemWithAssignees extends TaskItemRecord {
 
 export interface TaskWithDetails extends TaskRecord {
   items: TaskItemWithAssignees[];
+  links: TaskLinkRecord[];
 }
 
 /**
@@ -266,6 +268,7 @@ export async function createTaskWithItems(
         ...row,
         assignees: assigneeRecords.filter((a) => a.task_item_id === row.id),
       })),
+      links: [], // freshly created — links are attached later via POST …/links
     };
   } catch (err) {
     // Soft-cancel the shell so nothing downstream ever sees a half-built task.
@@ -310,12 +313,15 @@ export async function getTaskWithDetails(
     assigneeRecords = (assignees ?? []) as TaskAssigneeRecord[];
   }
 
+  const links = await listTaskLinks(supabase, taskId);
+
   return {
     ...(task as TaskRecord),
     items: itemRecords.map((row) => ({
       ...row,
       assignees: assigneeRecords.filter((a) => a.task_item_id === row.id),
     })),
+    links,
   };
 }
 
@@ -394,16 +400,22 @@ export function effectiveDeadline(task: TaskRecord, item: TaskItemRecord): strin
 
 // ---- done / accept marks ----
 
-/** Stamp done_at for one assignee. Returns false when the caller isn't an
- * assignee of the item (or is already done — idempotent success). */
+/** Stamp done_at for one assignee (with an optional note). Returns false when
+ * the caller isn't an assignee of the item (or is already done — idempotent
+ * success). The note is only written on the FIRST done stamp; editing an
+ * already-done note goes through setDoneNote. */
 export async function markAssigneeDone(
   supabase: SupabaseClient,
   itemId: string,
   lineUid: string,
+  note?: string | null,
 ): Promise<boolean> {
   const { data, error } = await supabase
     .from('task_assignees')
-    .update({ done_at: new Date().toISOString() })
+    .update({
+      done_at: new Date().toISOString(),
+      ...(note !== undefined ? { done_note: note } : {}),
+    })
     .eq('task_item_id', itemId)
     .eq('line_uid', lineUid)
     .is('done_at', null)
@@ -437,6 +449,25 @@ export async function markAssigneeAccepted(
   return (data ?? []).length > 0;
 }
 
+/** Set/clear an assignee's done note (edit after the fact). Returns false when
+ * the caller isn't an assignee of the item. Does NOT require done_at to be set —
+ * a note can be left independently, but the UI only surfaces it once done. */
+export async function setDoneNote(
+  supabase: SupabaseClient,
+  itemId: string,
+  lineUid: string,
+  note: string | null,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('task_assignees')
+    .update({ done_note: note })
+    .eq('task_item_id', itemId)
+    .eq('line_uid', lineUid)
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
 /**
  * Roll item/task statuses up from assignee done marks: an item whose assignees
  * are all done becomes 'done'; a task whose live items are all done becomes
@@ -460,6 +491,17 @@ export async function rollUpCompletion(
         .eq('id', item.id);
       if (error) throw error;
       item.status = 'done';
+    } else if (!allDone && item.status === 'done') {
+      // A previously-done item gained a still-pending assignee (creator edited
+      // the assignee set) — it's no longer complete, so revert it so progress
+      // and reminders reflect the outstanding work.
+      const nextStatus = item.assignees.some((a) => a.done_at !== null) ? 'in_progress' : 'pending';
+      const { error } = await supabase
+        .from('task_items')
+        .update({ status: nextStatus })
+        .eq('id', item.id);
+      if (error) throw error;
+      item.status = nextStatus;
     }
   }
 
@@ -499,6 +541,128 @@ export async function resetRecurringRound(supabase: SupabaseClient, taskId: stri
     .update({ status: 'pending' })
     .in('id', itemIds);
   if (itemErr) throw itemErr;
+}
+
+// ---- assignee editing ----
+
+/**
+ * Replace an item's assignee set with `wanted` (line_uid → profile). Preserves
+ * the rows for uids that stay (keeping their accepted_at/done_at/done_note), adds
+ * rows for new uids, and hard-deletes rows for uids removed (an assignee who is
+ * taken off an item leaves no residue — their done mark shouldn't count toward
+ * the item's completion). Caller must guarantee `wanted` is non-empty (an item
+ * with zero assignees can never roll up to done) and every uid is a group member.
+ */
+export async function replaceItemAssignees(
+  supabase: SupabaseClient,
+  itemId: string,
+  wanted: { lineUid: string; displayName: string | null; pictureUrl: string | null }[],
+): Promise<void> {
+  const { data: existingRows, error: exErr } = await supabase
+    .from('task_assignees')
+    .select('id, line_uid')
+    .eq('task_item_id', itemId);
+  if (exErr) throw exErr;
+  const existing = (existingRows ?? []) as { id: string; line_uid: string }[];
+  const existingUids = new Set(existing.map((r) => r.line_uid));
+  const wantedUids = new Set(wanted.map((w) => w.lineUid));
+
+  const toRemove = existing.filter((r) => !wantedUids.has(r.line_uid)).map((r) => r.id);
+  if (toRemove.length > 0) {
+    const { error } = await supabase.from('task_assignees').delete().in('id', toRemove);
+    if (error) throw error;
+  }
+
+  const toAdd = wanted.filter((w) => !existingUids.has(w.lineUid));
+  if (toAdd.length > 0) {
+    const { error } = await supabase.from('task_assignees').insert(
+      toAdd.map((w) => ({
+        task_item_id: itemId,
+        line_uid: w.lineUid,
+        display_name: w.displayName,
+        picture_url: w.pictureUrl,
+      })),
+    );
+    if (error) throw error;
+  }
+}
+
+// ---- task links ----
+
+export async function listTaskLinks(
+  supabase: SupabaseClient,
+  taskId: string,
+): Promise<TaskLinkRecord[]> {
+  const { data, error } = await supabase
+    .from('task_links')
+    .select('*')
+    .eq('task_id', taskId)
+    .order('sort_order', { ascending: true })
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as TaskLinkRecord[];
+}
+
+export async function addTaskLink(
+  supabase: SupabaseClient,
+  taskId: string,
+  url: string,
+  label: string | null,
+  createdByLineUid: string,
+): Promise<TaskLinkRecord> {
+  // Append after the current max sort_order so new links land at the end.
+  const existing = await listTaskLinks(supabase, taskId);
+  const nextSort = existing.length > 0 ? Math.max(...existing.map((l) => l.sort_order)) + 1 : 0;
+  const { data, error } = await supabase
+    .from('task_links')
+    .insert({
+      task_id: taskId,
+      url,
+      label,
+      sort_order: nextSort,
+      created_by_line_uid: createdByLineUid,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as TaskLinkRecord;
+}
+
+/** Delete a link. Returns false when the id doesn't belong to the task. */
+export async function deleteTaskLink(
+  supabase: SupabaseClient,
+  taskId: string,
+  linkId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('task_links')
+    .delete()
+    .eq('id', linkId)
+    .eq('task_id', taskId)
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+// ---- cancel ----
+
+/**
+ * Cancel a task: status → 'cancelled' ONLY — deliberately NOT deleted_at.
+ * getTaskWithDetails/listTasksForUser filter on deleted_at, so stamping it would
+ * hide the task entirely; the user wants cancelled tasks to remain visible in
+ * their own "ยกเลิก" tab. 'cancelled' is the terminal, still-listed state (the
+ * row is never hard-DELETEd — rule 6 holds either way). Reminder withdrawal is
+ * the caller's job (cancelReminders).
+ *
+ * (Contrast: createTaskWithItems' failure path DOES set deleted_at, because a
+ * half-built shell must vanish completely, not surface as a cancelled task.)
+ */
+export async function cancelTask(supabase: SupabaseClient, taskId: string): Promise<void> {
+  const { error } = await supabase
+    .from('tasks')
+    .update({ status: 'cancelled' })
+    .eq('id', taskId);
+  if (error) throw error;
 }
 
 // ---- reminder rows ----
@@ -583,5 +747,6 @@ export function toTaskDto(task: TaskWithDetails): TaskDto {
       sortOrder: item.sort_order,
       assignees: item.assignees.map(assigneeDto),
     })),
+    links: task.links.map(linkDto),
   };
 }

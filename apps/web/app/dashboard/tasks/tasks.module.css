@@ -247,6 +247,341 @@
   border-radius: 12px;
   height: 96px;
 }
+
+/* ---- tabs (list view: กำลังทำ / เสร็จแล้ว / ยกเลิก) ---- */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 16px 0 4px;
+  border-bottom: 1px solid #eee;
+}
+.tab {
+  border: none;
+  background: none;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #8c8c8c;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+}
+.tab:hover {
+  color: #111;
+}
+.tabActive {
+  color: #b53a32;
+  border-bottom-color: #b53a32;
+}
+
+/* ---- clickable list card ---- */
+.cardLink {
+  cursor: pointer;
+  transition: box-shadow 0.15s ease, transform 0.1s ease;
+}
+.cardLink:hover {
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+}
+.card.cancelled {
+  opacity: 0.6;
+}
+.card.cancelled .cardTitle {
+  text-decoration: line-through;
+  color: #8c8c8c;
+}
+
+/* status badge (color supplied inline) */
+.statusBadge {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+/* ---- detail page ---- */
+.detailTitleRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.detailTitle {
+  font-size: 22px;
+  font-weight: 800;
+  color: #111;
+  margin: 0;
+  word-break: break-word;
+}
+.detailMetaRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+.detailActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 4px;
+}
+.section {
+  margin-top: 22px;
+}
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.sectionTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+  margin: 0;
+}
+
+.primaryBtn,
+.secondaryBtn,
+.dangerBtn,
+.ghostBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 999px;
+  padding: 8px 16px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.primaryBtn {
+  background: #b53a32;
+  color: #fff;
+}
+.primaryBtn:hover {
+  background: #9c2f28;
+}
+.secondaryBtn {
+  background: #fff;
+  color: #333;
+  border-color: #ddd;
+}
+.secondaryBtn:hover {
+  border-color: #b53a32;
+  color: #b53a32;
+}
+.dangerBtn {
+  background: #fff;
+  color: #e03131;
+  border-color: #f1c0c0;
+}
+.dangerBtn:hover {
+  background: #fff5f5;
+}
+.ghostBtn {
+  background: none;
+  color: #8c8c8c;
+  padding: 6px 10px;
+}
+.ghostBtn:hover {
+  color: #b53a32;
+}
+.primaryBtn:disabled,
+.secondaryBtn:disabled,
+.dangerBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* assignee list inside an item card */
+.assigneeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+.assigneeName {
+  font-size: 13px;
+  color: #333;
+  flex: 1;
+  min-width: 0;
+  word-break: break-word;
+}
+.assigneeState {
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.stateDone {
+  color: #06c755;
+}
+.stateAccepted {
+  color: #1971c2;
+}
+.statePending {
+  color: #8c8c8c;
+}
+.noteText {
+  font-size: 12px;
+  color: #555;
+  background: #f7f7f7;
+  border-left: 3px solid #b53a3255;
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-top: 4px;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+/* links */
+.linkRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 12px;
+}
+.linkAnchor {
+  flex: 1;
+  min-width: 0;
+  color: #1971c2;
+  font-size: 13px;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.linkAnchor:hover {
+  text-decoration: underline;
+}
+.iconDelete {
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: #b0b0b0;
+  cursor: pointer;
+  padding: 4px;
+  display: inline-flex;
+}
+.iconDelete:hover {
+  color: #e03131;
+}
+
+/* inline inputs / forms */
+.input,
+.textarea {
+  width: 100%;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-family: inherit;
+  color: #111;
+  box-sizing: border-box;
+}
+.input:focus,
+.textarea:focus {
+  outline: none;
+  border-color: #b53a32;
+}
+.textarea {
+  resize: vertical;
+  min-height: 64px;
+}
+.inlineForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  background: #fafafa;
+}
+.inlineFormRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* modal (edit deadline / assignee editor) */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 100;
+}
+.modal {
+  background: #fff;
+  border-radius: 16px;
+  padding: 20px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+.modalTitle {
+  font-size: 17px;
+  font-weight: 700;
+  color: #111;
+  margin: 0 0 14px;
+}
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+.memberPick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 8px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-radius: 10px;
+  text-align: left;
+}
+.memberPick:hover {
+  background: #f7f7f7;
+}
+.memberPickName {
+  flex: 1;
+  font-size: 14px;
+  color: #111;
+}
+.pickBox {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 2px solid #ccc;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  flex: 0 0 auto;
+}
+.pickBoxOn {
+  background: #b53a32;
+  border-color: #b53a32;
+}
+.fieldLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c8c8c;
+  margin-bottom: 6px;
+  display: block;
+}
 @keyframes shimmer {
   0% {
     background-position: 100% 50%;

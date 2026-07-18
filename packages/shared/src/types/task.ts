@@ -72,6 +72,19 @@ export interface TaskAssigneeRecord {
   picture_url: string | null;
   accepted_at: string | null;
   done_at: string | null;
+  /** short note the assignee left when marking done (migration 037); editable */
+  done_note: string | null;
+}
+
+/** Reference link attached to a task (task-level, migration 037). */
+export interface TaskLinkRecord {
+  id: string;
+  task_id: string;
+  url: string;
+  label: string | null;
+  sort_order: number;
+  created_by_line_uid: string;
+  created_at: string;
 }
 
 export interface TaskReminderRecord {
@@ -139,6 +152,13 @@ export interface TaskAssigneeDto {
   pictureUrl: string | null;
   acceptedAt: string | null;
   doneAt: string | null;
+  doneNote: string | null;
+}
+
+export interface TaskLinkDto {
+  id: string;
+  url: string;
+  label: string | null;
 }
 
 export interface TaskItemDto {
@@ -163,6 +183,7 @@ export interface TaskDto {
   createdByLineUid: string;
   createdAt: string;
   items: TaskItemDto[];
+  links: TaskLinkDto[];
 }
 
 export interface GroupMemberDto {
@@ -179,7 +200,12 @@ export function toTaskAssigneeDto(row: TaskAssigneeRecord): TaskAssigneeDto {
     pictureUrl: row.picture_url,
     acceptedAt: row.accepted_at,
     doneAt: row.done_at,
+    doneNote: row.done_note,
   };
+}
+
+export function toTaskLinkDto(row: TaskLinkRecord): TaskLinkDto {
+  return { id: row.id, url: row.url, label: row.label };
 }
 
 export function toGroupMemberDto(row: GroupMemberRecord): GroupMemberDto {

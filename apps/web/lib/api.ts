@@ -19,6 +19,7 @@ import type {
   TeamLineGroupDto,
   TeamMemberDto,
   TaskDto,
+  GroupMemberDto,
   UserDto,
 } from '@nookeb/shared';
 
@@ -993,10 +994,94 @@ export function listMyTasks(): Promise<MyTasksResponse> {
   return apiFetch<MyTasksResponse>('/tasks/mine');
 }
 
-/** Mark the viewer's own part of a task item done (rolls the item/task up). */
+/** Full detail for one task (creator/assignee/group member only). */
+export function getTask(taskId: string): Promise<{ task: TaskDto; viewerLineUid: string }> {
+  return apiFetch(`/tasks/${taskId}`);
+}
+
+/**
+ * Mark the viewer's own part of a task item done (rolls the item/task up).
+ * Optional short note is stored against the viewer's assignee row.
+ */
 export function markTaskItemDone(
   taskId: string,
   itemId: string,
+  note?: string,
 ): Promise<{ task: TaskDto; taskDone: boolean }> {
-  return apiFetch(`/tasks/${taskId}/items/${itemId}/done`, { method: 'POST' });
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/done`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(note && note.trim() ? { note: note.trim() } : {}),
+  });
+}
+
+/** Edit (or clear, with '') the viewer's own done-note on an item. */
+export function updateTaskItemNote(
+  taskId: string,
+  itemId: string,
+  note: string,
+): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/note`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+}
+
+/** Acknowledge (accept) the viewer's own assignment on an item — optional. */
+export function acceptTaskItem(taskId: string, itemId: string): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/accept`, { method: 'POST' });
+}
+
+/** Creator edits the task title and/or global deadline (reschedules reminders). */
+export function updateTask(
+  taskId: string,
+  patch: { title?: string; globalDeadline?: string },
+): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Creator cancels the task (withdraws reminders, notifies the group). */
+export function cancelTask(taskId: string): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
+}
+
+/** Creator replaces the assignee set of one item. */
+export function setTaskItemAssignees(
+  taskId: string,
+  itemId: string,
+  lineUids: string[],
+): Promise<{ task: TaskDto; taskDone: boolean }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/assignees`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lineUids }),
+  });
+}
+
+/** Creator attaches a reference link to the task. */
+export function addTaskLink(
+  taskId: string,
+  url: string,
+  label?: string,
+): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}/links`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(label && label.trim() ? { url, label: label.trim() } : { url }),
+  });
+}
+
+/** Creator removes a task link. */
+export function deleteTaskLink(taskId: string, linkId: string): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}/links/${linkId}`, { method: 'DELETE' });
+}
+
+/** The assignee-picker roster for a group (used by the assignee editor). */
+export function listGroupTaskMembers(groupId: string): Promise<{ members: GroupMemberDto[] }> {
+  return apiFetch(`/groups/${encodeURIComponent(groupId)}/members`);
 }

@@ -5,14 +5,20 @@ import type { RecurrenceRule, TaskDto } from '@nookeb/shared';
 import { pushMessage } from '../services/line.service';
 import { buildTaskCreatedFlex } from '../services/lineMessage';
 import {
+  addTaskLink,
+  cancelTask,
   createTaskWithItems,
+  deleteTaskLink,
   effectiveDeadline,
   getTaskWithDetails,
   ensureGroupMember,
   listGroupMembers,
   listTasksForUser,
+  markAssigneeAccepted,
   markAssigneeDone,
+  replaceItemAssignees,
   rollUpCompletion,
+  setDoneNote,
   toTaskDto,
   updateTask,
   type TaskWithDetails,
@@ -67,6 +73,28 @@ const patchTaskSchema = z
   .refine((v) => v.title !== undefined || v.globalDeadline !== undefined, {
     message: 'nothing to update',
   });
+
+// A done-note is optional and short; an empty/blank string clears it.
+const doneSchema = z.object({ note: z.string().trim().max(500).optional() });
+const noteSchema = z.object({ note: z.string().trim().max(500) });
+const assigneesSchema = z.object({ lineUids: z.array(z.string().min(1)).min(1).max(50) });
+const linkSchema = z.object({
+  url: z.string().trim().url().max(2000),
+  label: z.string().trim().max(100).optional(),
+});
+
+/** Guard: only http(s) links (no javascript:/data: etc.). z.url() alone would
+ * pass those schemes. */
+function isHttpUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+const MAX_LINKS_PER_TASK = 20;
 
 function canView(task: TaskWithDetails, lineUid: string, isMember: boolean): boolean {
   return (
@@ -276,13 +304,22 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: 'Invalid id' });
       }
 
+      const parsedBody = doneSchema.safeParse(request.body ?? {});
+      if (!parsedBody.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsedBody.error.issues });
+      }
+      const note = parsedBody.data.note ? parsedBody.data.note : null;
+
       const task = await getTaskWithDetails(app.supabase, idParsed.data);
       if (!task) return reply.code(404).send({ error: 'Task not found' });
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
       const item = task.items.find((i) => i.id === itemParsed.data);
       if (!item) return reply.code(404).send({ error: 'Task item not found' });
 
       const lineUid = request.authUser!.lineUserId;
-      const marked = await markAssigneeDone(app.supabase, item.id, lineUid);
+      const marked = await markAssigneeDone(app.supabase, item.id, lineUid, note);
       if (!marked) {
         return reply.code(403).send({ error: 'ข้อนี้ไม่ได้มอบหมายให้เราน้า' });
       }
@@ -293,6 +330,229 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       }
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       return { task: toTaskDto(updated), taskDone };
+    },
+  );
+
+  // ---- DELETE /tasks/:id — creator cancels the task (withdraws reminders) ----
+  app.delete<{ Params: { id: string } }>(
+    '/tasks/:id',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      if (!idParsed.success) return reply.code(400).send({ error: 'Invalid task id' });
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      const lineUid = request.authUser!.lineUserId;
+      if (task.created_by_line_uid !== lineUid) {
+        return reply.code(403).send({ error: 'เฉพาะคนสร้างงานเท่านั้นที่ยกเลิกได้น้า' });
+      }
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
+      if (task.status === 'done') {
+        return reply.code(409).send({ error: 'งานนี้เสร็จไปแล้ว ยกเลิกไม่ได้น้า' });
+      }
+
+      await cancelTask(app.supabase, task.id);
+      // Withdraw outstanding reminders + the recurring rollover job.
+      await cancelReminders(app.supabase, task);
+
+      // Notify the group (push — same sanctioned exception as the announcement).
+      // Best-effort: the cancel already committed; a failed push is logged only.
+      try {
+        await pushMessage(task.group_line_id, [
+          { type: 'text', text: `ยกเลิกงาน "${task.title}" แล้วน้า ไม่ต้องทำต่อแล้ว` },
+        ]);
+      } catch (err) {
+        app.log.error({ err, taskId: task.id }, 'task cancel push failed');
+      }
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated) };
+    },
+  );
+
+  // ---- PUT /tasks/:id/items/:itemId/assignees — creator edits who owes an item ----
+  app.put<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId/assignees',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const parsed = assigneesSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      const lineUid = request.authUser!.lineUserId;
+      if (task.created_by_line_uid !== lineUid) {
+        return reply.code(403).send({ error: 'เฉพาะคนสร้างงานเท่านั้นที่แก้ผู้รับผิดชอบได้น้า' });
+      }
+      if (task.status === 'done' || task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้จบไปแล้ว แก้ไขไม่ได้น้า' });
+      }
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+
+      // Dedupe + validate every uid is a registered member of the task's group.
+      const wantedUids = [...new Set(parsed.data.lineUids)];
+      const members = await listGroupMembers(app.supabase, task.group_line_id);
+      const memberByUid = new Map(members.map((m) => [m.line_uid, m]));
+      for (const uid of wantedUids) {
+        if (!memberByUid.has(uid)) {
+          return reply.code(400).send({ error: 'มีคนที่ยังไม่ได้ลงทะเบียนในกลุ่ม เลือกใหม่อีกทีน้า' });
+        }
+      }
+
+      await replaceItemAssignees(
+        app.supabase,
+        item.id,
+        wantedUids.map((uid) => {
+          const m = memberByUid.get(uid)!;
+          return { lineUid: uid, displayName: m.display_name, pictureUrl: m.picture_url };
+        }),
+      );
+
+      // Removing a pending assignee can complete an item (and the task).
+      const { taskDone } = await rollUpCompletion(app.supabase, task.id);
+      if (taskDone) await cancelReminders(app.supabase, task);
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated), taskDone };
+    },
+  );
+
+  // ---- POST /tasks/:id/items/:itemId/accept — assignee acknowledges (optional) ----
+  app.post<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId/accept',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+
+      const lineUid = request.authUser!.lineUserId;
+      const isAssignee = item.assignees.some((a) => a.line_uid === lineUid);
+      if (!isAssignee) {
+        return reply.code(403).send({ error: 'ข้อนี้ไม่ได้มอบหมายให้เราน้า' });
+      }
+      await markAssigneeAccepted(app.supabase, item.id, lineUid); // idempotent
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated) };
+    },
+  );
+
+  // ---- PATCH /tasks/:id/items/:itemId/note — assignee edits their done note ----
+  app.patch<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId/note',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const parsed = noteSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+
+      const lineUid = request.authUser!.lineUserId;
+      // Empty string clears the note (stored as NULL).
+      const note = parsed.data.note.length > 0 ? parsed.data.note : null;
+      const ok = await setDoneNote(app.supabase, item.id, lineUid, note);
+      if (!ok) return reply.code(403).send({ error: 'ข้อนี้ไม่ได้มอบหมายให้เราน้า' });
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated) };
+    },
+  );
+
+  // ---- POST /tasks/:id/links — creator attaches a reference link ----
+  app.post<{ Params: { id: string } }>(
+    '/tasks/:id/links',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      if (!idParsed.success) return reply.code(400).send({ error: 'Invalid task id' });
+      const parsed = linkSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+      }
+      if (!isHttpUrl(parsed.data.url)) {
+        return reply.code(400).send({ error: 'ลิงก์ต้องขึ้นต้นด้วย http:// หรือ https:// น้า' });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      const lineUid = request.authUser!.lineUserId;
+      if (task.created_by_line_uid !== lineUid) {
+        return reply.code(403).send({ error: 'เฉพาะคนสร้างงานเท่านั้นที่แนบลิงก์ได้น้า' });
+      }
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
+      if (task.links.length >= MAX_LINKS_PER_TASK) {
+        return reply.code(409).send({ error: `แนบลิงก์ได้สูงสุด ${MAX_LINKS_PER_TASK} ลิงก์ต่องานน้า` });
+      }
+
+      await addTaskLink(
+        app.supabase,
+        task.id,
+        parsed.data.url,
+        parsed.data.label ? parsed.data.label : null,
+        lineUid,
+      );
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return reply.code(201).send({ task: toTaskDto(updated) });
+    },
+  );
+
+  // ---- DELETE /tasks/:id/links/:linkId — creator removes a link ----
+  app.delete<{ Params: { id: string; linkId: string } }>(
+    '/tasks/:id/links/:linkId',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const linkParsed = z.string().uuid().safeParse(request.params.linkId);
+      if (!idParsed.success || !linkParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      const lineUid = request.authUser!.lineUserId;
+      if (task.created_by_line_uid !== lineUid) {
+        return reply.code(403).send({ error: 'เฉพาะคนสร้างงานเท่านั้นที่ลบลิงก์ได้น้า' });
+      }
+
+      const removed = await deleteTaskLink(app.supabase, task.id, linkParsed.data);
+      if (!removed) return reply.code(404).send({ error: 'Link not found' });
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated) };
     },
   );
 
