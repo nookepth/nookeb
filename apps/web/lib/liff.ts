@@ -203,23 +203,32 @@ async function exchangeIdToken(idToken: string): Promise<'ok' | 'unauthorized' |
   return 'error';
 }
 
+// Messaging-API chat ids: groups C + 32 hex, rooms R + 32 hex. A LINE MINI App
+// LIFF's getContext() returns PSEUDO chat ids (UUID format) that the Messaging
+// API does not know — treating one as the tenant key silently forks the group
+// into a ghost roster containing only the caller (the mobile "one member" bug),
+// and tasks created under it can never be announced. So a ctx id is usable only
+// when it matches the real id shape.
+const LINE_CHAT_ID = /^[CR][0-9a-f]{32}$/;
+
 async function readContext(): Promise<Pick<LiffState, 'groupId' | 'profile' | 'inClient'>> {
-  // Chat context is authoritative but NOT reliable: LINE Desktop, the login
-  // round trips, and forwarded/pinned links all open the LIFF with type
-  // 'external'/'none' — no groupId — even when the tap happened inside the
-  // group. The สร้างงาน card therefore carries the group id in ?groupId= (a
-  // capability, same trust model as share links; the API still verifies
-  // membership), so ALWAYS fall back to the query when context has no chat.
+  // Chat context is NOT reliable: LINE Desktop, the login round trips, and
+  // forwarded/pinned links open the LIFF with type 'external'/'none' (no
+  // groupId), and a MINI App channel reports pseudo UUID ids (filtered above).
+  // The สร้างงาน card therefore carries the group id in ?groupId= (a capability,
+  // same trust model as share links; the API still verifies membership) — that
+  // query is the source of truth, with ctx/sessionStorage as fallbacks only.
   const ctx = liff.getContext();
-  const ctxGroupId =
+  const rawCtxId =
     ctx?.type === 'group'
       ? (ctx.groupId ?? null)
       : ctx?.type === 'room'
         ? ((ctx as { roomId?: string }).roomId ?? null)
         : null;
-  // group context (rare — usually 'external' for a Login-channel LIFF) → URL
-  // query → sessionStorage belt. Persist whatever resolves for the next redirect.
-  const groupId = ctxGroupId ?? queryGroupId() ?? storedGroupId();
+  const ctxGroupId = rawCtxId && LINE_CHAT_ID.test(rawCtxId) ? rawCtxId : null;
+  // URL query (the card's capability — always the webhook's real id) → real
+  // chat context → sessionStorage belt. Persist the winner for the next redirect.
+  const groupId = queryGroupId() ?? ctxGroupId ?? storedGroupId();
   persistGroupId(groupId);
 
   let profile: LiffState['profile'] = null;
