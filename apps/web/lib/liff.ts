@@ -181,9 +181,17 @@ async function doInit(): Promise<LiffState> {
     return { groupId: queryGroupId(), profile: null, inClient: false, authed: true, authError: null };
   }
 
+  // MINI App note: liff.init() takes ONLY { liffId } — no withLoginOnExternalBrowser
+  // (LINE MINI App does not support the external-browser login flow, and passing
+  // it makes init reject). The SDK (@line/liff >= 2.22) handles both the
+  // miniapp.line.me and liff.line.me entry domains from this single call.
   try {
     await liff.init({ liffId });
-  } catch {
+  } catch (err) {
+    // Never swallow: a failed init is the most common MINI App migration
+    // symptom (wrong/stale LIFF id → the LINE-native "เกิดข้อผิดพลาดระบบ").
+    // Log the id in use so the value can be confirmed against the console.
+    console.error(`[liff] init failed — NEXT_PUBLIC_LIFF_ID is: "${liffId}"`, err);
     return { groupId: queryGroupId(), profile: null, inClient: false, authed: false, authError: 'network' };
   }
 
@@ -205,11 +213,19 @@ async function doInit(): Promise<LiffState> {
 
   const result = await exchangeIdToken(idToken);
   if (result === 'unauthorized') {
+    // 401 from /auth/liff after a fresh token = the API verified this token
+    // against the WRONG channel id (aud mismatch — the classic MINI App
+    // migration bug: LINE_LIFF_CHANNEL_ID / LINE_LIFF_ID must match the MINI
+    // App channel, not the LINE Login channel).
+    console.error(
+      `[liff] /auth/liff rejected the id token (401). LIFF id "${liffId}" — verify the API's LINE_LIFF_CHANNEL_ID matches this MINI App channel.`,
+    );
     const parked = tryRelogin();
     if (parked) return parked;
     return { ...(await readContext()), authed: false, authError: 'verify-failed' };
   }
   if (result === 'error') {
+    console.error('[liff] /auth/liff unreachable or 5xx while exchanging the id token');
     return { ...(await readContext()), authed: false, authError: 'network' };
   }
 

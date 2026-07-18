@@ -22,11 +22,22 @@ const envSchema = z.object({
   LINE_LOGIN_CHANNEL_ID: z.string().optional(),
   LINE_LOGIN_CHANNEL_SECRET: z.string().optional(),
 
-  // LIFF app id for ระบบตามงาน (Task Manager). Created under the LINE Login
-  // channel with endpoint URL `${WEB_URL}/liff/tasks`. Optional: when unset,
-  // task links in LINE messages fall back to plain WEB_URL links (opens the
-  // external browser instead of the in-app LIFF view).
+  // LIFF app id for ระบบตามงาน (Task Manager) — now hosted by a LINE MINI App
+  // channel (migrated off the LINE Login channel). Format `{channelId}-{suffix}`,
+  // e.g. 2010750761-abcd1234; endpoint URL `${WEB_URL}/liff/tasks`. Optional:
+  // when unset, task links in LINE messages fall back to plain WEB_URL links
+  // (opens the external browser instead of the in-app LIFF view).
   LINE_LIFF_ID: z.string().optional(),
+
+  // Channel id that ISSUES the LIFF/MINI App id token — i.e. the audience
+  // (`aud`) that LINE stamps into the id token verified at POST /auth/liff.
+  // After the LINE MINI App migration this is a DIFFERENT channel from the LINE
+  // Login channel, so the two must not be conflated (verifying a MINI App token
+  // against LINE_LOGIN_CHANNEL_ID returns 401 → every task page dead-ends on
+  // "เชื่อมต่อ LINE ไม่สำเร็จ"). Optional: when unset it is derived from the
+  // numeric prefix of LINE_LIFF_ID (the LIFF id's prefix IS its channel id),
+  // and finally falls back to LINE_LOGIN_CHANNEL_ID for the pre-migration setup.
+  LINE_LIFF_CHANNEL_ID: z.string().optional(),
 
   // Supabase
   SUPABASE_URL: z.string().url(),

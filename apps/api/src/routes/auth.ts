@@ -149,8 +149,14 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   // POST /auth/liff — LIFF id-token → app session cookie (ระบบตามงาน pages).
   // The LIFF SDK hands the page a signed id token; LINE's verify endpoint
   // checks signature/expiry/audience server-side, so this is as strong as the
-  // authorization-code flow above. The LIFF app must be created under the same
-  // LINE Login channel (aud = LINE_LOGIN_CHANNEL_ID). Same abuse posture as
+  // authorization-code flow above.
+  //
+  // AUDIENCE: the id token's `aud` is the channel that HOSTS the LIFF/MINI App,
+  // which after the LINE MINI App migration is NOT the LINE Login channel. We
+  // must verify with THAT channel id or LINE returns 401 and every task page
+  // dead-ends. Resolution order: explicit LINE_LIFF_CHANNEL_ID → the numeric
+  // prefix of LINE_LIFF_ID (a LIFF id is `{channelId}-{suffix}`) → the LINE
+  // Login channel id (pre-migration fallback). Same abuse posture as
   // /auth/line: 10/min per IP + ban.
   app.post('/auth/liff', {
     config: {
@@ -171,8 +177,13 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Invalid body' });
     }
-    const loginChannelId = config.LINE_LOGIN_CHANNEL_ID;
-    if (!loginChannelId) {
+    // Channel the MINI App/LIFF token was minted for (its `aud`). See the note
+    // above for why this is NOT simply LINE_LOGIN_CHANNEL_ID after the migration.
+    const liffChannelId =
+      config.LINE_LIFF_CHANNEL_ID ||
+      config.LINE_LIFF_ID?.split('-')[0] ||
+      config.LINE_LOGIN_CHANNEL_ID;
+    if (!liffChannelId) {
       return reply.code(503).send({ error: 'LINE Login is not configured' });
     }
 
@@ -181,7 +192,7 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ id_token: parsed.data.idToken, client_id: loginChannelId }),
+        body: new URLSearchParams({ id_token: parsed.data.idToken, client_id: liffChannelId }),
         signal: AbortSignal.timeout(15_000),
       });
     } catch (err) {
@@ -192,7 +203,14 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       throw err;
     }
     if (!verifyRes.ok) {
-      app.log.warn({ status: verifyRes.status }, 'LIFF id-token verify failed');
+      // Surface the client_id used: a 400/401 here almost always means the
+      // configured channel id doesn't match the token's `aud` — the #1 symptom
+      // of a half-finished MINI App migration.
+      const detail = await verifyRes.text().catch(() => '');
+      app.log.warn(
+        { status: verifyRes.status, verifyClientId: liffChannelId, detail: detail.slice(0, 300) },
+        'LIFF id-token verify failed — check LINE_LIFF_CHANNEL_ID / LINE_LIFF_ID matches the MINI App channel',
+      );
       return reply.code(401).send({ error: 'LIFF login failed' });
     }
     const claims = (await verifyRes.json()) as { sub: string; name?: string; picture?: string };
