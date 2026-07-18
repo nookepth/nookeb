@@ -159,6 +159,30 @@ function clearLoginAttempts(): void {
   }
 }
 
+/**
+ * True when the LIFF id token is expired (or expires within `skewSec`), or can't
+ * be parsed. On an EXTERNAL browser (desktop) LIFF hands back a cached id token
+ * it never refreshes — valid ~1h — while liff.isLoggedIn() stays true for as
+ * long as the much longer-lived access token survives (hours). So getIDToken()
+ * happily returns a long-dead id token, /auth/liff rejects it ("IdToken
+ * expired." → 401), and the task pages loop on "ต้องเชื่อมต่อ LINE". Checking
+ * `exp` here lets us force a fresh login BEFORE the doomed exchange. Unparseable
+ * / no-exp → treat as stale (force refresh) rather than send a token we can't
+ * trust. Payload is base64URL (-, _), so normalise before atob.
+ */
+function idTokenExpired(token: string, skewSec = 60): boolean {
+  try {
+    const segment = token.split('.')[1];
+    if (!segment) return true;
+    const b64 = segment.replace(/-/g, '+').replace(/_/g, '/');
+    const payload = JSON.parse(atob(b64)) as { exp?: number };
+    if (typeof payload.exp !== 'number') return true;
+    return payload.exp < Math.floor(Date.now() / 1000) + skewSec;
+  } catch {
+    return true;
+  }
+}
+
 /** Re-login once (if the budget allows) and park; else return null to report. */
 function tryRelogin(): Promise<LiffState> | null {
   if (loginAttempts() >= MAX_LOGIN_ATTEMPTS) return null;
@@ -166,6 +190,18 @@ function tryRelogin(): Promise<LiffState> | null {
   // Mirror the group id into sessionStorage BEFORE the OAuth redirect, so it
   // survives even if LINE drops the query from liff.state on the round trip.
   persistGroupId(queryGroupId() ?? storedGroupId());
+  // logout() BEFORE login() is essential on external browsers: while the access
+  // token is still alive, LIFF considers the session valid and a plain login()
+  // returns the SAME cached (possibly expired) id token — so the refresh never
+  // happens and the 401 loop persists. logout() drops the cached tokens so the
+  // next login() mints a genuinely fresh id token. It's a harmless no-op at the
+  // not-logged-in call site. The MAX_LOGIN_ATTEMPTS budget still caps this at
+  // one forced redirect, so this can never become an infinite auto-login loop.
+  try {
+    liff.logout();
+  } catch {
+    // not logged in / SDK not ready — nothing to clear
+  }
   liff.login({ redirectUri: window.location.href });
   // login() navigates away — park forever so callers never proceed half-ready.
   return new Promise<LiffState>(() => {});
@@ -277,9 +313,12 @@ async function doInit(): Promise<LiffState> {
   }
 
   const idToken = liff.getIDToken();
-  if (!idToken) {
-    // No id token despite being logged in → the LIFF login lacks `openid`, or
-    // the token was dropped. One forced re-login may refresh it; if not, report.
+  if (!idToken || idTokenExpired(idToken)) {
+    // Missing id token (login lacks `openid`, or it was dropped) OR — the common
+    // desktop case — an EXPIRED cached id token that LIFF won't refresh on an
+    // external browser (see idTokenExpired). Either way, exchanging it would just
+    // earn a 401; force ONE budget-guarded fresh login (logout+login) instead. If
+    // the budget is spent, report rather than 401 later.
     const parked = tryRelogin();
     if (parked) return parked;
     return { ...(await readContext()), authed: false, authError: 'no-id-token' };

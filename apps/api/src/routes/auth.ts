@@ -214,48 +214,6 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(503).send({ error: 'LINE Login is not configured' });
     }
 
-    // ─── [401-debug] TEMPORARY — remove once the ระบบตามงาน /auth/liff 401 loop
-    // is diagnosed. JSON.stringify exposes stray whitespace/quotes in a
-    // copy-pasted Railway env value (a hidden char makes the client_id look
-    // correct in the dashboard yet fail verify). The token's own aud/exp are
-    // decoded WITHOUT signature verification purely to log them, so an aud
-    // mismatch or an expired token is visible without waiting on LINE. The raw
-    // id token is deliberately NEVER logged.
-    console.log('[401-debug] env LINE_LIFF_ID:', JSON.stringify(process.env.LINE_LIFF_ID));
-    console.log('[401-debug] env LINE_LIFF_CHANNEL_ID:', JSON.stringify(process.env.LINE_LIFF_CHANNEL_ID));
-    console.log(
-      '[401-debug] resolved liffChannelId:',
-      JSON.stringify(liffChannelId),
-      'len=',
-      liffChannelId.length,
-    );
-    try {
-      const payloadB64 = parsed.data.idToken.split('.')[1] ?? '';
-      const claimsPeek = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as {
-        aud?: unknown;
-        exp?: number;
-        iss?: string;
-      };
-      const now = Math.floor(Date.now() / 1000);
-      console.log(
-        '[401-debug] token claims (unverified decode):',
-        'aud=',
-        JSON.stringify(claimsPeek.aud),
-        'iss=',
-        claimsPeek.iss,
-        'exp=',
-        claimsPeek.exp,
-        claimsPeek.exp
-          ? `(${claimsPeek.exp - now}s from now — ${claimsPeek.exp < now ? 'EXPIRED' : 'valid'})`
-          : '(no exp)',
-        'audMatchesClientId=',
-        String(claimsPeek.aud) === liffChannelId,
-      );
-    } catch (e) {
-      console.log('[401-debug] token payload decode failed:', (e as Error).message);
-    }
-    // ─── end [401-debug] ───
-
     let verifyRes: Response;
     try {
       verifyRes = await fetch('https://api.line.me/oauth2/v2.1/verify', {
@@ -276,9 +234,6 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       // configured channel id doesn't match the token's `aud` — the #1 symptom
       // of a half-finished MINI App migration.
       const detail = await verifyRes.text().catch(() => '');
-      // [401-debug] LINE's own reason (untruncated) — e.g. "IdToken expired." vs
-      // a client_id/aud mismatch message. Remove with the debug block above.
-      console.log('[401-debug] LINE verify FAILED — status=', verifyRes.status, 'body=', detail);
       app.log.warn(
         { status: verifyRes.status, verifyClientId: liffChannelId, detail: detail.slice(0, 300) },
         'LIFF id-token verify failed — check LINE_LIFF_CHANNEL_ID / LINE_LIFF_ID matches the MINI App channel',
