@@ -376,13 +376,18 @@ export function closeLiff(): void {
 
 /**
  * "บันทึกลงปฏิทิน" — put a task's deadline into the user's calendar.
- *   - in the LINE client (webview can't handle a .ics response at all) →
- *     open Google Calendar's event template externally
- *   - else (iOS/Android/desktop Safari/Chrome etc.) → navigate the top-level
- *     page straight to the server's `/tasks/:id/ics` endpoint. A real
- *     top-level navigation to a `text/calendar` response is what makes iOS
- *     Safari present its native "Add to Calendar" sheet — a `data:` URI or an
- *     anchor `download` click does not reliably trigger it.
+ *
+ * We ALWAYS open the Google Calendar event-template URL, because it is the one
+ * path that works in every environment the task view actually runs in:
+ *   - the LINE in-app browser CANNOT download/open a `.ics` attachment, so the
+ *     old `/tasks/:id/ics` navigation silently did nothing there;
+ *   - iOS/Android/desktop browsers all open the Google Calendar template fine.
+ * Inside the LINE client we go through `liff.openWindow({ external: true })`
+ * (a bare `window.open` is unreliable in the in-app webview); everywhere else
+ * we use `window.open`.
+ *
+ * `taskId` is kept in the signature for call-site compatibility (the ICS
+ * endpoint still exists server-side for direct links) but is unused here.
  */
 export async function saveTaskToCalendar(
   taskId: string,
@@ -390,6 +395,7 @@ export async function saveTaskToCalendar(
   deadlineISO: string,
   description = '',
 ): Promise<void> {
+  void taskId;
   const pad = (n: number) => String(n).padStart(2, '0');
   const fmt = (d: Date) =>
     `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(
@@ -397,19 +403,20 @@ export async function saveTaskToCalendar(
     )}${pad(d.getUTCMinutes())}00Z`;
   const start = new Date(deadlineISO);
   const end = new Date(start.getTime() + 3600000);
+  const gcal = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
+    title || 'งาน',
+  )}&dates=${fmt(start)}/${fmt(end)}&details=${encodeURIComponent(description)}`;
 
-  // LINE in-app browser → open Google Calendar (it can't handle .ics downloads)
+  // LINE in-app browser → open externally via the SDK (window.open is blocked
+  // there); everywhere else a normal new-tab open works.
   try {
     if (liff.isInClient()) {
-      const gcal = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
-        title,
-      )}&dates=${fmt(start)}/${fmt(end)}&details=${encodeURIComponent(description)}`;
       liff.openWindow({ url: gcal, external: true });
       return;
     }
   } catch {
-    // SDK not ready / outside LINE — fall through to the ics endpoint
+    // SDK not ready / outside LINE — fall through to window.open
   }
 
-  window.location.href = `/api-proxy/tasks/${taskId}/ics`;
+  window.open(gcal, '_blank', 'noopener,noreferrer');
 }

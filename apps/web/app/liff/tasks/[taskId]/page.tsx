@@ -636,14 +636,13 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
                   กำหนดส่ง
                 </label>
-                <div className={styles.dateInputWrap}>
-                  <input
-                    className={styles.input}
-                    type="datetime-local"
-                    value={editDeadline}
-                    onChange={(e) => setEditDeadline(e.target.value)}
-                  />
-                </div>
+                <input
+                  className={styles.input}
+                  type="datetime-local"
+                  style={{ width: '100%', height: 44, minHeight: 44, maxHeight: 44, boxSizing: 'border-box' }}
+                  value={editDeadline}
+                  onChange={(e) => setEditDeadline(e.target.value)}
+                />
               </>
             ) : (
               <p className={styles.typeSub} style={{ marginTop: 10 }}>
