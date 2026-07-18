@@ -407,16 +407,28 @@ export async function saveTaskToCalendar(
     title || 'งาน',
   )}&dates=${fmt(start)}/${fmt(end)}&details=${encodeURIComponent(description)}`;
 
-  // LINE in-app browser → open externally via the SDK (window.open is blocked
-  // there); everywhere else a normal new-tab open works.
+  // 1) Real LIFF client with the SDK ready → open the device's browser, where
+  //    Google Calendar behaves normally.
   try {
     if (liff.isInClient()) {
       liff.openWindow({ url: gcal, external: true });
       return;
     }
   } catch {
-    // SDK not ready / outside LINE — fall through to window.open
+    // SDK not ready — fall through to the UA checks below
   }
 
-  window.open(gcal, '_blank', 'noopener,noreferrer');
+  // 2) LINE in-app browser where the SDK is NOT in-client (task links opened as
+  //    a plain URL): window.open is blocked / opens a blank tab that closes
+  //    instantly, so navigate the CURRENT tab. A top-level navigation to the
+  //    Google Calendar template always works; the user can tap back afterwards.
+  if (/\bLine\//i.test(navigator.userAgent)) {
+    window.location.href = gcal;
+    return;
+  }
+
+  // 3) Everywhere else (Safari/Chrome/desktop) → new tab, with a top-level
+  //    fallback if the popup is blocked.
+  const win = window.open(gcal, '_blank', 'noopener,noreferrer');
+  if (!win) window.location.href = gcal;
 }

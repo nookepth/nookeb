@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type CSSProperties } from 'react';
 import styles from '../tasks.module.css';
 import {
   apiFetch,
@@ -82,6 +82,17 @@ function toLocalInput(iso: string | null): string {
 }
 
 const api = (taskId: string, path = '') => `/api-proxy/tasks/${encodeURIComponent(taskId)}${path}`;
+
+/** Identical box geometry for both edit-sheet fields so ชื่องาน and กำหนดส่ง
+ *  render exactly the same size (native datetime inputs otherwise size to their
+ *  own intrinsic content). */
+const EDIT_FIELD_BOX: CSSProperties = {
+  width: '100%',
+  height: 48,
+  minHeight: 48,
+  maxHeight: 48,
+  boxSizing: 'border-box',
+};
 
 export default function TaskViewPage({ params }: { params: { taskId: string } }) {
   const [task, setTask] = useState<TaskDto | null>(null);
@@ -627,6 +638,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
             <label className={styles.fieldLabel}>ชื่องาน</label>
             <input
               className={styles.input}
+              style={EDIT_FIELD_BOX}
               value={editTitle}
               onChange={(e) => setEditTitle(e.target.value)}
               maxLength={200}
@@ -636,10 +648,21 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
                   กำหนดส่ง
                 </label>
+                {/* The global `.input[type=datetime-local]` rule strips the
+                    border/background (it is meant to live inside dateInputWrap);
+                    restore them inline so this box is pixel-identical to the
+                    ชื่องาน box above. */}
                 <input
                   className={styles.input}
                   type="datetime-local"
-                  style={{ width: '100%', height: 44, minHeight: 44, maxHeight: 44, boxSizing: 'border-box' }}
+                  style={{
+                    ...EDIT_FIELD_BOX,
+                    border: '1.5px solid var(--border)',
+                    borderRadius: 12,
+                    background: 'var(--card)',
+                    WebkitAppearance: 'none',
+                    appearance: 'none',
+                  }}
                   value={editDeadline}
                   onChange={(e) => setEditDeadline(e.target.value)}
                 />
