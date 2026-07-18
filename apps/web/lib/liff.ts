@@ -375,15 +375,17 @@ export function closeLiff(): void {
 }
 
 /**
- * "บันทึกลงปฏิทิน" — put a task's deadline into the user's calendar. The server
- * `/tasks/:id/ics` endpoint downloads fine on desktop but does NOTHING in the
- * LINE in-app browser (no file handler for a .ics attachment), so this picks a
- * path that actually works on mobile:
- *   - in the LINE client → open Google Calendar's event template externally
- *   - else if the Web Share sheet exists → share the .ics data URI
- *   - else (desktop) → download the .ics file
+ * "บันทึกลงปฏิทิน" — put a task's deadline into the user's calendar.
+ *   - in the LINE client (webview can't handle a .ics response at all) →
+ *     open Google Calendar's event template externally
+ *   - else (iOS/Android/desktop Safari/Chrome etc.) → navigate the top-level
+ *     page straight to the server's `/tasks/:id/ics` endpoint. A real
+ *     top-level navigation to a `text/calendar` response is what makes iOS
+ *     Safari present its native "Add to Calendar" sheet — a `data:` URI or an
+ *     anchor `download` click does not reliably trigger it.
  */
 export async function saveTaskToCalendar(
+  taskId: string,
   title: string,
   deadlineISO: string,
   description = '',
@@ -396,9 +398,6 @@ export async function saveTaskToCalendar(
   const start = new Date(deadlineISO);
   const end = new Date(start.getTime() + 3600000);
 
-  const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:${title}\r\nDTSTART:${fmt(start)}\r\nDTEND:${fmt(end)}\r\nDESCRIPTION:${description}\r\nEND:VEVENT\r\nEND:VCALENDAR`;
-  const icsUri = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
-
   // LINE in-app browser → open Google Calendar (it can't handle .ics downloads)
   try {
     if (liff.isInClient()) {
@@ -409,19 +408,8 @@ export async function saveTaskToCalendar(
       return;
     }
   } catch {
-    // SDK not ready / outside LINE — fall through to share or download
+    // SDK not ready / outside LINE — fall through to the ics endpoint
   }
 
-  // Mobile share sheet
-  if (typeof navigator !== 'undefined' && navigator.share) {
-    try {
-      await navigator.share({ title, url: icsUri });
-      return;
-    } catch {
-      // user cancelled or share unsupported for this payload — fall through
-    }
-  }
-
-  // Fallback: download .ics
-  Object.assign(document.createElement('a'), { href: icsUri, download: `${title}.ics` }).click();
+  window.location.href = `/api-proxy/tasks/${taskId}/ics`;
 }

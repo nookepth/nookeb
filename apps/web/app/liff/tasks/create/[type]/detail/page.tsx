@@ -265,7 +265,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 justifyContent: 'center',
                 gap: 8,
               }}
-              onClick={() => void saveTaskToCalendar(draft.title.trim(), calendarDeadline)}
+              onClick={() => void saveTaskToCalendar(created.id, draft.title.trim(), calendarDeadline)}
             >
               <IconCalendar /> บันทึกลงปฏิทิน
             </button>

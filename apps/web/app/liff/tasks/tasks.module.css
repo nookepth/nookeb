@@ -434,16 +434,35 @@
 }
 
 /* iOS Safari / the LINE in-app browser size date & time inputs to their
- * intrinsic CONTENT width and silently ignore width:100%, so a Deadline box
- * renders NARROWER than the full-width textarea / buttons beside it. Clearing
- * the native appearance lets width:100% apply and makes the box span the row
- * like every other field (the native picker still opens on tap). */
+ * intrinsic CONTENT width, which can render either narrower OR wider than the
+ * box's own border (the field's internal day/month/year/hour/AM-PM segments
+ * refuse to shrink below their intrinsic size, ignoring width:100%). Clearing
+ * the native appearance and clipping via overflow on the wrapper keeps the
+ * VISIBLE box exactly the same size as every other field regardless of how
+ * Safari sizes the control internally (the native picker still opens on tap). */
+.dateInputWrap {
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: var(--card);
+}
+
+.dateInputWrap:focus-within {
+  border-color: var(--brand);
+}
+
 .input[type='datetime-local'],
 .input[type='time'] {
   -webkit-appearance: none;
   appearance: none;
   width: 100%;
   min-width: 100%;
+  max-width: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
 }
 
 .inlineFields {

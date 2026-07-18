@@ -289,7 +289,7 @@ export function BoxReveal({ slug }: { slug: string }) {
               strokeLinecap="round"
               strokeLinejoin="round"
             >
-              <path d="M12 4v14m0 0l-6-6m6 6l6-6" />
+              <path d="M12 20V6m0 0l-6 6m6-6l6 6" />
             </svg>
           </div>
         </div>
