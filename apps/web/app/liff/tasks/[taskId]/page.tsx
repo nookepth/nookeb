@@ -649,23 +649,19 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                   กำหนดส่ง
                 </label>
                 {/* The global `.input[type=datetime-local]` rule strips the
-                    border/background (it is meant to live inside dateInputWrap);
-                    restore them inline so this box is pixel-identical to the
-                    ชื่องาน box above. */}
-                <input
-                  className={styles.input}
-                  type="datetime-local"
-                  style={{
-                    ...EDIT_FIELD_BOX,
-                    border: '1.5px solid var(--border)',
-                    borderRadius: 12,
-                    background: 'var(--card)',
-                    WebkitAppearance: 'none',
-                    appearance: 'none',
-                  }}
-                  value={editDeadline}
-                  onChange={(e) => setEditDeadline(e.target.value)}
-                />
+                    border/background because the box is meant to come from the
+                    dateInputWrap wrapper — whose overflow:hidden also clips the
+                    native control so it can never render wider than the ชื่องาน
+                    box above (EDIT_FIELD_BOX gives both the identical geometry). */}
+                <div className={styles.dateInputWrap} style={EDIT_FIELD_BOX}>
+                  <input
+                    className={styles.input}
+                    type="datetime-local"
+                    style={{ width: '100%', height: '100%' }}
+                    value={editDeadline}
+                    onChange={(e) => setEditDeadline(e.target.value)}
+                  />
+                </div>
               </>
             ) : (
               <p className={styles.typeSub} style={{ marginTop: 10 }}>

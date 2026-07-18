@@ -168,6 +168,11 @@ export default function MembersPage({ params }: { params: { type: string } }) {
           </button>
         </div>
         <p className={styles.headerSub}>แตะชื่อเพื่อเลือก เลือกได้หลายคน</p>
+        {state === 'ready' && (
+          <p className={styles.headerHint}>
+            ไม่เห็นชื่อที่มองหารึเปล่าน้า? ลองให้คนนั้นพิมพ์ข้อความอะไรก็ได้ในกลุ่มนี้ 1 ครั้ง แล้วกด &apos;รีเฟรช&apos; อีกครั้งน้าา
+          </p>
+        )}
       </header>
 
       {(state === 'ready' || state === 'loading') && (

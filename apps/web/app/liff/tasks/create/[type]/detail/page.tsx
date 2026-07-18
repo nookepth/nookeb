@@ -301,13 +301,15 @@ export default function DetailPage({ params }: { params: { type: string } }) {
           <div className={styles.card}>
             <div className={styles.field}>
               <label className={styles.fieldLabel}>Deadline</label>
-              <input
-                type="datetime-local"
-                className={styles.input}
-                style={{ width: '100%', height: 44, minHeight: 44, maxHeight: 44, boxSizing: 'border-box' }}
-                value={draft.globalDeadline ?? ''}
-                onChange={(e) => setDraft({ ...draft, globalDeadline: e.target.value || null })}
-              />
+              <div className={styles.dateInputWrap} style={{ height: 44 }}>
+                <input
+                  type="datetime-local"
+                  className={styles.input}
+                  style={{ width: '100%', height: '100%' }}
+                  value={draft.globalDeadline ?? ''}
+                  onChange={(e) => setDraft({ ...draft, globalDeadline: e.target.value || null })}
+                />
+              </div>
             </div>
             <div className={styles.field}>
               <label className={styles.fieldLabel}>รายละเอียด (ไม่บังคับ)</label>
@@ -330,13 +332,15 @@ export default function DetailPage({ params }: { params: { type: string } }) {
         <section className={styles.section}>
           <div className={styles.field}>
             <label className={styles.fieldLabel}>Deadline รวมของงาน (ใช้กับข้อที่ไม่ระบุเอง)</label>
-            <input
-              type="datetime-local"
-              className={styles.input}
-              style={{ width: '100%', height: 44, minHeight: 44, maxHeight: 44, boxSizing: 'border-box' }}
-              value={draft.globalDeadline ?? ''}
-              onChange={(e) => setDraft({ ...draft, globalDeadline: e.target.value || null })}
-            />
+            <div className={styles.dateInputWrap} style={{ height: 44 }}>
+              <input
+                type="datetime-local"
+                className={styles.input}
+                style={{ width: '100%', height: '100%' }}
+                value={draft.globalDeadline ?? ''}
+                onChange={(e) => setDraft({ ...draft, globalDeadline: e.target.value || null })}
+              />
+            </div>
           </div>
           <p className={styles.sectionLabel}>รายการงาน ({draft.items.length})</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -433,18 +437,20 @@ export default function DetailPage({ params }: { params: { type: string } }) {
               )}
               <div className={styles.field} style={{ flex: '1 1 0', minWidth: 0 }}>
                 <label className={styles.fieldLabel}>เวลา</label>
-                <input
-                  type="time"
-                  className={styles.input}
-                  style={{ width: '100%', height: 44, minHeight: 44, maxHeight: 44, boxSizing: 'border-box' }}
-                  value={draft.recurrence.time}
-                  onChange={(e) =>
-                    setDraft({
-                      ...draft,
-                      recurrence: { ...draft.recurrence, time: e.target.value || '09:00' },
-                    })
-                  }
-                />
+                <div className={styles.dateInputWrap} style={{ height: 44 }}>
+                  <input
+                    type="time"
+                    className={styles.input}
+                    style={{ width: '100%', height: '100%' }}
+                    value={draft.recurrence.time}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        recurrence: { ...draft.recurrence, time: e.target.value || '09:00' },
+                      })
+                    }
+                  />
+                </div>
               </div>
             </div>
             <div className={styles.field}>
@@ -496,13 +502,15 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             </div>
             <div className={styles.field}>
               <label className={styles.fieldLabel}>Deadline ของข้อนี้ (เว้นว่าง = ใช้ของงาน)</label>
-              <input
-                type="datetime-local"
-                className={styles.input}
-                style={{ width: '100%', height: 44, boxSizing: 'border-box' }}
-                value={sheetDeadline}
-                onChange={(e) => setSheetDeadline(e.target.value)}
-              />
+              <div className={styles.dateInputWrap} style={{ height: 44 }}>
+                <input
+                  type="datetime-local"
+                  className={styles.input}
+                  style={{ width: '100%', height: '100%' }}
+                  value={sheetDeadline}
+                  onChange={(e) => setSheetDeadline(e.target.value)}
+                />
+              </div>
             </div>
             <div className={styles.field}>
               <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>

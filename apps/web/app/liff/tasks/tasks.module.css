@@ -59,6 +59,17 @@
   gap: 12px;
 }
 
+/* Gentle "someone missing?" nudge next to the รีเฟรช button (assignee picker). */
+.headerHint {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--surface-muted, rgba(181, 58, 50, 0.06));
+  border-radius: 10px;
+  padding: 8px 10px;
+  margin: 8px 0 0;
+}
+
 /* brand gradient header zone (detail page) */
 .heroHeader {
   background: linear-gradient(135deg, #b53a32, #93312b);

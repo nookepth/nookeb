@@ -87,6 +87,12 @@ interface LineMessageEvent {
   deliveryContext?: { isRedelivery: boolean };
   /** Present on 'postback' events — the tapped action's `data` string. */
   postback?: { data: string };
+  /**
+   * Present on 'memberJoined' events — the members who just joined the group/
+   * room (each carries a `userId`). Used to add them to the assignee roster the
+   * instant they join, with zero typing required (ระบบตามงาน).
+   */
+  joined?: { members: LineEventSource[] };
   message?: {
     id: string;
     type: string; // 'image' | 'file' | 'video' | 'audio' | 'text' | ...
@@ -1083,6 +1089,38 @@ async function deliverLeftoverPending(
   }
 }
 
+/**
+ * ระบบตามงาน roster auto-fill: opt a LINE user into their group's assignee
+ * roster (group_members) with ZERO typing required. Called from EVERY
+ * group/room-scoped webhook event that carries a member userId — `message`,
+ * `postback`, `unsend`, and (the key one) `memberJoined`, which enrolls a
+ * brand-new member the instant they join instead of waiting for them to chat.
+ *
+ * Best-effort + fire-and-forget: it must never block the reply nor throw into
+ * the 1s webhook path (failures are swallowed + logged). NULL profile fields
+ * never overwrite an already-resolved name/avatar (see upsertGroupMember), and
+ * the row is NEVER deleted/expired — a member who later leaves stays assignable
+ * to their outstanding tasks.
+ */
+function autoUpsertGroupMember(app: FastifyInstance, groupId: string, lineUserId: string): void {
+  void (async () => {
+    try {
+      // Group-scoped profile fetch — the friend-only /v2/bot/profile endpoint
+      // 404s for members who never added the OA, which left roster rows NULL.
+      const profile = await getChatMemberProfile(groupId, lineUserId);
+      await upsertGroupMember(
+        app.supabase,
+        groupId,
+        lineUserId,
+        profile?.displayName ?? null,
+        profile?.pictureUrl ?? null,
+      );
+    } catch (err) {
+      app.log.warn({ err, groupId, lineUserId }, 'group member auto-upsert failed');
+    }
+  })();
+}
+
 async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promise<void> {
   // User adds the bot (1-1 chat) → welcome bubble + onboarding carousel.
   if (event.type === 'follow') {
@@ -1091,8 +1129,42 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   }
 
   // Bot added to a group/room → same welcome bubble + onboarding carousel.
+  // NOTE: a `join` event is the BOT joining — its source carries no member
+  // userId, so there's nobody to add to the roster here (existing members are
+  // enrolled as they chat / via memberJoined for future joins).
   if (event.type === 'join') {
     await sendOnboarding(event);
+    return;
+  }
+
+  // A member JOINED the group/room → enroll them in the assignee roster
+  // IMMEDIATELY (ระบบตามงาน), before they've typed a single message. This is the
+  // zero-friction path that fixes "member not showing until they've chatted":
+  // LINE's memberJoined event carries each new member's userId, and the display
+  // name is resolved via the group-scoped profile endpoint inside
+  // autoUpsertGroupMember.
+  if (event.type === 'memberJoined') {
+    const groupId = event.source.groupId ?? event.source.roomId;
+    if (groupId) {
+      for (const m of event.joined?.members ?? []) {
+        if (m.userId) autoUpsertGroupMember(app, groupId, m.userId);
+      }
+    }
+    return;
+  }
+
+  // Message unsend (group/room) is still a live signal the sender is present —
+  // keep their roster row fresh. Never used to remove anyone (roster rows are
+  // never deleted/expired).
+  if (event.type === 'unsend') {
+    const groupId = event.source.groupId ?? event.source.roomId;
+    if (
+      (event.source.type === 'group' || event.source.type === 'room') &&
+      groupId &&
+      event.source.userId
+    ) {
+      autoUpsertGroupMember(app, groupId, event.source.userId);
+    }
     return;
   }
 
@@ -1101,6 +1173,14 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   // text so the taps behave exactly like sending that command.
   if (event.type === 'postback') {
     if (event.source.userId && event.postback?.data) {
+      // Roster auto-fill: a group/room postback (task-card / carousel taps) is a
+      // live signal the tapper is a member — opt them in (zero typing).
+      {
+        const groupId = event.source.groupId ?? event.source.roomId;
+        if ((event.source.type === 'group' || event.source.type === 'room') && groupId) {
+          autoUpsertGroupMember(app, groupId, event.source.userId);
+        }
+      }
       // ระบบตามงาน Flex buttons (รับทราบ / เสร็จแล้ว) carry URL-encoded data, not
       // a "หนูเก็บ…" text command — route them before the text-command path.
       if (event.postback.data.startsWith('action=task_')) {
@@ -1127,29 +1207,11 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
 
   // ระบบตามงาน roster auto-fill: every message event from a group/room opts the
   // sender into that group's assignee roster (group_members). Replaces the manual
-  // "/register" opt-in — teammates just chat as usual and become assignable. Best-
-  // effort and fire-and-forget: it must never block the reply nor throw into the
-  // 1s webhook path (upsertGroupMember failures are swallowed and logged).
+  // "/register" opt-in — teammates just chat as usual and become assignable.
   {
     const groupId = source.groupId ?? source.roomId;
     if ((source.type === 'group' || source.type === 'room') && groupId) {
-      void (async () => {
-        try {
-          // Group-scoped profile fetch — the friend-only /v2/bot/profile
-          // endpoint 404s for members who never added the OA, which left
-          // roster rows with NULL names.
-          const profile = await getChatMemberProfile(groupId, lineUserId);
-          await upsertGroupMember(
-            app.supabase,
-            groupId,
-            lineUserId,
-            profile?.displayName ?? null,
-            profile?.pictureUrl ?? null,
-          );
-        } catch (err) {
-          app.log.warn({ err, groupId, lineUserId }, 'group member auto-upsert failed');
-        }
-      })();
+      autoUpsertGroupMember(app, groupId, lineUserId);
     }
   }
 
