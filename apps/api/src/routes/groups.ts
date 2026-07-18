@@ -1,13 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { toGroupMemberDto } from '@nookeb/shared';
-import { getChatMemberProfileStrict } from '../services/line.service';
 import {
   ensureGroupMember,
-  isGroupMember,
   listGroupMembers,
   syncGroupRoster,
-  upsertGroupMember,
 } from '../services/task.service';
 
 /**
@@ -33,9 +30,10 @@ const groupsRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (request, reply) => app.authenticate(request, reply));
 
   // GET /groups/:groupId/members — the LIFF assignee picker's roster.
-  // Auto-enrolls the caller (LINE's group-scoped profile fetch doubles as a
-  // membership check), then fills the roster from LINE before reading. 403
-  // NOT_REGISTERED only when LINE can't place the caller in the group at all.
+  // Auto-enrolls the caller via the group-id capability (ensureGroupMember),
+  // then fills the roster from LINE before reading. The 403 below is a
+  // defensive fallback only — ensureGroupMember enrolls on the capability and
+  // no longer denies legitimate members who happen to be quiet in the group.
   app.get<{ Params: { groupId: string } }>('/groups/:groupId/members', async (request, reply) => {
     const parsed = groupIdSchema.safeParse(request.params.groupId);
     if (!parsed.success) return reply.code(400).send({ error: 'Invalid group id' });
@@ -56,6 +54,13 @@ const groupsRoutes: FastifyPluginAsync = async (app) => {
   // POST /groups/:groupId/register — self-register the caller (the LIFF calls
   // this on open so the task creator is on the roster without typing anything;
   // teammates still register by typing "/register" in the group chat).
+  //
+  // Capability trust model: the group id is an unguessable bearer capability
+  // (same as share links). ensureGroupMember enrolls the caller and resolves
+  // their display name best-effort — it does NOT gate on LINE's group-scoped
+  // member endpoint, which 404s for legitimate members who haven't messaged
+  // recently and stranded them on the members page. The signed LIFF session
+  // proves who the caller is; holding the group id proves the group.
   app.post<{ Params: { groupId: string } }>(
     '/groups/:groupId/register',
     async (request, reply) => {
@@ -63,30 +68,7 @@ const groupsRoutes: FastifyPluginAsync = async (app) => {
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid group id' });
       const lineUid = request.authUser!.lineUserId;
 
-      // Already on the roster → idempotent success (no LINE round trip).
-      if (await isGroupMember(app.supabase, parsed.data, lineUid)) {
-        return reply.code(204).send();
-      }
-
-      // Profile from LINE, not from the request body — the roster's names and
-      // avatars end up in group-visible Flex cards, so they must be authentic.
-      // STRICT group-scoped fetch: it 404s for non-members, so a success is the
-      // membership proof. Without this gate, ANY authenticated user could enroll
-      // themselves into any groupId they learned and read/create its tasks.
-      const profile = await getChatMemberProfileStrict(parsed.data, lineUid);
-      if (!profile) {
-        return reply.code(403).send({
-          error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วกดลองใหม่อีกที',
-          code: 'NOT_REGISTERED',
-        });
-      }
-      await upsertGroupMember(
-        app.supabase,
-        parsed.data,
-        lineUid,
-        profile.displayName,
-        profile.pictureUrl ?? null,
-      );
+      await ensureGroupMember(app.supabase, parsed.data, lineUid);
       return reply.code(204).send();
     },
   );

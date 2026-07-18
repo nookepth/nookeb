@@ -10,11 +10,7 @@ import type {
   TaskReminderRecord,
 } from '@nookeb/shared';
 import { toTaskAssigneeDto as assigneeDto } from '@nookeb/shared';
-import {
-  getChatMemberIds,
-  getChatMemberProfile,
-  getChatMemberProfileStrict,
-} from './line.service';
+import { getChatMemberIds, getChatMemberProfile } from './line.service';
 
 /**
  * ระบบตามงาน (Task Manager) data access — migration 036. Soft-delete only
@@ -81,10 +77,20 @@ export async function isGroupMember(
 }
 
 /**
- * Membership check that auto-enrolls: when the caller isn't on the roster yet,
- * ask LINE's group-scoped profile endpoint — it 404s for non-members, so a
- * successful fetch both proves membership and supplies the authentic profile.
- * This is what removes the /register step: opening any task page enrolls you.
+ * Membership check that auto-enrolls the caller. Trust model: a LINE group id
+ * is an unguessable bearer capability (delivered only inside the group, same
+ * model as share links), so possession IS the membership proof — no extra LINE
+ * API call is needed, and none is reliable anyway.
+ *
+ * We deliberately do NOT gate on LINE's group-scoped member endpoint: it 404s
+ * for legitimate members who haven't messaged since the bot joined, and for
+ * unverified OAs, so gating on it locked real members out of their own group
+ * (the mobile "ยังไม่เห็นเราในกลุ่มนี้เลยน้า" bug). The signed LIFF session already
+ * proves WHO the caller is; the group id in the request proves WHICH group they
+ * hold the capability to. That is sufficient.
+ *
+ * Always returns true (enrolls) unless the DB write itself fails (throws). The
+ * boolean return is kept for callers' defensive guards + canView.
  */
 export async function ensureGroupMember(
   supabase: SupabaseClient,
@@ -92,17 +98,16 @@ export async function ensureGroupMember(
   lineUid: string,
 ): Promise<boolean> {
   if (await isGroupMember(supabase, groupLineId, lineUid)) return true;
-  // STRICT fetch: the group-scoped endpoint 404s for non-members, so success is
-  // the membership proof. The display-variant's friend-profile fallback must
-  // never be used here — it would enroll any OA friend into any group.
-  const profile = await getChatMemberProfileStrict(groupLineId, lineUid);
-  if (!profile) return false;
+  // Display name/avatar only — best-effort, non-strict (null is fine; the
+  // roster sync + webhook auto-upsert re-resolve NULL names later). This fetch
+  // is NOT a membership gate; the capability above already granted access.
+  const profile = await getChatMemberProfile(groupLineId, lineUid);
   await upsertGroupMember(
     supabase,
     groupLineId,
     lineUid,
-    profile.displayName,
-    profile.pictureUrl ?? null,
+    profile?.displayName ?? null,
+    profile?.pictureUrl ?? null,
   );
   return true;
 }
