@@ -3,7 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../tasks.module.css';
-import { initLiff, queryGroupId } from '../../../../lib/liff';
+import { initLiff, resolveGroupId } from '../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../lib/taskDraft';
 import { IconClipboard, IconListChecks, IconRepeat } from '../components';
 
@@ -43,8 +43,9 @@ export default function CreateTaskPage() {
           return;
         }
         // initLiff() is memoized — its groupId may predate the client-side
-        // redirect that put ?groupId= on THIS URL, so re-read the query here.
-        const resolved = liffState.groupId ?? queryGroupId();
+        // redirect that put ?groupId= on THIS URL, so re-resolve here (URL query
+        // + the sessionStorage belt that survives a login redirect).
+        const resolved = liffState.groupId ?? resolveGroupId();
         if (!resolved) {
           setState('no-group');
           return;

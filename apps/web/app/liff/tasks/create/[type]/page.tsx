@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../tasks.module.css';
-import { initLiff, queryGroupId } from '../../../../../lib/liff';
+import { initLiff, resolveGroupId } from '../../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../../lib/taskDraft';
 
 /**
@@ -32,9 +32,17 @@ export default function CreateTypeEntryPage({ params }: { params: { type: string
     const type = params.type;
     initLiff()
       .then((liffState) => {
+        // Fail fast on a broken session HERE (this deep-link entry otherwise
+        // silently forwards to the members step, which then dead-ends on the
+        // "ต้องเชื่อมต่อ LINE" notice with no context).
+        if (!liffState.authed) {
+          setState('error');
+          return;
+        }
         // initLiff() is memoized — its groupId may predate the client-side
-        // redirect that put ?groupId= on THIS URL, so re-read the query here.
-        const groupId = liffState.groupId ?? queryGroupId();
+        // redirect that put ?groupId= on THIS URL, so re-resolve here (URL query
+        // + the sessionStorage belt that survives a login redirect).
+        const groupId = liffState.groupId ?? resolveGroupId();
         if (!groupId) {
           setState('no-group');
           return;

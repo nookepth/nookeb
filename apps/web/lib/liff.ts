@@ -67,12 +67,65 @@ export function resetLiff(): Promise<LiffState> {
 }
 
 /**
+ * Explicit user-initiated reconnect (the "เชื่อมต่ออีกครั้ง" button). Unlike
+ * resetLiff(), this CLEARS the one-shot login budget so a genuine fresh
+ * liff.login() can fire — otherwise the retry re-runs doInit with the budget
+ * already spent, tryRelogin() no-ops, and the user is stuck looping on the same
+ * "ต้องเชื่อมต่อ LINE" notice forever. The budget re-arms after this single
+ * forced attempt, so at most ONE extra redirect happens per tap (never an
+ * infinite redirect loop). apiFetch's silent 401 recovery deliberately does NOT
+ * clear the budget — only a real user tap does.
+ */
+export function reconnectLiff(): Promise<LiffState> {
+  clearLoginAttempts();
+  ready = null;
+  return initLiff();
+}
+
+// groupId belt-and-braces across the login redirect. A LINE Login channel LIFF
+// carries the group id in ?groupId= (folded into ?liff.state= at the endpoint
+// root). The OAuth round trip of liff.login() has been observed to drop the
+// query portion of liff.state on some LINE client versions, which would strand
+// the member page with no group. So the moment we ever see a groupId we mirror
+// it into sessionStorage (scoped to this LIFF tab, cleared on close) and read it
+// back as the last-resort fallback.
+const GROUP_ID_KEY = 'nookeb:liff:groupId';
+
+function storedGroupId(): string | null {
+  try {
+    return sessionStorage.getItem(GROUP_ID_KEY);
+  } catch {
+    return null;
+  }
+}
+function persistGroupId(id: string | null): void {
+  if (!id) return;
+  try {
+    sessionStorage.setItem(GROUP_ID_KEY, id);
+  } catch {
+    /* private mode — the URL/liff.state path still carries it */
+  }
+}
+
+/**
  * ?groupId= read at the CURRENT URL. Exported because initLiff() is memoized:
  * its stored groupId can predate a client-side redirect that added the query
  * (the endpoint-root fallback), so pages re-read this at consume time.
  */
 export function queryGroupId(): string | null {
   return new URLSearchParams(window.location.search).get('groupId');
+}
+
+/**
+ * Full groupId resolution for pages: live URL query → sessionStorage belt (a
+ * value that survived a prior login redirect). Persists whatever it finds so a
+ * later redirect can recover it. Pages should prefer this over queryGroupId()
+ * as the fallback next to liffState.groupId.
+ */
+export function resolveGroupId(): string | null {
+  const id = queryGroupId() ?? storedGroupId();
+  persistGroupId(id);
+  return id;
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -110,6 +163,9 @@ function clearLoginAttempts(): void {
 function tryRelogin(): Promise<LiffState> | null {
   if (loginAttempts() >= MAX_LOGIN_ATTEMPTS) return null;
   bumpLoginAttempts();
+  // Mirror the group id into sessionStorage BEFORE the OAuth redirect, so it
+  // survives even if LINE drops the query from liff.state on the round trip.
+  persistGroupId(queryGroupId() ?? storedGroupId());
   liff.login({ redirectUri: window.location.href });
   // login() navigates away — park forever so callers never proceed half-ready.
   return new Promise<LiffState>(() => {});
@@ -161,7 +217,10 @@ async function readContext(): Promise<Pick<LiffState, 'groupId' | 'profile' | 'i
       : ctx?.type === 'room'
         ? ((ctx as { roomId?: string }).roomId ?? null)
         : null;
-  const groupId = ctxGroupId ?? queryGroupId();
+  // group context (rare — usually 'external' for a Login-channel LIFF) → URL
+  // query → sessionStorage belt. Persist whatever resolves for the next redirect.
+  const groupId = ctxGroupId ?? queryGroupId() ?? storedGroupId();
+  persistGroupId(groupId);
 
   let profile: LiffState['profile'] = null;
   try {

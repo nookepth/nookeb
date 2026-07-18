@@ -151,13 +151,17 @@ const authRoutes: FastifyPluginAsync = async (app) => {
   // checks signature/expiry/audience server-side, so this is as strong as the
   // authorization-code flow above.
   //
-  // AUDIENCE: the id token's `aud` is the channel that HOSTS the LIFF/MINI App,
-  // which after the LINE MINI App migration is NOT the LINE Login channel. We
-  // must verify with THAT channel id or LINE returns 401 and every task page
-  // dead-ends. Resolution order: explicit LINE_LIFF_CHANNEL_ID → the numeric
-  // prefix of LINE_LIFF_ID (a LIFF id is `{channelId}-{suffix}`) → the LINE
-  // Login channel id (pre-migration fallback). Same abuse posture as
-  // /auth/line: 10/min per IP + ban.
+  // AUDIENCE: the id token's `aud` is the channel that HOSTS the LIFF — whatever
+  // channel the LIFF id belongs to. A LIFF id is `{channelId}-{suffix}`, so its
+  // numeric prefix IS the aud, whether the LIFF lives under a LINE MINI App
+  // channel OR (after reverting the migration) the LINE Login channel. That
+  // prefix is therefore the AUTHORITATIVE resolver and MUST win: a stale
+  // LINE_LIFF_CHANNEL_ID left over from the MINI App era would otherwise verify
+  // every (now Login-channel) token against the wrong aud → 401 → every task
+  // page dead-ends on "ต้องเชื่อมต่อ LINE". Resolution order: prefix of
+  // LINE_LIFF_ID → explicit LINE_LIFF_CHANNEL_ID (only used when LINE_LIFF_ID is
+  // unset, e.g. a bare dev setup) → LINE Login channel id (final fallback). Same
+  // abuse posture as /auth/line: 10/min per IP + ban.
   app.post('/auth/liff', {
     config: {
       rateLimit: {
@@ -180,8 +184,8 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     // Channel the MINI App/LIFF token was minted for (its `aud`). See the note
     // above for why this is NOT simply LINE_LOGIN_CHANNEL_ID after the migration.
     const liffChannelId =
-      config.LINE_LIFF_CHANNEL_ID ||
       config.LINE_LIFF_ID?.split('-')[0] ||
+      config.LINE_LIFF_CHANNEL_ID ||
       config.LINE_LOGIN_CHANNEL_ID;
     if (!liffChannelId) {
       return reply.code(503).send({ error: 'LINE Login is not configured' });

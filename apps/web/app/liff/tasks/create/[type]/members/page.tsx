@@ -3,7 +3,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../../tasks.module.css';
-import { apiFetch, initLiff, resetLiff, type LiffState } from '../../../../../../lib/liff';
+import {
+  apiFetch,
+  initLiff,
+  reconnectLiff,
+  resetLiff,
+  resolveGroupId,
+  type LiffState,
+} from '../../../../../../lib/liff';
 import {
   loadDraft,
   saveDraft,
@@ -82,19 +89,35 @@ export default function MembersPage({ params }: { params: { type: string } }) {
 
   useEffect(() => {
     const stored = loadDraft();
-    if (!stored?.groupId) {
+    // groupId belt: prefer the draft, but recover from the URL / sessionStorage
+    // (a value that survived the login redirect) before giving up and restarting.
+    const groupId = stored?.groupId ?? resolveGroupId();
+    if (!stored || !groupId) {
       // Draft lost (LIFF reopened cold on this URL) — restart the flow.
       router.replace('/liff/tasks/create');
       return;
     }
-    setDraft(stored);
-    setSelected(stored.selected);
+    const hydrated = stored.groupId ? stored : { ...stored, groupId };
+    setDraft(hydrated);
+    setSelected(hydrated.selected);
     initLiff()
       .then((s) => {
-        if (applyAuthError(s)) return fetchMembers(stored.groupId!);
+        if (applyAuthError(s)) return fetchMembers(groupId);
       })
       .catch(() => setState('error'));
   }, [router, fetchMembers, applyAuthError]);
+
+  // Explicit "เชื่อมต่ออีกครั้ง" — clears the login budget so a real fresh
+  // liff.login() can fire (resetLiff alone would loop on the spent budget).
+  const reconnect = () => {
+    if (!draft?.groupId) return;
+    setState('loading');
+    reconnectLiff()
+      .then((s) => {
+        if (applyAuthError(s)) return fetchMembers(draft.groupId!);
+      })
+      .catch(() => setState('error'));
+  };
 
   // Retry re-establishes the session first (resetLiff), so a transient auth
   // failure recovers instead of dead-ending — the old retry re-ran only the
@@ -181,7 +204,7 @@ export default function MembersPage({ params }: { params: { type: string } }) {
         <StateNotice
           title="ต้องเชื่อมต่อ LINE ก่อนน้า"
           body="กด 'เชื่อมต่ออีกครั้ง' เพื่อเข้าสู่ระบบด้วย LINE ใหม่น้า ถ้ายังไม่ได้ ลองปิดหน้านี้แล้วเปิดใหม่จากปุ่มในห้องแชทกลุ่มอีกที"
-          onRetry={retry}
+          onRetry={reconnect}
           retryLabel="เชื่อมต่ออีกครั้ง"
         />
       )}
