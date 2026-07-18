@@ -333,6 +333,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             <input
               type="datetime-local"
               className={styles.input}
+              style={{ width: '100%', height: 44, boxSizing: 'border-box' }}
               value={draft.globalDeadline ?? ''}
               onChange={(e) => setDraft({ ...draft, globalDeadline: e.target.value || null })}
             />
@@ -435,6 +436,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 <input
                   type="time"
                   className={styles.input}
+                  style={{ width: '100%', height: 44, boxSizing: 'border-box' }}
                   value={draft.recurrence.time}
                   onChange={(e) =>
                     setDraft({
@@ -497,6 +499,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
               <input
                 type="datetime-local"
                 className={styles.input}
+                style={{ width: '100%', height: 44, boxSizing: 'border-box' }}
                 value={sheetDeadline}
                 onChange={(e) => setSheetDeadline(e.target.value)}
               />

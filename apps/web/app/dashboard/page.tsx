@@ -647,15 +647,6 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="profile-sheet-actions">
-              <a className="btn secondary" href="/dashboard/vault">
-                ห้องนิรภัย
-              </a>
-              <a className="btn secondary" href="/dashboard/diary">
-                ไดอารี่ของฉัน
-              </a>
-              <a className="btn secondary" href="/dashboard/trash">
-                ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
-              </a>
               {isAdmin && (
                 <a className="btn secondary" href="/admin">
                   หน้าผู้ดูแล
@@ -684,17 +675,17 @@ export default function DashboardPage() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3 className="modal-title">เมนู</h3>
             <div className="profile-sheet-actions">
+              <a className="btn secondary" href="/dashboard/vault">
+                ห้องนิรภัย
+              </a>
               <a className="btn secondary" href="/dashboard/tasks">
                 งานของฉัน
               </a>
-              <a className="btn secondary" href="/dashboard/teams">
-                ทีม
+              <a className="btn secondary" href="/dashboard/diary">
+                ไดอารี่ของฉัน
               </a>
               <a className="btn secondary" href="/dashboard/legacy-box">
                 กล่องของขวัญ
-              </a>
-              <a className="btn secondary" href="/dashboard/trash">
-                ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
               </a>
               <button
                 className="btn secondary"
@@ -705,6 +696,9 @@ export default function DashboardPage() {
               >
                 กิจกรรมชวนเพื่อน
               </button>
+              <a className="btn secondary" href="/dashboard/trash">
+                ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
+              </a>
               <button className="btn ghost-muted" onClick={() => setMenuOpen(false)}>
                 ปิด
               </button>
