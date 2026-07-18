@@ -118,6 +118,12 @@ export function buildCreateTaskCard(liffId: string | undefined, groupId: string)
       ? `https://liff.line.me/${liffId}/create/${type}${gq}`
       : `${config.WEB_URL}/liff/tasks/create/${type}${gq}`;
   const listUrl = `${config.WEB_URL}/dashboard/tasks`;
+  // The primary CTA lands on the type-selector index (/liff/tasks/create), not a
+  // hardcoded type — the body rows are the per-type shortcuts, so the button must
+  // let the user choose rather than assuming งานเดียว.
+  const selectUrl = liffId
+    ? `https://liff.line.me/${liffId}/create${gq}`
+    : `${config.WEB_URL}/liff/tasks/create${gq}`;
 
   const TYPES: { type: string; title: string; desc: string }[] = [
     { type: 'single', title: 'งานเดียว', desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว' },
@@ -184,13 +190,13 @@ export function buildCreateTaskCard(liffId: string | undefined, groupId: string)
         spacing: 'sm',
         paddingAll: '12px',
         contents: [
-          // Primary CTA — defaults to the first type (งานเดียว).
+          // Primary CTA — opens the type-selector page (not a hardcoded type).
           {
             type: 'button',
             style: 'primary',
             height: 'sm',
             color: BRAND_RED,
-            action: { type: 'uri', label: 'สร้างงาน', uri: createUrl(TYPES[0]!.type) },
+            action: { type: 'uri', label: 'สร้างงาน', uri: selectUrl },
           },
           // Secondary — jump to the full task list.
           {

@@ -249,12 +249,18 @@ async function doInit(): Promise<LiffState> {
     return { groupId: queryGroupId(), profile: null, inClient: false, authed: true, authError: null };
   }
 
-  // MINI App note: liff.init() takes ONLY { liffId } — no withLoginOnExternalBrowser
-  // (LINE MINI App does not support the external-browser login flow, and passing
-  // it makes init reject). The SDK (@line/liff >= 2.22) handles both the
-  // miniapp.line.me and liff.line.me entry domains from this single call.
+  // The MINI App migration was REVERTED: this LIFF is hosted under the LINE
+  // LOGIN channel again (liff.line.me). For a Login-channel LIFF opened in an
+  // EXTERNAL browser (desktop, or any non-LINE-client), withLoginOnExternalBrowser
+  // is REQUIRED — without it liff.login() redirects out to LINE but the login
+  // never completes/persists on the way back, so liff.isLoggedIn() stays false
+  // and getIDToken() returns null forever → the "ต้องเชื่อมต่อ LINE" redirect
+  // loop. Inside the LINE client the flag is a no-op (there is no external
+  // browser to log in on), so it is safe to set unconditionally. (The old code
+  // omitted it fearing a MINI App channel would reject init on this flag — no
+  // longer true after the revert.)
   try {
-    await liff.init({ liffId });
+    await liff.init({ liffId, withLoginOnExternalBrowser: true });
   } catch (err) {
     // Never swallow: a failed init is the most common MINI App migration
     // symptom (wrong/stale LIFF id → the LINE-native "เกิดข้อผิดพลาดระบบ").

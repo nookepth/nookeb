@@ -610,7 +610,15 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
             type="button"
             className={styles.secondaryBtn}
             style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-            onClick={() => void saveTaskToCalendar(task.title, calendarDeadline)}
+            onClick={async () => {
+              // Save the event, then land the user in the calendar — the same
+              // launch the create-flow's post-completion calendar button uses:
+              // saveTaskToCalendar() opens Google Calendar (liff.openWindow) in
+              // the LINE in-app browser, so awaiting it fires that open right
+              // after the save. (No separate open call — a second one would
+              // launch Google Calendar twice.)
+              await saveTaskToCalendar(task.title, calendarDeadline);
+            }}
           >
             <IconCalendar /> บันทึกลงปฏิทิน
           </button>
@@ -636,6 +644,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 </label>
                 <input
                   className={styles.input}
+                  style={{ width: '100%' }}
                   type="datetime-local"
                   value={editDeadline}
                   onChange={(e) => setEditDeadline(e.target.value)}
