@@ -328,3 +328,55 @@ export function closeLiff(): void {
     // outside LINE — nothing to close
   }
 }
+
+/**
+ * "บันทึกลงปฏิทิน" — put a task's deadline into the user's calendar. The server
+ * `/tasks/:id/ics` endpoint downloads fine on desktop but does NOTHING in the
+ * LINE in-app browser (no file handler for a .ics attachment), so this picks a
+ * path that actually works on mobile:
+ *   - in the LINE client → open Google Calendar's event template externally
+ *   - else if the Web Share sheet exists → share the .ics data URI
+ *   - else (desktop) → download the .ics file
+ */
+export async function saveTaskToCalendar(
+  title: string,
+  deadlineISO: string,
+  description = '',
+): Promise<void> {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const fmt = (d: Date) =>
+    `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(
+      d.getUTCHours(),
+    )}${pad(d.getUTCMinutes())}00Z`;
+  const start = new Date(deadlineISO);
+  const end = new Date(start.getTime() + 3600000);
+
+  const ics = `BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nSUMMARY:${title}\r\nDTSTART:${fmt(start)}\r\nDTEND:${fmt(end)}\r\nDESCRIPTION:${description}\r\nEND:VEVENT\r\nEND:VCALENDAR`;
+  const icsUri = 'data:text/calendar;charset=utf-8,' + encodeURIComponent(ics);
+
+  // LINE in-app browser → open Google Calendar (it can't handle .ics downloads)
+  try {
+    if (liff.isInClient()) {
+      const gcal = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
+        title,
+      )}&dates=${fmt(start)}/${fmt(end)}&details=${encodeURIComponent(description)}`;
+      liff.openWindow({ url: gcal, external: true });
+      return;
+    }
+  } catch {
+    // SDK not ready / outside LINE — fall through to share or download
+  }
+
+  // Mobile share sheet
+  if (typeof navigator !== 'undefined' && navigator.share) {
+    try {
+      await navigator.share({ title, url: icsUri });
+      return;
+    } catch {
+      // user cancelled or share unsupported for this payload — fall through
+    }
+  }
+
+  // Fallback: download .ics
+  Object.assign(document.createElement('a'), { href: icsUri, download: `${title}.ics` }).click();
+}

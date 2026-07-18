@@ -47,6 +47,14 @@ export function ListIcon({ size = 18 }: IconProps) {
   );
 }
 
+export function MenuIcon({ size = 20 }: IconProps) {
+  return (
+    <svg {...base(size)}>
+      <path d="M3 6h18M3 12h18M3 18h18" />
+    </svg>
+  );
+}
+
 export function ClockIcon({ size = 18 }: IconProps) {
   return (
     <svg {...base(size)}>

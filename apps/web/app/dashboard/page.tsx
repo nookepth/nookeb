@@ -30,12 +30,9 @@ import { FilePreviewModal } from '@/components/FilePreviewModal';
 import { Navbar, type NavbarUser } from '@/components/Navbar';
 import { BottomNav, type BottomTab } from '@/components/BottomNav';
 import { DiaryReminderBanner } from '@/components/DiaryReminderBanner';
-import { DiaryEntryCard } from '@/components/DiaryEntryCard';
-import { LegacyBoxEntryCard } from '@/components/LegacyBoxEntryCard';
 import { RecentStrip } from '@/components/RecentStrip';
 import { ReferralCard } from '@/components/ReferralCard';
 import { UsageBar } from '@/components/UsageBar';
-import { VaultEntryCard } from '@/components/VaultEntryCard';
 import { useVaultSummary } from '@/lib/useVaultSummary';
 import { BoxIcon, DatabaseIcon, DocIcon, FolderIcon, GridIcon, ImageIcon, ListIcon, LockIcon } from '@/components/icons';
 
@@ -90,6 +87,8 @@ export default function DashboardPage() {
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [activeTab, setActiveTab] = useState<BottomTab>('vault');
   const [profileOpen, setProfileOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false); // hamburger nav drawer (mobile)
+  const [referralOpen, setReferralOpen] = useState(false); // ชวนเพื่อน sheet
   const [previewFile, setPreviewFile] = useState<FileDto | null>(null);
 
 
@@ -341,6 +340,7 @@ export default function DashboardPage() {
         user={user}
         onLogout={handleLogout}
         trashCount={trashCount}
+        onMenu={() => setMenuOpen(true)}
         searchOpen={searchOpen}
         onSearchOpenChange={(open) => {
           setSearchOpen(open);
@@ -436,13 +436,10 @@ export default function DashboardPage() {
 
         {usage && <UsageBar usage={usage} />}
 
-        <VaultEntryCard status={vaultStatus} stats={vaultStats} />
-
-        <DiaryEntryCard />
-
-        <LegacyBoxEntryCard />
-
-        <ReferralCard />
+        {/* Feature entry cards (ห้องนิรภัย / ไดอารี่ / กล่องของขวัญ / ชวนเพื่อน) moved
+            off the คลัง homepage: vault + diary live in the โปรไฟล์ sheet, box +
+            referral in the hamburger drawer. The homepage is now the flat file
+            list below. */}
 
         {/* ---------- space / tools row ---------- */}
         <div className="actions-row">
@@ -650,6 +647,12 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="profile-sheet-actions">
+              <a className="btn secondary" href="/dashboard/vault">
+                ห้องนิรภัย
+              </a>
+              <a className="btn secondary" href="/dashboard/diary">
+                ไดอารี่ของฉัน
+              </a>
               <a className="btn secondary" href="/dashboard/trash">
                 ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
               </a>
@@ -671,6 +674,53 @@ export default function DashboardPage() {
                 ปิด
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- hamburger nav drawer (mobile) ---------- */}
+      {menuOpen && (
+        <div className="modal-overlay" onClick={() => setMenuOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <h3 className="modal-title">เมนู</h3>
+            <div className="profile-sheet-actions">
+              <a className="btn secondary" href="/dashboard/tasks">
+                งานของฉัน
+              </a>
+              <a className="btn secondary" href="/dashboard/teams">
+                ทีม
+              </a>
+              <a className="btn secondary" href="/dashboard/legacy-box">
+                กล่องของขวัญ
+              </a>
+              <a className="btn secondary" href="/dashboard/trash">
+                ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
+              </a>
+              <button
+                className="btn secondary"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setReferralOpen(true);
+                }}
+              >
+                กิจกรรมชวนเพื่อน
+              </button>
+              <button className="btn ghost-muted" onClick={() => setMenuOpen(false)}>
+                ปิด
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ---------- ชวนเพื่อน sheet (referral card has no route of its own) ---------- */}
+      {referralOpen && (
+        <div className="modal-overlay" onClick={() => setReferralOpen(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <ReferralCard />
+            <button className="btn ghost-muted" onClick={() => setReferralOpen(false)}>
+              ปิด
+            </button>
           </div>
         </div>
       )}

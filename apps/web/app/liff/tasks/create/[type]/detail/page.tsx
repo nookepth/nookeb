@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../../tasks.module.css';
-import { apiFetch, closeLiff, initLiff } from '../../../../../../lib/liff';
+import { apiFetch, closeLiff, initLiff, saveTaskToCalendar } from '../../../../../../lib/liff';
 import {
   clearDraft,
   loadDraft,
@@ -211,6 +211,12 @@ export default function DetailPage({ params }: { params: { type: string } }) {
   // ---- success screen ----
 
   if (created) {
+    // Calendar export needs one instant. single/multi carry a datetime-local
+    // deadline (task-level, else the first item's); recurring has none → the
+    // button is omitted rather than exporting a bogus 1970 event.
+    const localDeadline =
+      draft.globalDeadline ?? draft.items.find((i) => i.deadline)?.deadline ?? null;
+    const calendarDeadline = localDeadline ? localToIso(localDeadline) : null;
     return (
       <main className={styles.page}>
         <div className={styles.successWrap}>
@@ -248,19 +254,22 @@ export default function DetailPage({ params }: { params: { type: string } }) {
               ดูงาน
             </a>
           )}
-          <a
-            className={styles.secondaryBtn}
-            style={{
-              textDecoration: 'none',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              gap: 8,
-            }}
-            href={`/api-proxy/tasks/${created.id}/ics`}
-          >
-            <IconCalendar /> บันทึกลงปฏิทิน
-          </a>
+          {calendarDeadline && (
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              style={{
+                width: '100%',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+              }}
+              onClick={() => void saveTaskToCalendar(draft.title.trim(), calendarDeadline)}
+            >
+              <IconCalendar /> บันทึกลงปฏิทิน
+            </button>
+          )}
           <button type="button" className={styles.primaryBtn} onClick={() => closeLiff()}>
             เสร็จแล้ว ปิดหน้านี้
           </button>
@@ -295,6 +304,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
               <input
                 type="datetime-local"
                 className={styles.input}
+                style={{ width: '100%', height: 44, boxSizing: 'border-box' }}
                 value={draft.globalDeadline ?? ''}
                 onChange={(e) => setDraft({ ...draft, globalDeadline: e.target.value || null })}
               />
@@ -379,7 +389,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             </div>
             <div className={styles.inlineFields}>
               {draft.recurrence.freq === 'monthly' && (
-                <div className={styles.field}>
+                <div className={styles.field} style={{ flex: '0 0 120px' }}>
                   <label className={styles.fieldLabel}>ทุกวันที่</label>
                   <select
                     className={styles.select}
@@ -400,7 +410,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 </div>
               )}
               {draft.recurrence.freq === 'weekly' && (
-                <div className={styles.field}>
+                <div className={styles.field} style={{ flex: '0 0 120px' }}>
                   <label className={styles.fieldLabel}>ทุกวัน</label>
                   <select
                     className={styles.select}
@@ -420,7 +430,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                   </select>
                 </div>
               )}
-              <div className={styles.field}>
+              <div className={styles.field} style={{ flex: 1, maxWidth: 160 }}>
                 <label className={styles.fieldLabel}>เวลา</label>
                 <input
                   type="time"

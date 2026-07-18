@@ -288,6 +288,12 @@ button {
   flex-shrink: 0;
 }
 
+.navbar-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .navbar-user {
   display: flex;
   align-items: center;
@@ -332,6 +338,11 @@ button {
   display: none;
 }
 
+/* Hamburger drawer trigger — desktop uses the .navbar-links strip instead. */
+.navbar .nav-hamburger {
+  display: none;
+}
+
 .search-overlay {
   position: fixed;
   inset: 0;
@@ -370,6 +381,20 @@ button {
 
   .navbar .logout-btn {
     display: none;
+  }
+
+  /* Declutter the mobile header: search + the desktop nav strip move into the
+     hamburger drawer / bottom nav; the hamburger itself appears here. */
+  .navbar-search {
+    display: none;
+  }
+
+  .navbar-links {
+    display: none;
+  }
+
+  .navbar .nav-hamburger {
+    display: inline-flex;
   }
 }
 

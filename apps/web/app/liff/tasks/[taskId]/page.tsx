@@ -7,6 +7,7 @@ import {
   initLiff,
   reconnectLiff,
   resetLiff,
+  saveTaskToCalendar,
   type LiffState,
 } from '../../../../lib/liff';
 import {
@@ -213,6 +214,10 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   }
 
   const badge = STATUS_BADGE[task.status] ?? STATUS_BADGE.pending!;
+  // Calendar export needs a single instant; prefer the task-level deadline, else
+  // fall back to the first item that carries its own.
+  const calendarDeadline =
+    task.globalDeadline ?? task.items.find((i) => i.deadline)?.deadline ?? null;
   const doneCount = task.items.filter((i) => i.status === 'done').length;
   const progress = task.items.length > 0 ? Math.round((doneCount / task.items.length) * 100) : 0;
 
@@ -304,21 +309,24 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
         </div>
       </section>
 
-      <section className={styles.section}>
-        <a
-          className={styles.secondaryBtn}
-          style={{
-            textDecoration: 'none',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: 8,
-          }}
-          href={`/api-proxy/tasks/${encodeURIComponent(task.id)}/ics`}
-        >
-          <IconCalendar /> บันทึกลงปฏิทิน
-        </a>
-      </section>
+      {calendarDeadline && (
+        <section className={styles.section}>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 8,
+            }}
+            onClick={() => void saveTaskToCalendar(task.title, calendarDeadline)}
+          >
+            <IconCalendar /> บันทึกลงปฏิทิน
+          </button>
+        </section>
+      )}
 
       {toast && <div className={styles.errorBox}>{toast}</div>}
     </main>

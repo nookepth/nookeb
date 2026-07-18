@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
-import { CloseIcon, SearchIcon } from './icons';
+import { CloseIcon, MenuIcon, SearchIcon } from './icons';
 
 export interface NavbarUser {
   displayName: string | null;
@@ -19,6 +19,8 @@ export interface NavbarProps {
   onSearchOpenChange: (open: boolean) => void;
   /** Files currently in the trash — shows a count badge on the ถังขยะ link when > 0. */
   trashCount?: number;
+  /** Opens the mobile navigation drawer (hamburger). Only rendered when provided. */
+  onMenu?: () => void;
 }
 
 export function Navbar({
@@ -29,6 +31,7 @@ export function Navbar({
   searchOpen,
   onSearchOpenChange,
   trashCount = 0,
+  onMenu,
 }: NavbarProps) {
   const [scrolled, setScrolled] = useState(false);
   const overlayInputRef = useRef<HTMLInputElement>(null);
@@ -83,15 +86,24 @@ export function Navbar({
         </div>
 
         <div className="navbar-right">
-          <a className="btn ghost" href="/dashboard/tasks">
-            งานของฉัน
-          </a>
-          <a className="btn ghost" href="/dashboard/teams">
-            ทีม
-          </a>
-          <a className="btn ghost" href="/dashboard/trash">
-            ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
-          </a>
+          {/* Desktop nav strip — hidden on mobile, where the hamburger drawer
+              (below) surfaces these destinations instead. */}
+          <div className="navbar-links">
+            <a className="btn ghost" href="/dashboard/tasks">
+              งานของฉัน
+            </a>
+            <a className="btn ghost" href="/dashboard/teams">
+              ทีม
+            </a>
+            <a className="btn ghost" href="/dashboard/trash">
+              ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
+            </a>
+          </div>
+          {onMenu && (
+            <button className="icon-btn nav-hamburger" aria-label="เมนู" onClick={onMenu}>
+              <MenuIcon />
+            </button>
+          )}
           <button
             className="icon-btn search-toggle"
             aria-label="ค้นหาไฟล์"
