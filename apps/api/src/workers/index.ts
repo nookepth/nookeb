@@ -1,6 +1,6 @@
 import { createUploadWorker, closeWorkerQueue, scheduleRepeatableJobs } from './upload.worker';
 import { createTaskReminderWorker } from './taskReminderWorker';
-import { closeTaskQueue } from '../services/taskScheduler';
+import { closeTaskQueue, scheduleTaskRepeatableJobs } from '../services/taskScheduler';
 import { config } from '../config';
 
 // Worker entry point — run as a separate process (npm run dev:worker / start:worker)
@@ -10,6 +10,10 @@ const taskWorker = createTaskReminderWorker();
 // Register recurring maintenance jobs (daily R2 purge of long-deleted files)
 scheduleRepeatableJobs().catch((err) => {
   console.error('[worker] failed to schedule repeatable jobs:', err);
+});
+// Recurring-task self-heal sweep (see processRecurSweep in taskReminderWorker)
+scheduleTaskRepeatableJobs().catch((err) => {
+  console.error('[worker] failed to schedule task repeatable jobs:', err);
 });
 
 // Effective scan config, printed once per boot: Railway env is per-service and

@@ -10,7 +10,11 @@ import type {
   TaskReminderRecord,
 } from '@nookeb/shared';
 import { toTaskAssigneeDto as assigneeDto } from '@nookeb/shared';
-import { getChatMemberIds, getChatMemberProfile } from './line.service';
+import {
+  getChatMemberIds,
+  getChatMemberProfile,
+  getChatMemberProfileStrict,
+} from './line.service';
 
 /**
  * ระบบตามงาน (Task Manager) data access — migration 036. Soft-delete only
@@ -31,12 +35,16 @@ export async function upsertGroupMember(
   displayName?: string | null,
   pictureUrl?: string | null,
 ): Promise<void> {
+  // NULL profile fields are omitted from the payload: a transient LINE profile
+  // failure (webhook auto-upsert passes null then) must not wipe a name/avatar
+  // the roster already resolved — the conflict-update only touches provided
+  // columns, so existing values survive.
   const { error } = await supabase.from('group_members').upsert(
     {
       group_line_id: groupLineId,
       line_uid: lineUid,
-      display_name: displayName ?? null,
-      picture_url: pictureUrl ?? null,
+      ...(displayName != null ? { display_name: displayName } : {}),
+      ...(pictureUrl != null ? { picture_url: pictureUrl } : {}),
       registered_at: new Date().toISOString(),
     },
     { onConflict: 'group_line_id,line_uid' },
@@ -84,7 +92,10 @@ export async function ensureGroupMember(
   lineUid: string,
 ): Promise<boolean> {
   if (await isGroupMember(supabase, groupLineId, lineUid)) return true;
-  const profile = await getChatMemberProfile(groupLineId, lineUid);
+  // STRICT fetch: the group-scoped endpoint 404s for non-members, so success is
+  // the membership proof. The display-variant's friend-profile fallback must
+  // never be used here — it would enroll any OA friend into any group.
+  const profile = await getChatMemberProfileStrict(groupLineId, lineUid);
   if (!profile) return false;
   await upsertGroupMember(
     supabase,

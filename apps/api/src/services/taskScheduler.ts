@@ -24,7 +24,7 @@ export { BANGKOK_TZ, computeNextOccurrence } from './task-recurrence';
 
 /** Recurring rollover fires this long after the round's deadline — after the
  * overdue reminder (+60 min) so the round is chased before it resets. */
-const ROLLOVER_DELAY_MINUTES = 90;
+export const ROLLOVER_DELAY_MINUTES = 90;
 
 const REMIND_TYPES: RemindType[] = ['3_days', '1_day', '3_hours', 'overdue'];
 
@@ -60,8 +60,19 @@ export async function closeTaskQueue(): Promise<void> {
 }
 
 export const reminderJobId = (reminderId: string): string => `reminder-${reminderId}`;
-const rolloverJobId = (taskId: string, deadlineIso: string): string =>
+export const rolloverJobId = (taskId: string, deadlineIso: string): string =>
   `recur-${taskId}-${dayjs(deadlineIso).unix()}`;
+
+/** Repeatable self-heal sweep for recurring tasks whose rollover chain broke
+ * (see TaskRecurSweepJob). Registered once at worker startup — same pattern as
+ * the file worker's purge_deleted. */
+export async function scheduleTaskRepeatableJobs(): Promise<void> {
+  await getTaskQueue().add(
+    'task_recur_sweep',
+    { type: 'task_recur_sweep' },
+    { repeat: { every: 30 * 60 * 1000 }, jobId: 'task-recur-sweep' },
+  );
+}
 
 /**
  * Distinct reminder targets for a task: items with their OWN deadline get

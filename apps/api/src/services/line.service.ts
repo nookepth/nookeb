@@ -178,14 +178,15 @@ function chatScope(chatId: string): 'group' | 'room' {
 }
 
 /**
- * Group/room-scoped member profile. getProfile (/v2/bot/profile) only resolves
- * users who FRIENDED the OA — group members who never added the bot come back
- * 404 there, which is why rosters filled through it end up with NULL names.
- * This endpoint resolves any current member of a chat the bot is in, and 404s
- * for non-members (so a success doubles as a membership check). Falls back to
- * the friend profile; null means "couldn't resolve", never throws.
+ * Group/room-scoped member profile, STRICT: resolves only via
+ * /v2/bot/{group|room}/{chatId}/member/{userId}, which 404s for non-members —
+ * so a success IS proof of current membership in that chat. This is the ONLY
+ * variant safe to use as a membership check (ensureGroupMember, /register):
+ * the friend-profile fallback in getChatMemberProfile below would let any OA
+ * friend "prove" membership in any group. null = not a member OR LINE was
+ * unreachable (callers treat both as "can't verify right now"); never throws.
  */
-export async function getChatMemberProfile(
+export async function getChatMemberProfileStrict(
   chatId: string,
   lineUserId: string,
 ): Promise<{ displayName: string; pictureUrl?: string } | null> {
@@ -196,8 +197,23 @@ export async function getChatMemberProfile(
     });
     if (res.ok) return (await res.json()) as { displayName: string; pictureUrl?: string };
   } catch {
-    // timeout/network — fall through to the friend profile
+    // timeout/network — treated the same as "couldn't verify"
   }
+  return null;
+}
+
+/**
+ * Best-effort member profile for DISPLAY purposes (roster names/avatars):
+ * group/room-scoped endpoint first (resolves members who never friended the
+ * OA), then the friend profile as a fallback for transient failures. NOT a
+ * membership check — use getChatMemberProfileStrict for that.
+ */
+export async function getChatMemberProfile(
+  chatId: string,
+  lineUserId: string,
+): Promise<{ displayName: string; pictureUrl?: string } | null> {
+  const strict = await getChatMemberProfileStrict(chatId, lineUserId);
+  if (strict) return strict;
   return getProfile(lineUserId).catch(() => null);
 }
 

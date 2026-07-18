@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from './tasks.module.css';
 import { initLiff } from '../../../lib/liff';

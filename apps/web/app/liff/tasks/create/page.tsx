@@ -1,11 +1,17 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../tasks.module.css';
-import { initLiff, resolveGroupId } from '../../../../lib/liff';
+import {
+  initLiff,
+  reconnectLiff,
+  resetLiff,
+  resolveGroupId,
+  type LiffState,
+} from '../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../lib/taskDraft';
-import { IconClipboard, IconListChecks, IconRepeat } from '../components';
+import { IconClipboard, IconListChecks, IconRepeat, StateNotice } from '../components';
 
 const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: string }[] = [
   {
@@ -31,30 +37,49 @@ const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: str
 export default function CreateTaskPage() {
   const router = useRouter();
   const [groupId, setGroupId] = useState<string | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'no-group' | 'error'>('loading');
+  const [state, setState] = useState<'loading' | 'ready' | 'no-group' | 'unauth' | 'error'>(
+    'loading',
+  );
+
+  const applyState = useCallback((liffState: LiffState) => {
+    // Fail fast on a broken session HERE rather than letting the user pick a
+    // type and hit a wall of 401s on the next (member) step. A rejected/absent
+    // token gets the reconnect notice; a transient failure the generic retry.
+    if (!liffState.authed) {
+      setState(liffState.authError === 'network' ? 'error' : 'unauth');
+      return;
+    }
+    // initLiff() is memoized — its groupId may predate the client-side
+    // redirect that put ?groupId= on THIS URL, so re-resolve here (URL query
+    // + the sessionStorage belt that survives a login redirect).
+    const resolved = liffState.groupId ?? resolveGroupId();
+    if (!resolved) {
+      setState('no-group');
+      return;
+    }
+    setGroupId(resolved);
+    setState('ready');
+  }, []);
 
   useEffect(() => {
     initLiff()
-      .then((liffState) => {
-        // Fail fast on a broken session HERE rather than letting the user pick a
-        // type and hit a wall of 401s on the next (member) step.
-        if (!liffState.authed) {
-          setState('error');
-          return;
-        }
-        // initLiff() is memoized — its groupId may predate the client-side
-        // redirect that put ?groupId= on THIS URL, so re-resolve here (URL query
-        // + the sessionStorage belt that survives a login redirect).
-        const resolved = liffState.groupId ?? resolveGroupId();
-        if (!resolved) {
-          setState('no-group');
-          return;
-        }
-        setGroupId(resolved);
-        setState('ready');
-      })
+      .then(applyState)
       .catch(() => setState('error'));
-  }, []);
+  }, [applyState]);
+
+  const retry = () => {
+    setState('loading');
+    resetLiff()
+      .then(applyState)
+      .catch(() => setState('error'));
+  };
+
+  const reconnect = () => {
+    setState('loading');
+    reconnectLiff()
+      .then(applyState)
+      .catch(() => setState('error'));
+  };
 
   const pick = (type: TaskDraft['type']) => {
     if (!groupId) return;
@@ -88,8 +113,20 @@ export default function CreateTaskPage() {
         </div>
       )}
 
+      {state === 'unauth' && (
+        <StateNotice
+          title="ต้องเชื่อมต่อ LINE ก่อนน้า"
+          body="กด 'เชื่อมต่ออีกครั้ง' เพื่อเข้าสู่ระบบด้วย LINE ใหม่น้า ถ้ายังไม่ได้ ลองปิดหน้านี้แล้วเปิดใหม่จากปุ่มในห้องแชทกลุ่มอีกที"
+          onRetry={reconnect}
+          retryLabel="เชื่อมต่ออีกครั้ง"
+        />
+      )}
       {state === 'error' && (
-        <div className={styles.errorBox}>เชื่อมต่อ LINE ไม่สำเร็จ ลองปิดแล้วเปิดใหม่อีกทีน้า</div>
+        <StateNotice
+          title="เชื่อมต่อ LINE ไม่สำเร็จน้า"
+          body="เช็คสัญญาณอินเทอร์เน็ตแล้วลองใหม่อีกทีน้า"
+          onRetry={retry}
+        />
       )}
 
       {state === 'ready' && (

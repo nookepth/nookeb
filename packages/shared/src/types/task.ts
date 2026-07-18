@@ -117,7 +117,18 @@ export interface TaskRecurNextJob {
   occurrence: string;
 }
 
-export type TaskJob = TaskReminderJob | TaskRecurNextJob;
+/**
+ * Job: periodic self-heal for recurring tasks (repeatable). The rollover chain
+ * is self-scheduling, so a task_recur_next job that dies (all attempts failed,
+ * or Redis lost the delayed job) would otherwise freeze its task forever. The
+ * sweep finds recurring tasks whose deadline+rollover-delay has passed with no
+ * live rollover job and re-rolls them.
+ */
+export interface TaskRecurSweepJob {
+  type: 'task_recur_sweep';
+}
+
+export type TaskJob = TaskReminderJob | TaskRecurNextJob | TaskRecurSweepJob;
 
 // ---- DTOs (LIFF web ↔ API) ----
 

@@ -497,7 +497,16 @@ async function handleTextCommand(
   // The roster is populated automatically by the message-event auto-upsert (no
   // "/register" typing needed), so the card can offer assignees right away.
   if (isCmd(text, 'สร้างงาน', 'งาน', 'task')) {
-    const groupId = source.groupId ?? source.roomId ?? '';
+    const groupId = source.groupId ?? source.roomId;
+    if (!groupId) {
+      // 1-on-1 chat: a card here would carry no groupId and every button would
+      // dead-end on "ต้องเปิดจากในกลุ่ม" — explain instead.
+      await reply(
+        event,
+        'หนูเก็บ: สร้างงานใช้ในกลุ่มน้า 📋 พิมพ์ "สร้างงาน" ในกลุ่ม LINE ที่อยากมอบหมายงาน แล้วหนูจะส่งการ์ดให้เลือกรูปแบบงานได้เลยค่ะ',
+      );
+      return;
+    }
     await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, groupId));
     return;
   }

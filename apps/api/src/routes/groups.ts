@@ -1,9 +1,10 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { toGroupMemberDto } from '@nookeb/shared';
-import { getChatMemberProfile } from '../services/line.service';
+import { getChatMemberProfileStrict } from '../services/line.service';
 import {
   ensureGroupMember,
+  isGroupMember,
   listGroupMembers,
   syncGroupRoster,
   upsertGroupMember,
@@ -62,16 +63,29 @@ const groupsRoutes: FastifyPluginAsync = async (app) => {
       if (!parsed.success) return reply.code(400).send({ error: 'Invalid group id' });
       const lineUid = request.authUser!.lineUserId;
 
+      // Already on the roster → idempotent success (no LINE round trip).
+      if (await isGroupMember(app.supabase, parsed.data, lineUid)) {
+        return reply.code(204).send();
+      }
+
       // Profile from LINE, not from the request body — the roster's names and
       // avatars end up in group-visible Flex cards, so they must be authentic.
-      // Group-scoped fetch: resolves members who never friended the OA.
-      const profile = await getChatMemberProfile(parsed.data, lineUid);
+      // STRICT group-scoped fetch: it 404s for non-members, so a success is the
+      // membership proof. Without this gate, ANY authenticated user could enroll
+      // themselves into any groupId they learned and read/create its tasks.
+      const profile = await getChatMemberProfileStrict(parsed.data, lineUid);
+      if (!profile) {
+        return reply.code(403).send({
+          error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วกดลองใหม่อีกที',
+          code: 'NOT_REGISTERED',
+        });
+      }
       await upsertGroupMember(
         app.supabase,
         parsed.data,
         lineUid,
-        profile?.displayName ?? null,
-        profile?.pictureUrl ?? null,
+        profile.displayName,
+        profile.pictureUrl ?? null,
       );
       return reply.code(204).send();
     },

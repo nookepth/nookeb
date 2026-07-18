@@ -1,10 +1,17 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../../tasks.module.css';
-import { initLiff, resolveGroupId } from '../../../../../lib/liff';
+import {
+  initLiff,
+  reconnectLiff,
+  resetLiff,
+  resolveGroupId,
+  type LiffState,
+} from '../../../../../lib/liff';
 import { emptyDraft, saveDraft, type TaskDraft } from '../../../../../lib/taskDraft';
+import { StateNotice } from '../../components';
 
 /**
  * Deep-link entry for the create flow: the "สร้างงาน" Flex card links to
@@ -22,38 +29,57 @@ function isTaskType(value: string): value is TaskDraft['type'] {
 
 export default function CreateTypeEntryPage({ params }: { params: { type: string } }) {
   const router = useRouter();
-  const [state, setState] = useState<'loading' | 'no-group' | 'error'>('loading');
+  const [state, setState] = useState<'loading' | 'no-group' | 'unauth' | 'error'>('loading');
+
+  const applyState = useCallback(
+    (liffState: LiffState) => {
+      if (!isTaskType(params.type)) return; // effect below already redirected
+      // Fail fast on a broken session HERE (this deep-link entry otherwise
+      // silently forwards to the members step, which then dead-ends on the
+      // "ต้องเชื่อมต่อ LINE" notice with no context).
+      if (!liffState.authed) {
+        setState(liffState.authError === 'network' ? 'error' : 'unauth');
+        return;
+      }
+      // initLiff() is memoized — its groupId may predate the client-side
+      // redirect that put ?groupId= on THIS URL, so re-resolve here (URL query
+      // + the sessionStorage belt that survives a login redirect).
+      const groupId = liffState.groupId ?? resolveGroupId();
+      if (!groupId) {
+        setState('no-group');
+        return;
+      }
+      const draft = emptyDraft(params.type as TaskDraft['type']);
+      draft.groupId = groupId;
+      saveDraft(draft);
+      router.replace(`/liff/tasks/create/${params.type}/members`);
+    },
+    [params.type, router],
+  );
 
   useEffect(() => {
     if (!isTaskType(params.type)) {
       router.replace('/liff/tasks/create');
       return;
     }
-    const type = params.type;
     initLiff()
-      .then((liffState) => {
-        // Fail fast on a broken session HERE (this deep-link entry otherwise
-        // silently forwards to the members step, which then dead-ends on the
-        // "ต้องเชื่อมต่อ LINE" notice with no context).
-        if (!liffState.authed) {
-          setState('error');
-          return;
-        }
-        // initLiff() is memoized — its groupId may predate the client-side
-        // redirect that put ?groupId= on THIS URL, so re-resolve here (URL query
-        // + the sessionStorage belt that survives a login redirect).
-        const groupId = liffState.groupId ?? resolveGroupId();
-        if (!groupId) {
-          setState('no-group');
-          return;
-        }
-        const draft = emptyDraft(type);
-        draft.groupId = groupId;
-        saveDraft(draft);
-        router.replace(`/liff/tasks/create/${type}/members`);
-      })
+      .then(applyState)
       .catch(() => setState('error'));
-  }, [params.type, router]);
+  }, [params.type, router, applyState]);
+
+  const retry = () => {
+    setState('loading');
+    resetLiff()
+      .then(applyState)
+      .catch(() => setState('error'));
+  };
+
+  const reconnect = () => {
+    setState('loading');
+    reconnectLiff()
+      .then(applyState)
+      .catch(() => setState('error'));
+  };
 
   return (
     <main className={styles.page} style={{ paddingBottom: 24 }}>
@@ -79,8 +105,20 @@ export default function CreateTypeEntryPage({ params }: { params: { type: string
         </div>
       )}
 
+      {state === 'unauth' && (
+        <StateNotice
+          title="ต้องเชื่อมต่อ LINE ก่อนน้า"
+          body="กด 'เชื่อมต่ออีกครั้ง' เพื่อเข้าสู่ระบบด้วย LINE ใหม่น้า ถ้ายังไม่ได้ ลองปิดหน้านี้แล้วเปิดใหม่จากการ์ดในกลุ่มอีกที"
+          onRetry={reconnect}
+          retryLabel="เชื่อมต่ออีกครั้ง"
+        />
+      )}
       {state === 'error' && (
-        <div className={styles.errorBox}>เชื่อมต่อ LINE ไม่สำเร็จ ลองปิดแล้วเปิดใหม่อีกทีน้า</div>
+        <StateNotice
+          title="เชื่อมต่อ LINE ไม่สำเร็จน้า"
+          body="เช็คสัญญาณอินเทอร์เน็ตแล้วลองใหม่อีกทีน้า"
+          onRetry={retry}
+        />
       )}
     </main>
   );

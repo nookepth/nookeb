@@ -2,8 +2,21 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import styles from '../tasks.module.css';
-import { apiFetch, initLiff } from '../../../../lib/liff';
-import { AvatarStack, DeadlineChip, IconCalendar, IconCheck, ListSkeleton } from '../components';
+import {
+  apiFetch,
+  initLiff,
+  reconnectLiff,
+  resetLiff,
+  type LiffState,
+} from '../../../../lib/liff';
+import {
+  AvatarStack,
+  DeadlineChip,
+  IconCalendar,
+  IconCheck,
+  ListSkeleton,
+  StateNotice,
+} from '../components';
 
 interface AssigneeDto {
   id: string;
@@ -41,12 +54,33 @@ const STATUS_BADGE: Record<string, { label: string; bg: string; fg: string }> = 
 export default function TaskViewPage({ params }: { params: { taskId: string } }) {
   const [task, setTask] = useState<TaskDto | null>(null);
   const [viewerUid, setViewerUid] = useState<string | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'forbidden' | 'error'>('loading');
+  const [state, setState] = useState<
+    'loading' | 'ready' | 'forbidden' | 'unauth' | 'error'
+  >('loading');
   const [marking, setMarking] = useState<string | null>(null); // itemId in flight
   const [toast, setToast] = useState<string | null>(null);
 
+  // Same mapping as the members page: a rejected/absent token gets the
+  // reconnect notice; a transient connect failure gets the generic retry.
+  const applyAuthError = useCallback((s: LiffState): boolean => {
+    if (s.authed) return true;
+    setState(s.authError === 'network' ? 'error' : 'unauth');
+    return false;
+  }, []);
+
   const fetchTask = useCallback(async (): Promise<void> => {
-    const res = await apiFetch(`/api-proxy/tasks/${encodeURIComponent(params.taskId)}`);
+    const res = await apiFetch(`/api-proxy/tasks/${encodeURIComponent(params.taskId)}`).catch(
+      () => null,
+    );
+    if (!res) {
+      setState('error');
+      return;
+    }
+    if (res.status === 401) {
+      // apiFetch already retried auth once — the session genuinely isn't there.
+      setState('unauth');
+      return;
+    }
     if (res.status === 403) {
       setState('forbidden');
       return;
@@ -63,9 +97,29 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
 
   useEffect(() => {
     initLiff()
-      .then(() => fetchTask())
+      .then((s) => {
+        if (applyAuthError(s)) return fetchTask();
+      })
       .catch(() => setState('error'));
-  }, [fetchTask]);
+  }, [fetchTask, applyAuthError]);
+
+  const retry = () => {
+    setState('loading');
+    resetLiff()
+      .then((s) => {
+        if (applyAuthError(s)) return fetchTask();
+      })
+      .catch(() => setState('error'));
+  };
+
+  const reconnect = () => {
+    setState('loading');
+    reconnectLiff()
+      .then((s) => {
+        if (applyAuthError(s)) return fetchTask();
+      })
+      .catch(() => setState('error'));
+  };
 
   const markDone = async (item: ItemDto) => {
     if (!task || !viewerUid || marking) return;
@@ -124,9 +178,24 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   if (state === 'forbidden') {
     return (
       <main className={styles.page}>
-        <div className={styles.errorBox}>
-          งานนี้เป็นของกลุ่มที่เรายังไม่ได้อยู่ด้วยน้า — ลองส่งข้อความในกลุ่มนั้นสักครั้ง แล้วเปิดใหม่อีกที
-        </div>
+        <StateNotice
+          title="งานนี้เป็นของกลุ่มที่เรายังไม่ได้อยู่ด้วยน้า"
+          body="ลองส่งข้อความในกลุ่มนั้นสักครั้ง แล้วกดลองใหม่อีกทีน้า"
+          onRetry={retry}
+        />
+      </main>
+    );
+  }
+
+  if (state === 'unauth') {
+    return (
+      <main className={styles.page}>
+        <StateNotice
+          title="ต้องเชื่อมต่อ LINE ก่อนน้า"
+          body="กด 'เชื่อมต่ออีกครั้ง' เพื่อเข้าสู่ระบบด้วย LINE ใหม่น้า ถ้ายังไม่ได้ ลองปิดหน้านี้แล้วเปิดใหม่จากปุ่มในห้องแชทอีกที"
+          onRetry={reconnect}
+          retryLabel="เชื่อมต่ออีกครั้ง"
+        />
       </main>
     );
   }
@@ -134,7 +203,11 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   if (state === 'error' || !task) {
     return (
       <main className={styles.page}>
-        <div className={styles.errorBox}>โหลดงานไม่สำเร็จ ลองปิดแล้วเปิดใหม่อีกทีน้า</div>
+        <StateNotice
+          title="โหลดงานไม่สำเร็จน้า"
+          body="เช็คสัญญาณอินเทอร์เน็ตแล้วลองใหม่อีกทีน้า"
+          onRetry={retry}
+        />
       </main>
     );
   }

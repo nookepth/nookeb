@@ -13,12 +13,19 @@ import { buildMentionTextV2, buildReminderFlex } from '../services/lineMessage';
 import {
   getReminder,
   getTaskWithDetails,
+  listOutstandingReminders,
   resetRecurringRound,
   stampReminder,
   updateTask,
   type TaskWithDetails,
 } from '../services/task.service';
-import { computeNextOccurrence, scheduleReminders } from '../services/taskScheduler';
+import {
+  computeNextOccurrence,
+  getTaskQueue,
+  ROLLOVER_DELAY_MINUTES,
+  rolloverJobId,
+  scheduleReminders,
+} from '../services/taskScheduler';
 
 /**
  * ระบบตามงาน reminder worker — queue `nookeb-task-reminders`. Delivers scheduled
@@ -85,24 +92,98 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
   await stampReminder(supabase, reminderId, 'sent_at');
 }
 
-async function processRecurNext(job: Job<TaskRecurNextJob>): Promise<void> {
-  const { taskId, occurrence } = job.data;
-  const task = await getTaskWithDetails(supabase, taskId);
-  if (!task || task.status === 'cancelled' || !task.recurrence_rule) return;
-  // Stale rollover (deadline was rescheduled after this job was queued) — the
-  // reschedule enqueued its own rollover for the new deadline.
-  if (task.global_deadline !== new Date(occurrence).toISOString()) return;
-
-  const next = computeNextOccurrence(task.recurrence_rule, new Date());
-  await resetRecurringRound(supabase, taskId);
-  await updateTask(supabase, taskId, {
+/** Close the current round and open the next: reset marks, move the deadline
+ * to the next occurrence, schedule the new round's reminders + rollover. */
+async function rollTaskOver(task: TaskWithDetails): Promise<void> {
+  const next = computeNextOccurrence(task.recurrence_rule!, new Date());
+  await resetRecurringRound(supabase, task.id);
+  await updateTask(supabase, task.id, {
     global_deadline: next.toISOString(),
     status: 'pending',
   });
 
-  const rolled = await getTaskWithDetails(supabase, taskId);
+  const rolled = await getTaskWithDetails(supabase, task.id);
   if (rolled) await scheduleReminders(supabase, rolled);
-  console.log(`[task-worker] recurring task ${taskId} rolled over → ${next.toISOString()}`);
+  console.log(`[task-worker] recurring task ${task.id} rolled over → ${next.toISOString()}`);
+}
+
+/**
+ * A stale rollover found the deadline already moved. Usually a reschedule/an
+ * earlier attempt owns the new deadline and has scheduled its round — but an
+ * attempt that crashed BETWEEN the deadline move and scheduleReminders left
+ * the round with nothing scheduled (and the plain stale-return would freeze
+ * the task forever, because nothing else ever re-triggers the chain). Repair:
+ * if the current deadline has neither outstanding reminder rows nor a live
+ * rollover job, schedule them now.
+ */
+async function repairRoundIfUnscheduled(task: TaskWithDetails): Promise<void> {
+  if (!task.global_deadline) return;
+  const outstanding = await listOutstandingReminders(supabase, task.id);
+  if (outstanding.length > 0) return;
+  const rollover = await getTaskQueue().getJob(rolloverJobId(task.id, task.global_deadline));
+  if (rollover) return;
+  console.warn(`[task-worker] recurring task ${task.id} had an unscheduled round — repairing`);
+  await scheduleReminders(supabase, task);
+}
+
+async function processRecurNext(job: Job<TaskRecurNextJob>): Promise<void> {
+  const { taskId, occurrence } = job.data;
+  const task = await getTaskWithDetails(supabase, taskId);
+  if (!task || task.status === 'cancelled' || !task.recurrence_rule) return;
+  // Stale rollover (deadline moved after this job was queued): the mover owns
+  // the new round — but verify it actually got scheduled (crash repair above).
+  if (task.global_deadline !== new Date(occurrence).toISOString()) {
+    await repairRoundIfUnscheduled(task);
+    return;
+  }
+
+  await rollTaskOver(task);
+}
+
+/**
+ * Periodic self-heal (repeatable, every 30 min): the rollover chain is
+ * self-scheduling, so a task_recur_next job that died (all push/DB attempts
+ * failed, or Redis lost the delayed job) freezes its task with a past deadline
+ * and no future rounds. Re-roll any recurring task whose deadline+delay has
+ * passed and whose rollover job is gone or dead. A rollover job that still
+ * exists in a runnable state is left alone — BullMQ will deliver it (e.g. the
+ * worker was down and just caught up).
+ */
+async function processRecurSweep(): Promise<void> {
+  const cutoffIso = new Date(Date.now() - ROLLOVER_DELAY_MINUTES * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from('tasks')
+    .select('id')
+    .eq('type', 'recurring')
+    .neq('status', 'cancelled')
+    .is('deleted_at', null)
+    .lt('global_deadline', cutoffIso);
+  if (error) throw error;
+
+  for (const row of (data ?? []) as { id: string }[]) {
+    try {
+      const task = await getTaskWithDetails(supabase, row.id);
+      if (
+        !task ||
+        task.status === 'cancelled' ||
+        !task.recurrence_rule ||
+        !task.global_deadline ||
+        new Date(task.global_deadline).toISOString() >= cutoffIso
+      ) {
+        continue;
+      }
+      const job = await getTaskQueue().getJob(rolloverJobId(task.id, task.global_deadline));
+      const state = job ? await job.getState() : null;
+      if (job && state !== 'failed' && state !== 'unknown') continue; // still runnable
+      if (job) await job.remove().catch(() => {});
+      console.warn(
+        `[task-worker] sweep: recurring task ${task.id} stuck at ${task.global_deadline} (rollover job ${state ?? 'missing'}) — re-rolling`,
+      );
+      await rollTaskOver(task);
+    } catch (err) {
+      console.error(`[task-worker] sweep failed for task ${row.id}:`, err);
+    }
+  }
 }
 
 export function createTaskReminderWorker(): Worker<TaskJob> {
@@ -114,6 +195,8 @@ export function createTaskReminderWorker(): Worker<TaskJob> {
           return processTaskReminder(job as Job<TaskReminderJob>);
         case 'task_recur_next':
           return processRecurNext(job as Job<TaskRecurNextJob>);
+        case 'task_recur_sweep':
+          return processRecurSweep();
       }
     },
     { connection: createRedis(), concurrency: 5 },

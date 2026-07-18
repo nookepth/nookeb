@@ -378,11 +378,18 @@ export function buildReminderFlex(
  * @mentions only via textV2 substitution; placeholder keys are matched to the
  * substitution map, no manual index math needed or possible here).
  */
+/** LINE rejects a text message carrying more than 20 mentions — overflow
+ * assignees are simply not @-mentioned (they still appear in the Flex card). */
+const MAX_MENTIONS = 20;
+
 export function buildMentionTextV2(
   pendingAssignees: Pick<TaskAssigneeRecord, 'line_uid'>[],
   headerText: string,
 ): Record<string, unknown> {
-  const unique = [...new Map(pendingAssignees.map((a) => [a.line_uid, a])).values()];
+  const unique = [...new Map(pendingAssignees.map((a) => [a.line_uid, a])).values()].slice(
+    0,
+    MAX_MENTIONS,
+  );
   const substitution: Record<string, unknown> = {};
   const placeholders = unique.map((a, i) => {
     const key = `user${i + 1}`;

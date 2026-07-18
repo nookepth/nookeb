@@ -103,6 +103,11 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (body.items.length !== 1) {
         return reply.code(400).send({ error: 'งานประจำต้องมีรายการเดียว' });
       }
+      if (body.items[0]!.deadline) {
+        // A recurring round's deadline comes ONLY from the rule — a per-item
+        // deadline would spawn its own reminder round that fights the rollover.
+        return reply.code(400).send({ error: 'งานประจำใช้กำหนดจากรอบเตือน ระบุ deadline รายข้อไม่ได้น้า' });
+      }
     } else if (body.recurrenceRule) {
       return reply.code(400).send({ error: 'recurrenceRule ใช้ได้เฉพาะงานประจำ' });
     }
@@ -129,10 +134,13 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
     // Assignees must be registered group members — their stored profile is the
     // display name/avatar snapshot the task carries (never client-supplied).
+    // Dedupe per item first: a repeated uid would trip the task_assignees
+    // UNIQUE(task_item_id, line_uid) constraint mid-insert and 500 the create.
+    const itemAssignees = body.items.map((item) => [...new Set(item.assignees)]);
     const members = await listGroupMembers(app.supabase, body.groupId);
     const memberByUid = new Map(members.map((m) => [m.line_uid, m]));
-    for (const item of body.items) {
-      for (const uid of item.assignees) {
+    for (const uids of itemAssignees) {
+      for (const uid of uids) {
         if (!memberByUid.has(uid)) {
           return reply.code(400).send({ error: 'มีคนที่ยังไม่ได้ลงทะเบียนในกลุ่ม เลือกใหม่อีกทีน้า' });
         }
@@ -154,11 +162,11 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       globalDeadline,
       recurrenceRule: (body.recurrenceRule as RecurrenceRule | undefined) ?? null,
       createdByLineUid: lineUid,
-      items: body.items.map((item) => ({
+      items: body.items.map((item, i) => ({
         title: item.title,
         description: item.description ?? null,
         deadline: item.deadline ?? null,
-        assignees: item.assignees.map((uid) => {
+        assignees: itemAssignees[i]!.map((uid) => {
           const m = memberByUid.get(uid)!;
           return { lineUid: uid, displayName: m.display_name, pictureUrl: m.picture_url };
         }),
