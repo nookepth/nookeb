@@ -696,6 +696,9 @@ export default function DashboardPage() {
               >
                 กิจกรรมชวนเพื่อน
               </button>
+              <a className="btn secondary" href="/dashboard/teams">
+                ทีม
+              </a>
               <a className="btn secondary" href="/dashboard/trash">
                 ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
               </a>

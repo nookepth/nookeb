@@ -390,7 +390,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             </div>
             <div className={styles.inlineFields}>
               {draft.recurrence.freq === 'monthly' && (
-                <div className={styles.field} style={{ flex: '0 0 120px' }}>
+                <div className={styles.field} style={{ flex: '1 1 0', minWidth: 0 }}>
                   <label className={styles.fieldLabel}>ทุกวันที่</label>
                   <select
                     className={styles.select}
@@ -411,7 +411,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 </div>
               )}
               {draft.recurrence.freq === 'weekly' && (
-                <div className={styles.field} style={{ flex: '0 0 120px' }}>
+                <div className={styles.field} style={{ flex: '1 1 0', minWidth: 0 }}>
                   <label className={styles.fieldLabel}>ทุกวัน</label>
                   <select
                     className={styles.select}
@@ -431,7 +431,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                   </select>
                 </div>
               )}
-              <div className={styles.field} style={{ flex: 1, maxWidth: 160 }}>
+              <div className={styles.field} style={{ flex: '1 1 0', minWidth: 0 }}>
                 <label className={styles.fieldLabel}>เวลา</label>
                 <input
                   type="time"

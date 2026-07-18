@@ -433,6 +433,19 @@
   resize: vertical;
 }
 
+/* iOS Safari / the LINE in-app browser size date & time inputs to their
+ * intrinsic CONTENT width and silently ignore width:100%, so a Deadline box
+ * renders NARROWER than the full-width textarea / buttons beside it. Clearing
+ * the native appearance lets width:100% apply and makes the box span the row
+ * like every other field (the native picker still opens on tap). */
+.input[type='datetime-local'],
+.input[type='time'] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  min-width: 100%;
+}
+
 .inlineFields {
   display: flex;
   gap: 10px;
