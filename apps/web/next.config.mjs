@@ -35,9 +35,14 @@ const csp = Object.entries({
   // which this CSP otherwise blocks — scripts load but never execute, so every
   // page renders its SSR shell and silently never hydrates. Production builds
   // don't use eval and don't get the relaxation.
+  // static.line-scdn.net: the bundled @line/liff SDK lazily fetches its edge
+  // extension scripts (liff/edge/2/sdk.js, l2m-extensions) from this CDN at
+  // runtime on /liff/tasks/*. Without it those loads are CSP-blocked — the SDK
+  // then logs "[LIFF Init] failed to load legacy extensions" and runs degraded.
   'script-src': [
     "'self'",
     "'unsafe-inline'",
+    'https://static.line-scdn.net',
     ...(process.env.NODE_ENV === 'development' ? ["'unsafe-eval'"] : []),
   ],
   'style-src': ["'self'", "'unsafe-inline'"],
@@ -49,10 +54,14 @@ const csp = Object.entries({
   // photos beside it (img-src https:) loaded fine.
   'media-src': ["'self'", 'blob:', 'https:'],
   'font-src': ["'self'", 'data:'],
-  // api.line.me: the LIFF SDK (@line/liff, bundled via npm — no CDN script) on
-  // /liff/tasks/* calls LINE's REST endpoints directly from the page (init,
-  // profile). Everything else stays same-origin via /api-proxy.
-  'connect-src': ["'self'", 'https://api.line.me'],
+  // api.line.me + liff.line.me: the LIFF SDK (@line/liff, bundled via npm — no
+  // CDN script) on /liff/tasks/* calls LINE's REST endpoints directly from the
+  // page — api.line.me for init/profile/verify, liff.line.me for the app's
+  // manifest (a blocked manifest fetch makes the SDK fall back to raw keys and
+  // logs a CSP violation). access.line.me is a top-level login NAVIGATION, not a
+  // fetch, so it needs no connect-src entry. Everything else stays same-origin
+  // via /api-proxy.
+  'connect-src': ["'self'", 'https://api.line.me', 'https://liff.line.me'],
   'object-src': ["'self'", 'https:'],
   'frame-src': ["'self'", 'https:'],
   'base-uri': ["'self'"],
