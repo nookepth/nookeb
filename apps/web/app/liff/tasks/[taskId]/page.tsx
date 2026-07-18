@@ -259,7 +259,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     if (ok) setNoteDraft((d) => ({ ...d, [item.id]: '' }));
   };
   const doAccept = (item: ItemDto) =>
-    mutate(`/items/${item.id}/accept`, { method: 'POST' }, 'รับงานแล้วน้า สู้ๆ น้า');
+    mutate(`/items/${item.id}/accept`, { method: 'POST' }, 'รับทราบแล้วน้า สู้ๆ น้า');
   const saveNote = async (item: ItemDto) => {
     const note = noteDraft[item.id] ?? '';
     const ok = await mutate(
@@ -499,7 +499,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                     const s = a.doneAt
                       ? { txt: 'เสร็จแล้ว', c: '#059669' }
                       : a.acceptedAt
-                        ? { txt: 'รับงานแล้ว', c: '#1971c2' }
+                        ? { txt: 'รับทราบแล้ว', c: '#1971c2' }
                         : { txt: 'ยังไม่เสร็จ', c: '#8c8c8c' };
                     return (
                       <div key={a.id}>
@@ -552,7 +552,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                           onClick={() => void doAccept(item)}
                           disabled={busy}
                         >
-                          รับงาน
+                          รับทราบ
                         </button>
                       )}
                     </div>

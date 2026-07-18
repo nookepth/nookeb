@@ -268,7 +268,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   };
 
   const doAccept = (item: TaskItemDto) =>
-    run(() => acceptTaskItem(task.id, item.id), 'รับงานแล้วน้า สู้ๆ น้า');
+    run(() => acceptTaskItem(task.id, item.id), 'รับทราบแล้วน้า สู้ๆ น้า');
 
   const saveNote = async (item: TaskItemDto) => {
     const note = noteDraft[item.id] ?? '';
@@ -470,7 +470,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                     const stateLabel = a.doneAt
                       ? { txt: 'เสร็จแล้ว', cls: styles.stateDone }
                       : a.acceptedAt
-                        ? { txt: 'รับงานแล้ว', cls: styles.stateAccepted }
+                        ? { txt: 'รับทราบแล้ว', cls: styles.stateAccepted }
                         : { txt: 'ยังไม่เสร็จ', cls: styles.statePending };
                     return (
                       <div key={a.id}>
@@ -513,7 +513,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                           onClick={() => void doAccept(item)}
                           disabled={busy}
                         >
-                          รับงาน
+                          รับทราบ
                         </button>
                       )}
                     </div>

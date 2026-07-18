@@ -93,12 +93,19 @@ function uriButton(label: string, uri: string): Record<string, unknown> {
 }
 
 /**
- * "สร้างงาน" entry card — a 3-bubble carousel (single / multi / recurring), each
- * opening the LIFF create flow for that type. REPLIED into the chat (fresh
- * replyToken from the triggering message) — not a push. `liffId` comes from
- * process.env.LINE_LIFF_ID (config.LINE_LIFF_ID); when it's unset the buttons
- * fall back to the plain web create URL so the card still works in dev.
- * NO emoji (brand rule).
+ * "สร้างงาน" entry card — ONE self-contained bubble (was a 3-bubble carousel,
+ * which LINE renders as several swipeable cards → card overflow). REPLIED into
+ * the chat (fresh replyToken from the triggering message) — not a push.
+ *
+ * Layout: an in-card type selector (งานเดียว / แยกรายการ / งานประจำ, งานเดียว
+ * first) as tappable rows, then two distinct action buttons — "สร้างงาน"
+ * (primary, defaults to the first type) and "ดูงานทั้งหมด" (secondary → the web
+ * task list). LINE Flex is static — it can't hold a radio "selected" state and
+ * submit later, so each type row deep-links straight into that type's create
+ * flow; the row IS the select-and-create. `liffId` comes from
+ * process.env.LINE_LIFF_ID (config.LINE_LIFF_ID); when it's unset the links
+ * fall back to plain web URLs so the card still works in dev. NO emoji (brand
+ * rule) — the type rows use native colored dots, not icons.
  */
 export function buildCreateTaskCard(liffId: string | undefined, groupId: string): FlexMessage {
   const gq = `?groupId=${encodeURIComponent(groupId)}`;
@@ -110,70 +117,91 @@ export function buildCreateTaskCard(liffId: string | undefined, groupId: string)
     liffId
       ? `https://liff.line.me/${liffId}/create/${type}${gq}`
       : `${config.WEB_URL}/liff/tasks/create/${type}${gq}`;
+  const listUrl = `${config.WEB_URL}/dashboard/tasks`;
 
-  const CARDS: { type: string; title: string; desc: string }[] = [
-    {
-      type: 'single',
-      title: 'งานเดียว',
-      desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว เหมาะกับงานเร่งด่วนสั้นๆ',
-    },
-    {
-      type: 'multi',
-      title: 'แยกรายการ',
-      desc: 'หลายรายการในงานเดียว แต่ละข้อมอบหมายคนและกำหนดส่งแยกกันได้',
-    },
-    {
-      type: 'recurring',
-      title: 'งานประจำ',
-      desc: 'งานที่ต้องทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เองทุกครั้งที่ถึงกำหนด',
-    },
+  const TYPES: { type: string; title: string; desc: string }[] = [
+    { type: 'single', title: 'งานเดียว', desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว' },
+    { type: 'multi', title: 'แยกรายการ', desc: 'หลายรายการ แยกคนและกำหนดส่งได้' },
+    { type: 'recurring', title: 'งานประจำ', desc: 'ทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เอง' },
   ];
 
-  // Equal-weight bubbles: one brand-red accent bar + title in ink, description
-  // in muted gray, brand-red CTA. No per-type colors — the choice is the copy.
-  const bubble = (card: (typeof CARDS)[number]): Record<string, unknown> => ({
-    type: 'bubble',
-    size: 'micro',
-    header: {
-      type: 'box',
-      layout: 'vertical',
-      backgroundColor: BRAND_RED,
-      height: '6px',
-      paddingAll: '0px',
-      contents: [],
-    },
-    body: {
-      type: 'box',
-      layout: 'vertical',
-      backgroundColor: '#FFFFFF',
-      paddingAll: '16px',
-      spacing: 'sm',
-      contents: [
-        { type: 'text', text: card.title, weight: 'bold', size: 'lg', color: INK, wrap: true },
-        { type: 'text', text: card.desc, size: 'xs', color: MUTED, wrap: true },
-      ],
-    },
-    footer: {
-      type: 'box',
-      layout: 'vertical',
-      backgroundColor: '#FFFFFF',
-      paddingAll: '12px',
-      contents: [
-        {
-          type: 'button',
-          style: 'primary',
-          height: 'sm',
-          color: BRAND_RED,
-          action: { type: 'uri', label: 'สร้างงานนี้', uri: createUrl(card.type) },
-        },
-      ],
-    },
+  // Tappable selector row: whole box deep-links to that type's create flow.
+  // Brand-red dot + title in ink + one-line desc in muted gray; a light border
+  // reads as a selectable option without any icon art.
+  const typeRow = (t: (typeof TYPES)[number]): Record<string, unknown> => ({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    alignItems: 'center',
+    paddingAll: '12px',
+    cornerRadius: '8px',
+    borderWidth: '1px',
+    borderColor: '#EAEAEA',
+    action: { type: 'uri', label: t.title, uri: createUrl(t.type) },
+    contents: [
+      dot(BRAND_RED),
+      {
+        type: 'box',
+        layout: 'vertical',
+        flex: 1,
+        contents: [
+          { type: 'text', text: t.title, weight: 'bold', size: 'sm', color: INK, wrap: true },
+          { type: 'text', text: t.desc, size: 'xs', color: MUTED, wrap: true },
+        ],
+      },
+    ],
   });
 
   return {
     type: 'flex',
     altText: 'สร้างงานใหม่',
-    contents: { type: 'carousel', contents: CARDS.map(bubble) },
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: BRAND_RED,
+        paddingAll: '16px',
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: 'สร้างงานใหม่', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+          { type: 'text', text: 'เลือกรูปแบบงานที่จะมอบหมายในกลุ่ม', size: 'xs', color: '#FFFFFFCC' },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        paddingAll: '16px',
+        spacing: 'sm',
+        contents: TYPES.map(typeRow),
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          // Primary CTA — defaults to the first type (งานเดียว).
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: BRAND_RED,
+            action: { type: 'uri', label: 'สร้างงาน', uri: createUrl(TYPES[0]!.type) },
+          },
+          // Secondary — jump to the full task list.
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: { type: 'uri', label: 'ดูงานทั้งหมด', uri: listUrl },
+          },
+        ],
+      },
+    },
   };
 }
 
@@ -268,7 +296,7 @@ export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
         paddingAll: '12px',
         contents: [
           uriButton('ดูงาน', taskPageUrl(`/${task.id}`)),
-          postbackButton('รับงาน', `action=task_accept&taskId=${task.id}`, BRAND_RED),
+          postbackButton('รับทราบ', `action=task_accept&taskId=${task.id}`, BRAND_RED),
         ],
       },
     },

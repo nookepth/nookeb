@@ -70,7 +70,7 @@ export async function handleTaskPostback(
       for (const item of myItems) {
         await markAssigneeAccepted(app.supabase, item.id, lineUid);
       }
-      await replyText(event, `รับงาน "${task.title}" แล้วน้า สู้ๆ น้า`);
+      await replyText(event, `รับทราบ "${task.title}" แล้วน้า สู้ๆ น้า`);
       return true;
     }
 

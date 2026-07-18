@@ -491,8 +491,9 @@ async function handleTextCommand(
     return;
   }
 
-  // ระบบตามงาน "สร้างงาน" entry point — opens the LIFF create flow as a 3-bubble
-  // carousel (single/multi/recurring). Deliberately UNPREFIXED and matched BEFORE
+  // ระบบตามงาน "สร้างงาน" entry point — replies ONE self-contained card with an
+  // in-card type selector (single/multi/recurring) + สร้างงาน/ดูงานทั้งหมด
+  // buttons (was a 3-bubble carousel). Deliberately UNPREFIXED and matched BEFORE
   // the group bot-directed guard so it works when typed straight into a group.
   // The roster is populated automatically by the message-event auto-upsert (no
   // "/register" typing needed), so the card can offer assignees right away.
@@ -1100,7 +1101,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   // text so the taps behave exactly like sending that command.
   if (event.type === 'postback') {
     if (event.source.userId && event.postback?.data) {
-      // ระบบตามงาน Flex buttons (รับงาน / เสร็จแล้ว) carry URL-encoded data, not
+      // ระบบตามงาน Flex buttons (รับทราบ / เสร็จแล้ว) carry URL-encoded data, not
       // a "หนูเก็บ…" text command — route them before the text-command path.
       if (event.postback.data.startsWith('action=task_')) {
         await handleTaskPostback(app, event);
