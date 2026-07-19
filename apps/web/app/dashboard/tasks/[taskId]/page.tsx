@@ -364,6 +364,13 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
 
       {/* action buttons row — evenly spaced, consistent border-radius */}
       <div className={styles.detailActions}>
+        <a
+          className={styles.secondaryBtn}
+          style={{ flex: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
+          href={buildGoogleCalendarUrl(task.title, task.globalDeadline)}
+        >
+          <CalendarIcon /> บันทึกลงปฏิทิน
+        </a>
         {isCreator && !isClosed && (
           <button
             type="button"
@@ -375,13 +382,6 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             แก้ไขงาน
           </button>
         )}
-        <a
-          className={styles.secondaryBtn}
-          style={{ flex: 1, justifyContent: 'center' }}
-          href={buildGoogleCalendarUrl(task.title, task.globalDeadline)}
-        >
-          <CalendarIcon /> บันทึกลงปฏิทิน
-        </a>
         {isCreator && !isClosed && (
           <button
             type="button"
