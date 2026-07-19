@@ -96,6 +96,24 @@ const fileQueue = new Queue<FileJob>(FILE_QUEUE, { connection: createRedis() });
 const THUMBNAIL_WIDTH = 480;
 
 /**
+ * Sanitize a LINE-supplied filename before it becomes part of the R2 object key
+ * (`spaces/{sid}/files/{fid}/{name}`). S3 keys are literal (no `../` traversal
+ * resolution) and the prefix is fixed, so this is defense-in-depth: strip path
+ * separators and control characters, and cap the length so an oversized or
+ * odd name can't produce a malformed/unbounded key. Only the KEY is sanitized —
+ * the human-facing `original_name`/`display_name` stored on the row (and used
+ * for the download Content-Disposition) keeps the original bytes.
+ */
+function sanitizeR2Name(name: string): string {
+  const cleaned = (name ?? '')
+    .replace(/[/\\]/g, '_') // path separators
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, '') // control chars
+    .trim();
+  return (cleaned.length > 0 ? cleaned : 'file').slice(0, 200);
+}
+
+/**
  * Reply-only user notification (CLAUDE.md "LINE Messaging — Critical Rules"):
  * pushes are banned (they burn monthly quota and fail silently when it runs
  * out). When the job carries a saved reply token, try ONE reply with it —
@@ -338,7 +356,7 @@ async function storeUpload(
   let scanStatus: FileScanStatus | null = null;
   let bodyStream: Readable = content.stream;
   const fileId = randomUUID();
-  const r2Key = buildFileKey(space.id, fileId, item.originalName);
+  const r2Key = buildFileKey(space.id, fileId, sanitizeR2Name(item.originalName));
   let record: FileRecord;
   try {
     if (isVirusScanEnabled()) {
@@ -1717,7 +1735,27 @@ export function createUploadWorker(): Worker<FileJob> {
     console.log(`[upload.worker] job ${job.id} completed`);
   });
   worker.on('failed', (job, err) => {
-    console.error(`[upload.worker] job ${job?.id} failed:`, err.message);
+    // When retries are EXHAUSTED this is a lost job — a file the user was already
+    // told "รับแล้ว" may never finish (LINE CDN content has a ~1h TTL, so it's
+    // unrecoverable after the window). No external alerting infra exists yet;
+    // escalate to a CRITICAL, structured log so a log-based alert can catch it.
+    // TODO(ops): route exhausted-job failures to a real alert channel
+    // (Sentry/Slack) — needs a tracking issue; log-scraping is the stopgap.
+    const attempts = job?.opts.attempts ?? 1;
+    const exhausted = job ? job.attemptsMade >= attempts : false;
+    const jobType = (job?.data as { type?: string } | undefined)?.type ?? 'unknown';
+    if (exhausted) {
+      console.error(
+        `[upload.worker] CRITICAL job permanently failed (retries exhausted): ` +
+          `id=${job?.id} type=${jobType} attempts=${job?.attemptsMade}/${attempts}`,
+        err,
+      );
+    } else {
+      console.error(
+        `[upload.worker] job attempt failed (will retry): ` +
+          `id=${job?.id} type=${jobType} attempt=${job?.attemptsMade}/${attempts}: ${err.message}`,
+      );
+    }
   });
 
   return worker;

@@ -310,8 +310,15 @@ export async function listPendingInvites(
   teamId: string,
   requesterId: string,
 ): Promise<TeamInviteRecord[]> {
+  // Invite TOKENS are owner/admin-only, matching the mint gate in inviteMember —
+  // a plain member must never receive them (audit 2026-07-19). This is called
+  // unconditionally inside the GET /:teamId detail fetch for EVERY member, so
+  // return an empty list for non-managers rather than throwing (a throw would
+  // 403 the whole team page for members). The UI only renders invites under its
+  // own owner/admin gate, so members see no behaviour change.
   const role = await getTeamRole(supabase, teamId, requesterId);
   if (!role) throw forbidden('Not a member of this team');
+  if (role !== 'owner' && role !== 'admin') return [];
 
   const { data, error } = await supabase
     .from('team_invites')
@@ -539,15 +546,18 @@ export async function deleteTeam(
   if (error) throw error;
 }
 
-/** Any team member can bind a LINE group to the team (a group binds to ONE team). */
+/** Owner/admin binds a LINE group to the team (a group binds to ONE team).
+ * Restricted to owner/admin to match unbindLineGroup (audit 2026-07-19): binding
+ * is a structural action — it materializes a shared team space and pulls every
+ * member into it — so it should not be triggerable by a plain member. The web
+ * bind-form is gated to owner/admin to match. */
 export async function bindLineGroup(
   supabase: SupabaseClient,
   teamId: string,
   lineGroupId: string,
   userId: string,
 ): Promise<TeamLineGroupRecord> {
-  const role = await getTeamRole(supabase, teamId, userId);
-  if (!role) throw forbidden('Not a member of this team');
+  await requireRole(supabase, teamId, userId, ['owner', 'admin'], 'bind LINE groups');
 
   // line_group_id is UNIQUE — a group already bound elsewhere must be unbound first
   const { data: existing, error: findErr } = await supabase

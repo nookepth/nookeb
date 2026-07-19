@@ -468,17 +468,19 @@ export default function TeamDetailPage() {
             )}
           </div>
         ))}
-        <div className="bind-form">
-          <input
-            placeholder="วาง LINE Group ID เช่น C1234567890..."
-            value={groupIdInput}
-            onChange={(e) => setGroupIdInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleBind()}
-          />
-          <button className="btn secondary" disabled={!groupIdInput.trim() || bindBusy} onClick={handleBind}>
-            ผูกกลุ่ม
-          </button>
-        </div>
+        {canManage && (
+          <div className="bind-form">
+            <input
+              placeholder="วาง LINE Group ID เช่น C1234567890..."
+              value={groupIdInput}
+              onChange={(e) => setGroupIdInput(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleBind()}
+            />
+            <button className="btn secondary" disabled={!groupIdInput.trim() || bindBusy} onClick={handleBind}>
+              ผูกกลุ่ม
+            </button>
+          </div>
+        )}
       </section>
 
       {/* Danger zone */}

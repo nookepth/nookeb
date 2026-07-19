@@ -7,6 +7,7 @@ import { THEMES } from '@nookeb/shared';
 import { deleteLegacyBox, hasSession, listLegacyBoxes } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { BOX_SHARE_COPY, shareOrCopy } from '@/lib/share';
+import { SITE_URL } from '@/lib/site';
 import styles from './page.module.css';
 
 /**
@@ -20,11 +21,12 @@ const SHARE_FEEDBACK_MS = 2000;
 
 /**
  * The API builds `shareUrl` from WEB_URL; the fallback is only for a payload
- * that predates it. Never `window.location.origin` — a recipient must not be
- * sent to a preview domain (see lib/share.ts).
+ * that predates it. Uses the SITE_URL canon (lib/site.ts) — never
+ * `window.location.origin`, so a recipient is never sent to a preview domain
+ * (see lib/share.ts).
  */
 function shareUrlOf(box: LegacyBoxDto): string {
-  return box.shareUrl || `${process.env.NEXT_PUBLIC_WEB_URL ?? ''}/box/${box.slug}`;
+  return box.shareUrl || `${SITE_URL}/box/${box.slug}`;
 }
 
 function shareLabel(state: ShareState): string {

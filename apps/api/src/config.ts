@@ -170,6 +170,23 @@ export function loadConfig(): Config {
         throw new Error(`${key} is "${parsed.data[key]}" in production — set it to the deployed URL`);
       }
     }
+    // Redis must use TLS (rediss://) in production for any REMOTE host — a plain
+    // redis:// to Upstash/etc. would send BullMQ + rate-limit traffic in the
+    // clear. localhost is exempt (a local dev Redis has no TLS). Fail fast at
+    // startup rather than silently running unencrypted.
+    let redisHost = '';
+    try {
+      redisHost = new URL(parsed.data.REDIS_URL).hostname;
+    } catch {
+      /* unparseable → fall through to the non-TLS guard below */
+    }
+    const isLocalRedis =
+      redisHost === 'localhost' || redisHost === '127.0.0.1' || redisHost === '::1';
+    if (!parsed.data.REDIS_URL.startsWith('rediss://') && !isLocalRedis) {
+      throw new Error(
+        `REDIS_URL must use rediss:// (TLS) in production for remote Redis — got host "${redisHost || 'unparseable'}"`,
+      );
+    }
   }
   return parsed.data;
 }

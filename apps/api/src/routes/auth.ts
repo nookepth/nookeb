@@ -122,10 +122,21 @@ const authRoutes: FastifyPluginAsync = async (app) => {
     }
     const tokens = (await tokenRes.json()) as LineTokenResponse;
 
-    // 2. Fetch LINE profile
-    const profileRes = await fetch('https://api.line.me/v2/profile', {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
-    });
+    // 2. Fetch LINE profile (15s timeout — same guard as the token exchange
+    // above; a hung LINE endpoint must not pin the request → 503 for retry).
+    let profileRes: Response;
+    try {
+      profileRes = await fetch('https://api.line.me/v2/profile', {
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (err) {
+      if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
+        app.log.warn('LINE profile fetch timed out after 15000ms');
+        return reply.code(503).send({ error: 'LINE login temporarily unavailable' });
+      }
+      throw err;
+    }
     if (!profileRes.ok) {
       return reply.code(401).send({ error: 'LINE profile fetch failed' });
     }
@@ -161,11 +172,11 @@ const authRoutes: FastifyPluginAsync = async (app) => {
       userId: user.id,
       source: 'web',
     });
-    // accessToken stays in the body for backward compatibility with web
-    // bundles deployed before the cookie rollout (they still use Bearer auth).
-    // Safe to drop once every client is on the cookie flow.
+    // The session travels ONLY in the HttpOnly cookie set above — never in the
+    // response body, so client-side JS can't read the JWT (audit 2026-07-19).
+    // The current web bundle authenticates via the cookie and reads only
+    // user + defaultSpaceId from this response.
     return {
-      accessToken,
       user: toUserDto(user),
       defaultSpaceId: space.id,
     };
