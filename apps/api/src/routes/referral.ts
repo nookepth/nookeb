@@ -9,6 +9,7 @@ import {
   sendRedeemSuccessToReferee,
   sendReferralProgressToReferrer,
 } from '../services/referral.messages';
+import { logEvent } from '../services/events.service';
 
 const redeemBodySchema = z.object({
   code: z.string().regex(/^[a-zA-Z0-9]{1,8}$/),
@@ -36,10 +37,25 @@ const referralRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(429).send({ message: 'ลองใหม่ใน 1 ชั่วโมง' });
     }
 
+    // A code was submitted for redemption (the attempt — distinct from success).
+    void logEvent(app.supabase, {
+      eventType: 'referral_code_entered',
+      userId,
+      source: 'web',
+    });
+
     const result = await redeemCode(app.supabase, app.redis, parsed.data.code, userId);
     if (!result.ok) {
       return { ok: false, message: result.reason };
     }
+
+    // Redemption succeeded and the bonus was granted.
+    void logEvent(app.supabase, {
+      eventType: 'referral_code_activated',
+      userId,
+      source: 'web',
+      metadata: { bonus_bytes: result.newStorageBytes ?? 0 },
+    });
 
     // LINE pushes are best-effort — the redemption is already committed, so a
     // push failure must not turn the response into an error.

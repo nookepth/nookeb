@@ -14,6 +14,7 @@ import {
   isOccasionId,
 } from '@nookeb/shared';
 import { ApiError, createLegacyBox, hasSession, postProInterest } from '@/lib/api';
+import { ProLockModal } from '@/components/ProLockModal';
 import { startLineLogin } from '@/lib/auth';
 import { AudioIcon, CheckBadgeIcon, LockIcon, OCCASION_ICONS, VideoIcon } from './OccasionIcons';
 import { ShareActions } from './ShareActions';
@@ -741,42 +742,19 @@ export default function NewLegacyBoxPage() {
         )}
       </div>
 
-      {proModal && (
-        <div
-          className={styles.modalOverlay}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="pro-modal-title"
-          onClick={() => setProModal(null)}
-        >
-          {/* stop the backdrop's dismiss from firing on clicks inside the panel */}
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <span className={styles.modalIcon} aria-hidden>
-              <LockIcon />
-            </span>
-            <h2 className={styles.modalTitle} id="pro-modal-title">
-              ฟีเจอร์นี้อยู่ในแผน Pro
-            </h2>
-            <p className={styles.modalText}>เร็วๆ นี้ — กดแจ้งเตือนเพื่อรับข่าวสาร</p>
-            <div className={styles.modalActions}>
-              <button
-                type="button"
-                className={`${styles.navBtn} ${styles.nextBtn}`}
-                onClick={() => void notifyPro(proModal)}
-              >
-                แจ้งเตือนฉัน
-              </button>
-              <button
-                type="button"
-                className={`${styles.navBtn} ${styles.backBtn}`}
-                onClick={() => setProModal(null)}
-              >
-                ปิด
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ProLockModal
+        open={proModal !== null}
+        accent="var(--bx-accent)"
+        title="ฟีเจอร์นี้อยู่ในแผน Pro"
+        subtitle="เร็วๆ นี้ — กดแจ้งเตือนเพื่อรับข่าวสาร"
+        ctaLabel="แจ้งเตือนฉัน"
+        notified={false}
+        notifiedLabel=""
+        onNotify={() => {
+          if (proModal) void notifyPro(proModal);
+        }}
+        onDismiss={() => setProModal(null)}
+      />
 
       {toast && <div className={styles.toast}>{toast}</div>}
     </main>

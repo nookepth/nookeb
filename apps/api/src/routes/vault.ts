@@ -257,6 +257,7 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
 
     const { userId, sessionVersion } = request.authUser!;
     await openVaultSession(app.redis, userId, sessionVersion);
+    void logEvent(app.supabase, { eventType: 'vault_open', userId, source: 'web' });
     return { success: true, expiresIn: VAULT_SESSION_TTL_SECONDS };
   });
 

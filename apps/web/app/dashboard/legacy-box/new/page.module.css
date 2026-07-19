@@ -587,83 +587,9 @@
   display: block;
 }
 
-/* ---------- Pro modal ---------- */
-
-.modalOverlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 20px;
-  background: rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(2px);
-  animation: modalFade 180ms ease;
-}
-.modal {
-  width: 100%;
-  max-width: 340px;
-  border-radius: 22px;
-  background: #fff;
-  padding: 26px 22px 20px;
-  text-align: center;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
-  animation: modalPop 200ms ease;
-}
-.modalIcon {
-  display: block;
-  width: 34px;
-  height: 34px;
-  margin: 0 auto 10px;
-  color: var(--bx-accent);
-}
-.modalIcon svg {
-  width: 100%;
-  height: 100%;
-  display: block;
-}
-.modalTitle {
-  font-size: 17px;
-  font-weight: 700;
-  margin: 0 0 6px;
-}
-.modalText {
-  font-size: 13.5px;
-  opacity: 0.7;
-  margin: 0 0 18px;
-  line-height: 1.6;
-}
-.modalActions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-@keyframes modalFade {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-@keyframes modalPop {
-  from {
-    opacity: 0;
-    transform: scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .modalOverlay,
-  .modal {
-    animation: none;
-  }
-}
+/* The Pro lock modal moved to the shared <ProLockModal> component
+   (components/ProLockModal.tsx); its styles live there now. The .proRow / .proBadge
+   entry rows above stay here — the gift-box flow still renders them inline. */
 
 /* ---------- step 4: theme picker ---------- */
 

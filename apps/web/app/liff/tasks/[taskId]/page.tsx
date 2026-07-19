@@ -20,6 +20,8 @@ import {
   MemberRow,
   StateNotice,
 } from '../components';
+import { ProFeatureSection } from '../ProFeatureSection';
+import { trackEvent } from '../../../../lib/track';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface AssigneeDto {
@@ -142,6 +144,8 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     setTask(body.task);
     setViewerUid(body.viewerLineUid);
     setState('ready');
+    trackEvent('task_view', { task_type: body.task.type });
+    if (body.task.type === 'recurring') trackEvent('task_repeat_view');
   }, [params.taskId]);
 
   useEffect(() => {
@@ -661,6 +665,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
             className={styles.secondaryBtn}
             style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
             onClick={async () => {
+              trackEvent('task_ics_download', { task_type: task.type });
               await saveTaskToCalendar(task.id, task.title, calendarDeadline);
             }}
           >
@@ -668,6 +673,9 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
           </button>
         </section>
       )}
+
+      {/* Pro fake-door demand test on the task detail screen. */}
+      <ProFeatureSection />
 
       {/* edit sheet */}
       {editOpen && (

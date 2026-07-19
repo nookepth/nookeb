@@ -1,0 +1,124 @@
+/* Shared Pro fake-door lock modal (components/ProLockModal.tsx). Accent is
+ * driven by --pro-accent, set inline from the `accent` prop; the fallback keeps
+ * it usable if a caller forgets to pass one. */
+
+.overlay {
+  --pro-accent: #b53a32; /* brand red fallback */
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  animation: proModalFade 180ms ease;
+}
+
+.modal {
+  width: 100%;
+  max-width: 340px;
+  border-radius: 22px;
+  background: #fff;
+  padding: 26px 22px 20px;
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  animation: proModalPop 200ms ease;
+}
+
+.icon {
+  display: block;
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 10px;
+  color: var(--pro-accent);
+}
+
+.title {
+  font-size: 17px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: #111;
+}
+
+.text {
+  font-size: 13.5px;
+  color: #555;
+  margin: 0 0 18px;
+  line-height: 1.6;
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.primary,
+.secondary {
+  width: 100%;
+  border-radius: 14px;
+  padding: 13px 16px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    opacity 160ms ease;
+}
+
+.primary {
+  border: none;
+  background: var(--pro-accent);
+  color: #fff;
+}
+.primary:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.secondary {
+  border: 1.5px solid rgba(0, 0, 0, 0.12);
+  background: #fff;
+  color: #555;
+}
+
+.notified {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 13px 16px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--pro-accent);
+  font-size: 15px;
+  font-weight: 700;
+}
+
+@keyframes proModalFade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes proModalPop {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .overlay,
+  .modal {
+    animation: none;
+  }
+}

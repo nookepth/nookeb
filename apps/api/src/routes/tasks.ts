@@ -4,6 +4,7 @@ import ical, { ICalAlarmType, ICalEventRepeatingFreq } from 'ical-generator';
 import type { RecurrenceRule, TaskDto } from '@nookeb/shared';
 import { pushMessage } from '../services/line.service';
 import { buildTaskCreatedFlex } from '../services/lineMessage';
+import { logEvent } from '../services/events.service';
 import {
   addTaskLink,
   cancelTask,
@@ -229,6 +230,19 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       app.log.error({ err, taskId: task.id }, 'task announcement push failed');
     }
 
+    // Analytics: task successfully created (funnel bottom for task_create_start).
+    void logEvent(app.supabase, {
+      eventType: 'task_create_submit',
+      userId: request.authUser!.userId,
+      spaceId: (spaceRow?.id as string | undefined) ?? null,
+      source: 'web',
+      metadata: {
+        task_type: body.type,
+        assignee_count: new Set(itemAssignees.flat()).size,
+        has_deadline: globalDeadline != null || body.items.some((i) => i.deadline != null),
+      },
+    });
+
     const dto: TaskDto = toTaskDto(task);
     return reply.code(201).send({ task: dto, announced });
   });
@@ -412,6 +426,23 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (taskDone) {
         await cancelReminders(app.supabase, task);
       }
+
+      // Analytics: assignee completed their part. time_to_complete = seconds from
+      // task creation to this done mark (structured number, no PII).
+      const createdMs = new Date(task.created_at).getTime();
+      void logEvent(app.supabase, {
+        eventType: 'task_mark_done',
+        userId: request.authUser!.userId,
+        spaceId: task.space_id,
+        source: 'web',
+        metadata: {
+          task_type: task.type,
+          ...(Number.isFinite(createdMs)
+            ? { time_to_complete: Math.max(0, Math.round((Date.now() - createdMs) / 1000)) }
+            : {}),
+        },
+      });
+
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       return { task: toTaskDto(updated), taskDone };
     },

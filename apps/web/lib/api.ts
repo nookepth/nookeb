@@ -472,6 +472,178 @@ export function getAdminPowerUsers(days = 30): Promise<{ days: number; users: Ad
   return apiFetch(`/admin/power-users?days=${days}`);
 }
 
+/* ---- Admin Pro-Interest dashboard (Task 3 / migration 042) ---- */
+
+export interface AdminProInterestTask {
+  featureId: string;
+  viewEvents: number;
+  viewUsers: number;
+  clickEvents: number;
+  clickUsers: number;
+  dismissEvents: number;
+  registeredUsers: number; // all-time deduped (pro_interest table)
+  conversionRate: number | null; // clickUsers / viewUsers, %
+}
+
+export interface AdminProInterestGiftbox {
+  feature: string; // 'audio' | 'video'
+  taps: number;
+}
+
+export interface AdminProInterestDaily {
+  day: string;
+  taskClicks: number;
+  giftboxTaps: number;
+}
+
+export interface AdminProInterest {
+  days: number;
+  tasks: AdminProInterestTask[];
+  giftbox: AdminProInterestGiftbox[];
+  daily: AdminProInterestDaily[];
+}
+
+export function getAdminProInterest(days = 30): Promise<AdminProInterest> {
+  return apiFetch(`/admin/pro-interest?days=${days}`);
+}
+
+/* ---- Admin Tasks dashboard (Task 3 / migration 042) ---- */
+
+export interface AdminTasksDaily {
+  day: string;
+  single: number;
+  multi: number;
+  recurring: number;
+}
+
+export interface AdminTasks {
+  days: number;
+  totals: {
+    totalCreated: number;
+    byType: { single: number; multi: number; recurring: number };
+    byStatus: { pending: number; inProgress: number; done: number; cancelled: number };
+    completionRate: number | null; // done / completable (excludes recurring), %
+    icsDownloads: number;
+    markDoneCount: number; // per-assignee-item completions (not task-level done)
+    avgCompleteSec: number | null;
+  };
+  daily: AdminTasksDaily[];
+}
+
+export function getAdminTasks(days = 30): Promise<AdminTasks> {
+  return apiFetch(`/admin/tasks?days=${days}`);
+}
+
+/* ---- Admin Funnel Overview + retention cohorts (Task 3 / migration 042) ---- */
+
+export type FunnelStage =
+  | 'awareness'
+  | 'consideration'
+  | 'conversion'
+  | 'activation'
+  | 'referral'
+  | 'retention';
+
+export interface AdminFunnelStage {
+  stage: FunnelStage;
+  count: number;
+}
+
+export interface AdminRetentionCohort {
+  week: string;
+  size: number;
+  d1: number;
+  d7: number;
+  d30: number;
+}
+
+export interface AdminFunnelOverview {
+  days: number;
+  funnel: AdminFunnelStage[];
+  cohorts: AdminRetentionCohort[];
+}
+
+export function getAdminFunnel(days = 30): Promise<AdminFunnelOverview> {
+  return apiFetch(`/admin/funnel?days=${days}`);
+}
+
+/* ---- Admin Feature Adoption (module level) (Task 3 / migration 042) ---- */
+
+export type FeatureModule = 'storage' | 'vault' | 'diary' | 'gift_box' | 'tasks' | 'referral';
+
+export interface AdminModuleAdoption {
+  module: FeatureModule;
+  users: number;
+  pctOfActive: number | null;
+}
+
+export interface AdminFeatureErrorRate {
+  feature: string; // 'convert' | 'vault_unlock'
+  ok: number;
+  fail: number;
+  errorRate: number | null; // fail / (ok + fail), %
+}
+
+export interface AdminAdoption {
+  days: number;
+  activeUsers: number;
+  avgDepth: number;
+  modules: AdminModuleAdoption[];
+  errorRates: AdminFeatureErrorRate[];
+}
+
+export function getAdminAdoption(days = 30): Promise<AdminAdoption> {
+  return apiFetch(`/admin/adoption?days=${days}`);
+}
+
+/* ---- Admin Storage / Quota dashboard (Task 3 / migration 042) ---- */
+
+export interface AdminStorageBucket {
+  bucket: string; // '0-20' .. '100+'
+  users: number;
+}
+
+export interface AdminStorageWarningDay {
+  day: string;
+  warn80: number;
+  warn95: number;
+  blocked: number;
+}
+
+export interface AdminStorage {
+  days: number;
+  histogram: AdminStorageBucket[];
+  warningsDaily: AdminStorageWarningDay[];
+}
+
+export function getAdminStorage(days = 30): Promise<AdminStorage> {
+  return apiFetch(`/admin/storage?days=${days}`);
+}
+
+/* ---- Admin Referral / Marketing dashboard (Task 3 / migration 042) ---- */
+
+export interface AdminReferrer {
+  userId: string;
+  displayName: string | null;
+  referralCode: string | null;
+  referralCount: number;
+}
+
+export interface AdminReferral {
+  days: number;
+  funnel: {
+    issuedCodes: number;
+    entered: number;
+    activated: number;
+    activationRate: number | null; // activated / entered, %
+  };
+  topReferrers: AdminReferrer[];
+}
+
+export function getAdminReferral(days = 30): Promise<AdminReferral> {
+  return apiFetch(`/admin/referral?days=${days}`);
+}
+
 export function getMe(): Promise<UserDto & { defaultSpaceId: string | null; isAdmin: boolean }> {
   return apiFetch(`/auth/me`);
 }

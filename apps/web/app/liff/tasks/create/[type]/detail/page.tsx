@@ -12,6 +12,8 @@ import {
   type TaskDraft,
 } from '../../../../../../lib/taskDraft';
 import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../components';
+import { ProFeatureSection } from '../../../ProFeatureSection';
+import { trackEvent } from '../../../../../../lib/track';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface CreatedTask {
@@ -272,7 +274,10 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 justifyContent: 'center',
                 gap: 8,
               }}
-              onClick={() => void saveTaskToCalendar(created.id, draft.title.trim(), calendarDeadline)}
+              onClick={() => {
+                trackEvent('task_ics_download', { task_type: draft.type });
+                void saveTaskToCalendar(created.id, draft.title.trim(), calendarDeadline);
+              }}
             >
               <IconCalendar /> บันทึกลงปฏิทิน
             </button>
@@ -474,6 +479,9 @@ export default function DetailPage({ params }: { params: { type: string } }) {
           </div>
         </section>
       )}
+
+      {/* Pro fake-door demand test — below the assignees, above submit. */}
+      <ProFeatureSection />
 
       {error && <div className={styles.errorBox}>{error}</div>}
 

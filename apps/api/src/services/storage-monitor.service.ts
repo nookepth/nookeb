@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { SpaceRecord, UserRecord } from '@nookeb/shared';
 import { config } from '../config';
 import { addPendingNotify } from './pending-notify.service';
+import { logEvent } from './events.service';
 
 /**
  * Storage warning notifications to the space owner at 80% / 95% usage.
@@ -142,6 +143,17 @@ async function runCheck(
 
   // Already notified at this level (or higher) since the last reset → stay quiet
   if ((alert?.last_notified_threshold ?? 0) >= crossed) return;
+
+  // Analytics: a soft storage threshold was newly crossed (deduped by the gate
+  // above, so this fires once per threshold per reset cycle). The 100%-full /
+  // upload-blocked case is a separate `feature_blocked_quota` event.
+  void logEvent(supabase, {
+    eventType: 'storage_quota_warning_shown',
+    userId,
+    spaceId,
+    source: 'worker',
+    metadata: { threshold: crossed, pct: Math.round(pct) },
+  });
 
   const { data: spaceData, error: spaceErr } = await supabase
     .from('spaces')

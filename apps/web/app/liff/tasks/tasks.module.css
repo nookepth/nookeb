@@ -821,3 +821,87 @@
   0% { transform: scale(0.3); opacity: 0; }
   100% { transform: scale(1); opacity: 1; }
 }
+
+/* ---------- ฟีเจอร์พิเศษ (Pro) fake-door section (ProFeatureSection.tsx) ----------
+ * Brand red/cream, NOT gift-box yellow. Rows are locked-but-tappable: the tap
+ * records demand, so they stay focusable buttons; the Pro badge + dimmed label
+ * carry the "locked" meaning. */
+.proSection {
+  padding: 16px 20px 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.proSectionLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  margin: 0;
+}
+.proRows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.proRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 14px;
+  border: 1.5px dashed var(--brand-soft);
+  border-radius: 14px;
+  background: var(--brand-tint);
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease;
+}
+.proRow:hover {
+  background: #fff;
+  border-color: var(--brand);
+}
+.proRowIcon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  color: var(--brand);
+  opacity: 0.55;
+  display: flex;
+}
+.proRowLabel {
+  font-size: 14px;
+  color: var(--text);
+  opacity: 0.7;
+}
+.proDone {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--brand);
+  margin-left: auto;
+}
+.proBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  padding: 3px 9px 3px 7px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  flex: 0 0 auto;
+}
+/* when the "จะแจ้งเตือนน้า" note takes the auto margin, the badge must not also */
+.proDone ~ .proBadge {
+  margin-left: 0;
+}
+.proLock {
+  width: 11px;
+  height: 11px;
+  display: flex;
+}

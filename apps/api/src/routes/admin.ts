@@ -258,6 +258,332 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
+  // GET /admin/pro-interest?days=30 — the fake-door demand test, split into two
+  // deliberately non-comparable panels (they must NOT share a y-scale):
+  //   * task features: real view→click funnel, deduped by user (usage_events +
+  //     the deduped pro_interest table).
+  //   * gift-box: anonymous tap counts only — no views, no dedup, no conversion.
+  app.get<{ Querystring: { days?: string } }>('/admin/pro-interest', async (request) => {
+    const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
+    const [tasksRes, giftboxRes, dailyRes] = await Promise.all([
+      app.supabase.rpc('admin_pro_interest_tasks', { p_since: sinceIso(days) }),
+      app.supabase.rpc('admin_pro_interest_giftbox', { p_since: sinceIso(days) }),
+      app.supabase.rpc('admin_pro_interest_daily', { p_days: days }),
+    ]);
+
+    const taskRows =
+      (tasksRes.data as
+        | {
+            feature_id: string;
+            view_events: number;
+            view_users: number;
+            click_events: number;
+            click_users: number;
+            dismiss_events: number;
+            registered_users: number;
+          }[]
+        | null) ?? [];
+    const giftRows = (giftboxRes.data as { feature: string; taps: number }[] | null) ?? [];
+    const dailyRows =
+      (dailyRes.data as { day: string; task_clicks: number; giftbox_taps: number }[] | null) ?? [];
+
+    const tasks = taskRows
+      .map((r) => {
+        const viewUsers = Number(r.view_users);
+        const clickUsers = Number(r.click_users);
+        return {
+          featureId: r.feature_id,
+          viewEvents: Number(r.view_events),
+          viewUsers,
+          clickEvents: Number(r.click_events),
+          clickUsers,
+          dismissEvents: Number(r.dismiss_events),
+          registeredUsers: Number(r.registered_users),
+          // deduped-by-user conversion — unique clickers / unique viewers
+          conversionRate: viewUsers > 0 ? Math.round((clickUsers / viewUsers) * 100) : null,
+        };
+      })
+      // highest interest first (ranked list — spec Task 2)
+      .sort((a, b) => b.registeredUsers - a.registeredUsers || b.clickUsers - a.clickUsers);
+
+    return {
+      days,
+      tasks,
+      giftbox: giftRows
+        .map((r) => ({ feature: r.feature, taps: Number(r.taps) }))
+        .sort((a, b) => b.taps - a.taps),
+      daily: dailyRows.map((r) => ({
+        day: r.day,
+        taskClicks: Number(r.task_clicks),
+        giftboxTaps: Number(r.giftbox_taps),
+      })),
+    };
+  });
+
+  // GET /admin/tasks?days=30 — ระบบตามงาน dashboard: creation-by-type (daily +
+  // totals), current status breakdown, ICS downloads, and completion timing.
+  app.get<{ Querystring: { days?: string } }>('/admin/tasks', async (request) => {
+    const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
+    const [summaryRes, dailyRes] = await Promise.all([
+      app.supabase.rpc('admin_tasks_summary', { p_since: sinceIso(days) }),
+      app.supabase.rpc('admin_tasks_daily', { p_days: days }),
+    ]);
+
+    const s = (summaryRes.data as
+      | {
+          total_created: number;
+          type_single: number;
+          type_multi: number;
+          type_recurring: number;
+          status_pending: number;
+          status_progress: number;
+          status_done: number;
+          status_cancelled: number;
+          ics_downloads: number;
+          mark_done_count: number;
+          avg_complete_sec: number | null;
+        }[]
+      | null)?.[0] ?? {
+      total_created: 0,
+      type_single: 0,
+      type_multi: 0,
+      type_recurring: 0,
+      status_pending: 0,
+      status_progress: 0,
+      status_done: 0,
+      status_cancelled: 0,
+      ics_downloads: 0,
+      mark_done_count: 0,
+      avg_complete_sec: null,
+    };
+    const dailyRows =
+      (dailyRes.data as { day: string; single: number; multi: number; recurring: number }[] | null) ??
+      [];
+
+    const totalCreated = Number(s.total_created);
+    const typeRecurring = Number(s.type_recurring);
+    const statusDone = Number(s.status_done);
+    // Completion % over COMPLETABLE tasks only: recurring never reaches 'done'
+    // (self-reschedules forever), so excluding it keeps the rate honest.
+    const completable = totalCreated - typeRecurring;
+
+    return {
+      days,
+      totals: {
+        totalCreated,
+        byType: {
+          single: Number(s.type_single),
+          multi: Number(s.type_multi),
+          recurring: typeRecurring,
+        },
+        byStatus: {
+          pending: Number(s.status_pending),
+          inProgress: Number(s.status_progress),
+          done: statusDone,
+          cancelled: Number(s.status_cancelled),
+        },
+        completionRate: completable > 0 ? Math.round((statusDone / completable) * 100) : null,
+        icsDownloads: Number(s.ics_downloads),
+        markDoneCount: Number(s.mark_done_count),
+        avgCompleteSec: s.avg_complete_sec === null ? null : Math.round(Number(s.avg_complete_sec)),
+      },
+      daily: dailyRows.map((r) => ({
+        day: r.day,
+        single: Number(r.single),
+        multi: Number(r.multi),
+        recurring: Number(r.recurring),
+      })),
+    };
+  });
+
+  // GET /admin/funnel?days=30 — the 6-stage product funnel + weekly D1/D7/D30
+  // retention cohorts. DAU/WAU/MAU already live in /admin/overview.
+  app.get<{ Querystring: { days?: string } }>('/admin/funnel', async (request) => {
+    const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
+    const weeks = Math.min(Math.max(Math.ceil(days / 7), 4), 12);
+    const [funnelRes, cohortsRes] = await Promise.all([
+      app.supabase.rpc('admin_funnel_overview', { p_days: days }),
+      app.supabase.rpc('admin_retention_cohorts', { p_weeks: weeks }),
+    ]);
+
+    const f = (funnelRes.data as
+      | {
+          awareness: number;
+          consideration: number;
+          conversion: number;
+          activation: number;
+          referral: number;
+          retention: number;
+        }[]
+      | null)?.[0] ?? {
+      awareness: 0,
+      consideration: 0,
+      conversion: 0,
+      activation: 0,
+      referral: 0,
+      retention: 0,
+    };
+    const cohortRows =
+      (cohortsRes.data as
+        | { cohort_week: string; cohort_size: number; d1_n: number; d7_n: number; d30_n: number }[]
+        | null) ?? [];
+
+    return {
+      days,
+      funnel: [
+        { stage: 'awareness', count: Number(f.awareness) },
+        { stage: 'consideration', count: Number(f.consideration) },
+        { stage: 'conversion', count: Number(f.conversion) },
+        { stage: 'activation', count: Number(f.activation) },
+        { stage: 'referral', count: Number(f.referral) },
+        { stage: 'retention', count: Number(f.retention) },
+      ],
+      cohorts: cohortRows.map((r) => ({
+        week: r.cohort_week,
+        size: Number(r.cohort_size),
+        d1: Number(r.d1_n),
+        d7: Number(r.d7_n),
+        d30: Number(r.d30_n),
+      })),
+    };
+  });
+
+  // GET /admin/adoption?days=30 — module-level adoption (% of active users
+  // touching each module), the avg Feature Depth Score, and per-feature error
+  // rates (only where a failure event exists).
+  app.get<{ Querystring: { days?: string } }>('/admin/adoption', async (request) => {
+    const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
+    const [adoptionRes, errorsRes] = await Promise.all([
+      app.supabase.rpc('admin_feature_adoption', { p_days: days }),
+      app.supabase.rpc('admin_feature_error_rates', { p_days: days }),
+    ]);
+
+    const a = (adoptionRes.data as
+      | {
+          active_users: number;
+          avg_depth: number;
+          storage: number;
+          vault: number;
+          diary: number;
+          gift_box: number;
+          tasks: number;
+          referral: number;
+        }[]
+      | null)?.[0] ?? {
+      active_users: 0,
+      avg_depth: 0,
+      storage: 0,
+      vault: 0,
+      diary: 0,
+      gift_box: 0,
+      tasks: 0,
+      referral: 0,
+    };
+    const errorRows =
+      (errorsRes.data as { feature: string; ok_count: number; fail_count: number }[] | null) ?? [];
+
+    const activeUsers = Number(a.active_users);
+    const pct = (n: number): number | null =>
+      activeUsers > 0 ? Math.round((n / activeUsers) * 100) : null;
+
+    const modules = (
+      [
+        ['storage', a.storage],
+        ['vault', a.vault],
+        ['diary', a.diary],
+        ['gift_box', a.gift_box],
+        ['tasks', a.tasks],
+        ['referral', a.referral],
+      ] as const
+    )
+      .map(([module, users]) => ({ module, users: Number(users), pctOfActive: pct(Number(users)) }))
+      .sort((x, y) => y.users - x.users);
+
+    return {
+      days,
+      activeUsers,
+      avgDepth: Math.round(Number(a.avg_depth) * 100) / 100,
+      modules,
+      errorRates: errorRows.map((r) => {
+        const ok = Number(r.ok_count);
+        const fail = Number(r.fail_count);
+        const total = ok + fail;
+        return {
+          feature: r.feature,
+          ok,
+          fail,
+          errorRate: total > 0 ? Math.round((fail / total) * 100) : null,
+        };
+      }),
+    };
+  });
+
+  // GET /admin/storage?days=30 — per-user fill histogram + daily quota-warning
+  // counts (80 / 95 soft thresholds and the true 100%-blocked event).
+  const STORAGE_BUCKETS = ['0-20', '20-40', '40-60', '60-80', '80-100', '100+'];
+  app.get<{ Querystring: { days?: string } }>('/admin/storage', async (request) => {
+    const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
+    const [histRes, warnRes] = await Promise.all([
+      app.supabase.rpc('admin_storage_histogram'),
+      app.supabase.rpc('admin_storage_warnings_daily', { p_days: days }),
+    ]);
+
+    const histRows = (histRes.data as { bucket: string; users: number }[] | null) ?? [];
+    const byBucket = new Map(histRows.map((r) => [r.bucket, Number(r.users)]));
+    const warnRows =
+      (warnRes.data as { day: string; warn80: number; warn95: number; blocked: number }[] | null) ??
+      [];
+
+    return {
+      days,
+      histogram: STORAGE_BUCKETS.map((bucket) => ({ bucket, users: byBucket.get(bucket) ?? 0 })),
+      warningsDaily: warnRows.map((r) => ({
+        day: r.day,
+        warn80: Number(r.warn80),
+        warn95: Number(r.warn95),
+        blocked: Number(r.blocked),
+      })),
+    };
+  });
+
+  // GET /admin/referral?days=30 — referral funnel (issued → entered → activated)
+  // + the creator leaderboard. NO campaign attribution exists in the schema; the
+  // web renders that as a "Coming soon" placeholder.
+  app.get<{ Querystring: { days?: string } }>('/admin/referral', async (request) => {
+    const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
+    const [funnelRes, topRes] = await Promise.all([
+      app.supabase.rpc('admin_referral_funnel', { p_since: sinceIso(days) }),
+      app.supabase.rpc('admin_top_referrers', { p_limit: 20 }),
+    ]);
+
+    const f = (funnelRes.data as
+      | { issued_codes: number; entered: number; activated: number }[]
+      | null)?.[0] ?? { issued_codes: 0, entered: 0, activated: 0 };
+    const topRows =
+      (topRes.data as
+        | { user_id: string; display_name: string | null; referral_code: string | null; referral_count: number }[]
+        | null) ?? [];
+
+    const entered = Number(f.entered);
+    const activated = Number(f.activated);
+
+    return {
+      days,
+      funnel: {
+        issuedCodes: Number(f.issued_codes),
+        entered,
+        activated,
+        activationRate: entered > 0 ? Math.round((activated / entered) * 100) : null,
+      },
+      topReferrers: topRows.map((r) => ({
+        userId: r.user_id,
+        displayName: r.display_name,
+        referralCode: r.referral_code,
+        referralCount: Number(r.referral_count),
+      })),
+    };
+  });
+
   // PATCH /admin/users/:id — adjust a user's storage quota.
   // This is the only place that may set storage_limit to an arbitrary value.
   // redeem_referral uses GREATEST() to avoid overwriting this.

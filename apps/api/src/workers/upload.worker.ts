@@ -78,6 +78,7 @@ import {
   buildDiaryImageKey,
   buildDiaryThumbnailKey,
   countEntries,
+  getAdjacentEntryDates,
   getEntryByDate,
   getEntryByLineMessageId,
   insertEntry,
@@ -1510,6 +1511,29 @@ async function processCreateDiaryEntry(job: CreateDiaryEntryJob, isLastAttempt: 
       source: 'worker',
       metadata: { dayNumber, hasCaption: (job.caption ?? '').length > 0 },
     });
+    // Analytics: detect a broken streak — this entry lands after a gap (the most
+    // recent prior entry is older than yesterday), so the run before it ended.
+    // Best-effort + wrapped so it can never throw and trigger a duplicating retry.
+    void (async () => {
+      try {
+        const { prev } = await getAdjacentEntryDates(supabase, user.id, record.entry_date);
+        if (!prev) return; // first-ever entry — no streak to break
+        const dayMs = 86400000;
+        const gapDays = Math.round(
+          (new Date(record.entry_date).getTime() - new Date(prev).getTime()) / dayMs,
+        );
+        if (gapDays > 1) {
+          void logEvent(supabase, {
+            eventType: 'diary_streak_break',
+            userId: user.id,
+            source: 'worker',
+            metadata: { gap_days: gapDays },
+          });
+        }
+      } catch {
+        /* best-effort analytics — never affects the job */
+      }
+    })();
   } catch (err) {
     // Store/insert failed — release the reservation and remove any stored
     // object so a BullMQ retry starts from a clean slate.

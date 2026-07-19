@@ -1,8 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import styles from '../tasks.module.css';
+import { trackEvent } from '../../../../lib/track';
 import {
   initLiff,
   reconnectLiff,
@@ -68,6 +69,16 @@ export default function CreateTaskPage() {
       .then(applyState)
       .catch(() => setState('error'));
   }, [applyState]);
+
+  // Funnel top: fire once when the create flow is usable (valid session+group),
+  // so an abandoned create (start without submit) is measurable.
+  const startedRef = useRef(false);
+  useEffect(() => {
+    if (state === 'ready' && !startedRef.current) {
+      startedRef.current = true;
+      trackEvent('task_create_start');
+    }
+  }, [state]);
 
   const retry = () => {
     setState('loading');
