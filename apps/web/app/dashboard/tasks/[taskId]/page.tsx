@@ -99,7 +99,6 @@ function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): stri
   const fmt = (d: Date) => {
     const date = new Date(d);
     date.setSeconds(0, 0);
-    date.setMinutes(date.getMinutes() - 1);
     const pad = (n: number) => String(n).padStart(2, '0');
     return (
       date.getFullYear().toString() +
