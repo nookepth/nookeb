@@ -68,7 +68,19 @@ interface GroupMemberDto {
 
 function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): string {
   if (!deadlineIso) return 'https://calendar.google.com';
-  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+  const fmt = (d: Date) => {
+    const date = new Date(d);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (
+      date.getFullYear().toString() +
+      pad(date.getMonth() + 1) +
+      pad(date.getDate()) +
+      'T' +
+      pad(date.getHours()) +
+      pad(date.getMinutes()) +
+      '00'
+    );
+  };
   const start = new Date(deadlineIso);
   const startStr = fmt(start);
   const endStr = fmt(new Date(start.getTime() + 60 * 60 * 1000)); // +1hr
@@ -448,7 +460,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 }}
                 onClick={() => {
                   trackEvent('task_ics_download', { task_type: task.type });
-                  window.open(buildGoogleCalendarUrl(task.title, calendarDeadline), '_blank');
+                  window.location.href = buildGoogleCalendarUrl(task.title, calendarDeadline);
                 }}
               >
                 <IconCalendar /> ปฏิทิน

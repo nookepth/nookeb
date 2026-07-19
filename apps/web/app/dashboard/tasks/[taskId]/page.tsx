@@ -35,6 +35,14 @@ const STATUS_BADGE: Record<TaskStatus, { label: string; bg: string; fg: string }
   cancelled: { label: 'ยกเลิก', bg: '#fee2e2', fg: '#b91c1c' },
 };
 
+/** Per-sub-task status pill: กำลังทำ=yellow, เสร็จแล้ว=green, ยกเลิก/ยังไม่เริ่ม=gray. */
+const ITEM_STATUS_PILL: Record<TaskStatus, { label: string; bg: string; fg: string }> = {
+  pending: { label: 'ยังไม่เริ่ม', bg: '#f3f4f6', fg: '#6b7280' },
+  in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
+  done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
+  cancelled: { label: 'ยกเลิก', bg: '#f3f4f6', fg: '#6b7280' },
+};
+
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
 function formatDeadline(iso: string): string {
@@ -88,7 +96,19 @@ function CheckIcon({ size = 13 }: { size?: number }) {
 }
 function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): string {
   if (!deadlineIso) return 'https://calendar.google.com';
-  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+  const fmt = (d: Date) => {
+    const date = new Date(d);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    return (
+      date.getFullYear().toString() +
+      pad(date.getMonth() + 1) +
+      pad(date.getDate()) +
+      'T' +
+      pad(date.getHours()) +
+      pad(date.getMinutes()) +
+      '00'
+    );
+  };
   const start = new Date(deadlineIso);
   const startStr = fmt(start);
   const endStr = fmt(new Date(start.getTime() + 60 * 60 * 1000)); // +1hr
@@ -322,52 +342,71 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         ← กลับรายการงาน
       </a>
 
-      <div className={styles.detailTitleRow}>
-        <h1 className={styles.detailTitle}>{task.title}</h1>
-        <span className={styles.statusBadge} style={{ background: badge.bg, color: badge.fg }}>
-          {badge.label}
-        </span>
-      </div>
-      <div className={styles.detailMetaRow}>
-        <span className={styles.typeTag}>{TYPE_LABEL[task.type]}</span>
-        {task.globalDeadline && (
-          <span className={styles.deadline}>
-            <ClockIcon size={14} />
-            กำหนดส่ง {formatDeadline(task.globalDeadline)}
+      {/* header card: title + status + deadline */}
+      <div className={styles.card}>
+        <div className={styles.detailTitleRow}>
+          <h1 className={styles.detailTitle}>{task.title}</h1>
+          <span className={styles.statusBadge} style={{ background: badge.bg, color: badge.fg }}>
+            {badge.label}
           </span>
-        )}
+        </div>
+        <div className={styles.detailMetaRow}>
+          <span className={styles.typeTag}>{TYPE_LABEL[task.type]}</span>
+          {task.globalDeadline && (
+            <span className={styles.deadline} style={{ marginTop: 0 }}>
+              <ClockIcon size={14} />
+              กำหนดส่ง {formatDeadline(task.globalDeadline)}
+            </span>
+          )}
+        </div>
       </div>
 
-      {/* creator + calendar actions */}
+      {/* action buttons row — evenly spaced, consistent border-radius */}
       <div className={styles.detailActions}>
         {isCreator && !isClosed && (
-          <button type="button" className={styles.secondaryBtn} onClick={openEdit} disabled={busy}>
+          <button
+            type="button"
+            className={styles.secondaryBtn}
+            style={{ flex: 1, justifyContent: 'center' }}
+            onClick={openEdit}
+            disabled={busy}
+          >
             แก้ไขงาน
           </button>
         )}
         <a
           className={styles.secondaryBtn}
+          style={{ flex: 1, justifyContent: 'center' }}
           href={buildGoogleCalendarUrl(task.title, task.globalDeadline)}
-          target="_blank"
-          rel="noopener noreferrer"
         >
           <CalendarIcon /> บันทึกลงปฏิทิน
         </a>
         {isCreator && !isClosed && (
-          <button type="button" className={styles.dangerBtn} onClick={doCancel} disabled={busy}>
+          <button
+            type="button"
+            className={styles.dangerBtn}
+            style={{ flex: 1, justifyContent: 'center' }}
+            onClick={doCancel}
+            disabled={busy}
+          >
             ยกเลิกงาน
           </button>
         )}
       </div>
 
-      {/* progress */}
-      <div className={styles.progressRow} style={{ marginTop: 18 }}>
+      {/* progress bar */}
+      <div className={styles.card} style={{ marginTop: 14 }}>
+        <div className={styles.detailTitleRow} style={{ marginBottom: 8 }}>
+          <span className={styles.fieldLabel} style={{ margin: 0 }}>
+            ความคืบหน้า
+          </span>
+          <span className={styles.fieldLabel} style={{ margin: 0 }}>
+            {doneItems}/{task.items.length}
+          </span>
+        </div>
         <div className={styles.progressTrack}>
           <div className={styles.progressFill} style={{ width: `${pct}%` }} />
         </div>
-        <span className={styles.progressText}>
-          {doneItems}/{task.items.length} เสร็จ
-        </span>
       </div>
 
       {/* links */}
@@ -451,12 +490,29 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             const mine = item.assignees.find((a) => a.lineUid === viewerUid);
             const itemDone = item.status === 'done';
             const canAct = mine && !isClosed;
+            const ipill = ITEM_STATUS_PILL[item.status];
             return (
               <article key={item.id} className={styles.card}>
                 <div className={styles.cardTop}>
-                  <h3 className={styles.cardTitle} style={{ fontSize: 15 }}>
-                    {task.type === 'multi' ? `${idx + 1}. ${item.title}` : item.title}
-                  </h3>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 8,
+                      flexWrap: 'wrap',
+                      minWidth: 0,
+                    }}
+                  >
+                    <h3 className={styles.cardTitle} style={{ fontSize: 15 }}>
+                      {task.type === 'multi' ? `${idx + 1}. ${item.title}` : item.title}
+                    </h3>
+                    <span
+                      className={styles.statusBadge}
+                      style={{ background: ipill.bg, color: ipill.fg }}
+                    >
+                      {ipill.label}
+                    </span>
+                  </div>
                   {isCreator && !isClosed && (
                     <button
                       type="button"
