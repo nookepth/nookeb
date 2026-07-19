@@ -616,7 +616,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                 {isCreator && !isClosed && (
                   <div className={styles.tdCreatorControls}>
                     <button type="button" className={styles.ghostBtn} onClick={() => void openAssigneeEditor(item)}>
-                      แก้คน
+                      แก้ผู้รับผิดชอบ
                     </button>
                   </div>
                 )}

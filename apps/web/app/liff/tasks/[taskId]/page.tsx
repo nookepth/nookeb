@@ -625,7 +625,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                       style={{ padding: 6, minHeight: 0, fontSize: 13 }}
                       onClick={() => void openAssigneeEditor(item)}
                     >
-                      แก้คน
+                      แก้ผู้รับผิดชอบ
                     </button>
                     {task.type === 'multi' && item.status !== 'done' && item.status !== 'cancelled' && (
                       <button
