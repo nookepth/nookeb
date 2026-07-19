@@ -341,6 +341,20 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         }
       }
 
+      // Renaming the task also renames its first (implicit for single/recurring)
+      // item so the item title tracks the task title — same items[0] mapping as
+      // the description above.
+      if (parsed.data.title !== undefined) {
+        const firstItem = task.items[0];
+        if (firstItem) {
+          const { error: titleErr } = await app.supabase
+            .from('task_items')
+            .update({ title: parsed.data.title })
+            .eq('id', firstItem.id);
+          if (titleErr) throw titleErr;
+        }
+      }
+
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       if (parsed.data.globalDeadline !== undefined) {
         await rescheduleReminders(app.supabase, updated, previousDeadline);
