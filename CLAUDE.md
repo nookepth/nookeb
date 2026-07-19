@@ -201,9 +201,10 @@ LINE-webhook/worker write path, unreachable from every share/team/space flow.
   AFTER the row delete commits, so a crash mid-sweep can only undercount the
   refund, never double-refund (which would hand out free quota on every retry).
 - Dashboard: `GET /vault/stats` (guarded — premium + unlock, so a locked vault
-  leaks no counts) feeds the vault stat chip + entry card on `/dashboard`. The
-  web calls it ONLY when `/vault/session-status` reports `isUnlocked`
-  (`lib/useVaultSummary.ts`). Note the aggregate size still leaks via the shared
+  leaks no counts) feeds the vault stat chip on `/dashboard` (the vault entry
+  itself lives in the โปรไฟล์ sheet; the old VaultEntryCard component was
+  removed). The web calls it ONLY when `/vault/session-status` reports
+  `isUnlocked` (`lib/useVaultSummary.ts`). Note the aggregate size still leaks via the shared
   `storage_used` in `GET /me/usage`, which is ungated — inherent to the shared
   pool, not an oversight.
 - Upload is the app's ONLY web multipart endpoint (`@fastify/multipart`,
@@ -328,8 +329,8 @@ own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
   tombstoned (`purged_at` + title/message redacted, `audio_key` nulled — rule 6
   holds) via `purgeDeletedBoxes` in the daily `purge_deleted` job.
 - Events: `box_created`, `box_viewed` (user_id = box OWNER, not the viewer),
-  `box_deleted`. Dashboard entry: `components/LegacyBoxEntryCard.tsx` (diary-banner
-  geometry, themed to the newest box).
+  `box_deleted`. Dashboard entry: a link in the โปรไฟล์ sheet on `/dashboard`
+  (the old LegacyBoxEntryCard component was removed with the dashboard redesign).
 
 ## ระบบตามงาน (Task Manager) — LIFF + web, migration 036
 Khun-Thong-style group task chasing at `/liff/tasks/*` (API `routes/tasks.ts` +

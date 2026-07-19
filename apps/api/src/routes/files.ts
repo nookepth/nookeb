@@ -367,6 +367,23 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
     const file = await getAuthorizedFile(request.params.id, request.authUser!.userId);
     if (!file) return reply.code(404).send({ error: 'File not found' });
 
+    // Target folder must live in the file's own space (mirror of the folder-move
+    // route's parent check): a cross-space folder_id makes the file unreachable
+    // from every folder view of its space, and an unknown id surfaced as a raw
+    // FK 500 instead of a 400.
+    if (parsed.data.folderId) {
+      const { data: folder, error: folderErr } = await app.supabase
+        .from('folders')
+        .select('id')
+        .eq('id', parsed.data.folderId)
+        .eq('space_id', file.space_id)
+        .maybeSingle();
+      if (folderErr) throw folderErr;
+      if (!folder) {
+        return reply.code(400).send({ error: 'Folder not found in this space' });
+      }
+    }
+
     const updates: Record<string, unknown> = { updated_at: new Date().toISOString() };
     if (parsed.data.displayName !== undefined) updates['display_name'] = parsed.data.displayName;
     if (parsed.data.folderId !== undefined) updates['folder_id'] = parsed.data.folderId;

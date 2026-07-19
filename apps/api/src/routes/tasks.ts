@@ -75,6 +75,12 @@ const patchTaskSchema = z
     message: 'nothing to update',
   });
 
+// Item-deadline edit: an explicit null clears the item's own deadline so it
+// falls back to the task-level deadline (same semantics as create).
+const itemDeadlineSchema = z.object({
+  deadline: z.string().datetime({ offset: true }).nullable(),
+});
+
 // A done-note is optional and short; an empty/blank string clears it.
 const doneSchema = z.object({ note: z.string().trim().max(500).optional() });
 const noteSchema = z.object({ note: z.string().trim().max(500) });
@@ -296,6 +302,69 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (parsed.data.globalDeadline !== undefined) {
         await rescheduleReminders(app.supabase, updated, previousDeadline);
       }
+      return { task: toTaskDto(updated) };
+    },
+  );
+
+  // ---- PATCH /tasks/:id/items/:itemId — creator edits one item's own deadline ----
+  // Fills the gap where a mis-set per-item deadline was only fixable by
+  // cancel + recreate (which pushes a "ยกเลิกงาน" notice to the whole group).
+  // Reminder rounds are rebuilt via rescheduleReminders, whose
+  // TASK_NOTIFICATIONS_ENABLED gate stays authoritative (no rows/jobs are
+  // created while the reminder push is soft-disabled).
+  app.patch<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const parsed = itemDeadlineSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      const lineUid = request.authUser!.lineUserId;
+      if (task.created_by_line_uid !== lineUid) {
+        return reply.code(403).send({ error: 'เฉพาะคนสร้างงานเท่านั้นที่แก้ไขได้น้า' });
+      }
+      if (task.status === 'done' || task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้จบไปแล้ว แก้ไขไม่ได้น้า' });
+      }
+      if (task.type === 'recurring') {
+        // Same rule as create: a recurring round's deadline comes ONLY from
+        // the rule — a per-item deadline would fight the rollover.
+        return reply.code(400).send({ error: 'งานประจำใช้กำหนดจากรอบเตือน ระบุ deadline รายข้อไม่ได้น้า' });
+      }
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+      if (item.status === 'done' || item.status === 'cancelled') {
+        return reply.code(409).send({ error: 'ข้อนี้จบไปแล้ว แก้ไขไม่ได้น้า' });
+      }
+      if (parsed.data.deadline === null && !task.global_deadline) {
+        // Mirrors the create-time rule: every item needs SOME effective deadline.
+        return reply.code(400).send({ error: 'ทุกข้อต้องมี deadline (ของข้อเองหรือของงาน)' });
+      }
+      if (parsed.data.deadline && new Date(parsed.data.deadline).getTime() <= Date.now()) {
+        return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
+      }
+
+      const { error: updateErr } = await app.supabase
+        .from('task_items')
+        .update({ deadline: parsed.data.deadline })
+        .eq('id', item.id);
+      if (updateErr) throw updateErr;
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      // Rebuild all rounds from the task's CURRENT deadlines (cancel +
+      // schedule): scheduleReminders re-derives per-item vs shared task-level
+      // rounds itself, so moving an item off/onto the global deadline lands in
+      // the right round shape.
+      await rescheduleReminders(app.supabase, updated);
       return { task: toTaskDto(updated) };
     },
   );
