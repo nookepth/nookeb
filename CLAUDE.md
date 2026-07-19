@@ -659,3 +659,12 @@ and `supabase/backfills/` for specifics.
 ## Deferred / NOT built
 - Plans / Billing / subscriptions (free tier only for now)
 - Approval workflows, anything ERP-related
+
+## Known accepted risks
+- **Next.js pinned to 14.2.35 (latest 14.x patch)** — request-smuggling /
+  cache-poisoning advisories in rewrites/middleware remain unresolved on the 14
+  branch (npm audit's only offered fix is a jump to Next 16). Full 14→16
+  migration needed to close; tracked as a separate project, not yet scheduled.
+  Accepted 2026-07-19. Compensating control: the `/api-proxy` rewrite is a
+  single fixed-target passthrough with no user-controlled destination (see
+  `apps/web/next.config.mjs`).
