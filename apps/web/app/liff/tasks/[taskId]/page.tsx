@@ -436,17 +436,6 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
       {((isCreator && !isClosed) || calendarDeadline) && (
         <section className={styles.section}>
           <div style={{ display: 'flex', gap: 10 }}>
-            {isCreator && !isClosed && (
-              <button
-                type="button"
-                className={styles.secondaryBtn}
-                style={{ flex: 1, padding: '13px 10px' }}
-                onClick={openEdit}
-                disabled={busy}
-              >
-                แก้ไขงาน
-              </button>
-            )}
             {calendarDeadline && (
               <button
                 type="button"
@@ -458,13 +447,25 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                   alignItems: 'center',
                   justifyContent: 'center',
                   gap: 6,
+                  whiteSpace: 'nowrap',
                 }}
                 onClick={() => {
                   trackEvent('task_ics_download', { task_type: task.type });
                   window.location.href = buildGoogleCalendarUrl(task.title, calendarDeadline);
                 }}
               >
-                <IconCalendar /> ปฏิทิน
+                <IconCalendar /> บันทึกลงปฏิทิน
+              </button>
+            )}
+            {isCreator && !isClosed && (
+              <button
+                type="button"
+                className={styles.secondaryBtn}
+                style={{ flex: 1, padding: '13px 10px' }}
+                onClick={openEdit}
+                disabled={busy}
+              >
+                แก้ไขงาน
               </button>
             )}
             {isCreator && !isClosed && (
