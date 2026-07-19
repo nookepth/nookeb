@@ -92,12 +92,6 @@ export function Navbar({
             <a className="btn ghost" href="/dashboard/tasks">
               งานของฉัน
             </a>
-            <a className="btn ghost" href="/dashboard/teams">
-              ทีม
-            </a>
-            <a className="btn ghost" href="/dashboard/trash">
-              ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
-            </a>
           </div>
           {onMenu && (
             <button className="icon-btn nav-hamburger" aria-label="เมนู" onClick={onMenu}>
