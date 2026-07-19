@@ -12,6 +12,7 @@ import {
   effectiveDeadline,
   getTaskWithDetails,
   ensureGroupMember,
+  isGroupMember,
   listGroupMembers,
   listTasksForUser,
   markAssigneeAccepted,
@@ -238,7 +239,13 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (!task) return reply.code(404).send({ error: 'Task not found' });
 
       const lineUid = request.authUser!.lineUserId;
-      const member = await ensureGroupMember(app.supabase, task.group_line_id, lineUid);
+      // READ-ONLY membership check — must NOT enroll the caller. A task UUID is a
+      // semi-public capability (it's the unauthenticated ICS export handle, so it
+      // leaks into browser history/logs); auto-enrolling here would silently
+      // upgrade whoever holds a task id into a full group member. Enrollment stays
+      // on the explicit register/create paths only. Creators/assignees still pass
+      // via canView even when not (yet) on the roster.
+      const member = await isGroupMember(app.supabase, task.group_line_id, lineUid);
       if (!canView(task, lineUid, member)) {
         return reply.code(403).send({ error: 'Forbidden' });
       }

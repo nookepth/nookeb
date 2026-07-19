@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
+import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { config } from './config';
 import supabasePlugin from './plugins/supabase';
@@ -56,18 +57,27 @@ async function main(): Promise<void> {
 
   // CORS for the web dashboard. NOTE: the dashboard now reaches the API
   // same-origin through the Next.js /api-proxy rewrite (so its requests never
-  // need CORS at all); these headers remain for the transition period while
-  // older deployed bundles still call the API cross-origin with a Bearer
-  // header. Allow-Credentials is set for completeness — the exact-origin
-  // Allow-Origin above it is what makes that legal for browsers.
-  app.addHook('onRequest', async (request, reply) => {
-    reply.header('Access-Control-Allow-Origin', config.WEB_URL);
-    reply.header('Access-Control-Allow-Credentials', 'true');
-    reply.header('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-    reply.header('Access-Control-Allow-Headers', 'Authorization,Content-Type');
-    if (request.method === 'OPTIONS') {
-      return reply.code(204).send();
-    }
+  // need CORS at all); this remains for the transition period while older
+  // deployed bundles still call the API cross-origin with a Bearer header, and
+  // for the Vercel PREVIEW deploys (`*-nookeb.vercel.app`), which are a
+  // different origin than config.WEB_URL.
+  //
+  // Explicit allowlist (never wildcard with credentials): the production web
+  // origin plus the preview-domain pattern. @fastify/cors reflects only a
+  // matched origin back and sets `Vary: Origin`, so caches never cross origins.
+  // A request with no Origin header (server-to-server, e.g. the LINE webhook) is
+  // allowed through — CORS response headers are irrelevant to it.
+  const PREVIEW_ORIGIN = /^https:\/\/[a-z0-9-]+-nookeb\.vercel\.app$/;
+  await app.register(cors, {
+    origin(origin, cb) {
+      if (!origin || origin === config.WEB_URL || PREVIEW_ORIGIN.test(origin)) {
+        return cb(null, true);
+      }
+      cb(null, false);
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Authorization', 'Content-Type'],
   });
 
   // Session cookie support (FIX #7): the app JWT now travels in an HttpOnly

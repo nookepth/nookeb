@@ -191,11 +191,13 @@ const shareRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(404).send({ error: 'not_found' });
     }
 
-    // Count the view (best-effort — a failed increment must not block viewing).
-    const { error: incErr } = await app.supabase
-      .from('file_shares')
-      .update({ view_count: share.view_count + 1 })
-      .eq('id', share.id);
+    // Count the view atomically (best-effort — a failed increment must not block
+    // viewing). The RPC avoids the read-modify-write race where concurrent
+    // viewers all read the same view_count and overshoot max_views. Same pattern
+    // as increment_box_views (migration 033); defined in migration 039.
+    const { error: incErr } = await app.supabase.rpc('increment_share_views', {
+      p_share_id: share.id,
+    });
     if (incErr) {
       request.log.warn({ err: incErr }, 'file_shares view_count increment failed');
     }
@@ -232,7 +234,12 @@ const shareRoutes: FastifyPluginAsync = async (app) => {
     if (!shareData) return reply.code(404).send({ error: 'not_found' });
     const share = shareData as FileShareRow;
 
-    if (share.expires_at !== null && new Date(share.expires_at).getTime() < Date.now()) {
+    // Mirror the expiry gate of GET /share/:token: an exhausted view cap must
+    // also block downloads, otherwise a share that 410s on view keeps minting
+    // fresh 1-hour download URLs forever.
+    const expired = share.expires_at !== null && new Date(share.expires_at).getTime() < Date.now();
+    const viewsExhausted = share.max_views !== null && share.view_count >= share.max_views;
+    if (expired || viewsExhausted) {
       return reply.code(410).send({ error: 'expired' });
     }
 

@@ -116,14 +116,6 @@ const envSchema = z.object({
     .string()
     .optional()
     .transform((v) => v === 'true'),
-  // Google Document AI (optional high-accuracy OCR). All three DOCUMENT_AI_*
-  // vars must be set for it to be used; otherwise tesseract.js is the OCR
-  // engine. GOOGLE_APPLICATION_CREDENTIALS is the standard ADC key-file path
-  // read by the Google client library itself.
-  GOOGLE_DOCUMENT_AI_PROJECT: z.string().optional(),
-  GOOGLE_DOCUMENT_AI_LOCATION: z.string().optional(),
-  GOOGLE_DOCUMENT_AI_PROCESSOR_ID: z.string().optional(),
-  GOOGLE_APPLICATION_CREDENTIALS: z.string().optional(),
   // Default color mode for new scan sessions ('bw' | 'color').
   SCAN_DEFAULT_MODE: z.enum(['bw', 'color']).default('bw'),
 
