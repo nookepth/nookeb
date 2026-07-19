@@ -86,6 +86,16 @@ function CheckIcon({ size = 13 }: { size?: number }) {
     </svg>
   );
 }
+function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): string {
+  if (!deadlineIso) return 'https://calendar.google.com';
+  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+  const start = new Date(deadlineIso);
+  const startStr = fmt(start);
+  const endStr = fmt(new Date(start.getTime() + 60 * 60 * 1000)); // +1hr
+  const text = encodeURIComponent(title || '');
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${startStr}/${endStr}`;
+}
+
 function CalendarIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -108,6 +118,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   const [editOpen, setEditOpen] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editDeadline, setEditDeadline] = useState('');
+  const [editDescription, setEditDescription] = useState('');
   const [addingLink, setAddingLink] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [linkLabel, setLinkLabel] = useState('');
@@ -223,15 +234,20 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   const openEdit = () => {
     setEditTitle(task.title);
     setEditDeadline(toLocalInput(task.globalDeadline));
+    setEditDescription(task.items[0]?.description ?? '');
     setEditOpen(true);
   };
   const saveEdit = async () => {
-    const patch: { title?: string; globalDeadline?: string } = {};
+    const patch: { title?: string; globalDeadline?: string; description?: string } = {};
     if (editTitle.trim() && editTitle.trim() !== task.title) patch.title = editTitle.trim();
     if (!isRecurring && editDeadline) {
       const iso = new Date(editDeadline).toISOString();
       if (iso !== task.globalDeadline) patch.globalDeadline = iso;
     }
+    // Task-level description maps to the first item (see API patchTaskSchema).
+    // Send the trimmed value (empty clears it) only when it actually changed.
+    const currentDesc = task.items[0]?.description ?? '';
+    if (editDescription.trim() !== currentDesc) patch.description = editDescription.trim();
     if (Object.keys(patch).length === 0) {
       setEditOpen(false);
       return;
@@ -331,7 +347,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         )}
         <a
           className={styles.secondaryBtn}
-          href="https://calendar.google.com"
+          href={buildGoogleCalendarUrl(task.title, task.globalDeadline)}
           target="_blank"
           rel="noopener noreferrer"
         >
@@ -598,6 +614,16 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                 งานประจำเลื่อนรอบเองตามกำหนด แก้กำหนดส่งไม่ได้น้า
               </p>
             )}
+            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+              รายละเอียด (ไม่บังคับ)
+            </label>
+            <textarea
+              className={styles.textarea}
+              placeholder="อธิบายงานเพิ่มเติม..."
+              value={editDescription}
+              onChange={(e) => setEditDescription(e.target.value)}
+              maxLength={1000}
+            />
             <div className={styles.modalActions}>
               <button type="button" className={styles.ghostBtn} onClick={() => setEditOpen(false)}>
                 ยกเลิก

@@ -66,11 +66,29 @@ interface GroupMemberDto {
   pictureUrl: string | null;
 }
 
+function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): string {
+  if (!deadlineIso) return 'https://calendar.google.com';
+  const fmt = (d: Date) => d.toISOString().replace(/[-:]/g, '').slice(0, 15);
+  const start = new Date(deadlineIso);
+  const startStr = fmt(start);
+  const endStr = fmt(new Date(start.getTime() + 60 * 60 * 1000)); // +1hr
+  const text = encodeURIComponent(title || '');
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${startStr}/${endStr}`;
+}
+
 const STATUS_BADGE: Record<string, { label: string; bg: string; fg: string }> = {
   pending: { label: 'รอดำเนินการ', bg: '#f3f4f6', fg: '#374151' },
   in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
   done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
   cancelled: { label: 'ยกเลิก', bg: '#fee2e2', fg: '#b91c1c' },
+};
+
+/** Per-sub-task status pill: กำลังทำ=yellow, เสร็จแล้ว=green, ยกเลิก/ยังไม่เริ่ม=gray. */
+const ITEM_STATUS_PILL: Record<string, { label: string; bg: string; fg: string }> = {
+  pending: { label: 'ยังไม่เริ่ม', bg: '#f3f4f6', fg: '#6b7280' },
+  in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
+  done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
+  cancelled: { label: 'ยกเลิก', bg: '#f3f4f6', fg: '#6b7280' },
 };
 
 /** ISO → 'YYYY-MM-DDTHH:mm' local, for <input type="datetime-local">. */
@@ -114,6 +132,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   const [editOpen, setEditOpen] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editDeadline, setEditDeadline] = useState('');
+  const [editDescription, setEditDescription] = useState('');
   // per-item deadline sheet
   const [deadlineItemId, setDeadlineItemId] = useState<string | null>(null);
   const [itemDeadlineDraft, setItemDeadlineDraft] = useState('');
@@ -305,15 +324,20 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   const openEdit = () => {
     setEditTitle(task.title);
     setEditDeadline(toLocalInput(task.globalDeadline));
+    setEditDescription(task.items[0]?.description ?? '');
     setEditOpen(true);
   };
   const saveEdit = async () => {
-    const patch: { title?: string; globalDeadline?: string } = {};
+    const patch: { title?: string; globalDeadline?: string; description?: string } = {};
     if (editTitle.trim() && editTitle.trim() !== task.title) patch.title = editTitle.trim();
     if (!isRecurring && editDeadline) {
       const iso = new Date(editDeadline).toISOString();
       if (iso !== task.globalDeadline) patch.globalDeadline = iso;
     }
+    // Task-level description maps to the first item (see API patchTaskSchema).
+    // Send the trimmed value (empty clears it) only when it actually changed.
+    const currentDesc = task.items[0]?.description ?? '';
+    if (editDescription.trim() !== currentDesc) patch.description = editDescription.trim();
     if (Object.keys(patch).length === 0) return setEditOpen(false);
     const ok = await mutate('', { method: 'PATCH', body: JSON.stringify(patch) }, 'บันทึกการแก้ไขแล้วน้า');
     if (ok) setEditOpen(false);
@@ -373,37 +397,80 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
 
   return (
     <main className={styles.page} style={{ paddingBottom: 60 }}>
-      <header className={styles.header}>
-        <div className={styles.headerRow}>
-          <h1 className={styles.headerTitle}>{task.title}</h1>
-          <span className={styles.statusBadge} style={{ background: badge.bg, color: badge.fg }}>
-            {badge.label}
-          </span>
-        </div>
-        {task.globalDeadline && (
-          <p className={styles.headerSub}>
-            <DeadlineChip iso={task.globalDeadline} />
-          </p>
-        )}
-        {isCreator && !isClosed && (
-          <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>
-            <button type="button" className={styles.ghostBtn} onClick={openEdit} disabled={busy}>
-              แก้ไขงาน
-            </button>
-            <button
-              type="button"
-              className={styles.ghostBtn}
-              style={{ color: '#b91c1c' }}
-              onClick={() => void doCancel()}
-              disabled={busy}
+      {/* header card: title + status + deadline */}
+      <section className={styles.section} style={{ paddingTop: 20 }}>
+        <div className={styles.card}>
+          <div className={styles.headerRow} style={{ alignItems: 'flex-start' }}>
+            <h1 className={styles.headerTitle} style={{ overflowWrap: 'anywhere' }}>
+              {task.title}
+            </h1>
+            <span
+              className={styles.statusBadge}
+              style={{ background: badge.bg, color: badge.fg, flexShrink: 0 }}
             >
-              ยกเลิกงาน
-            </button>
+              {badge.label}
+            </span>
           </div>
-        )}
-      </header>
+          {task.globalDeadline && (
+            <div style={{ marginTop: 10 }}>
+              <DeadlineChip iso={task.globalDeadline} />
+            </div>
+          )}
+        </div>
+      </section>
 
-      <section className={styles.section} style={{ paddingTop: 0 }}>
+      {/* action buttons row — evenly spaced, consistent border-radius */}
+      {((isCreator && !isClosed) || calendarDeadline) && (
+        <section className={styles.section}>
+          <div style={{ display: 'flex', gap: 10 }}>
+            {isCreator && !isClosed && (
+              <button
+                type="button"
+                className={styles.secondaryBtn}
+                style={{ flex: 1, padding: '13px 10px' }}
+                onClick={openEdit}
+                disabled={busy}
+              >
+                แก้ไขงาน
+              </button>
+            )}
+            {calendarDeadline && (
+              <button
+                type="button"
+                className={styles.secondaryBtn}
+                style={{
+                  flex: 1,
+                  padding: '13px 10px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+                onClick={() => {
+                  trackEvent('task_ics_download', { task_type: task.type });
+                  window.open(buildGoogleCalendarUrl(task.title, calendarDeadline), '_blank');
+                }}
+              >
+                <IconCalendar /> ปฏิทิน
+              </button>
+            )}
+            {isCreator && !isClosed && (
+              <button
+                type="button"
+                className={styles.secondaryBtn}
+                style={{ flex: 1, padding: '13px 10px', color: '#b91c1c', borderColor: '#e5b3b0' }}
+                onClick={() => void doCancel()}
+                disabled={busy}
+              >
+                ยกเลิกงาน
+              </button>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* progress bar */}
+      <section className={styles.section}>
         <div className={styles.card}>
           <div className={styles.headerRow} style={{ marginBottom: 8 }}>
             <span className={styles.fieldLabel} style={{ margin: 0 }}>
@@ -504,47 +571,61 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
             const mine = viewerUid ? item.assignees.find((a) => a.lineUid === viewerUid) : undefined;
             const myDone = mine?.doneAt != null;
             const itemDone = item.status === 'done';
+            const ipill = ITEM_STATUS_PILL[item.status] ?? ITEM_STATUS_PILL.pending!;
             return (
-              <div key={item.id} className={styles.itemCard} style={{ flexDirection: 'column' }}>
+              <div key={item.id} className={styles.itemCard} style={{ flexDirection: 'column', gap: 10 }}>
                 <div style={{ display: 'flex', gap: 12, width: '100%' }}>
                   <span className={styles.numBadge} style={itemDone ? { background: '#059669' } : undefined}>
                     {itemDone ? <IconCheck size={13} /> : i + 1}
                   </span>
                   <div className={styles.itemBody}>
-                    <p className={styles.itemTitle}>{item.title}</p>
+                    {/* title + status pill */}
+                    <div className={styles.headerRow} style={{ alignItems: 'flex-start', gap: 8 }}>
+                      <p className={styles.itemTitle} style={{ margin: 0 }}>
+                        {item.title}
+                      </p>
+                      <span
+                        className={styles.statusBadge}
+                        style={{ background: ipill.bg, color: ipill.fg, flexShrink: 0 }}
+                      >
+                        {ipill.label}
+                      </span>
+                    </div>
                     {item.description && (
-                      <p className={styles.typeSub} style={{ marginBottom: 6 }}>
+                      <p className={styles.typeSub} style={{ marginTop: 6 }}>
                         {item.description}
                       </p>
                     )}
-                    <div className={styles.itemMeta}>
+                    <div className={styles.itemMeta} style={{ marginTop: 8 }}>
                       <AvatarStack members={item.assignees} size={24} max={4} />
                       <DeadlineChip iso={item.deadline} />
                     </div>
                   </div>
-                  {isCreator && !isClosed && (
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                </div>
+
+                {/* creator controls */}
+                {isCreator && !isClosed && (
+                  <div style={{ display: 'flex', gap: 10, borderTop: '1px solid #f0f0f0', paddingTop: 8 }}>
+                    <button
+                      type="button"
+                      className={styles.ghostBtn}
+                      style={{ padding: 6, minHeight: 0, fontSize: 13 }}
+                      onClick={() => void openAssigneeEditor(item)}
+                    >
+                      แก้คน
+                    </button>
+                    {task.type === 'multi' && item.status !== 'done' && item.status !== 'cancelled' && (
                       <button
                         type="button"
                         className={styles.ghostBtn}
-                        style={{ padding: 4, minHeight: 0, fontSize: 13 }}
-                        onClick={() => void openAssigneeEditor(item)}
+                        style={{ padding: 6, minHeight: 0, fontSize: 13 }}
+                        onClick={() => openItemDeadline(item)}
                       >
-                        แก้คน
+                        แก้กำหนดส่ง
                       </button>
-                      {task.type === 'multi' && item.status !== 'done' && item.status !== 'cancelled' && (
-                        <button
-                          type="button"
-                          className={styles.ghostBtn}
-                          style={{ padding: 4, minHeight: 0, fontSize: 13 }}
-                          onClick={() => openItemDeadline(item)}
-                        >
-                          แก้กำหนดส่ง
-                        </button>
-                      )}
-                    </div>
-                  )}
-                </div>
+                    )}
+                  </div>
+                )}
 
                 {/* per-assignee status + notes */}
                 <div style={{ marginTop: 10, width: '100%' }}>
@@ -657,22 +738,6 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
         </div>
       </section>
 
-      {calendarDeadline && (
-        <section className={styles.section}>
-          <button
-            type="button"
-            className={styles.secondaryBtn}
-            style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-            onClick={() => {
-              trackEvent('task_ics_download', { task_type: task.type });
-              window.open('https://calendar.google.com', '_blank');
-            }}
-          >
-            <IconCalendar /> บันทึกลงปฏิทิน
-          </button>
-        </section>
-      )}
-
       {/* Pro fake-door demand test on the task detail screen. */}
       <ProFeatureSection />
 
@@ -714,6 +779,16 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 งานประจำเลื่อนรอบเองตามกำหนด แก้กำหนดส่งไม่ได้น้า
               </p>
             )}
+            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+              รายละเอียด (ไม่บังคับ)
+            </label>
+            <textarea
+              className={styles.textarea}
+              placeholder="อธิบายงานเพิ่มเติม..."
+              value={editDescription}
+              onChange={(e) => setEditDescription(e.target.value)}
+              maxLength={1000}
+            />
             <button type="button" className={styles.primaryBtn} style={{ marginTop: 16 }} onClick={() => void saveEdit()} disabled={busy}>
               บันทึก
             </button>

@@ -71,10 +71,16 @@ const patchTaskSchema = z
   .object({
     title: z.string().trim().min(1).max(200).optional(),
     globalDeadline: z.string().datetime({ offset: true }).optional(),
+    // Task-level detail edit. There is no task-level description column —
+    // task_items is the only place a description lives — so a task-level edit
+    // writes it onto the task's FIRST (implicit for single/recurring) item. An
+    // empty string clears it (stored NULL).
+    description: z.string().trim().max(1000).optional(),
   })
-  .refine((v) => v.title !== undefined || v.globalDeadline !== undefined, {
-    message: 'nothing to update',
-  });
+  .refine(
+    (v) => v.title !== undefined || v.globalDeadline !== undefined || v.description !== undefined,
+    { message: 'nothing to update' },
+  );
 
 // Item-deadline edit: an explicit null clears the item's own deadline so it
 // falls back to the task-level deadline (same semantics as create).
@@ -319,6 +325,21 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
           ? { global_deadline: parsed.data.globalDeadline }
           : {}),
       });
+
+      // Task-level description writes onto the first item (see patchTaskSchema).
+      // Empty string clears it. Items are ordered by sort_order, so items[0] is
+      // the task's primary/implicit item.
+      if (parsed.data.description !== undefined) {
+        const firstItem = task.items[0];
+        if (firstItem) {
+          const desc = parsed.data.description.length > 0 ? parsed.data.description : null;
+          const { error: descErr } = await app.supabase
+            .from('task_items')
+            .update({ description: desc })
+            .eq('id', firstItem.id);
+          if (descErr) throw descErr;
+        }
+      }
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       if (parsed.data.globalDeadline !== undefined) {

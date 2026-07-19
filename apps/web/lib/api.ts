@@ -1208,7 +1208,7 @@ export function acceptTaskItem(taskId: string, itemId: string): Promise<{ task: 
 /** Creator edits the task title and/or global deadline (reschedules reminders). */
 export function updateTask(
   taskId: string,
-  patch: { title?: string; globalDeadline?: string },
+  patch: { title?: string; globalDeadline?: string; description?: string },
 ): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks/${taskId}`, {
     method: 'PATCH',
