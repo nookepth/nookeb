@@ -12,16 +12,16 @@ const ibmPlexSansThai = IBM_Plex_Sans_Thai({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: 'หนูเก็บ — คลังไฟล์จาก LINE',
+  title: 'หนูเก็บ — ฝากไว้กับหนูเก็บ',
   description: 'ส่งไฟล์ผ่าน LINE เก็บถาวร เปิดดูได้ทุกที่',
   openGraph: {
-    title: 'หนูเก็บ — คลังไฟล์จาก LINE',
+    title: 'หนูเก็บ — ฝากไว้กับหนูเก็บ',
     description: 'ส่งไฟล์ผ่าน LINE เก็บถาวร เปิดดูได้ทุกที่',
     images: ['/logo.png'],
   },
   twitter: {
     card: 'summary',
-    title: 'หนูเก็บ — คลังไฟล์จาก LINE',
+    title: 'หนูเก็บ — ฝากไว้กับหนูเก็บ',
     description: 'ส่งไฟล์ผ่าน LINE เก็บถาวร เปิดดูได้ทุกที่',
     images: ['/logo.png'],
   },

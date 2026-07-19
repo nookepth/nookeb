@@ -7,7 +7,6 @@ import {
   initLiff,
   reconnectLiff,
   resetLiff,
-  saveTaskToCalendar,
   type LiffState,
 } from '../../../../lib/liff';
 import {
@@ -664,9 +663,9 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
             type="button"
             className={styles.secondaryBtn}
             style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}
-            onClick={async () => {
+            onClick={() => {
               trackEvent('task_ics_download', { task_type: task.type });
-              await saveTaskToCalendar(task.id, task.title, calendarDeadline);
+              window.open('https://calendar.google.com', '_blank');
             }}
           >
             <IconCalendar /> บันทึกลงปฏิทิน

@@ -17,7 +17,6 @@ import {
   addTaskLink,
   deleteTaskLink,
   listGroupTaskMembers,
-  API_URL,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { ClockIcon, CloseIcon } from '@/components/icons';
@@ -332,9 +331,9 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         )}
         <a
           className={styles.secondaryBtn}
-          href={`${API_URL}/tasks/${task.id}/ics`}
+          href="https://calendar.google.com"
           target="_blank"
-          rel="noreferrer"
+          rel="noopener noreferrer"
         >
           <CalendarIcon /> บันทึกลงปฏิทิน
         </a>

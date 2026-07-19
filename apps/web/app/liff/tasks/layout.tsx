@@ -4,7 +4,7 @@ import { Prompt } from 'next/font/google';
 // LIFF pages are in-app tooling, never search results (robots.ts also
 // disallows /liff).
 export const metadata: Metadata = {
-  title: 'หนูเก็บ — ตามงาน',
+  title: 'หนูเก็บ — เตือนงาน',
   robots: { index: false, follow: false },
 };
 

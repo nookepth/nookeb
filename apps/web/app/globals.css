@@ -338,9 +338,10 @@ button {
   display: none;
 }
 
-/* Hamburger drawer trigger — desktop uses the .navbar-links strip instead. */
+/* Hamburger drawer trigger — shown on desktop alongside the .navbar-links strip
+   (opens the full menu drawer) and on mobile in place of the strip. */
 .navbar .nav-hamburger {
-  display: none;
+  display: inline-flex;
 }
 
 .search-overlay {
