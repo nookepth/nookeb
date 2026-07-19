@@ -169,6 +169,11 @@ export async function findLiveFileByLineMessageId(
     .select('*')
     .eq('line_message_id', lineMessageId)
     .is('deleted_at', null)
+    // Errored rows are not "stored" — matching one here made a retry (or a
+    // webhook redelivery) return a dead row as success. markFileError now
+    // tombstones its row, so this filter only matters for legacy live 'error'
+    // rows that predate that change.
+    .neq('status', 'error')
     .order('created_at', { ascending: true })
     .limit(1);
   if (error) throw error;
@@ -238,10 +243,20 @@ export async function markFileReady(
   if (error) throw error;
 }
 
+/**
+ * Tombstone a row whose store failed mid-flight. The row must not stay LIVE:
+ * the unique line_message_id index (migration 022) covers live rows, so a live
+ * 'error' row would block the retry's re-INSERT — and the dedup lookups would
+ * hand it back as "already stored". Stamping deleted_at frees the slot so the
+ * retry can store the file for real; purged_at keeps the row out of the trash
+ * UI (there is nothing restorable — the caller removes any partial R2 object
+ * first, see storeUpload's error path).
+ */
 export async function markFileError(supabase: SupabaseClient, fileId: string): Promise<void> {
+  const now = new Date().toISOString();
   const { error } = await supabase
     .from('files')
-    .update({ status: 'error', updated_at: new Date().toISOString() })
+    .update({ status: 'error', deleted_at: now, purged_at: now, updated_at: now })
     .eq('id', fileId);
   if (error) throw error;
 }

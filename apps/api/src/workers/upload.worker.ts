@@ -257,7 +257,12 @@ async function storeUpload(
   // this pre-check just avoids the CDN fetch + reservation churn in the common case.
   if (item.lineMessageId) {
     const existing = await findLiveFileByLineMessageId(supabase, item.lineMessageId);
-    if (existing) {
+    // Only a 'ready' row counts as stored. A live 'processing' row (another run
+    // still uploading, or a crashed worker's leftover) falls through to the
+    // INSERT below: a concurrent owner still dedups via the unique-index 23505
+    // recovery, while a crashed leftover can no longer masquerade as success
+    // (the stale-processing sweep eventually tombstones it).
+    if (existing && existing.status === 'ready') {
       console.log(
         `[upload.worker] dedup: file already stored for message ${item.lineMessageId} ` +
           `(file ${existing.id}) — skipping re-store/charge`,
@@ -496,6 +501,15 @@ async function storeUpload(
         sizeLimitMessage(item.originalName, null),
       );
     }
+    // markFileError tombstones the row (deleted_at + purged_at) so the retry
+    // can re-INSERT past the unique message-id index and store the file for
+    // real. Remove whatever landed in R2 first so purged_at stays truthful
+    // (e.g. markFileReady failing AFTER a successful upload leaves a full
+    // object behind). Best-effort: an orphaned object is logged, never blocks
+    // the retry.
+    await deleteObject(r2, r2Key).catch((delErr) => {
+      console.error(`[upload.worker] failed to delete R2 object of errored file ${record.id}:`, delErr);
+    });
     await markFileError(supabase, record.id).catch((markErr) => {
       console.error(`[upload.worker] failed to mark file ${record.id} as error:`, markErr);
     });

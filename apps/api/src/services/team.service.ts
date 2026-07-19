@@ -538,6 +538,17 @@ export async function deleteTeam(
   // team's counter, never the uploader's personal quota — see FIX #3.)
   await revokeTeamSpaceMemberships(supabase, teamId);
 
+  // Release the team's LINE-group bindings. Left behind, they outlive the
+  // team forever: bindLineGroup answers GROUP_ALREADY_BOUND for any new team,
+  // and unbindLineGroup requires a role on THIS (soon-deleted) team, which
+  // getTeamRole filters out — so the group could never be bound again. Runs
+  // before the soft delete so a failure leaves the team intact and retryable.
+  const { error: unbindErr } = await supabase
+    .from('team_line_groups')
+    .delete()
+    .eq('team_id', teamId);
+  if (unbindErr) throw unbindErr;
+
   const { error } = await supabase
     .from('teams')
     .update({ deleted_at: new Date().toISOString() })
