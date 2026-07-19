@@ -469,7 +469,12 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     `services/events.service.ts` `logEvent()` (NEVER throws — protects the 1s webhook budget
     and worker retry-safety): intent events in `webhook/line.ts` (`classifyIntent`), outcome
     events in `upload.worker.ts` (upload/scan/docx/diary done + `feature_blocked_quota`),
-    `web_login` in `auth.ts`. NOT auto-applied; the admin endpoints fail soft to empty when
+    `web_login` in `auth.ts`. The event vocabulary is the `EVENT_TYPES` array in
+    `events.service.ts` (also the `EventType` union) — add there, never pass raw strings;
+    where a spec event overlaps an existing one the existing name is KEPT and its metadata
+    enriched (`file_upload`=`upload_done`, `diary_post`=`diary_done`,
+    `vault_pin_fail_count`=`vault_unlock_failed`, `word_convert`=`docx_done`/`docx_failed`).
+    NOT auto-applied; the admin endpoints fail soft to empty when
     the RPCs are missing, so it's safe to deploy code first — analytics just stays blank
     until the migration is applied.
   - `031_vault.sql` — ห้องนิรภัย (Vault): `users.vault_pin_hash` / `users.vault_plan`
@@ -501,8 +506,60 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     apply BEFORE deploying the task code (the /tasks, /groups routes and the
     "/register" webhook command error without these tables; everything else is
     unaffected).
+  - `040_pro_interest_authed.sql` — `pro_interest` table: the AUTHENTICATED task
+    Pro fake-door demand test (ระบบตามงาน LIFF pages). DELIBERATELY separate from
+    the anonymous gift-box `pro_interest_log` (migration 034): here we record WHO
+    tapped and dedupe one record per `(user_id, feature_id)` (CHECK pins
+    feature_id to `task_auto_reminder` / `task_voice_command`), so unique clicks
+    == unique interested users — that's what powers the admin Pro-Interest
+    dashboard's real per-feature conversion %. Do NOT merge the two tables. NOT
+    auto-applied; apply BEFORE the API deploy (POST/GET `/pro-interest` error
+    without it). Additive.
+  - `041_usage_events_client_dims.sql` — three nullable columns on `usage_events`
+    for client-event tracking: `session_id` (per-tab UUID, partial index),
+    `plan_tier` (`'free'|'pro'` CHECK, indexed with created_at DESC — derived
+    SERVER-side, never trusted from the client), `entry_channel` (open-ended
+    origin hint, no constraint). Additive + nullable → every existing row/insert
+    stays valid. The event vocabulary stays code-enforced (NO event_type CHECK);
+    the client writes events ONLY through `POST /api/events/track` (whitelist +
+    payload sanitiser in `routes/events.ts`, client util `apps/web/lib/track.ts`).
+    NOT auto-applied; the writer fails open, so columns just stay NULL until applied.
+  - `042_admin_analytics_rpcs.sql` — Task-3 admin-dashboard aggregate RPCs (12
+    read-only STABLE functions, Bangkok day buckets, same posture as 029) behind
+    six new `/admin/*` endpoints (see the admin dashboard note under migration
+    029). NOT auto-applied; the endpoints fail soft to empty/zero when the RPCs
+    are missing, so it's safe to deploy code first — the new panels just read
+    blank until it's applied.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
+
+## Admin Dashboard (`apps/web/app/admin/page.tsx` — ONE scrollable client page)
+Gated by `ADMIN_LINE_USER_IDS` (checked in `routes/admin.ts`). All reads go through
+`admin_*` Supabase RPCs (explicit column lists, no `SELECT *`); charts are hand-rolled
+inline SVG/CSS — NO chart library (do not add one without asking). A shared `[7,30,90]`-day
+range selector drives every panel. Client fns + DTO types live in `apps/web/lib/api.ts`;
+new Thai labels go in the `EVENT_LABELS` / feature / module maps in `page.tsx` (admin-only,
+neutral tone — no หนู/พี่/น้า voice). Endpoints (migration 029 + 042, both apply-manually):
+- Migration 029: `/admin/overview` · `/admin/timeseries` · `/admin/features` (event adoption +
+  funnels) · `/admin/power-users` (revenue-signal leaderboard).
+- Migration 042 (Task 3, 2026-07-19): `/admin/pro-interest` · `/admin/tasks` · `/admin/funnel` ·
+  `/admin/adoption` · `/admin/storage` · `/admin/referral`.
+Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLineChart`,
+`StackedBars`, plus one component per section (`ProInterestSection`, `TasksSection`,
+`FunnelSection`, `AdoptionSection`, `StorageSection`, `ReferralSection`).
+**Analytics facts that shaped these panels — don't relitigate:**
+- Pro fake-door demand has TWO non-comparable sources: the gift-box test
+  (`pro_interest_log`, migration 034) is ANONYMOUS taps only — no views, no dedup, so NO
+  conversion % is derivable; the task test (`pro_interest`, migration 040 + client
+  `pro_interest_view/click` events carrying `metadata.feature_id`) IS deduped-by-user with a
+  real view→click funnel. Rendered as SEPARATE panels, never a shared y-scale.
+- Storage warning thresholds are **80 / 95** (`STORAGE_WARN_THRESHOLD_LOW`/`_HIGH`), NOT 100;
+  true 100%-full / upload-blocked is the SEPARATE `feature_blocked_quota` event.
+- No campaign / `hook_id` / content tagging exists → the referral panel is a funnel
+  (issued→entered→activated) + creator leaderboard (`users.referral_code`/`referral_count` +
+  `referrals`) only; campaign attribution is a deliberate "Coming soon" placeholder.
+- Uploads log no failure event → NO upload error rate (only docx convert + vault unlock have
+  failure events); the Tasks completion % excludes `recurring` (they never reach `done`).
 
 ## Project Structure
 - `apps/api` — Fastify API + LINE webhook + BullMQ workers
@@ -512,7 +569,12 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     today-status/notification — user-scoped, no space membership), `vault`
     (ห้องนิรภัย — PIN + encrypted view-only store, see the Vault section), `trash`
     (ถังขยะ — list/restore/purge soft-deleted files, uploader-scoped), `legacy-box`
-    (กล่องของขวัญ — shareable gift boxes, see the Legacy Box section), `static`
+    (กล่องของขวัญ — shareable gift boxes, see the Legacy Box section), `pro-interest`
+    (Pro fake-door demand tests — anonymous gift-box `POST /api/pro-interest` +
+    authenticated task `POST/GET /pro-interest`, see migration 040), `events`
+    (`POST /api/events/track` — the ONE client-event ingest: whitelist + payload
+    sanitiser + server-derived `plan_tier`, feeds `usage_events`), `tasks`, `groups`
+    (ระบบตามงาน — see the Task Manager section), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
