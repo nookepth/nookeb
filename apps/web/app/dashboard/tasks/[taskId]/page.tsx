@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
-import { useRouter } from 'next/navigation';
 import type { TaskDto, TaskItemDto, TaskStatus, GroupMemberDto } from '@nookeb/shared';
 import {
   ApiError,
@@ -45,10 +44,20 @@ const ITEM_STATUS_PILL: Record<TaskStatus, { label: string; bg: string; fg: stri
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
+/** Full date incl. Buddhist-Era year — used ONLY in the header's กำหนดส่ง line
+ *  (the one deliberate difference from the LIFF view, which shows a same-year
+ *  deadline pill instead). */
 function formatDeadline(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, '0');
   return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]} ${d.getFullYear() + 543} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Short date, no year — matches the LIFF item-level deadline chip. */
+function formatShortDeadline(iso: string): string {
+  const d = new Date(iso);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** ISO → 'YYYY-MM-DDTHH:mm' in local time for <input type="datetime-local">. */
@@ -61,39 +70,6 @@ function toLocalInput(iso: string | null): string {
   )}`;
 }
 
-function PlusIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-function LinkIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="M10 13a5 5 0 0 0 7 0l2-2a5 5 0 0 0-7-7l-1 1M14 11a5 5 0 0 0-7 0l-2 2a5 5 0 0 0 7 7l1-1"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-function CheckIcon({ size = 13 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path
-        d="m5 12.5 4.5 4.5L19 7.5"
-        stroke="currentColor"
-        strokeWidth="3"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): string {
   if (!deadlineIso) return 'https://calendar.google.com';
   const fmt = (d: Date) => {
@@ -116,6 +92,8 @@ function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): stri
   return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${startStr}/${startStr}`;
 }
 
+/* ---- small inline icons (brand rule: no emoji in UI text) ---- */
+
 function CalendarIcon({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
@@ -124,9 +102,114 @@ function CalendarIcon({ size = 16 }: { size?: number }) {
     </svg>
   );
 }
+function CheckIcon({ size = 13 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path
+        d="m5 12.5 4.5 4.5L19 7.5"
+        stroke="currentColor"
+        strokeWidth="3"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+function UsersIcon({ size = 26 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="9" cy="8" r="3.5" stroke="currentColor" strokeWidth="2" />
+      <path d="M3 19c0-3 2.7-5 6-5s6 2 6 5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <path
+        d="M15.5 5.2a3.5 3.5 0 0 1 0 5.6M17.8 14.6c1.9.8 3.2 2.4 3.2 4.4"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+/* ---- small presentational helpers (mirror liff/tasks/components.tsx) ---- */
+
+function Avatar({ member, size = 28 }: { member: GroupMemberDto; size?: number }) {
+  const initial = (member.displayName ?? '?').trim().charAt(0) || '?';
+  const style = { width: size, height: size, fontSize: size * 0.42 };
+  return member.pictureUrl ? (
+    // eslint-disable-next-line @next/next/no-img-element -- LINE CDN avatar, remote domain varies
+    <img className={styles.tdAvatar} style={style} src={member.pictureUrl} alt="" />
+  ) : (
+    <div className={styles.tdAvatar} style={style}>
+      {initial}
+    </div>
+  );
+}
+
+function AvatarStack({ members, size = 24, max = 4 }: { members: GroupMemberDto[]; size?: number; max?: number }) {
+  const shown = members.slice(0, max);
+  return (
+    <div className={styles.tdStack}>
+      {shown.map((m) => (
+        <div key={m.lineUid} className={styles.tdStackItem}>
+          <Avatar member={m} size={size} />
+        </div>
+      ))}
+      {members.length > max && <span className={styles.tdStackMore}>+{members.length - max}</span>}
+    </div>
+  );
+}
+
+function DeadlineChip({ iso }: { iso: string | null }) {
+  if (!iso) return <span className={styles.tdDeadlineChip}>ตาม deadline งาน</span>;
+  const overdue = new Date(iso).getTime() < Date.now();
+  return (
+    <span className={`${styles.tdDeadlineChip} ${overdue ? styles.tdDeadlineChipOverdue : ''}`}>
+      {formatShortDeadline(iso)}
+    </span>
+  );
+}
+
+function ListSkeleton({ rows = 4 }: { rows?: number }) {
+  return (
+    <div className={styles.tdMemberList} aria-hidden>
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className={styles.tdSkeletonRow}>
+          <div className={styles.tdSkeletonCircle} />
+          <div className={styles.tdSkeletonBar} style={{ width: `${45 + (i % 3) * 15}%` }} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StateNotice({
+  title,
+  body,
+  onRetry,
+  retryLabel = 'ลองใหม่อีกที',
+}: {
+  title: string;
+  body: string;
+  onRetry?: () => void;
+  retryLabel?: string;
+}) {
+  return (
+    <div className={styles.tdStateCard}>
+      <div className={styles.tdStateIcon}>
+        <UsersIcon />
+      </div>
+      <p className={styles.tdStateTitle}>{title}</p>
+      <p className={styles.tdStateText}>{body}</p>
+      {onRetry && (
+        <button type="button" className={styles.tdRetryBtn} onClick={onRetry}>
+          {retryLabel}
+        </button>
+      )}
+    </div>
+  );
+}
 
 export default function TaskDetailPage({ params }: { params: { taskId: string } }) {
-  const router = useRouter();
   const taskId = params.taskId;
   const [task, setTask] = useState<TaskDto | null>(null);
   const [viewerUid, setViewerUid] = useState<string>('');
@@ -176,6 +259,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
     void load();
   }, [load]);
 
+  const retry = () => {
+    setState('loading');
+    void load();
+  };
+
   /** Run a mutating call, adopt its returned task, surface a friendly error. */
   async function run<T extends { task: TaskDto }>(
     fn: () => Promise<T>,
@@ -217,8 +305,14 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   if (state === 'loading') {
     return (
       <main className={styles.wrap}>
-        <div className={styles.skeleton} style={{ height: 40, marginBottom: 16 }} />
-        <div className={styles.skeleton} style={{ height: 120 }} />
+        <a className={styles.back} href="/dashboard/tasks">
+          ← กลับรายการงาน
+        </a>
+        <div className={styles.card} style={{ marginBottom: 12 }}>
+          <div className={styles.tdSkeletonBar} style={{ width: '60%', height: 20, marginBottom: 10 }} />
+          <div className={styles.tdSkeletonBar} style={{ width: '35%' }} />
+        </div>
+        <ListSkeleton rows={4} />
       </main>
     );
   }
@@ -228,7 +322,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         <a className={styles.back} href="/dashboard/tasks">
           ← กลับรายการงาน
         </a>
-        <p className={styles.error}>งานนี้เป็นของกลุ่มที่เธอยังไม่ได้อยู่ด้วยน้า</p>
+        <StateNotice
+          title="งานนี้เป็นของกลุ่มที่เธอยังไม่ได้อยู่ด้วยน้า"
+          body="ลองส่งข้อความในกลุ่มนั้นสักครั้ง แล้วกดลองใหม่อีกทีน้า"
+          onRetry={retry}
+        />
       </main>
     );
   }
@@ -238,7 +336,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         <a className={styles.back} href="/dashboard/tasks">
           ← กลับรายการงาน
         </a>
-        <p className={styles.error}>โหลดงานไม่สำเร็จ ลองรีเฟรชอีกครั้งน้า</p>
+        <StateNotice
+          title="โหลดงานไม่สำเร็จน้า"
+          body="เช็คสัญญาณอินเทอร์เน็ตแล้วลองใหม่อีกทีน้า"
+          onRetry={retry}
+        />
       </main>
     );
   }
@@ -247,6 +349,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   const isRecurring = task.type === 'recurring';
   const isClosed = task.status === 'done' || task.status === 'cancelled';
   const badge = STATUS_BADGE[task.status];
+  const calendarDeadline = task.globalDeadline ?? task.items.find((i) => i.deadline)?.deadline ?? null;
   const doneItems = task.items.filter((i) => i.status === 'done').length;
   const pct = task.items.length > 0 ? Math.round((doneItems / task.items.length) * 100) : 0;
 
@@ -337,12 +440,13 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   };
 
   return (
-    <main className={styles.wrap}>
+    <main className={styles.wrap} style={{ paddingBottom: 60 }}>
       <a className={styles.back} href="/dashboard/tasks">
         ← กลับรายการงาน
       </a>
 
-      {/* header card: title + status + deadline */}
+      {/* header card: title + status + (task type + full deadline w/ พ.ศ. — the
+          one deliberate difference from the LIFF view's plain deadline pill) */}
       <div className={styles.card}>
         <div className={styles.detailTitleRow}>
           <h1 className={styles.detailTitle}>{task.title}</h1>
@@ -362,37 +466,41 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
       </div>
 
       {/* action buttons row — evenly spaced, consistent border-radius */}
-      <div className={styles.detailActions}>
-        <a
-          className={styles.secondaryBtn}
-          style={{ flex: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
-          href={buildGoogleCalendarUrl(task.title, task.globalDeadline)}
-        >
-          <CalendarIcon /> บันทึกลงปฏิทิน
-        </a>
-        {isCreator && !isClosed && (
-          <button
-            type="button"
-            className={styles.secondaryBtn}
-            style={{ flex: 1, justifyContent: 'center' }}
-            onClick={openEdit}
-            disabled={busy}
-          >
-            แก้ไขงาน
-          </button>
-        )}
-        {isCreator && !isClosed && (
-          <button
-            type="button"
-            className={styles.dangerBtn}
-            style={{ flex: 1, justifyContent: 'center' }}
-            onClick={doCancel}
-            disabled={busy}
-          >
-            ยกเลิกงาน
-          </button>
-        )}
-      </div>
+      {((isCreator && !isClosed) || calendarDeadline) && (
+        <div className={styles.detailActions}>
+          {calendarDeadline && (
+            <a
+              className={styles.secondaryBtn}
+              style={{ flex: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
+              href={buildGoogleCalendarUrl(task.title, calendarDeadline)}
+            >
+              <CalendarIcon /> บันทึกลงปฏิทิน
+            </a>
+          )}
+          {isCreator && !isClosed && (
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              style={{ flex: 1, justifyContent: 'center' }}
+              onClick={openEdit}
+              disabled={busy}
+            >
+              แก้ไขงาน
+            </button>
+          )}
+          {isCreator && !isClosed && (
+            <button
+              type="button"
+              className={styles.dangerBtn}
+              style={{ flex: 1, justifyContent: 'center' }}
+              onClick={doCancel}
+              disabled={busy}
+            >
+              ยกเลิกงาน
+            </button>
+          )}
+        </div>
+      )}
 
       {/* progress bar */}
       <div className={styles.card} style={{ marginTop: 14 }}>
@@ -415,7 +523,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
           <h2 className={styles.sectionTitle}>ลิงก์ที่แนบ</h2>
           {isCreator && !isClosed && !addingLink && (
             <button type="button" className={styles.ghostBtn} onClick={() => setAddingLink(true)}>
-              <PlusIcon /> เพิ่มลิงก์
+              เพิ่มลิงก์
             </button>
           )}
         </div>
@@ -426,8 +534,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         )}
         <div className={styles.list}>
           {task.links.map((link) => (
-            <div key={link.id} className={styles.linkRow}>
-              <LinkIcon />
+            <div key={link.id} className={`${styles.card} ${styles.tdLinkCard}`}>
               <a className={styles.linkAnchor} href={link.url} target="_blank" rel="noreferrer">
                 {link.label || link.url}
               </a>
@@ -492,51 +599,44 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             const canAct = mine && !isClosed;
             const ipill = ITEM_STATUS_PILL[item.status];
             return (
-              <article key={item.id} className={styles.card}>
-                <div className={styles.cardTop}>
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      flexWrap: 'wrap',
-                      minWidth: 0,
-                    }}
-                  >
-                    <h3 className={styles.cardTitle} style={{ fontSize: 15 }}>
-                      {task.type === 'multi' ? `${idx + 1}. ${item.title}` : item.title}
-                    </h3>
-                    <span
-                      className={styles.statusBadge}
-                      style={{ background: ipill.bg, color: ipill.fg }}
-                    >
-                      {ipill.label}
-                    </span>
-                  </div>
-                  {isCreator && !isClosed && (
-                    <button
-                      type="button"
-                      className={styles.ghostBtn}
-                      onClick={() => void openAssigneeEditor(item)}
-                    >
-                      แก้ผู้รับผิดชอบ
-                    </button>
-                  )}
-                </div>
-                {item.description && (
-                  <p className={styles.itemMeta} style={{ marginTop: 4 }}>
-                    {item.description}
-                  </p>
-                )}
-                {item.deadline && (
-                  <span className={styles.deadline} style={{ marginTop: 6 }}>
-                    <ClockIcon size={13} />
-                    {formatDeadline(item.deadline)}
+              <article key={item.id} className={styles.tdItemCard}>
+                <div className={styles.tdItemTopRow}>
+                  <span className={styles.tdNumBadge} style={itemDone ? { background: '#059669' } : undefined}>
+                    {itemDone ? <CheckIcon size={13} /> : idx + 1}
                   </span>
+                  <div className={styles.tdItemBody}>
+                    <div className={styles.detailTitleRow} style={{ alignItems: 'flex-start', gap: 8 }}>
+                      <p className={styles.tdItemTitle}>{item.title}</p>
+                      <span
+                        className={styles.statusBadge}
+                        style={{ background: ipill.bg, color: ipill.fg, flexShrink: 0 }}
+                      >
+                        {ipill.label}
+                      </span>
+                    </div>
+                    {item.description && (
+                      <p className={styles.hint} style={{ margin: '6px 0 0' }}>
+                        {item.description}
+                      </p>
+                    )}
+                    <div className={styles.tdMetaRow}>
+                      <AvatarStack members={item.assignees} size={24} max={4} />
+                      <DeadlineChip iso={item.deadline} />
+                    </div>
+                  </div>
+                </div>
+
+                {/* creator controls */}
+                {isCreator && !isClosed && (
+                  <div className={styles.tdCreatorControls}>
+                    <button type="button" className={styles.ghostBtn} onClick={() => void openAssigneeEditor(item)}>
+                      แก้คน
+                    </button>
+                  </div>
                 )}
 
-                {/* assignees */}
-                <div style={{ marginTop: 10 }}>
+                {/* per-assignee status + notes */}
+                <div>
                   {item.assignees.map((a) => {
                     const stateLabel = a.doneAt
                       ? { txt: 'เสร็จแล้ว', cls: styles.stateDone }
@@ -547,9 +647,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                       <div key={a.id}>
                         <div className={styles.assigneeRow}>
                           <span className={styles.assigneeName}>{a.displayName || 'สมาชิก'}</span>
-                          <span className={`${styles.assigneeState} ${stateLabel.cls}`}>
-                            {stateLabel.txt}
-                          </span>
+                          <span className={`${styles.assigneeState} ${stateLabel.cls}`}>{stateLabel.txt}</span>
                         </div>
                         {a.doneNote && <p className={styles.noteText}>{a.doneNote}</p>}
                       </div>
@@ -559,28 +657,22 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
 
                 {/* viewer controls for their own assignment */}
                 {canAct && !mine!.doneAt && (
-                  <div style={{ marginTop: 12 }}>
-                    <label className={styles.fieldLabel}>หมายเหตุ (ไม่ใส่ก็ได้)</label>
+                  <div>
                     <textarea
                       className={styles.textarea}
-                      placeholder="เช่น ส่งไฟล์ในกลุ่มแล้ว / ทำถึงขั้นตอนไหน"
+                      placeholder="หมายเหตุ (ไม่ใส่ก็ได้) เช่น ส่งไฟล์ในกลุ่มแล้ว"
                       value={noteDraft[item.id] ?? ''}
                       onChange={(e) => setNoteDraft((d) => ({ ...d, [item.id]: e.target.value }))}
                       maxLength={500}
                     />
                     <div className={styles.inlineFormRow} style={{ marginTop: 8 }}>
-                      <button
-                        type="button"
-                        className={styles.primaryBtn}
-                        onClick={() => void doDone(item)}
-                        disabled={busy}
-                      >
+                      <button type="button" className={styles.primaryBtn} onClick={() => void doDone(item)} disabled={busy}>
                         เสร็จแล้ว
                       </button>
                       {!mine!.acceptedAt && (
                         <button
                           type="button"
-                          className={styles.secondaryBtn}
+                          className={styles.ghostBtn}
                           onClick={() => void doAccept(item)}
                           disabled={busy}
                         >
@@ -593,7 +685,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
 
                 {/* viewer already done → edit own note */}
                 {canAct && mine!.doneAt && (
-                  <div style={{ marginTop: 10 }}>
+                  <div>
                     {noteEditing[item.id] ? (
                       <>
                         <textarea
@@ -624,6 +716,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                       <button
                         type="button"
                         className={styles.ghostBtn}
+                        style={{ padding: 4 }}
                         onClick={() => {
                           setNoteDraft((d) => ({ ...d, [item.id]: mine!.doneNote ?? '' }));
                           setNoteEditing((e) => ({ ...e, [item.id]: true }));
@@ -640,11 +733,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         </div>
       </section>
 
-      {/* ---- edit modal ---- */}
+      {/* edit sheet */}
       {editOpen && (
-        <div className={styles.modalOverlay} onClick={() => setEditOpen(false)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 className={styles.modalTitle}>แก้ไขงาน</h3>
+        <div className={styles.tdSheetOverlay} onClick={() => setEditOpen(false)}>
+          <div className={styles.tdSheet} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.tdSheetHandle} />
             <label className={styles.fieldLabel}>ชื่องาน</label>
             <input
               className={styles.input}
@@ -652,20 +745,22 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
               onChange={(e) => setEditTitle(e.target.value)}
               maxLength={200}
             />
-            {!isRecurring && (
+            {!isRecurring ? (
               <>
                 <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
                   กำหนดส่ง
                 </label>
-                <input
-                  className={styles.input}
-                  type="datetime-local"
-                  value={editDeadline}
-                  onChange={(e) => setEditDeadline(e.target.value)}
-                />
+                <div className={styles.tdDateInputWrap}>
+                  <input
+                    className={styles.input}
+                    type="datetime-local"
+                    style={{ border: 'none' }}
+                    value={editDeadline}
+                    onChange={(e) => setEditDeadline(e.target.value)}
+                  />
+                </div>
               </>
-            )}
-            {isRecurring && (
+            ) : (
               <p className={styles.hint} style={{ margin: '10px 0 0' }}>
                 งานประจำเลื่อนรอบเองตามกำหนด แก้กำหนดส่งไม่ได้น้า
               </p>
@@ -680,67 +775,71 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
               onChange={(e) => setEditDescription(e.target.value)}
               maxLength={1000}
             />
-            <div className={styles.modalActions}>
-              <button type="button" className={styles.ghostBtn} onClick={() => setEditOpen(false)}>
-                ยกเลิก
-              </button>
-              <button type="button" className={styles.primaryBtn} onClick={() => void saveEdit()} disabled={busy}>
-                บันทึก
-              </button>
-            </div>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              style={{ marginTop: 16, width: '100%', justifyContent: 'center' }}
+              onClick={() => void saveEdit()}
+              disabled={busy}
+            >
+              บันทึก
+            </button>
           </div>
         </div>
       )}
 
-      {/* ---- assignee editor modal ---- */}
+      {/* assignee editor sheet */}
       {assigneeItemId && (
-        <div className={styles.modalOverlay} onClick={() => setAssigneeItemId(null)}>
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
-            <h3 className={styles.modalTitle}>เลือกผู้รับผิดชอบ</h3>
+        <div className={styles.tdSheetOverlay} onClick={() => setAssigneeItemId(null)}>
+          <div className={styles.tdSheet} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.tdSheetHandle} />
+            <h2 className={styles.sectionTitle} style={{ marginBottom: 12 }}>
+              เลือกผู้รับผิดชอบ
+            </h2>
             {roster === null ? (
-              <div className={styles.skeleton} style={{ height: 120 }} />
+              <ListSkeleton rows={4} />
             ) : roster.length === 0 ? (
               <p className={styles.hint} style={{ margin: 0 }}>
                 ยังไม่มีสมาชิกในกลุ่มให้เลือกน้า ลองให้เพื่อนส่งข้อความในกลุ่มก่อน
               </p>
             ) : (
-              roster.map((m) => {
-                const on = picked.has(m.lineUid);
-                return (
-                  <button
-                    key={m.lineUid}
-                    type="button"
-                    className={styles.memberPick}
-                    onClick={() =>
-                      setPicked((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(m.lineUid)) next.delete(m.lineUid);
-                        else next.add(m.lineUid);
-                        return next;
-                      })
-                    }
-                  >
-                    <span className={`${styles.pickBox} ${on ? styles.pickBoxOn : ''}`}>
-                      {on ? <CheckIcon size={13} /> : null}
-                    </span>
-                    <span className={styles.memberPickName}>{m.displayName || 'สมาชิก'}</span>
-                  </button>
-                );
-              })
+              <div className={styles.tdMemberList}>
+                {roster.map((m) => {
+                  const on = picked.has(m.lineUid);
+                  return (
+                    <button
+                      key={m.lineUid}
+                      type="button"
+                      className={`${styles.tdMemberRow} ${on ? styles.tdMemberRowSelected : ''}`}
+                      aria-pressed={on}
+                      onClick={() =>
+                        setPicked((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(m.lineUid)) next.delete(m.lineUid);
+                          else next.add(m.lineUid);
+                          return next;
+                        })
+                      }
+                    >
+                      <Avatar member={m} size={40} />
+                      <span className={styles.tdMemberName}>{m.displayName ?? 'สมาชิก'}</span>
+                      <span className={`${styles.tdCheckmark} ${on ? styles.tdCheckmarkOn : ''}`}>
+                        <CheckIcon />
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             )}
-            <div className={styles.modalActions}>
-              <button type="button" className={styles.ghostBtn} onClick={() => setAssigneeItemId(null)}>
-                ยกเลิก
-              </button>
-              <button
-                type="button"
-                className={styles.primaryBtn}
-                onClick={() => void saveAssignees()}
-                disabled={busy || picked.size === 0}
-              >
-                บันทึก
-              </button>
-            </div>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              style={{ marginTop: 16, width: '100%', justifyContent: 'center' }}
+              onClick={() => void saveAssignees()}
+              disabled={busy || picked.size === 0}
+            >
+              บันทึก
+            </button>
           </div>
         </div>
       )}

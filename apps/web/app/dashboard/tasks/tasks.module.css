@@ -590,3 +590,277 @@
     background-position: 0 50%;
   }
 }
+
+/* ---- task detail page ([taskId]) — mirrors the LIFF task-view layout.
+   "td" prefix keeps these scoped to the detail page so nothing here can
+   collide with the list page (page.tsx), which shares this module. ---- */
+
+.tdItemCard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  padding: 14px 16px;
+}
+.tdItemTopRow {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+}
+.tdItemBody {
+  flex: 1;
+  min-width: 0;
+}
+.tdItemTitle {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: #111;
+}
+.tdNumBadge {
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  background: #b53a32;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.tdMetaRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+.tdStack {
+  display: flex;
+  align-items: center;
+}
+.tdStackItem {
+  margin-left: -8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+}
+.tdStackItem:first-child {
+  margin-left: 0;
+}
+.tdStackMore {
+  margin-left: 6px;
+  font-size: 13px;
+  color: #8c8c8c;
+}
+.tdAvatar {
+  border-radius: 50%;
+  object-fit: cover;
+  background: #f9e3e1;
+  color: #93312b;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.tdDeadlineChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fef2f2;
+  color: #93312b;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.tdDeadlineChipOverdue {
+  background: #fde8e7;
+  color: #b91c1c;
+}
+.tdCreatorControls {
+  display: flex;
+  gap: 10px;
+  border-top: 1px solid #f0f0f0;
+  padding-top: 8px;
+}
+.tdLinkCard {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+
+/* bottom sheets (edit / assignee editor) */
+.tdSheetOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 100;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+.tdSheet {
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
+  width: 100%;
+  max-width: 520px;
+  max-height: 85dvh;
+  overflow-y: auto;
+  box-shadow: 0 -8px 30px rgba(0, 0, 0, 0.15);
+}
+.tdSheetHandle {
+  width: 40px;
+  height: 4px;
+  border-radius: 2px;
+  background: #e5e5e5;
+  margin: 0 auto 16px;
+}
+
+/* state notice card (forbidden / error) */
+.tdStateCard {
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  padding: 36px 24px;
+  text-align: center;
+}
+.tdStateIcon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: #fef2f2;
+  color: #b53a32;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 14px;
+}
+.tdStateTitle {
+  font-size: 16px;
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: #111;
+}
+.tdStateText {
+  font-size: 14px;
+  color: #8c8c8c;
+  margin: 0 0 18px;
+  line-height: 1.6;
+}
+.tdRetryBtn {
+  background: #fff;
+  color: #b53a32;
+  border: 1.5px solid #b53a32;
+  border-radius: 12px;
+  padding: 11px 24px;
+  min-height: 44px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+/* member picker sheet */
+.tdMemberList {
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+.tdMemberRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 64px;
+  width: 100%;
+  background: none;
+  border: none;
+  border-bottom: 1px solid #f0f0f0;
+  text-align: left;
+  cursor: pointer;
+  font-size: 15px;
+}
+.tdMemberRow:last-child {
+  border-bottom: none;
+}
+.tdMemberRowSelected {
+  background: #fef2f2;
+}
+.tdMemberName {
+  flex: 1;
+  min-width: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tdCheckmark {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid #d4d4d4;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+}
+.tdCheckmarkOn {
+  background: #b53a32;
+  border-color: #b53a32;
+  color: #fff;
+}
+.tdSkeletonRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  min-height: 64px;
+}
+.tdSkeletonCircle {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: #e9e9e9;
+  animation: tdPulse 1.4s ease-in-out infinite;
+  flex-shrink: 0;
+}
+.tdSkeletonBar {
+  height: 14px;
+  border-radius: 7px;
+  background: #e9e9e9;
+  animation: tdPulse 1.4s ease-in-out infinite;
+}
+@keyframes tdPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.tdDateInputWrap {
+  width: 100%;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  background: #fff;
+}
+.tdDateInputWrap:focus-within {
+  border-color: #b53a32;
+}
