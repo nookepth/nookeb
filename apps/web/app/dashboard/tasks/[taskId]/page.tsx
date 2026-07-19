@@ -12,6 +12,7 @@ import {
   acceptTaskItem,
   updateTask,
   cancelTask,
+  updateTaskItem,
   setTaskItemAssignees,
   addTaskLink,
   deleteTaskLink,
@@ -219,6 +220,12 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   // per-item transient inputs
   const [noteDraft, setNoteDraft] = useState<Record<string, string>>({});
   const [noteEditing, setNoteEditing] = useState<Record<string, boolean>>({});
+  // per-item edit sheet (title + deadline + description; drafts are refilled on
+  // each open, so no state leaks between items)
+  const [editItemId, setEditItemId] = useState<string | null>(null);
+  const [itemEditTitle, setItemEditTitle] = useState('');
+  const [itemEditDeadline, setItemEditDeadline] = useState('');
+  const [itemEditDescription, setItemEditDescription] = useState('');
   // assignee editor
   const [assigneeItemId, setAssigneeItemId] = useState<string | null>(null);
   const [roster, setRoster] = useState<GroupMemberDto[] | null>(null);
@@ -403,6 +410,32 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
     const note = noteDraft[item.id] ?? '';
     const res = await run(() => updateTaskItemNote(task.id, item.id, note), 'แก้หมายเหตุแล้วน้า');
     if (res) setNoteEditing((e) => ({ ...e, [item.id]: false }));
+  };
+
+  const openItemEdit = (item: TaskItemDto) => {
+    setItemEditTitle(item.title);
+    setItemEditDeadline(toLocalInput(item.deadline));
+    setItemEditDescription(item.description ?? '');
+    setEditItemId(item.id);
+  };
+  const saveItemEdit = async () => {
+    if (!editItemId) return;
+    if (!itemEditTitle.trim()) {
+      showToast('ใส่ชื่องานก่อนน้า');
+      return;
+    }
+    // Empty deadline → null (falls back to the task-level deadline).
+    const deadline = itemEditDeadline ? new Date(itemEditDeadline).toISOString() : null;
+    const res = await run(
+      () =>
+        updateTaskItem(task.id, editItemId, {
+          title: itemEditTitle.trim(),
+          deadline,
+          description: itemEditDescription.trim(),
+        }),
+      'แก้ไขงานแล้วน้า',
+    );
+    if (res) setEditItemId(null);
   };
 
   const openAssigneeEditor = async (item: TaskItemDto) => {
@@ -618,6 +651,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                     <button type="button" className={styles.ghostBtn} onClick={() => void openAssigneeEditor(item)}>
                       แก้ผู้รับผิดชอบ
                     </button>
+                    {task.type === 'multi' && item.status !== 'done' && item.status !== 'cancelled' && (
+                      <button type="button" className={styles.ghostBtn} onClick={() => openItemEdit(item)}>
+                        แก้ไขงาน
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -770,6 +808,64 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             >
               บันทึก
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* per-item edit sheet (ชื่องาน + กำหนดส่ง + รายละเอียด) */}
+      {editItemId && (
+        <div className={styles.tdSheetOverlay} onClick={() => setEditItemId(null)}>
+          <div className={styles.tdSheet} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.tdSheetHandle} />
+            <label className={styles.fieldLabel}>ชื่องาน</label>
+            <input
+              className={styles.input}
+              value={itemEditTitle}
+              onChange={(e) => setItemEditTitle(e.target.value)}
+              maxLength={200}
+            />
+            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+              กำหนดส่ง
+            </label>
+            <div className={styles.tdDateInputWrap}>
+              <input
+                className={styles.input}
+                type="datetime-local"
+                style={{ border: 'none' }}
+                value={itemEditDeadline}
+                onChange={(e) => setItemEditDeadline(e.target.value)}
+              />
+            </div>
+            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+              รายละเอียด (ไม่บังคับ)
+            </label>
+            <textarea
+              className={styles.textarea}
+              placeholder="อธิบายงานเพิ่มเติม..."
+              value={itemEditDescription}
+              onChange={(e) => setItemEditDescription(e.target.value)}
+              maxLength={1000}
+            />
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              style={{ marginTop: 16, width: '100%', justifyContent: 'center' }}
+              onClick={() => void saveItemEdit()}
+              disabled={busy}
+            >
+              บันทึก
+            </button>
+            {task.globalDeadline && (
+              <button
+                type="button"
+                className={styles.ghostBtn}
+                style={{ marginTop: 10, width: '100%', justifyContent: 'center' }}
+                onClick={() => setItemEditDeadline('')}
+                disabled={busy}
+              >
+                ใช้ของงาน (ล้างกำหนดของข้อนี้)
+              </button>
+            )}
           </div>
         </div>
       )}

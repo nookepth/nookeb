@@ -1222,6 +1222,20 @@ export function cancelTask(taskId: string): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });
 }
 
+/** Creator edits one item's title / deadline (null = fall back to the task
+ *  deadline) / description. Mirrors the LIFF `PATCH /tasks/:id/items/:itemId`. */
+export function updateTaskItem(
+  taskId: string,
+  itemId: string,
+  patch: { title: string; deadline: string | null; description: string },
+): Promise<{ task: TaskDto; taskDone: boolean }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+}
+
 /** Creator replaces the assignee set of one item. */
 export function setTaskItemAssignees(
   taskId: string,
