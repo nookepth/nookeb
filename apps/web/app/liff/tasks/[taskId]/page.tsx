@@ -145,9 +145,12 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   const [editTitle, setEditTitle] = useState('');
   const [editDeadline, setEditDeadline] = useState('');
   const [editDescription, setEditDescription] = useState('');
-  // per-item deadline sheet
-  const [deadlineItemId, setDeadlineItemId] = useState<string | null>(null);
-  const [itemDeadlineDraft, setItemDeadlineDraft] = useState('');
+  // per-item edit sheet (title + deadline + description; drafts are refilled on
+  // each open, so no state leaks between items)
+  const [editItemId, setEditItemId] = useState<string | null>(null);
+  const [itemEditTitle, setItemEditTitle] = useState('');
+  const [itemEditDeadline, setItemEditDeadline] = useState('');
+  const [itemEditDescription, setItemEditDescription] = useState('');
   // assignee sheet
   const [assigneeItemId, setAssigneeItemId] = useState<string | null>(null);
   const [roster, setRoster] = useState<GroupMemberDto[] | null>(null);
@@ -354,25 +357,30 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     const ok = await mutate('', { method: 'PATCH', body: JSON.stringify(patch) }, 'บันทึกการแก้ไขแล้วน้า');
     if (ok) setEditOpen(false);
   };
-  const openItemDeadline = (item: ItemDto) => {
-    setItemDeadlineDraft(toLocalInput(item.deadline));
-    setDeadlineItemId(item.id);
+  const openItemEdit = (item: ItemDto) => {
+    setItemEditTitle(item.title);
+    setItemEditDeadline(toLocalInput(item.deadline));
+    setItemEditDescription(item.description ?? '');
+    setEditItemId(item.id);
   };
-  const saveItemDeadline = async (clear = false) => {
-    if (!deadlineItemId) return;
-    let deadline: string | null;
-    if (clear) {
-      deadline = null;
-    } else {
-      if (!itemDeadlineDraft) return showToast('เลือกกำหนดส่งก่อนน้า');
-      deadline = new Date(itemDeadlineDraft).toISOString();
-    }
+  const saveItemEdit = async () => {
+    if (!editItemId) return;
+    if (!itemEditTitle.trim()) return showToast('ใส่ชื่องานก่อนน้า');
+    // Empty deadline → null (falls back to the task-level deadline).
+    const deadline = itemEditDeadline ? new Date(itemEditDeadline).toISOString() : null;
     const ok = await mutate(
-      `/items/${deadlineItemId}`,
-      { method: 'PATCH', body: JSON.stringify({ deadline }) },
-      'แก้กำหนดส่งของข้อนี้แล้วน้า',
+      `/items/${editItemId}`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: itemEditTitle.trim(),
+          deadline,
+          description: itemEditDescription.trim(),
+        }),
+      },
+      'แก้ไขงานแล้วน้า',
     );
-    if (ok) setDeadlineItemId(null);
+    if (ok) setEditItemId(null);
   };
   const doCancel = async () => {
     const cancelPrompt = TASK_NOTIFICATIONS_ENABLED
@@ -632,9 +640,9 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                         type="button"
                         className={styles.ghostBtn}
                         style={{ padding: 6, minHeight: 0, fontSize: 13 }}
-                        onClick={() => openItemDeadline(item)}
+                        onClick={() => openItemEdit(item)}
                       >
-                        แก้กำหนดส่ง
+                        แก้ไขงาน
                       </button>
                     )}
                   </div>
@@ -809,13 +817,22 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
         </div>
       )}
 
-      {/* per-item deadline sheet */}
-      {deadlineItemId && (
-        <div className={styles.sheetOverlay} onClick={() => setDeadlineItemId(null)}>
+      {/* per-item edit sheet (ชื่องาน + กำหนดส่ง + รายละเอียด) */}
+      {editItemId && (
+        <div className={styles.sheetOverlay} onClick={() => setEditItemId(null)}>
           <div className={styles.sheet} onClick={(e) => e.stopPropagation()}>
             <div className={styles.sheetHandle} />
-            <p className={styles.sectionLabel}>กำหนดส่งของข้อนี้</p>
-            <label className={styles.fieldLabel}>กำหนดส่ง</label>
+            <label className={styles.fieldLabel}>ชื่องาน</label>
+            <input
+              className={styles.input}
+              style={EDIT_FIELD_BOX}
+              value={itemEditTitle}
+              onChange={(e) => setItemEditTitle(e.target.value)}
+              maxLength={200}
+            />
+            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+              กำหนดส่ง
+            </label>
             {/* Same dateInputWrap geometry as the edit-task sheet so the native
                 datetime control keeps its border/background and can't overflow. */}
             <div className={styles.dateInputWrap} style={EDIT_FIELD_BOX}>
@@ -823,15 +840,25 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 className={styles.input}
                 type="datetime-local"
                 style={{ width: '100%', height: '100%' }}
-                value={itemDeadlineDraft}
-                onChange={(e) => setItemDeadlineDraft(e.target.value)}
+                value={itemEditDeadline}
+                onChange={(e) => setItemEditDeadline(e.target.value)}
               />
             </div>
+            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+              รายละเอียด (ไม่บังคับ)
+            </label>
+            <textarea
+              className={styles.textarea}
+              placeholder="อธิบายงานเพิ่มเติม..."
+              value={itemEditDescription}
+              onChange={(e) => setItemEditDescription(e.target.value)}
+              maxLength={1000}
+            />
             <button
               type="button"
               className={styles.primaryBtn}
               style={{ marginTop: 16 }}
-              onClick={() => void saveItemDeadline(false)}
+              onClick={() => void saveItemEdit()}
               disabled={busy}
             >
               บันทึก
@@ -841,7 +868,7 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 type="button"
                 className={styles.ghostBtn}
                 style={{ marginTop: 10 }}
-                onClick={() => void saveItemDeadline(true)}
+                onClick={() => setItemEditDeadline('')}
                 disabled={busy}
               >
                 ใช้ของงาน (ล้างกำหนดของข้อนี้)

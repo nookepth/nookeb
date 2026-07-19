@@ -82,10 +82,13 @@ const patchTaskSchema = z
     { message: 'nothing to update' },
   );
 
-// Item-deadline edit: an explicit null clears the item's own deadline so it
-// falls back to the task-level deadline (same semantics as create).
+// Per-item edit: title/description are optional; an explicit null deadline
+// clears the item's own deadline so it falls back to the task-level deadline
+// (same semantics as create). An empty-string description clears it.
 const itemDeadlineSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
   deadline: z.string().datetime({ offset: true }).nullable(),
+  description: z.string().trim().max(1000).optional(),
 });
 
 // A done-note is optional and short; an empty/blank string clears it.
@@ -363,7 +366,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     },
   );
 
-  // ---- PATCH /tasks/:id/items/:itemId — creator edits one item's own deadline ----
+  // ---- PATCH /tasks/:id/items/:itemId — creator edits one item's title/deadline/description ----
   // Fills the gap where a mis-set per-item deadline was only fixable by
   // cancel + recreate (which pushes a "ยกเลิกงาน" notice to the whole group).
   // Reminder rounds are rebuilt via rescheduleReminders, whose
@@ -410,9 +413,16 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
       }
 
+      const itemUpdate: { deadline: string | null; title?: string; description?: string | null } = {
+        deadline: parsed.data.deadline,
+      };
+      if (parsed.data.title !== undefined) itemUpdate.title = parsed.data.title;
+      if (parsed.data.description !== undefined) {
+        itemUpdate.description = parsed.data.description.length > 0 ? parsed.data.description : null;
+      }
       const { error: updateErr } = await app.supabase
         .from('task_items')
-        .update({ deadline: parsed.data.deadline })
+        .update(itemUpdate)
         .eq('id', item.id);
       if (updateErr) throw updateErr;
 

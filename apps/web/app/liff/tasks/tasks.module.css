@@ -19,6 +19,10 @@
   --disabled-text: #8c8c8c;
 
   min-height: 100dvh;
+  /* Constrain the content column on desktop so the LIFF page doesn't stretch
+     edge-to-edge — matches the dashboard task detail (.wrap max-width: 860px). */
+  max-width: 860px;
+  margin: 0 auto;
   background: var(--bg);
   font-family: var(--font-liff), var(--font-ibm-plex-sans-thai), system-ui, -apple-system,
     'Segoe UI', sans-serif;
