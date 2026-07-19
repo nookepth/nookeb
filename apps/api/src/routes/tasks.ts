@@ -113,7 +113,15 @@ function canView(task: TaskWithDetails, lineUid: string, isMember: boolean): boo
 
 const tasksRoutes: FastifyPluginAsync = async (app) => {
   // ---- POST /tasks — create + announce + schedule reminders ----
-  app.post('/tasks', { preHandler: app.authenticate }, async (request, reply) => {
+  // Each create fires a metered LINE push (announcement) and schedules more
+  // (reminders), so it's cost-bearing — cap it tighter than the 100/min global.
+  // Keyed per-IP by @fastify/rate-limit; a per-GROUP daily cap would need the
+  // parsed body (unavailable at the onRequest limiter stage), so it doesn't fit
+  // this pattern — the 10/min route limit is the guard here.
+  app.post('/tasks', {
+    preHandler: app.authenticate,
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });

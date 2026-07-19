@@ -283,7 +283,12 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /vault/upload — multipart, stream-encrypted straight to R2 (rule 3:
   // never buffered, never on disk). Stored ciphertext = plaintext + 16-byte tag.
-  app.post('/vault/upload', guarded, async (request, reply) => {
+  // Per-route cap (on top of the 100/min global): large multipart bodies +
+  // per-view sharp watermarking make this CPU/memory-heavy, so 20/min per IP.
+  app.post('/vault/upload', {
+    ...guarded,
+    config: { rateLimit: { max: 20, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
     const mp = await request.file();
     if (!mp) return reply.code(400).send({ error: 'Missing file field' });
     if (!VAULT_ALLOWED_MIME.has(mp.mimetype)) {

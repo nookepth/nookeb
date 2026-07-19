@@ -76,6 +76,13 @@ const securityHeaders = [
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  // Vercel already injects HSTS on *.vercel.app, but won't on a future custom
+  // domain — set it explicitly so TLS is pinned wherever the app is served.
+  // (Browsers ignore HSTS over plain http, so local dev is unaffected.)
+  {
+    key: 'Strict-Transport-Security',
+    value: 'max-age=63072000; includeSubDomains; preload',
+  },
   // microphone=(self): the legacy-box voice recorder needs getUserMedia on our
   // own origin. `microphone=()` disables it for the whole origin, so the browser
   // rejects with NotAllowedError WITHOUT ever prompting — the recorder then

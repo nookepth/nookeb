@@ -80,6 +80,26 @@ async function main(): Promise<void> {
     allowedHeaders: ['Authorization', 'Content-Type'],
   });
 
+  // Baseline security response headers on every API response. Hand-rolled as an
+  // onSend hook rather than @fastify/helmet: the API serves JSON + binary
+  // streams, so helmet's HTML-oriented defaults (CSP, etc.) don't apply, and
+  // this avoids adding a dependency. Especially relevant for
+  // GET /vault/files/:id/view, which streams user-controlled bytes inline —
+  // nosniff blocks content-type confusion. HSTS is set only in production (over
+  // TLS): Vercel injects it on *.vercel.app but nothing guarantees it on the
+  // Railway origin or a future custom domain. Route-level onSend hooks (e.g. the
+  // vault's Cache-Control/X-Robots-Tag) still run and add to these.
+  app.addHook('onSend', async (_request, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff');
+    reply.header('X-Frame-Options', 'DENY');
+    reply.header('Referrer-Policy', 'no-referrer');
+    reply.header('X-DNS-Prefetch-Control', 'off');
+    if (config.NODE_ENV === 'production') {
+      reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    }
+    return payload;
+  });
+
   // Session cookie support (FIX #7): the app JWT now travels in an HttpOnly
   // cookie set by POST /auth/line, so client-side JS can never read it.
   await app.register(cookie);

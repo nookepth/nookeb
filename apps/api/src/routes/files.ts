@@ -105,6 +105,18 @@ async function toDtoWithExtras(
 }
 
 const filesRoutes: FastifyPluginAsync = async (app) => {
+  // Surface the download-token secret fallback in production. When
+  // DOWNLOAD_TOKEN_SECRET is unset we derive `${JWT_SECRET}:download` (kept as a
+  // fallback so already-minted tokens don't break) — fine, but it means download
+  // tokens share the session JWT's key material. Warn loudly at startup so this
+  // is visible instead of silent; setting a real secret on Railway is an ops task.
+  if (!config.DOWNLOAD_TOKEN_SECRET && config.NODE_ENV === 'production') {
+    app.log.warn(
+      'DOWNLOAD_TOKEN_SECRET is unset — download tokens are signed with a key ' +
+        'derived from JWT_SECRET (fallback). Set a dedicated DOWNLOAD_TOKEN_SECRET.',
+    );
+  }
+
   // Every file route requires the normal Bearer JWT, EXCEPT the download route
   // when called with ?dl_token= — that one-time token is verified (signature,
   // file scope, single-use Redis key) inside the route handler itself.

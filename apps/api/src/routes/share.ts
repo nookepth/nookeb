@@ -159,7 +159,14 @@ const shareRoutes: FastifyPluginAsync = async (app) => {
 
   // GET /share/:token — PUBLIC viewer resolver (no auth). Returns file metadata
   // plus short-lived presigned preview/download URLs.
-  app.get<{ Params: { token: string } }>('/share/:token', async (request, reply) => {
+  //
+  // Tighter than the 100/min global limit — this is an unauthenticated,
+  // token-enumeration surface (same reasoning as GET /legacy-box/open/:slug,
+  // which carries the identical 30/min per-IP cap).
+  app.get<{ Params: { token: string } }>(
+    '/share/:token',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
     const { token } = request.params;
 
     const { data: shareData, error: shareErr } = await app.supabase

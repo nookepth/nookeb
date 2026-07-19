@@ -3,6 +3,13 @@ import { z } from 'zod';
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().default(3001),
+  // The BullMQ worker (a SEPARATE process/Railway service) exposes a minimal
+  // /health HTTP endpoint on this port so Railway's healthcheck can restart it
+  // when it crashes or hangs. Kept on its OWN port — NOT the API's PORT — so
+  // both processes can run on one host in local dev (`npm run dev`) without a
+  // bind conflict. On Railway, point the worker service's healthcheck at this
+  // port (set WORKER_HEALTH_PORT to the worker's exposed PORT, or reference it).
+  WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),
   APP_URL: z.string().url().default('http://localhost:3001'),
   WEB_URL: z.string().url().default('http://localhost:3000'),
 

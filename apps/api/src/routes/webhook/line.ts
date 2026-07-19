@@ -973,7 +973,14 @@ async function handleTextCommand(
       await reply(event, 'ยังไม่มีไฟล์ให้รวมเลยน้า หนูยกเลิกโหมดรวมรูปให้แล้วนะคะ');
       return;
     }
-    await setSessionStatus(app.supabase, session.id, 'processing');
+    // Compare-and-set collecting → processing: if a concurrent "เสร็จ" already
+    // flipped it, only one request enqueues finalize_scan (the fixed jobId
+    // dedups too, but this stops the double reply as well).
+    const flipped = await setSessionStatus(app.supabase, session.id, 'processing', 'collecting');
+    if (!flipped) {
+      await reply(event, 'กำลังรวมไฟล์ให้อยู่น้า รอสักครู่นะคะ');
+      return;
+    }
     await app.fileQueue.add(
       'finalize_scan',
       { type: 'finalize_scan', sessionId: session.id, lineUserId },

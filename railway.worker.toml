@@ -1,7 +1,11 @@
 # Railway service: nookeb Worker (BullMQ consumer — OCR, thumbnails, scan-to-PDF, purge)
 # NOT read automatically. In the Railway UI for the Worker service, set
 #   Settings → Config-as-code → Config file path = railway.worker.toml
-# The worker has no HTTP server, so there is intentionally NO healthcheckPath.
+# The worker now runs a minimal /health HTTP endpoint (workers/index.ts) so a
+# crash/hang is caught and restarted instead of silently stopping all jobs.
+# It listens on WORKER_HEALTH_PORT (default 3002) — set that env var on the
+# worker service to match its exposed PORT (or reference ${{PORT}}) so this
+# healthcheck can reach it.
 [build]
 builder = "nixpacks"
 buildCommand = "npm run build --workspace @nookeb/shared --workspace @nookeb/api"
@@ -17,5 +21,7 @@ watchPatterns = [
 
 [deploy]
 startCommand = "npm run start:worker --workspace @nookeb/api"
+healthcheckPath = "/health"
+healthcheckTimeout = 100
 restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10

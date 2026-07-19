@@ -565,6 +565,40 @@ export async function deleteTeam(
     .eq('team_id', teamId);
   if (unbindErr) throw unbindErr;
 
+  // Because the team is only SOFT-deleted, the ON DELETE CASCADE FKs on
+  // team_join_requests / team_invites / team_members never fire — those rows
+  // would otherwise reference a dead team forever, and a pending join request
+  // becomes permanently unresolvable (no live team to approve/reject against).
+  // Clean them up explicitly here, in delete order. Runs AFTER
+  // revokeTeamSpaceMemberships + the spaces.team_id null-out above, both of
+  // which still need the team_members rows in place, so this must stay last
+  // (before the soft delete itself).
+  //
+  // 1. Stamp any PENDING join requests as rejected — soft-close (keep the audit
+  //    trail, matching the rest of the codebase), same shape as rejectJoinRequest.
+  const { error: reqErr } = await supabase
+    .from('team_join_requests')
+    .update({ status: 'rejected', reviewed_by: requesterId, reviewed_at: new Date().toISOString() })
+    .eq('team_id', teamId)
+    .eq('status', 'pending');
+  if (reqErr) throw reqErr;
+
+  // 2. Delete the team's invite rows — tokens for a dead team must not stay
+  //    redeemable or listable.
+  const { error: inviteErr } = await supabase
+    .from('team_invites')
+    .delete()
+    .eq('team_id', teamId);
+  if (inviteErr) throw inviteErr;
+
+  // 3. Delete the now-meaningless membership rows (space access was already
+  //    revoked above; this removes the membership record itself).
+  const { error: memberErr } = await supabase
+    .from('team_members')
+    .delete()
+    .eq('team_id', teamId);
+  if (memberErr) throw memberErr;
+
   const { error } = await supabase
     .from('teams')
     .update({ deleted_at: new Date().toISOString() })

@@ -137,16 +137,27 @@ export async function deleteScanTempObjects(
   return { objectsDeleted, errors };
 }
 
+/**
+ * Update a scan session's status. Pass `expectedPrev` for a compare-and-set:
+ * the update only lands if the row is still in that status, so two concurrent
+ * transitions (e.g. a double-tapped "เสร็จ") can't stomp each other. Returns
+ * whether a row was actually flipped — callers guarding a one-shot action (like
+ * enqueuing finalize_scan) should check it. Without `expectedPrev` the update is
+ * unconditional and always returns true (back-compat for unconditional cancels).
+ */
 export async function setSessionStatus(
   supabase: SupabaseClient,
   sessionId: string,
   status: ScanSessionRecord['status'],
-): Promise<void> {
-  const { error } = await supabase
-    .from('scan_sessions')
-    .update({ status })
-    .eq('id', sessionId);
+  expectedPrev?: ScanSessionRecord['status'],
+): Promise<boolean> {
+  let query = supabase.from('scan_sessions').update({ status }).eq('id', sessionId);
+  if (expectedPrev !== undefined) {
+    query = query.eq('status', expectedPrev);
+  }
+  const { data, error } = await query.select('id');
   if (error) throw error;
+  return (data?.length ?? 0) > 0;
 }
 
 export async function getSession(

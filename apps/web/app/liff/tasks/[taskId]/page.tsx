@@ -113,6 +113,9 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   const [editOpen, setEditOpen] = useState(false);
   const [editTitle, setEditTitle] = useState('');
   const [editDeadline, setEditDeadline] = useState('');
+  // per-item deadline sheet
+  const [deadlineItemId, setDeadlineItemId] = useState<string | null>(null);
+  const [itemDeadlineDraft, setItemDeadlineDraft] = useState('');
   // assignee sheet
   const [assigneeItemId, setAssigneeItemId] = useState<string | null>(null);
   const [roster, setRoster] = useState<GroupMemberDto[] | null>(null);
@@ -312,6 +315,26 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     const ok = await mutate('', { method: 'PATCH', body: JSON.stringify(patch) }, 'บันทึกการแก้ไขแล้วน้า');
     if (ok) setEditOpen(false);
   };
+  const openItemDeadline = (item: ItemDto) => {
+    setItemDeadlineDraft(toLocalInput(item.deadline));
+    setDeadlineItemId(item.id);
+  };
+  const saveItemDeadline = async (clear = false) => {
+    if (!deadlineItemId) return;
+    let deadline: string | null;
+    if (clear) {
+      deadline = null;
+    } else {
+      if (!itemDeadlineDraft) return showToast('เลือกกำหนดส่งก่อนน้า');
+      deadline = new Date(itemDeadlineDraft).toISOString();
+    }
+    const ok = await mutate(
+      `/items/${deadlineItemId}`,
+      { method: 'PATCH', body: JSON.stringify({ deadline }) },
+      'แก้กำหนดส่งของข้อนี้แล้วน้า',
+    );
+    if (ok) setDeadlineItemId(null);
+  };
   const doCancel = async () => {
     const cancelPrompt = TASK_NOTIFICATIONS_ENABLED
       ? `ยกเลิกงาน "${task.title}" ใช่ไหมน้า? หนูจะหยุดเตือนและบอกกลุ่มให้`
@@ -497,14 +520,26 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                     </div>
                   </div>
                   {isCreator && !isClosed && (
-                    <button
-                      type="button"
-                      className={styles.ghostBtn}
-                      style={{ padding: 4, minHeight: 0, fontSize: 13 }}
-                      onClick={() => void openAssigneeEditor(item)}
-                    >
-                      แก้คน
-                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                      <button
+                        type="button"
+                        className={styles.ghostBtn}
+                        style={{ padding: 4, minHeight: 0, fontSize: 13 }}
+                        onClick={() => void openAssigneeEditor(item)}
+                      >
+                        แก้คน
+                      </button>
+                      {task.type === 'multi' && item.status !== 'done' && item.status !== 'cancelled' && (
+                        <button
+                          type="button"
+                          className={styles.ghostBtn}
+                          style={{ padding: 4, minHeight: 0, fontSize: 13 }}
+                          onClick={() => openItemDeadline(item)}
+                        >
+                          แก้กำหนดส่ง
+                        </button>
+                      )}
+                    </div>
                   )}
                 </div>
 
@@ -675,6 +710,48 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
             <button type="button" className={styles.primaryBtn} style={{ marginTop: 16 }} onClick={() => void saveEdit()} disabled={busy}>
               บันทึก
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* per-item deadline sheet */}
+      {deadlineItemId && (
+        <div className={styles.sheetOverlay} onClick={() => setDeadlineItemId(null)}>
+          <div className={styles.sheet} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.sheetHandle} />
+            <p className={styles.sectionLabel}>กำหนดส่งของข้อนี้</p>
+            <label className={styles.fieldLabel}>กำหนดส่ง</label>
+            {/* Same dateInputWrap geometry as the edit-task sheet so the native
+                datetime control keeps its border/background and can't overflow. */}
+            <div className={styles.dateInputWrap} style={EDIT_FIELD_BOX}>
+              <input
+                className={styles.input}
+                type="datetime-local"
+                style={{ width: '100%', height: '100%' }}
+                value={itemDeadlineDraft}
+                onChange={(e) => setItemDeadlineDraft(e.target.value)}
+              />
+            </div>
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              style={{ marginTop: 16 }}
+              onClick={() => void saveItemDeadline(false)}
+              disabled={busy}
+            >
+              บันทึก
+            </button>
+            {task.globalDeadline && (
+              <button
+                type="button"
+                className={styles.ghostBtn}
+                style={{ marginTop: 10 }}
+                onClick={() => void saveItemDeadline(true)}
+                disabled={busy}
+              >
+                ใช้ของงาน (ล้างกำหนดของข้อนี้)
+              </button>
+            )}
           </div>
         </div>
       )}

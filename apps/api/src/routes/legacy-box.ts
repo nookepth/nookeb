@@ -137,9 +137,21 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // POST /legacy-box — create a box from multipart (title/message/theme + photos).
-  app.post('/legacy-box', async (request, reply) => {
+  // Per-route cap (on top of the 100/min global): up to 11 files run through
+  // sharp re-encoding per request, so this is the heaviest web write — 10/min per IP.
+  app.post('/legacy-box', {
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
     const userId = request.authUser!.userId;
 
+    // TOCTOU note: this count-then-insert can be raced (two concurrent creates
+    // both see 9 and both insert an 11th). Left as-is deliberately — a per-user
+    // "max N live rows" cap isn't expressible as a partial unique index, so
+    // enforcing it at the DB would need a trigger (real DDL + failure paths) for
+    // a low-value ceiling. The real, DB-enforced backstop is storage quota:
+    // every box reserves its bytes via incrementPersonalStorage(enforce) below,
+    // so a race can leak at most a handful of extra boxes and never unbounded
+    // storage. MAX_BOXES_PER_USER is a UX guardrail, not a security boundary.
     if ((await countLiveBoxes(app.supabase, userId)) >= MAX_BOXES_PER_USER) {
       return reply.code(429).send({
         error: `คุณมีกล่องของขวัญครบ ${MAX_BOXES_PER_USER} กล่องแล้ว`,
