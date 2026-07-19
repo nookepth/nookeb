@@ -18,7 +18,7 @@ import {
   listGroupTaskMembers,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
-import { ClockIcon, CloseIcon } from '@/components/icons';
+import { CloseIcon } from '@/components/icons';
 import styles from '../tasks.module.css';
 
 const TYPE_LABEL: Record<TaskDto['type'], string> = {
@@ -44,16 +44,7 @@ const ITEM_STATUS_PILL: Record<TaskStatus, { label: string; bg: string; fg: stri
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
-/** Full date incl. Buddhist-Era year — used ONLY in the header's กำหนดส่ง line
- *  (the one deliberate difference from the LIFF view, which shows a same-year
- *  deadline pill instead). */
-function formatDeadline(iso: string): string {
-  const d = new Date(iso);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]} ${d.getFullYear() + 543} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** Short date, no year — matches the LIFF item-level deadline chip. */
+/** Short date, no year — matches the LIFF deadline chip. */
 function formatShortDeadline(iso: string): string {
   const d = new Date(iso);
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -445,8 +436,8 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         ← กลับรายการงาน
       </a>
 
-      {/* header card: title + status + (task type + full deadline w/ พ.ศ. — the
-          one deliberate difference from the LIFF view's plain deadline pill) */}
+      {/* header card: title + status + (task type badge kept from the dashboard
+          view) + LIFF-style deadline pill */}
       <div className={styles.card}>
         <div className={styles.detailTitleRow}>
           <h1 className={styles.detailTitle}>{task.title}</h1>
@@ -456,12 +447,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         </div>
         <div className={styles.detailMetaRow}>
           <span className={styles.typeTag}>{TYPE_LABEL[task.type]}</span>
-          {task.globalDeadline && (
-            <span className={styles.deadline} style={{ marginTop: 0 }}>
-              <ClockIcon size={14} />
-              กำหนดส่ง {formatDeadline(task.globalDeadline)}
-            </span>
-          )}
+          {task.globalDeadline && <DeadlineChip iso={task.globalDeadline} />}
         </div>
       </div>
 
@@ -471,7 +457,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
           {calendarDeadline && (
             <a
               className={styles.secondaryBtn}
-              style={{ flex: 1, justifyContent: 'center', whiteSpace: 'nowrap' }}
+              style={{ flex: 1, padding: '13px 10px', whiteSpace: 'nowrap' }}
               href={buildGoogleCalendarUrl(task.title, calendarDeadline)}
             >
               <CalendarIcon /> บันทึกลงปฏิทิน
@@ -481,7 +467,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             <button
               type="button"
               className={styles.secondaryBtn}
-              style={{ flex: 1, justifyContent: 'center' }}
+              style={{ flex: 1, padding: '13px 10px' }}
               onClick={openEdit}
               disabled={busy}
             >
@@ -492,7 +478,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             <button
               type="button"
               className={styles.dangerBtn}
-              style={{ flex: 1, justifyContent: 'center' }}
+              style={{ flex: 1, padding: '13px 10px' }}
               onClick={doCancel}
               disabled={busy}
             >
