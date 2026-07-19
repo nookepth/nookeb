@@ -70,6 +70,8 @@ function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): stri
   if (!deadlineIso) return 'https://calendar.google.com';
   const fmt = (d: Date) => {
     const date = new Date(d);
+    date.setSeconds(0, 0);
+    date.setMinutes(date.getMinutes() - 1);
     const pad = (n: number) => String(n).padStart(2, '0');
     return (
       date.getFullYear().toString() +
@@ -83,9 +85,8 @@ function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): stri
   };
   const start = new Date(deadlineIso);
   const startStr = fmt(start);
-  const endStr = fmt(new Date(start.getTime() + 60 * 60 * 1000)); // +1hr
   const text = encodeURIComponent(title || '');
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${startStr}/${endStr}`;
+  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${startStr}/${startStr}`;
 }
 
 const STATUS_BADGE: Record<string, { label: string; bg: string; fg: string }> = {
