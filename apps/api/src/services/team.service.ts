@@ -538,6 +538,22 @@ export async function deleteTeam(
   // team's counter, never the uploader's personal quota — see FIX #3.)
   await revokeTeamSpaceMemberships(supabase, teamId);
 
+  // Un-stamp the team's spaces so they revert to plain open group spaces.
+  // Left stamped, spaces.team_id points at a deleted team and
+  // joinSenderToGroupSpace gates on isLineUserTeamMember — whose team_members
+  // rows survive the soft delete — so an ex-member who uploads is silently
+  // re-granted the access the revoke above just removed, while ex-members who
+  // don't upload stay locked out. Nulling team_id makes the post-delete state
+  // coherent: the group space behaves like any never-bound group space again
+  // (any sender joins on upload; files charge personal quota, which is already
+  // the case once the team is gone). Ordering: AFTER
+  // revokeTeamSpaceMemberships, which discovers team spaces via this column.
+  const { error: unstampErr } = await supabase
+    .from('spaces')
+    .update({ team_id: null })
+    .eq('team_id', teamId);
+  if (unstampErr) throw unstampErr;
+
   // Release the team's LINE-group bindings. Left behind, they outlive the
   // team forever: bindLineGroup answers GROUP_ALREADY_BOUND for any new team,
   // and unbindLineGroup requires a role on THIS (soon-deleted) team, which

@@ -5,7 +5,7 @@ import { config } from '../config';
 import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
 import { getGroupNotifySetting } from './group-settings.service';
 import { replyMessage, type LineMessage } from './line.service';
-import { addPendingNotify } from './pending-notify.service';
+import { addPendingNotify, drainPendingNotify } from './pending-notify.service';
 
 /**
  * Per-user debounce queue for normal uploads. A burst of image/file events from
@@ -274,13 +274,24 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
         // The progress page is served by the API, not the web app — hence APP_URL
         progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
       });
+  // Deferred worker notices (quota-full, rejections, lost-batch apologies)
+  // used to drain ONLY on 1-on-1 text/postback events — a user who only ever
+  // sends files never saw them (audit finding #5). Prepend them to this reply
+  // too, 1-on-1 only (pending-notify never drains in groups, by design).
+  // MAX_PENDING (4) + the progress card fits LINE's 5-messages-per-reply cap.
+  // Drain only when a token exists to deliver on; re-queue if the reply fails
+  // so the notices aren't lost with the spent token (mirrors sendReply).
+  const pending: LineMessage[] =
+    !isGroup && shouldNotify && entry.replyToken ? await drainPendingNotify(lineUserId) : [];
+
   // When notifications are OFF for this group, store silently — no reply at all.
   if (shouldNotify) {
     try {
-      if (entry.replyToken) await replyMessage(entry.replyToken, [message]);
+      if (entry.replyToken) await replyMessage(entry.replyToken, [...pending, message]);
       else app.log.warn({ lineUserId }, 'upload confirmation skipped — no reply token');
     } catch (err) {
       app.log.error({ err, lineUserId }, 'upload confirmation reply failed — skipping (no push fallback)');
+      if (pending.length > 0) await addPendingNotify(lineUserId, pending);
     }
   }
 

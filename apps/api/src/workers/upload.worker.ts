@@ -55,7 +55,7 @@ import {
   incrementTeamStorage,
   StorageQuotaError,
 } from '../services/team.service';
-import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeDeletedVaultFiles, purgeDeletedBoxes, purgeOrphanScanTemp } from '../services/purge.service';
+import { purgeDeletedFiles, purgeDeletedDiaryEntries, purgeDeletedVaultFiles, purgeDeletedBoxes, purgeOrphanScanTemp, purgeStaleProcessingFiles } from '../services/purge.service';
 import * as progressStore from '../services/progress-store';
 import {
   countPages,
@@ -1570,6 +1570,21 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
     `[upload.worker] purge: scanned ${result.scanned} file(s) deleted before ${result.cutoff}, ` +
       `removed ${result.objectsDeleted} R2 object(s), errors ${result.errors}`,
   );
+
+  // Stale-processing repair (audit finding #4): rows a crashed worker left
+  // live in 'processing' (or legacy live 'error' rows) for >24h are dead —
+  // tombstone them so the dashboard badge doesn't spin forever. Best-effort:
+  // must not fail the sweeps below. Quota drift, if any, is repaired by
+  // scripts/backfill-quota.ts (see purgeStaleProcessingFiles).
+  try {
+    const staleSweep = await purgeStaleProcessingFiles(supabase, r2, { apply: true });
+    console.log(
+      `[upload.worker] purge: stale-processing swept ${staleSweep.scanned} row(s) older than ${staleSweep.cutoff}, ` +
+        `removed ${staleSweep.objectsDeleted} R2 object(s), errors ${staleSweep.errors}`,
+    );
+  } catch (err) {
+    console.error('[upload.worker] purge: stale-processing sweep failed:', err);
+  }
 
   // Safety net for orphaned scan-temp page images from cancelled/timed-out sessions.
   const scanSweep = await purgeOrphanScanTemp(supabase);

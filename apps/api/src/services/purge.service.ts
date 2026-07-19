@@ -137,6 +137,76 @@ export async function purgeDeletedFiles(
   return result;
 }
 
+export interface StaleProcessingSweepResult {
+  cutoff: string;
+  scanned: number;
+  objectsDeleted: number;
+  errors: number;
+}
+
+/**
+ * Repair rows stuck LIVE in a non-ready status (audit 2026-07-19 finding #4):
+ * a worker crash between createFileRecord and markFileReady leaves
+ * status='processing' forever — a permanent "กำลังประมวลผล" badge in the
+ * dashboard that no retry can repair (the dedup guard refuses to treat
+ * non-ready rows as stored). Live status='error' rows are swept too: they can
+ * only predate the markFileError tombstone change (same audit, finding #1) and
+ * are the same dead-row class.
+ *
+ * Treatment: mark status='error' + soft-delete, then run the standard
+ * purgeFileRows tombstone path IMMEDIATELY (best-effort R2 delete of whatever
+ * landed + purged_at + redaction) rather than waiting out the trash retention —
+ * these rows were never successfully stored, so there is nothing meaningful to
+ * restore and they must not surface in the trash UI. If an R2 delete fails,
+ * purgeFileRows leaves that row un-tombstoned (deleted_at set, metadata kept)
+ * and the next daily run retries it.
+ *
+ * Quota is deliberately NOT adjusted here: whether the crashed run's
+ * reservation was released is unknowable from the row, so a blind refund could
+ * double-refund. Drift (rare — requires a hard crash in the store window) is
+ * repaired by the existing recompute script, apps/api/scripts/backfill-quota.ts.
+ *
+ * 24h minimum age keeps the sweep far clear of any legitimately in-flight
+ * upload (a live batch finishes in minutes).
+ */
+export async function purgeStaleProcessingFiles(
+  supabase: SupabaseClient,
+  r2: S3Client,
+  opts: { olderThanHours?: number; apply: boolean },
+): Promise<StaleProcessingSweepResult> {
+  const hours = opts.olderThanHours ?? 24;
+  const cutoff = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
+
+  const { data, error } = await supabase
+    .from('files')
+    .select('id, r2_key, thumbnail_key')
+    .in('status', ['processing', 'error'])
+    .is('deleted_at', null)
+    .lt('created_at', cutoff);
+  if (error) throw error;
+
+  const rows = (data ?? []) as PurgeFileRow[];
+  const result: StaleProcessingSweepResult = {
+    cutoff,
+    scanned: rows.length,
+    objectsDeleted: 0,
+    errors: 0,
+  };
+  if (rows.length === 0 || !opts.apply) return result;
+
+  const now = new Date().toISOString();
+  const { error: markErr } = await supabase
+    .from('files')
+    .update({ status: 'error', deleted_at: now, updated_at: now })
+    .in('id', rows.map((r) => r.id));
+  if (markErr) throw markErr;
+
+  const applied = await purgeFileRows(supabase, r2, rows);
+  result.objectsDeleted = applied.objectsDeleted;
+  result.errors = applied.errors;
+  return result;
+}
+
 export interface DiaryPurgeResult {
   cutoff: string;
   scanned: number;
