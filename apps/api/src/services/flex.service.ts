@@ -767,7 +767,7 @@ export function buildOnboardingCarouselMessage(): FlexMessage {
   const bubbles = ONBOARDING_ACTIONS.map((action, i) => ({
     type: 'bubble',
     size: 'mega',
-    hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/onboarding/${i + 1}.jpg`, action },
+    hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/onboarding/${i + 1}.jpg?v=2`, action },
   }));
   return {
     type: 'flex',
