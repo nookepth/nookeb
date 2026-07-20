@@ -3,7 +3,6 @@ import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
 import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
-import { getGroupNotifySetting } from './group-settings.service';
 import { replyMessage, type LineMessage } from './line.service';
 import { addPendingNotify, drainPendingNotify } from './pending-notify.service';
 
@@ -262,30 +261,25 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
   // neither pushes. Previously groups got no reply here and a worker text push —
   // that push is gone, so the group acknowledgement now lives here as a reply.
   const isGroup = entry.lineSource === 'group' || entry.lineSource === 'room';
-  // Per-group opt-out: a group can silence the "บันทึกแล้วน้า ✓" confirmation with
-  // "หนูเก็บปิดแจ้งเตือน" (migration 021). Default ON, and getGroupNotifySetting fails
-  // open, so a missing setting / DB error still notifies. 1-on-1 chats are unaffected.
-  const shouldNotify = isGroup ? await getGroupNotifySetting(app.supabase, entry.notifyGroupId) : true;
-  const message: LineMessage = isGroup
-    ? { type: 'text', text: 'บันทึกแล้วน้า ✓' }
-    : buildProgressFlexMessage({
-        total: entry.items.length,
-        username: entry.username,
-        // The progress page is served by the API, not the web app — hence APP_URL
-        progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
-      });
-  // Deferred worker notices (quota-full, rejections, lost-batch apologies)
-  // used to drain ONLY on 1-on-1 text/postback events — a user who only ever
-  // sends files never saw them (audit finding #5). Prepend them to this reply
-  // too, 1-on-1 only (pending-notify never drains in groups, by design).
-  // MAX_PENDING (4) + the progress card fits LINE's 5-messages-per-reply cap.
-  // Drain only when a token exists to deliver on; re-queue if the reply fails
-  // so the notices aren't lost with the spent token (mirrors sendReply).
-  const pending: LineMessage[] =
-    !isGroup && shouldNotify && entry.replyToken ? await drainPendingNotify(lineUserId) : [];
-
-  // When notifications are OFF for this group, store silently — no reply at all.
-  if (shouldNotify) {
+  // Group/room uploads are stored SILENTLY — no acknowledgement reply of any kind.
+  // The "บันทึกแล้วน้า ✓" group confirmation (and its per-group notify toggle,
+  // migration 021) was retired: shared chats stay quiet. Only 1-on-1 chats get an
+  // acknowledgement, the progress card below.
+  if (!isGroup) {
+    const message: LineMessage = buildProgressFlexMessage({
+      total: entry.items.length,
+      username: entry.username,
+      // The progress page is served by the API, not the web app — hence APP_URL
+      progressViewUrl: `${config.APP_URL}/progress/${batchId}/view`,
+    });
+    // Deferred worker notices (quota-full, rejections, lost-batch apologies)
+    // used to drain ONLY on 1-on-1 text/postback events — a user who only ever
+    // sends files never saw them (audit finding #5). Prepend them to this reply
+    // too, 1-on-1 only (pending-notify never drains in groups, by design).
+    // MAX_PENDING (4) + the progress card fits LINE's 5-messages-per-reply cap.
+    // Drain only when a token exists to deliver on; re-queue if the reply fails
+    // so the notices aren't lost with the spent token (mirrors sendReply).
+    const pending: LineMessage[] = entry.replyToken ? await drainPendingNotify(lineUserId) : [];
     try {
       if (entry.replyToken) await replyMessage(entry.replyToken, [...pending, message]);
       else app.log.warn({ lineUserId }, 'upload confirmation skipped — no reply token');
@@ -316,8 +310,9 @@ async function flush(app: FastifyInstance, lineUserId: string): Promise<void> {
     // disable.)
     await app.fileQueue.add('upload_batch', job, { jobId, attempts: 1 });
   } catch (err) {
-    // The user was already told "บันทึกแล้วน้า ✓" / shown the progress card above,
-    // but the job never made it to the queue — the files are lost. Own the failure:
+    // In 1-on-1 the user was already shown the progress card above (groups get no
+    // reply at all now); the job never made it to the queue — the files are lost.
+    // Own the failure:
     // apologise so the user knows to resend, instead of silently dropping the batch.
     // The reply token is already spent on the confirmation above and pushes are
     // banned (reply-only messaging), so the apology is deferred to pending-notify

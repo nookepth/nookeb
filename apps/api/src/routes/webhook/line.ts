@@ -29,7 +29,6 @@ import {
   type FlexMessage,
 } from '../../services/flex.service';
 import { ensureUserAndSpace, findLiveFileByLineMessageId } from '../../services/file.service';
-import { getGroupNotifySetting, setGroupNotifySetting } from '../../services/group-settings.service';
 import {
   checkRedeemRateLimit,
   getReferralStatus,
@@ -310,8 +309,6 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
 หนูเก็บยกเลิกผูกทีม — ยกเลิกการผูกทีม
 หนูเก็บไอดีกลุ่ม — ดูไอดีกลุ่มนี้
-หนูเก็บปิดแจ้งเตือน — ให้หนูเงียบๆ ในกลุ่ม
-หนูเก็บเปิดแจ้งเตือน — ให้หนูแจ้งทุกครั้ง
 
 🎁 เพื่อน
 หนูเก็บเชิญ — รับโค้ดชวนเพื่อน
@@ -644,13 +641,11 @@ async function handleTextCommand(
     return;
   }
 
-  // "หนูเก็บเพิ่มเติม" — group shows a group-admin sub-menu (5 quick replies);
+  // "หนูเก็บเพิ่มเติม" — group shows a group-admin sub-menu (3 quick replies);
   // 1-on-1 shows an informational feature-image carousel (safe in both contexts).
   if (prefixed && isCmd(text, 'เพิ่มเติม')) {
     if (source.type === 'group' || source.type === 'room') {
       await replyWithQuickReply(event, 'เลือกเมนูเพิ่มเติมได้เลยน้า 🎛️', [
-        { label: 'หนูเก็บปิดแจ้งเตือน', text: 'หนูเก็บปิดแจ้งเตือน' },
-        { label: 'หนูเก็บเปิดแจ้งเตือน', text: 'หนูเก็บเปิดแจ้งเตือน' },
         { label: 'หนูเก็บผูกทีม', text: 'หนูเก็บผูกทีม' },
         { label: 'หนูเก็บยกเลิกผูกทีม', text: 'หนูเก็บยกเลิกผูกทีม' },
         { label: 'หนูเก็บไอดีกลุ่ม', text: 'หนูเก็บไอดีกลุ่ม' },
@@ -783,45 +778,10 @@ async function handleTextCommand(
     return;
   }
 
-  // Group notification toggle (group/room only). Turns the per-upload
-  // "บันทึกแล้วน้า ✓" confirmation reply ON/OFF for THIS group — stored per group
-  // (migration 021, group-settings.service). Open to any member (LINE's Messaging
-  // API can't expose group-admin role); `updated_by` records who last changed it.
-  // Reached in group/room because the "หนูเก็บ" prefix passes the bot-directed guard
-  // above. In 1-on-1 it just explains the command is group-only.
-  const notifyOff = prefixed && isCmd(text, 'ปิดแจ้งเตือน');
-  const notifyOn = prefixed && isCmd(text, 'เปิดแจ้งเตือน');
-  if (notifyOff || notifyOn) {
-    // Room (OpenChat) is treated like a group; both key off the group/room id.
-    const groupId = source.groupId ?? source.roomId;
-    if ((source.type !== 'group' && source.type !== 'room') || !groupId) {
-      await reply(event, 'คำสั่งนี้ใช้ในกลุ่มน้า ลองพิมพ์ในกลุ่มดูน้า 📡');
-      return;
-    }
-    const enable = notifyOn;
-    // Already in the requested state → acknowledge without a redundant write.
-    const current = await getGroupNotifySetting(app.supabase, groupId);
-    if (current === enable) {
-      await reply(
-        event,
-        enable ? 'เปิดแจ้งเตือนอยู่แล้วน้า 🔔' : 'ปิดแจ้งเตือนอยู่แล้วน้า ไม่ต้องทำอะไรเพิ่มเลยน้า 🔕',
-      );
-      return;
-    }
-    try {
-      await setGroupNotifySetting(app.supabase, groupId, enable, lineUserId);
-      await reply(
-        event,
-        enable
-          ? 'เปิดการแจ้งเตือนแล้วน้า\nหนูจะบอกทุกครั้งที่เก็บของเสร็จน้า 📢'
-          : 'ปิดการแจ้งเตือนแล้วน้า\nต่อไปหนูจะเก็บของเงียบๆ ให้น้า 🤫',
-      );
-    } catch (err) {
-      app.log.error({ err, groupId }, 'group notify toggle failed');
-      await reply(event, 'ขอโทษน้า มีอะไรผิดพลาดนิดหน่อย ลองใหม่อีกทีนะน้า 🔧').catch(() => {});
-    }
-    return;
-  }
+  // (The group notification toggle — "หนูเก็บปิดแจ้งเตือน" / "เปิดแจ้งเตือน",
+  // migration 021 — was retired: group/room uploads are now stored SILENTLY,
+  // always, so there is nothing to toggle. The words fall through to the
+  // quiet-chatter rule and are ignored.)
 
   // Redeem a referral code: "กรอกโค้ด XXXXXXXX". Checked before the "เชิญ" match
   // so the redeem text can never be swallowed by another branch. The regex
