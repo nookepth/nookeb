@@ -788,11 +788,11 @@ export function buildFeatureCarouselMessage(): FlexMessage {
   const bubbles = filenames.map((filename) => ({
     type: 'bubble',
     size: 'mega',
-    // display-only card, action is a no-op placeholder
     hero: {
       ...ONBOARDING_HERO,
       url: `${config.APP_URL}/static/onboarding/${filename}.jpg?v=2`,
-      action: { type: 'postback', data: 'หนูเก็บ' },
+      // no-op: display-only card
+      action: { type: 'uri', uri: 'https://line.me/R/' },
     },
   }));
   return {
@@ -851,6 +851,126 @@ export function buildTeamGuideFlexMessage(): FlexMessage {
         ],
       },
       styles: { header: { backgroundColor: BRAND_RED }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
+// ── หนูเก็บวิธีใช้ (Help / usage guide) ──────────────────────────────────────
+// Pink-themed usage card replied to the "หนูเก็บวิธีใช้" command. Same header +
+// body + footer structure as buildTeamGuideFlexMessage, but grouped into feature
+// sections (section header + bullet lines) instead of numbered steps.
+const HELP_PINK = '#FF6B9D';
+const HELP_PINK_SOFT = '#FFF0F5';
+
+/**
+ * Full usage guide as a pink Flex card. Static content covering every current
+ * หนูเก็บ feature; each section is a bold accent header followed by short bullet
+ * lines. Footer points to support.
+ */
+export function buildHelpFlexMessage(): FlexMessage {
+  const sections: { header: string; lines: string[] }[] = [
+    {
+      header: '📁 เก็บไฟล์',
+      lines: [
+        '• ส่งรูปหรือไฟล์มาในแชท → หนูเก็บให้อัตโนมัติ',
+        '• พิมพ์ "หนูเก็บล็อคเกอร์" เพื่อเปิดคลังไฟล์',
+      ],
+    },
+    {
+      header: '📄 สแกน & แปลงไฟล์',
+      lines: [
+        '• "หนูเก็บสแกนสี" / "หนูเก็บสแกนขาวดำ" → สแกนเอกสารเป็น PDF',
+        '• ส่งรูปต่อกันได้เรื่อยๆ พิมพ์ "เสร็จ" เมื่อครบ',
+        '• "หนูเก็บแปลงไฟล์" → ส่งรูปหรือ PDF แปลงเป็น Word',
+      ],
+    },
+    {
+      header: '🖼️ รวมรูป',
+      lines: ['• "หนูเก็บรวมรูป" → ส่งรูปทีละใบ พิมพ์ "เสร็จ" เมื่อครบ'],
+    },
+    {
+      header: '📓 ไดอารี่',
+      lines: [
+        '• "หนูเก็บไดอารี่" → พิมพ์ข้อความ แล้วส่งรูป 1 ใบ',
+        '• บันทึกได้วันละ 1 ครั้ง 365 วัน',
+      ],
+    },
+    {
+      header: '🌐 เว็บแอป',
+      lines: [
+        '• "หนูเก็บกล่องของขวัญ" → ส่งของขวัญให้คนพิเศษ',
+        '• "หนูเก็บห้องนิรภัย" → เก็บข้อมูลสำคัญ',
+        '• "หนูเก็บงานของฉัน" → ดูงานที่ได้รับมอบหมาย',
+      ],
+    },
+    {
+      header: '👥 ทีม (ใช้ในกลุ่ม)',
+      lines: [
+        '• "หนูเก็บผูกทีม" → เชื่อมกลุ่มกับทีม',
+        '• "หนูเก็บสร้างงาน" → มอบหมายงานในกลุ่ม',
+        '• "หนูเก็บปิด/เปิดแจ้งเตือน" → ตั้งค่าการแจ้งเตือน',
+      ],
+    },
+    {
+      header: '⚙️ ทั่วไป',
+      lines: [
+        '• พิมพ์ "ยกเลิก" เพื่อหยุดการทำงานปัจจุบัน',
+        '• พิมพ์ "หนูเก็บคำสั่ง" เพื่อดูคำสั่งทั้งหมด',
+      ],
+    },
+  ];
+
+  const bodyContents: Record<string, unknown>[] = [];
+  sections.forEach((section, i) => {
+    bodyContents.push({
+      type: 'text',
+      text: section.header,
+      weight: 'bold',
+      size: 'sm',
+      color: HELP_PINK,
+      wrap: true,
+      margin: i === 0 ? 'none' : 'lg',
+    });
+    for (const line of section.lines) {
+      bodyContents.push({
+        type: 'text',
+        text: line,
+        size: 'sm',
+        color: '#333333',
+        wrap: true,
+        margin: 'sm',
+      });
+    }
+  });
+
+  return {
+    type: 'flex',
+    altText: 'วิธีใช้หนูเก็บ',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'วิธีใช้หนูเก็บ', color: '#FFFFFF', weight: 'bold', size: 'lg', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: bodyContents,
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          { type: 'text', text: 'ติดต่อทีมงาน → ติดต่อหนูเก็บ', size: 'xs', color: HELP_PINK, wrap: true },
+        ],
+      },
+      styles: { header: { backgroundColor: HELP_PINK }, body: { backgroundColor: HELP_PINK_SOFT } },
     },
   };
 }

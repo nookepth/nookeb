@@ -21,6 +21,7 @@ import {
   buildMergeFlexMessage,
   buildDocxConvertFlexMessage,
   buildFeatureCarouselMessage,
+  buildHelpFlexMessage,
   buildOnboardingCarouselMessage,
   buildRedeemSuccessFlexMessage,
   buildScanFlexMessage,
@@ -278,7 +279,7 @@ const INTRO_TEXT = `ทุกอย่างที่พี่อยากเก
 // Rich-menu "ช่วยเหลือ" cell → contact support.
 const SUPPORT_TEXT = `มีอะไรให้หนูช่วยไหมน้า 🙏
 พี่ทักหาทีมงานหนูเก็บได้เลยน้า
-👉 https://lin.ee/Z0ewNYb`;
+🫱 https://lin.ee/Z0ewNYb`;
 
 // "หนูเก็บคำสั่ง" → the full command reference. Every entry below is a real,
 // reachable handler (each works with or without the "หนูเก็บ" prefix); shown in the
@@ -583,7 +584,7 @@ async function handleTextCommand(
           { label: 'หนูเก็บเพิ่มเติม', text: 'หนูเก็บเพิ่มเติม' },
           { label: 'ติดต่อหนูเก็บ', text: 'ติดต่อหนูเก็บ' },
         ];
-    await replyWithQuickReply(event, 'หนูพร้อมช่วยแล้วน้า พี่เลือกได้เลยน้า', buttons);
+    await replyWithQuickReply(event, 'หนูพร้อมช่วย พี่เลือกได้เลย 💫', buttons);
     return;
   }
 
@@ -592,10 +593,10 @@ async function handleTextCommand(
   // web-only ones (กล่องของขวัญ / ห้องนิรภัย / งานของฉัน).
   if (prefixed && isCmd(text, 'ฟีเจอร์')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ฟีเจอร์นี้ทักหนูมาในแชทส่วนตัวได้เลยน้า');
+      await reply(event, 'ฟีเจอร์นี้ทักหนูมาในแชทส่วนตัวได้เลยน้า 🤗');
       return;
     }
-    await replyWithQuickReply(event, 'พี่เลือกฟีเจอร์ที่อยากใช้ได้เลยน้า', [
+    await replyWithQuickReply(event, 'พี่เลือกฟีเจอร์ที่อยากใช้ได้เลยน้า 🌟', [
       { label: 'หนูเก็บไดอารี่', text: 'หนูเก็บไดอารี่' },
       { label: 'หนูเก็บแปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
       { label: 'หนูเก็บสแกนสี', text: 'หนูเก็บสแกนสี' },
@@ -612,7 +613,7 @@ async function handleTextCommand(
   // pass the group bot-directed guard; in a group they explain it's personal-chat only.
   if (prefixed && isCmd(text, 'กล่องของขวัญ')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่');
+      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่ 🏠');
       return;
     }
     await replyWithQuickReply(event, 'เปิดกล่องของขวัญให้เลยน้าพี่ 🎁', [
@@ -623,7 +624,7 @@ async function handleTextCommand(
 
   if (prefixed && isCmd(text, 'ห้องนิรภัย')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่');
+      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่ 🏠');
       return;
     }
     await replyWithQuickReply(event, 'เปิดห้องนิรภัยให้เลยน้าพี่ 🔐', [
@@ -634,7 +635,7 @@ async function handleTextCommand(
 
   if (prefixed && isCmd(text, 'งานของฉัน')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่');
+      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่ 🏠');
       return;
     }
     await replyWithQuickReply(event, 'เปิดหน้างานให้เลยน้าพี่ 📬', [
@@ -647,7 +648,7 @@ async function handleTextCommand(
   // 1-on-1 shows an informational feature-image carousel (safe in both contexts).
   if (prefixed && isCmd(text, 'เพิ่มเติม')) {
     if (source.type === 'group' || source.type === 'room') {
-      await replyWithQuickReply(event, 'เลือกเมนูเพิ่มเติมได้เลยน้า', [
+      await replyWithQuickReply(event, 'เลือกเมนูเพิ่มเติมได้เลยน้า 🎛️', [
         { label: 'หนูเก็บปิดแจ้งเตือน', text: 'หนูเก็บปิดแจ้งเตือน' },
         { label: 'หนูเก็บเปิดแจ้งเตือน', text: 'หนูเก็บเปิดแจ้งเตือน' },
         { label: 'หนูเก็บผูกทีม', text: 'หนูเก็บผูกทีม' },
@@ -664,7 +665,7 @@ async function handleTextCommand(
   // sources (group AND 1-on-1).
   if (prefixed && isCmd(text, 'ล็อคเกอร์')) {
     const inGroup = source.type === 'group' || source.type === 'room';
-    await replyWithQuickReply(event, 'ล็อคเกอร์ของพี่อยู่นี่น้า เลือกได้เลยน้า', [
+    await replyWithQuickReply(event, 'เปิดดูล็อคเกอร์ได้เลยน้า 🗄️', [
       {
         label: inGroup ? 'หนูเก็บดูล็อคเกอร์' : 'ดูล็อคเกอร์',
         uri: `${config.WEB_URL}/dashboard`,
@@ -692,7 +693,7 @@ async function handleTextCommand(
     const groupId = source.groupId;
     const team = await getTeamByLineGroup(app.supabase, groupId);
     if (!team) {
-      await reply(event, 'กลุ่มนี้ยังไม่ได้ผูกกับทีมไหนเลยน้า');
+      await reply(event, 'กลุ่มนี้ยังไม่ได้ผูกกับทีมไหนเลยน้า 🔗');
       return;
     }
     // Permission: only owner/admin can unbind (unbindLineGroup enforces this too,
@@ -704,7 +705,7 @@ async function handleTextCommand(
       return;
     }
     await unbindLineGroup(app.supabase, team.id, groupId, userId);
-    await reply(event, `ยกเลิกการผูกกลุ่มกับทีม ${team.name} เรียบร้อยแล้วน้า`);
+    await reply(event, `ยกเลิกการผูกกลุ่มกับทีม ${team.name} เรียบร้อยแล้วน้า ✂️`);
     return;
   }
 
@@ -723,7 +724,7 @@ async function handleTextCommand(
 
     const existing = await getTeamByLineGroup(app.supabase, groupId);
     if (existing) {
-      await reply(event, `กลุ่มนี้ผูกกับทีม ${existing.name} อยู่แล้วน้า`);
+      await reply(event, `กลุ่มนี้ผูกกับทีม ${existing.name} อยู่แล้วน้า 🏢`);
       return;
     }
 
@@ -743,7 +744,7 @@ async function handleTextCommand(
         return;
       }
       await bindLineGroup(app.supabase, chosen.team.id, groupId, userId);
-      await reply(event, `ผูกกลุ่มกับทีม ${chosen.team.name} เรียบร้อยแล้วน้า ✓`);
+      await reply(event, `ผูกกลุ่มกับทีม ${chosen.team.name} เรียบร้อยแล้วน้า 🔗`);
       return;
     }
 
@@ -753,13 +754,13 @@ async function handleTextCommand(
       await bindLineGroup(app.supabase, only.team.id, groupId, userId);
       await reply(
         event,
-        `ผูกกลุ่มกับทีม ${only.team.name} แล้วน้า\nส่งไฟล์ในกลุ่มนี้จะเข้าพื้นที่ทีมเลย ✓`,
+        `ผูกกลุ่มกับทีม ${only.team.name} แล้วน้า\nส่งไฟล์ในกลุ่มนี้จะเข้าพื้นที่ทีมเลย 🔗`,
       );
       return;
     }
     // More than one team → list them numbered; the user re-sends "ผูกทีม [เลข]".
     const teamList = teams.map((t, i) => `${i + 1}. ${t.team.name}`).join('\n');
-    await reply(event, `มีหลายทีมน้า พิมพ์ หนูเก็บผูกทีม [เลข] เพื่อเลือกได้เลยน้า:\n${teamList}`);
+    await reply(event, `มีหลายทีมน้า พิมพ์ หนูเก็บผูกทีม [เลข] เพื่อเลือกได้เลยน้า 🔢:\n${teamList}`);
     return;
   }
 
@@ -772,11 +773,11 @@ async function handleTextCommand(
     const groupId = source.groupId;
     const team = await getTeamByLineGroup(app.supabase, groupId);
     if (team) {
-      await reply(event, `ไอดีกลุ่มนี้คือ:\n${groupId}\n\nผูกกับทีม: ${team.name} แล้วน้า`);
+      await reply(event, `ไอดีกลุ่มนี้คือ:\n${groupId}\n\nผูกกับทีม: ${team.name} แล้วน้า 🆔`);
     } else {
       await reply(
         event,
-        `ไอดีกลุ่มนี้คือ:\n${groupId}\n\nยังไม่ได้ผูกกับทีมไหนน้า เอาไอดีนี้ไปใส่ในแดชบอร์ด → ทีม → ผูกกลุ่ม ได้เลยน้า`,
+        `ไอดีกลุ่มนี้คือ:\n${groupId}\n\nยังไม่ได้ผูกกับทีมไหนน้า เอาไอดีนี้ไปใส่ในแดชบอร์ด → ทีม → ผูกกลุ่ม ได้เลยน้า 📇`,
       );
     }
     return;
@@ -812,7 +813,7 @@ async function handleTextCommand(
       await reply(
         event,
         enable
-          ? 'เปิดการแจ้งเตือนแล้วน้า\nหนูจะบอกทุกครั้งที่เก็บของเสร็จน้า'
+          ? 'เปิดการแจ้งเตือนแล้วน้า\nหนูจะบอกทุกครั้งที่เก็บของเสร็จน้า 📢'
           : 'ปิดการแจ้งเตือนแล้วน้า\nต่อไปหนูจะเก็บของเงียบๆ ให้น้า 🤫',
       );
     } catch (err) {
@@ -875,7 +876,7 @@ async function handleTextCommand(
   const scanPlain = prefixed && isCmd(text, 'สแกน');
   if (scanColor || scanBw || scanPlain) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบสแกนทักหนูมาในแชทส่วนตัวได้เลยน้า');
+      await reply(event, 'ระบบสแกนทักหนูมาในแชทส่วนตัวได้เลยน้า 📸');
       return;
     }
     const scanMode: ScanMode = scanColor ? 'color' : 'bw';
@@ -911,7 +912,7 @@ async function handleTextCommand(
     // Merge-to-PDF is a personal-chat feature only — group scan sessions would
     // collide across members sharing one group space.
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบรวมรูปทักหนูมาในแชทส่วนตัวได้เลยน้า');
+      await reply(event, 'ระบบรวมรูปทักหนูมาในแชทส่วนตัวได้เลยน้า 🖼️');
       return;
     }
     const profile = await getProfile(lineUserId).catch(() => undefined);
@@ -935,7 +936,7 @@ async function handleTextCommand(
   // photo (the worker + unique index re-check as backstops).
   if (prefixed && isCmd(text, 'ไดอารี่')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ไดอารี่ทักหนูมาในแชทส่วนตัวได้เลยน้า');
+      await reply(event, 'ไดอารี่ทักหนูมาในแชทส่วนตัวได้เลยน้า 📓');
       return;
     }
     try {
@@ -980,7 +981,7 @@ async function handleTextCommand(
   // the Mistral key: without it the command explains it's unavailable.
   if (prefixed && isCmd(text, 'แปลงไฟล์')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบแปลงไฟล์ทักหนูมาในแชทส่วนตัวได้เลยน้า');
+      await reply(event, 'ระบบแปลงไฟล์ทักหนูมาในแชทส่วนตัวได้เลยน้า 📝');
       return;
     }
     if (!isMistralOcrConfigured()) {
@@ -1041,11 +1042,18 @@ async function handleTextCommand(
     const diaryWasArmed = (await consumeDiaryMode(app.redis, lineUserId)) !== null;
     if (session) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะน้า');
+      // Message keys off the session kind (scan vs merge) so the confirmation
+      // names the mode the user was actually in. session_kind is existing state
+      // (set at startSession); this only picks the copy, not the logic.
+      if ((session.session_kind ?? 'merge') === 'scan') {
+        await reply(event, 'ยกเลิกโหมดสแกนให้แล้วน้า 🚫');
+      } else {
+        await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า 🚫');
+      }
     } else if (diaryWasArmed) {
-      await reply(event, 'ยกเลิกโหมดไดอารี่ให้แล้วน้า');
+      await reply(event, 'ยกเลิกโหมดไดอารี่ให้แล้วน้า 📕');
     } else if (wasArmed) {
-      await reply(event, 'ยกเลิกโหมดแปลงไฟล์ให้แล้วน้า');
+      await reply(event, 'ยกเลิกโหมดแปลงไฟล์ให้แล้วน้า 🗑️');
     } else {
       await reply(event, 'ตอนนี้พี่ยังไม่ได้อยู่ในโหมดไหนเลยน้า 💡');
     }
@@ -1072,7 +1080,7 @@ async function handleTextCommand(
 
   // How-to / usage guide ("หนูเก็บวิธีใช้")
   if (prefixed && isCmd(text, 'วิธีใช้')) {
-    await reply(event, HELP_TEXT);
+    await replyFlex(event, buildHelpFlexMessage());
     return;
   }
   // Quiet chatter: only respond to an UNRECOGNIZED message when it was addressed
