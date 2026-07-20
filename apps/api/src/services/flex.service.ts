@@ -745,26 +745,28 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
 const ONBOARDING_HERO = { type: 'image', size: 'full', aspectRatio: '1:1', aspectMode: 'fit', backgroundColor: '#FFFFFF' } as const;
 
 /**
- * Per-bubble tap action for the onboarding carousel (index 0 = 1.jpg … 6 = 7.jpg).
- * All are `postback`s whose `data` is an existing "หนูเก็บ…" text command (routed
- * by the postback handler in webhook/line.ts → handleTextCommand), except bubble 6
- * (index 5) which opens the LINE sticker shop via a `uri` action.
+ * Per-bubble tap action for the onboarding carousel (index 0 = 1.jpg … 7 = 8.jpg).
+ * LINE requires a valid action on every bubble hero, so bubbles without a real
+ * action yet use a `postback` with data 'หนูเก็บ' as a safe placeholder (routed by
+ * the postback handler in webhook/line.ts → handleTextCommand); the last bubble
+ * (index 7) opens the web dashboard via a `uri` action.
  */
 const ONBOARDING_ACTIONS: readonly Record<string, unknown>[] = [
   { type: 'postback', data: 'หนูเก็บ' },
-  { type: 'postback', data: 'หนูเก็บแนะนำตัว' },
-  { type: 'postback', data: 'หนูเก็บวิธีใช้งาน' },
-  { type: 'postback', data: 'หนูเก็บคำสั่ง' },
-  { type: 'postback', data: 'หนูเก็บทีม' },
-  { type: 'uri', uri: 'https://store.line.me/stickershop/product/35012660/en' },
-  { type: 'postback', data: 'หนูเก็บ' },
+  { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
+  { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
+  { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
+  { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
+  { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
+  { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
+  { type: 'uri', uri: `${config.APP_URL}/dashboard` },
 ];
 
-/** 7-bubble scrollable onboarding carousel (images /static/onboarding/1..7.jpg). */
+/** 8-bubble scrollable onboarding carousel (images /static/onboarding/1..8.jpg). */
 export function buildOnboardingCarouselMessage(): FlexMessage {
   const bubbles = ONBOARDING_ACTIONS.map((action, i) => ({
     type: 'bubble',
-    size: 'giga',
+    size: 'mega',
     hero: { ...ONBOARDING_HERO, url: `${config.APP_URL}/static/onboarding/${i + 1}.jpg`, action },
   }));
   return {
