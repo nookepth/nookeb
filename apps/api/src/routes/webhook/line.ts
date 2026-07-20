@@ -129,20 +129,13 @@ const RETRY_OPTS = { attempts: 3, backoff: { type: 'exponential', delay: 5000 } 
 const REFERRAL_GB = 1024 * 1024 * 1024;
 
 /**
- * Onboarding sent on `follow` (1-1 chat) and `join` (group/room): a plain welcome
- * image + a 7-bubble scrollable carousel Flex message (builder in flex.service.ts).
- * Two messages fit LINE's 5-per-reply limit, so no push/split is needed. The
- * carousel's per-bubble postback taps are routed by the postback handler in
- * handleEvent.
+ * Onboarding sent on `follow` (1-1 chat) and `join` (group/room): an 8-bubble
+ * scrollable carousel Flex message (builder in flex.service.ts). The carousel's
+ * per-bubble postback taps are routed by the postback handler in handleEvent.
  */
 async function sendOnboarding(event: LineMessageEvent): Promise<void> {
   if (!event.replyToken) return;
   await replyMessage(event.replyToken, [
-    {
-      type: 'image',
-      originalContentUrl: `${config.APP_URL}/static/welcome.jpg`,
-      previewImageUrl: `${config.APP_URL}/static/welcome.jpg`,
-    },
     buildOnboardingCarouselMessage(),
   ]);
 }
