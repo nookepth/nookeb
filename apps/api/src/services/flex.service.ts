@@ -777,7 +777,33 @@ export function buildOnboardingCarouselMessage(): FlexMessage {
 }
 
 /**
- * "วิธีเริ่มใช้งานกับทีม" guide — replied to the "หนูเก็บทีม" command / onboarding
+ * "หนูเก็บเพิ่มเติม" feature carousel (1-on-1) — a 7-bubble scrollable carousel of
+ * feature-preview images (/static/onboarding/{2,3,4,5,6,7,9}.jpg), same mega/hero
+ * style as the onboarding carousel. Informational only: LINE requires a valid
+ * action on every bubble hero, so each carries a no-op 'หนูเก็บ' postback
+ * placeholder (harmless — the server just routes it to the main menu).
+ */
+export function buildFeatureCarouselMessage(): FlexMessage {
+  const filenames = ['2', '3', '4', '5', '6', '7', '9'];
+  const bubbles = filenames.map((filename) => ({
+    type: 'bubble',
+    size: 'mega',
+    // display-only card, action is a no-op placeholder
+    hero: {
+      ...ONBOARDING_HERO,
+      url: `${config.APP_URL}/static/onboarding/${filename}.jpg?v=2`,
+      action: { type: 'postback', data: 'หนูเก็บ' },
+    },
+  }));
+  return {
+    type: 'flex',
+    altText: 'ฟีเจอร์เพิ่มเติมของหนูเก็บ',
+    contents: { type: 'carousel', contents: bubbles },
+  };
+}
+
+/**
+ * "วิธีเริ่มใช้งานกับทีม" guide — replied to the "หนูเก็บคู่มือทีม" command / onboarding
  * carousel bubble-5 postback. Brand-red header (BRAND_RED, the same red the merge
  * card uses), 5 numbered steps, muted footer. No emoji (parity with the other
  * cards). Static content, so no params.

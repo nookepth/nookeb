@@ -20,6 +20,7 @@ import {
   buildInviteFlexMessage,
   buildMergeFlexMessage,
   buildDocxConvertFlexMessage,
+  buildFeatureCarouselMessage,
   buildOnboardingCarouselMessage,
   buildRedeemSuccessFlexMessage,
   buildScanFlexMessage,
@@ -263,74 +264,76 @@ async function findUserId(app: FastifyInstance, lineUserId: string): Promise<str
 
 const HELP_TEXT = `วิธีใช้หนูเก็บน้า
 
-• ส่งรูป/ไฟล์มาในแชท หนูจะเก็บให้เองเลย
-• พิมพ์ "หนูเก็บรวมรูป" ถ้าอยากรวมรูปหลายหน้าเป็น PDF 
-• พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" ถ้าอยากสแกนเป็น PDF แบบสีหรือขาวดำ
-• พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF ถ้าอยากแปลงเป็นไฟล์ Word แก้ไขต่อได้
-• พิมพ์ "หนูเก็บไดอารี่" แล้วส่งรูป 1 รูป บันทึกไดอารี่ 365 วัน
-• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ https://nookeb-web.vercel.app/dashboard เลยน้า`;
+• ส่งรูปหรือไฟล์เข้ามาในแชทได้เลยน้า เดี๋ยวหนูเก็บให้พี่เอง
+• อยากรวมรูปหลายหน้าเป็น PDF พิมพ์ "หนูเก็บรวมรูป" ได้เลยน้า
+• อยากสแกนเป็น PDF พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" น้า
+• อยากได้ไฟล์ Word แก้ต่อได้ พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF มาน้า
+• อยากทำไดอารี่ 365 วัน พิมพ์ "หนูเก็บไดอารี่" แล้วส่งรูป 1 รูปมาน้า
+• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ ${config.WEB_URL}/dashboard เลยน้า`;
 
 // Rich-menu "แนะนำตัว" cell → the bot's self-introduction (message action, since the
 // webhook has no postback handler — rich-menu buttons send these trigger words as text).
-const INTRO_TEXT = `สาวัดดีกั้บพี่ๆ ทุกคนน้า~ 📄✨
-หนูชื่อ "หนูเก็บ" หนูเกิดมาจากเอกสารที่ใช้งานเสร็จแล้วก็ทิ้งเป็นขยะ หนูเลยตั้งใจจะเก็บกระดาษทั้งหมดให้เป็นไฟล์ เก็บรูป ให้พี่เป็นระเบียบเรียบร้อย ไม่ให้หล่นหาย ไม่ให้กระจัดกระจาย 📁💎
-
-อยากให้เก็บ อยากให้ค้น หรืออยากใช้ฟังก์ชันอื่นๆ เรียกหนูได้ตลอดเลยน้า~ หนูพร้อมช่วยพี่เสมอเยยย 💙`;
+const INTRO_TEXT = `ทุกอย่างที่พี่อยากเก็บ ฝากหนูได้เลยน้า 📁✨`;
 
 // Rich-menu "ช่วยเหลือ" cell → contact support.
-const SUPPORT_TEXT = `ขออภัยในความไม่สะดวกนะคะ 🙏
-หากต้องการความช่วยเหลือ ติดต่อหนูเก็บได้เลยน้าา
+const SUPPORT_TEXT = `มีอะไรให้หนูช่วยไหมน้า 🙏
+พี่ทักหาทีมงานหนูเก็บได้เลยน้า
 👉 https://lin.ee/Z0ewNYb`;
 
 // "หนูเก็บคำสั่ง" → the full command reference. Every entry below is a real,
 // reachable handler (each works with or without the "หนูเก็บ" prefix); shown in the
 // prefixed form since that's how the menu/rich-menu buttons send them. Keep this in
 // sync with the handlers in handleTextCommand.
-const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้งหมด
+const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้งหมด 📋
 
-📁 ไฟล์ & ล็อคเกอร์
-หนูเก็บล็อคเกอร์ 
-หนูเก็บอัพโหลดไฟล์ 
+📁 ล็อคเกอร์
+หนูเก็บล็อคเกอร์ — เปิดคลังไฟล์ของพี่
 
-✨ รวมรูป
-หนูเก็บรวมรูป
+✨ ฟีเจอร์
+หนูเก็บฟีเจอร์ — ดูฟีเจอร์ทั้งหมด
+หนูเก็บรวมรูป — รวมรูปหลายใบเป็น PDF
+หนูเก็บสแกน — สแกนเอกสารเป็น PDF
+หนูเก็บสแกนสี — สแกนแบบสี
+หนูเก็บสแกนขาวดำ — สแกนแบบขาวดำ
+หนูเก็บแปลงไฟล์ — แปลงรูป/PDF เป็นไฟล์ Word
+หนูเก็บไดอารี่ — เก็บความทรงจำ 365 วัน
 
-📄 สแกนเอกสารเป็น PDF
-หนูเก็บสแกน 
-หนูเก็บสแกนสี 
-หนูเก็บสแกนขาวดำ 
-
-📝 แปลงไฟล์เป็น Word
-หนูเก็บแปลงไฟล์
-
-📔 ไดอารี่ 365 วัน
-หนูเก็บไดอารี่
+🌐 เว็บแอป
+หนูเก็บกล่องของขวัญ — ส่งกล่องของขวัญให้คนพิเศษ
+หนูเก็บห้องนิรภัย — เก็บของสำคัญไว้ให้ปลอดภัย
+หนูเก็บงานของฉัน — ดูงานที่ต้องทำ
 
 👥 ทีม (ใช้ในกลุ่ม)
-หนูเก็บผูกทีม 
-หนูเก็บยกเลิกผูกทีม 
-หนูเก็บไอดีกลุ่ม 
-หนูเก็บปิดแจ้งเตือน 
-หนูเก็บเปิดแจ้งเตือน 
+หนูเก็บสร้างงาน — มอบหมายงานในกลุ่ม
+หนูเก็บคู่มือทีม — วิธีเริ่มใช้งานแบบทีม
+หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
+หนูเก็บยกเลิกผูกทีม — ยกเลิกการผูกทีม
+หนูเก็บไอดีกลุ่ม — ดูไอดีกลุ่มนี้
+หนูเก็บปิดแจ้งเตือน — ให้หนูเงียบๆ ในกลุ่ม
+หนูเก็บเปิดแจ้งเตือน — ให้หนูแจ้งทุกครั้ง
 
-🎁 เชิญเพื่อน / โค้ด
-หนูเก็บเชิญ 
-หนูเก็บกรอกโค้ด [โค้ด]
+🎁 เพื่อน
+หนูเก็บเชิญ — รับโค้ดชวนเพื่อน
+หนูเก็บกรอกโค้ด [โค้ด] — กรอกโค้ดรับพื้นที่เพิ่ม
 
-ℹ️ อื่นๆ
-หนูเก็บ (หรือ เมนู) 
-หนูเก็บวิธีใช้
-หนูเก็บแนะนำตัว 
-หนูเก็บช่วยเหลือ 
-หนูเก็บคำสั่ง`;
+ℹ️ ทั่วไป
+หนูเก็บ — เปิดเมนูหลัก
+หนูเก็บวิธีใช้ — คู่มือการใช้งาน
+หนูเก็บแนะนำตัว — ทำความรู้จักหนูเก็บ
+หนูเก็บเพิ่มเติม — ดูเพิ่มเติม
+ติดต่อหนูเก็บ — ติดต่อทีมงาน
+
+⚙️ ระหว่างใช้ฟีเจอร์
+เสร็จ — บอกหนูว่าครบแล้ว
+ยกเลิก — หยุดสิ่งที่ทำอยู่`;
 
 // /redeem failure copy in the bot's voice, keyed by the service's reasonCode
 // (the API route keeps returning the plain `reason` for the dashboard).
 const REDEEM_FAIL_TEXT: Record<RedeemFailCode, string> = {
-  not_found: 'หนูเก็บ: หาโค้ดนี้ไม่เจอเลยนะ 📋\nลองเช็คตัวพิมพ์อีกทีได้เลย!',
-  self: 'หนูเก็บ: กรอกโค้ดตัวเองไม่ได้นะ 😅\nแชร์ให้เพื่อนกรอกแทนนะคะ!',
-  already_redeemed: 'หนูเก็บ: กรอกโค้ดไปแล้วนะ 💛\nชวนเพื่อนมากรอกโค้ดของเราแทนได้เลย!',
-  chain: 'หนูเก็บ: อันนี้กรอกไม่ได้นะคะ 📄\nลองชวนเพื่อนคนอื่นดูนะ!',
+  not_found: 'หนูหาโค้ดนี้ไม่เจอเลยน้า 📋\nลองเช็คตัวพิมพ์แล้วส่งมาใหม่ได้เลยน้า',
+  self: 'กรอกโค้ดตัวเองไม่ได้น้า 😅\nลองแชร์ให้เพื่อนกรอกแทนดูน้า',
+  already_redeemed: 'พี่กรอกโค้ดไปแล้วน้า 💛\nชวนเพื่อนมากรอกโค้ดของพี่ต่อได้เลยน้า',
+  chain: 'โค้ดนี้กรอกไม่ได้น้า 📄\nลองชวนเพื่อนคนอื่นดูน้า',
 };
 
 /**
@@ -362,15 +365,15 @@ function isCmd(text: string, ...matches: string[]): boolean {
  * for unrecognized chatter so we don't log noise. Best-effort only; used purely
  * for the admin dashboard (events.service).
  */
-function classifyIntent(text: string): EventType | null {
-  if (isCmd(text, 'สแกน', 'scan')) return 'cmd_scan';
-  if (isCmd(text, 'รวมรูป', 'merge')) return 'cmd_merge';
-  if (isCmd(text, 'เสร็จ', 'done')) return 'cmd_done';
-  if (isCmd(text, 'ยกเลิก', 'cancel')) return 'cmd_cancel';
-  if (isCmd(text, 'แปลงไฟล์', 'word')) return 'cmd_convert_arm';
-  if (isCmd(text, 'ไดอารี่', 'ไดอารี่วันนี้', 'diary')) return 'cmd_diary_arm';
-  if (isCmd(text, 'วิธีใช้', 'help')) return 'cmd_help';
-  if (isCmd(text, 'ช่วยเหลือ', 'support', 'contact_support', 'ติดต่อหนูเก็บ')) return 'cmd_support';
+function classifyIntent(text: string, prefixed: boolean): EventType | null {
+  if (prefixed && isCmd(text, 'สแกน')) return 'cmd_scan';
+  if (prefixed && isCmd(text, 'รวมรูป')) return 'cmd_merge';
+  if (isCmd(text, 'เสร็จ')) return 'cmd_done';
+  if (isCmd(text, 'ยกเลิก')) return 'cmd_cancel';
+  if (prefixed && isCmd(text, 'แปลงไฟล์')) return 'cmd_convert_arm';
+  if (prefixed && isCmd(text, 'ไดอารี่')) return 'cmd_diary_arm';
+  if (prefixed && isCmd(text, 'วิธีใช้')) return 'cmd_help';
+  if (isCmd(text, 'ติดต่อหนูเก็บ')) return 'cmd_support';
   return null;
 }
 
@@ -409,11 +412,11 @@ async function handleRedeem(
   try {
     const code = rawCode?.trim();
     if (!code) {
-      await reply(event, 'หนูเก็บ: พิมพ์โค้ดต่อท้ายด้วยนะ 📁\nเช่น กรอกโค้ด ABC12345');
+      await reply(event, 'พิมพ์โค้ดต่อท้ายมาด้วยน้า 📮\nเช่น กรอกโค้ด ABC12345 น้า');
       return;
     }
     if (!/^[a-zA-Z0-9]{1,8}$/.test(code)) {
-      await reply(event, 'หนูเก็บ: หาโค้ดนี้ไม่เจอเลยนะ 📋\nลองเช็คตัวพิมพ์อีกทีได้เลย!');
+      await reply(event, 'หนูหาโค้ดนี้ไม่เจอเลยน้า 🏷️\nลองเช็คตัวพิมพ์แล้วส่งมาใหม่ได้เลยน้า');
       return;
     }
     const profile = await getProfile(lineUserId).catch(() => undefined);
@@ -424,7 +427,7 @@ async function handleRedeem(
       profile?.pictureUrl,
     );
     if (!(await checkRedeemRateLimit(app.redis, user.id))) {
-      await reply(event, 'หนูเก็บ: พักก่อนนะ 😴\nลองใหม่ได้ในอีก 1 ชั่วโมงนะคะ!');
+      await reply(event, 'ขอพักแป๊บนึงน้า 😴\nอีก 1 ชั่วโมงค่อยลองใหม่นะน้า');
       return;
     }
     const result = await redeemCode(app.supabase, app.redis, code, user.id);
@@ -459,7 +462,7 @@ async function handleRedeem(
     }
   } catch (err) {
     app.log.error({ err, lineUserId }, 'referral: redeem handler error');
-    await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+    await reply(event, 'ขอโทษน้า มีอะไรผิดพลาดนิดหน่อย ลองใหม่อีกทีนะน้า 🔧').catch(() => {});
   }
 }
 
@@ -482,10 +485,9 @@ async function handleTextCommand(
   // "หนูเก็บ…"-prefixed, a bare menu word, or the numbered team-pick re-send
   // ("ผูกทีม 2"). 1-on-1 chats also handle bare commands (the tail fallback below
   // only nudges on an UNRECOGNIZED "หนูเก็บ…" message, so random chatter stays quiet).
-  // ระบบตามงาน roster opt-in ("/register" / "สมัคร") — deliberately UNPREFIXED
-  // (ขุนทอง-style: teammates just type it), so it must be matched BEFORE the
-  // group bot-directed guard below would drop it as ordinary chatter.
-  if (isCmd(text, '/register', 'register', 'สมัคร', 'ลงทะเบียน')) {
+  // ระบบตามงาน roster opt-in ("หนูเก็บลงทะเบียน"). Matched BEFORE the group
+  // bot-directed guard below; the prefix passes the guard anyway.
+  if (prefixed && isCmd(text, 'ลงทะเบียน')) {
     await handleRegisterCommand(app, event);
     return;
   }
@@ -496,14 +498,14 @@ async function handleTextCommand(
   // the group bot-directed guard so it works when typed straight into a group.
   // The roster is populated automatically by the message-event auto-upsert (no
   // "/register" typing needed), so the card can offer assignees right away.
-  if (isCmd(text, 'สร้างงาน', 'งาน', 'task')) {
+  if (prefixed && isCmd(text, 'สร้างงาน')) {
     const groupId = source.groupId ?? source.roomId;
     if (!groupId) {
       // 1-on-1 chat: a card here would carry no groupId and every button would
       // dead-end on "ต้องเปิดจากในกลุ่ม" — explain instead.
       await reply(
         event,
-        'หนูเก็บ: สร้างงานใช้ในกลุ่มน้า 📋 พิมพ์ "สร้างงาน" ในกลุ่ม LINE ที่อยากมอบหมายงาน แล้วหนูจะส่งการ์ดให้เลือกรูปแบบงานได้เลยค่ะ',
+        'สร้างงานใช้ในกลุ่มน้า 🎯 พิมพ์ "สร้างงาน" ในกลุ่ม LINE ที่พี่อยากมอบหมายงาน แล้วหนูจะส่งการ์ดให้เลือกรูปแบบงานเลยน้า',
       );
       return;
     }
@@ -512,8 +514,8 @@ async function handleTextCommand(
   }
 
   if (source.type === 'group' || source.type === 'room') {
-    const isBindTeam = /^(?:ผูกทีม|bind team)\s+\d+$/i.test(text.trim());
-    if (!prefixed && !isCmd(text, 'menu', 'เมนู') && !isBindTeam) return;
+    const isBindTeam = /^(?:ผูกทีม)\s+\d+$/i.test(text.trim());
+    if (!prefixed && !isBindTeam) return;
   }
 
   // ไดอารี่ caption capture: unprefixed text typed while diary mode is armed
@@ -526,7 +528,7 @@ async function handleTextCommand(
     source.type === 'user' &&
     !prefixed &&
     text.length > 0 &&
-    !isCmd(text, 'ยกเลิก', 'cancel', 'ไดอารี่', 'ไดอารี่วันนี้', 'diary')
+    !isCmd(text, 'ยกเลิก', 'ไดอารี่')
   ) {
     let captured = false;
     try {
@@ -535,7 +537,7 @@ async function handleTextCommand(
       app.log.warn({ err, lineUserId }, 'diary caption capture failed — treating as normal text');
     }
     if (captured) {
-      await reply(event, 'จดข้อความไว้แล้วน้า ส่งรูปมาได้เลย 🌸');
+      await reply(event, 'จดข้อความไว้ให้แล้วน้า ส่งรูปมาได้เลยน้า 🌸');
       return;
     }
   }
@@ -546,7 +548,7 @@ async function handleTextCommand(
   // every message) — funnels use event counts, and DAU is driven by the
   // worker-outcome + web-login events which do carry user_id.
   {
-    const intent = classifyIntent(text);
+    const intent = classifyIntent(text, prefixed);
     if (intent) {
       void logEvent(app.supabase, {
         eventType: intent,
@@ -559,81 +561,132 @@ async function handleTextCommand(
 
   // Quick-function menu (rich-menu-free shortcut). Shows the common actions as
   // LINE quick-reply buttons — the last one only makes sense inside a group.
-  if (isCmd(text, 'หนูเก็บ', 'menu', 'เมนู')) {
-    // In group/room the button texts carry a "หนูเก็บ" prefix so their tapped
-    // text is unique and passes the group guard without clashing with normal
-    // human typing. In 1-on-1 the buttons stay bare (no guard there).
+  if (prefixed && isCmd(text, 'เมนู')) {
+    // Different button sets for 1-on-1 vs group/room. Every button sends a
+    // "หนูเก็บ"-prefixed message (or "ติดต่อหนูเก็บ") so its tapped text passes the
+    // bot-directed gate in group and 1-on-1 alike without clashing with human typing.
     const inGroup = source.type === 'group' || source.type === 'room';
-    // Every button sends the "หนูเก็บ"-prefixed text so it passes the bot-directed
-    // gate in group and 1-on-1 alike; the label stays friendly (bare) in 1-on-1.
-    const buttons: QuickReplyButton[] = [
-      inGroup
-        ? { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' }
-        : { label: 'ล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' },
-    ];
-    // รวมรูป + สแกน are personal-chat only, so they're not offered in a group menu.
-    if (!inGroup) {
-      buttons.push({ label: 'รวมรูป', text: 'หนูเก็บรวมรูป' });
-      buttons.push({ label: 'สแกน PDF', text: 'หนูเก็บสแกน' });
-      buttons.push({ label: 'แปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' });
-      buttons.push({ label: 'ไดอารี่วันนี้', text: 'หนูเก็บไดอารี่' });
+    const buttons: QuickReplyButton[] = inGroup
+      ? [
+          { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' },
+          { label: 'หนูเก็บสร้างงาน', text: 'หนูเก็บสร้างงาน' },
+          { label: 'หนูเก็บคู่มือทีม', text: 'หนูเก็บคู่มือทีม' },
+          { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' },
+          { label: 'หนูเก็บคำสั่ง', text: 'หนูเก็บคำสั่ง' },
+          { label: 'หนูเก็บเพิ่มเติม', text: 'หนูเก็บเพิ่มเติม' },
+        ]
+      : [
+          { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' },
+          { label: 'หนูเก็บฟีเจอร์', text: 'หนูเก็บฟีเจอร์' },
+          { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' },
+          { label: 'หนูเก็บคำสั่ง', text: 'หนูเก็บคำสั่ง' },
+          { label: 'หนูเก็บเพิ่มเติม', text: 'หนูเก็บเพิ่มเติม' },
+          { label: 'ติดต่อหนูเก็บ', text: 'ติดต่อหนูเก็บ' },
+        ];
+    await replyWithQuickReply(event, 'หนูพร้อมช่วยแล้วน้า พี่เลือกได้เลยน้า', buttons);
+    return;
+  }
+
+  // "หนูเก็บฟีเจอร์" — feature quick-pick (1-on-1 only). Buttons only, no flex
+  // card: message actions for the LINE-bot features + uri actions for the
+  // web-only ones (กล่องของขวัญ / ห้องนิรภัย / งานของฉัน).
+  if (prefixed && isCmd(text, 'ฟีเจอร์')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ฟีเจอร์นี้ทักหนูมาในแชทส่วนตัวได้เลยน้า');
+      return;
     }
-    buttons.push(
-      inGroup
-        ? { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' }
-        : { label: 'วิธีใช้', text: 'หนูเก็บวิธีใช้' },
-    );
-    // All-commands reference — always sends the prefixed text so it works in
-    // group (passes the bot-directed gate) and 1-on-1 alike.
-    buttons.push({ label: 'คำสั่ง', text: 'หนูเก็บคำสั่ง' });
-    if (source.type === 'group') {
-      buttons.push({ label: 'หนูเก็บไอดีกลุ่ม', text: 'หนูเก็บไอดีกลุ่ม' });
-      buttons.push({ label: 'หนูเก็บผูกทีม', text: 'หนูเก็บผูกทีม' });
-      buttons.push({ label: 'หนูเก็บยกเลิกผูกทีม', text: 'หนูเก็บยกเลิกผูกทีม' });
+    await replyWithQuickReply(event, 'พี่เลือกฟีเจอร์ที่อยากใช้ได้เลยน้า', [
+      { label: 'หนูเก็บไดอารี่', text: 'หนูเก็บไดอารี่' },
+      { label: 'หนูเก็บแปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
+      { label: 'หนูเก็บสแกนสี', text: 'หนูเก็บสแกนสี' },
+      { label: 'หนูเก็บรวมรูป', text: 'หนูเก็บรวมรูป' },
+      { label: 'หนูเก็บกล่องของขวัญ', uri: 'https://nookeb-web.vercel.app/dashboard/legacy-box' },
+      { label: 'หนูเก็บห้องนิรภัย', uri: 'https://nookeb-web.vercel.app/dashboard/vault' },
+      { label: 'หนูเก็บงานของฉัน', uri: 'https://nookeb-web.vercel.app/dashboard/tasks' },
+    ]);
+    return;
+  }
+
+  // Web-only feature shortcuts (1-on-1 only). Each replies a friendly line plus a
+  // uri quick-reply that opens the matching dashboard page. Prefixed so the taps
+  // pass the group bot-directed guard; in a group they explain it's personal-chat only.
+  if (prefixed && isCmd(text, 'กล่องของขวัญ')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่');
+      return;
     }
-    await replyWithQuickReply(event, 'เลือกได้เลยน้า ', buttons);
+    await replyWithQuickReply(event, 'เปิดกล่องของขวัญให้เลยน้าพี่ 🎁', [
+      { label: 'เปิดกล่องของขวัญ', uri: 'https://nookeb-web.vercel.app/dashboard/legacy-box' },
+    ]);
+    return;
+  }
+
+  if (prefixed && isCmd(text, 'ห้องนิรภัย')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่');
+      return;
+    }
+    await replyWithQuickReply(event, 'เปิดห้องนิรภัยให้เลยน้าพี่ 🔐', [
+      { label: 'เปิดห้องนิรภัย', uri: 'https://nookeb-web.vercel.app/dashboard/vault' },
+    ]);
+    return;
+  }
+
+  if (prefixed && isCmd(text, 'งานของฉัน')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ฟีเจอร์นี้ใช้ได้เฉพาะแชทส่วนตัวน้าพี่');
+      return;
+    }
+    await replyWithQuickReply(event, 'เปิดหน้างานให้เลยน้าพี่ 📬', [
+      { label: 'ดูงานของฉัน', uri: 'https://nookeb-web.vercel.app/dashboard/tasks' },
+    ]);
+    return;
+  }
+
+  // "หนูเก็บเพิ่มเติม" — group shows a group-admin sub-menu (5 quick replies);
+  // 1-on-1 shows an informational feature-image carousel (safe in both contexts).
+  if (prefixed && isCmd(text, 'เพิ่มเติม')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await replyWithQuickReply(event, 'เลือกเมนูเพิ่มเติมได้เลยน้า', [
+        { label: 'หนูเก็บปิดแจ้งเตือน', text: 'หนูเก็บปิดแจ้งเตือน' },
+        { label: 'หนูเก็บเปิดแจ้งเตือน', text: 'หนูเก็บเปิดแจ้งเตือน' },
+        { label: 'หนูเก็บผูกทีม', text: 'หนูเก็บผูกทีม' },
+        { label: 'หนูเก็บยกเลิกผูกทีม', text: 'หนูเก็บยกเลิกผูกทีม' },
+        { label: 'หนูเก็บไอดีกลุ่ม', text: 'หนูเก็บไอดีกลุ่ม' },
+      ]);
+      return;
+    }
+    await replyFlex(event, buildFeatureCarouselMessage());
     return;
   }
 
   // "ล็อคเกอร์" → quick-reply shortcuts (buttons only, no Flex card) in ALL
   // sources (group AND 1-on-1).
-  if (isCmd(text, 'ล็อคเกอร์', 'locker', 'หนูเก็บล็อคเกอร์')) {
+  if (prefixed && isCmd(text, 'ล็อคเกอร์')) {
     const inGroup = source.type === 'group' || source.type === 'room';
-    await replyWithQuickReply(event, 'ล็อคเกอร์น้า เลือกได้เลย', [
+    await replyWithQuickReply(event, 'ล็อคเกอร์ของพี่อยู่นี่น้า เลือกได้เลยน้า', [
       {
         label: inGroup ? 'หนูเก็บดูล็อคเกอร์' : 'ดูล็อคเกอร์',
         uri: `${config.WEB_URL}/dashboard`,
       },
-      inGroup
-        ? { label: 'หนูเก็บอัพโหลดไฟล์', text: 'หนูเก็บอัพโหลดไฟล์' }
-        : { label: 'อัพโหลดไฟล์', text: 'อัพโหลดไฟล์' },
     ]);
     return;
   }
 
-  // Upload helper (the "อัพโหลดไฟล์" quick-reply button) — uploads happen by
-  // sending files straight into the chat, so just nudge the user to do that.
-  if (isCmd(text, 'อัพโหลดไฟล์', 'upload', 'หนูเก็บอัพโหลดไฟล์')) {
-    await reply(event, 'ส่งรูปหรือไฟล์เข้ามาในแชทนี้ได้เลยน้า เดี๋ยวหนูเก็บให้เองน้า');
-    return;
-  }
-
-  // Team onboarding guide ("หนูเก็บทีม" command / onboarding carousel bubble-5
-  // postback). After stripBotPrefix the remainder is "ทีม", so exact-match that
-  // (NOT includes — that would shadow "ผูกทีม"/"ยกเลิกผูกทีม", which contain "ทีม").
-  // Works in 1-1 and group alike: the "หนูเก็บ"-prefixed form passes the group
-  // bot-directed guard above. Grouped with the team commands, before the tail
-  // "unrecognized command" catch-all (the exact-match "หนูเก็บ" menu handler above
-  // never matches "ทีม", so sitting below it is safe).
-  if (isCmd(text, 'ทีม', 'team')) {
+  // Team onboarding guide ("หนูเก็บคู่มือทีม" command / onboarding carousel
+  // bubble-5 postback). After stripBotPrefix the remainder is "คู่มือทีม", exact-
+  // matched. Works in 1-1 and group alike: the "หนูเก็บ"-prefixed form passes the
+  // group bot-directed guard above. Grouped with the team commands, before the tail
+  // "unrecognized command" catch-all.
+  if (prefixed && isCmd(text, 'คู่มือทีม')) {
     await replyFlex(event, buildTeamGuideFlexMessage());
     return;
   }
 
   // Unbind this LINE group from its team (group context only; owner/admin only).
-  if (isCmd(text, 'หนูเก็บยกเลิกผูกทีม')) {
+  if (prefixed && isCmd(text, 'ยกเลิกผูกทีม')) {
     if (source.type !== 'group' || !source.groupId) {
-      await reply(event, 'ใช้ได้เฉพาะในกลุ่มน้า');
+      await reply(event, 'อันนี้ใช้ในกลุ่มน้า ลองพิมพ์ในกลุ่มดูน้า 🤝');
       return;
     }
     const groupId = source.groupId;
@@ -647,7 +700,7 @@ async function handleTextCommand(
     const userId = await findUserId(app, lineUserId);
     const role = userId ? await getTeamRole(app.supabase, team.id, userId) : null;
     if (!userId || !role || !['owner', 'admin'].includes(role)) {
-      await reply(event, 'เฉพาะเจ้าของทีมหรือแอดมินเท่านั้นที่ยกเลิกผูกได้น้า');
+      await reply(event, 'ต้องเป็นเจ้าของทีมก่อนนะน้า ถึงจะยกเลิกผูกได้น้า 🔑');
       return;
     }
     await unbindLineGroup(app.supabase, team.id, groupId, userId);
@@ -659,10 +712,10 @@ async function handleTextCommand(
   // when unambiguous (one team); with several teams the user picks by number
   // ("ผูกทีม 2"). Match the "ผูกทีม"/"bind team" prefix, then parse the rest as
   // an optional 1-based index.
-  const bindMatch = /^(?:หนูเก็บผูกทีม|ผูกทีม|bind team)\s*(\d+)?$/i.exec(text.trim());
+  const bindMatch = /^(?:หนูเก็บผูกทีม|ผูกทีม)\s*(\d+)?$/i.exec(text.trim());
   if (bindMatch) {
     if (source.type !== 'group' || !source.groupId) {
-      await reply(event, 'ใช้คำสั่งนี้ในกลุ่มเท่านั้นน้า');
+      await reply(event, 'คำสั่งนี้ใช้ในกลุ่มน้า ลองพิมพ์ในกลุ่มดูน้า 🧩');
       return;
     }
     const groupId = source.groupId;
@@ -678,7 +731,7 @@ async function handleTextCommand(
     const teams = userId ? await listUserTeams(app.supabase, userId) : [];
 
     if (teams.length === 0 || !userId) {
-      await reply(event, 'ยังไม่มีทีมน้า ไปสร้างทีมที่แดชบอร์ดก่อนน้า');
+      await reply(event, 'พี่ยังไม่มีทีมเลยน้า ไปสร้างทีมที่แดชบอร์ดก่อนได้เลยน้า 🧭');
       return;
     }
 
@@ -686,7 +739,7 @@ async function handleTextCommand(
     if (pick !== null) {
       const chosen = teams[pick - 1];
       if (!chosen) {
-        await reply(event, `ไม่มีทีมที่ ${pick} น้า ลองใหม่ด้วย หนูเก็บผูกทีม [เลข] น้า`);
+        await reply(event, `ไม่มีทีมลำดับที่ ${pick} น้า ลองใหม่ด้วย หนูเก็บผูกทีม [เลข] น้า 🔍`);
         return;
       }
       await bindLineGroup(app.supabase, chosen.team.id, groupId, userId);
@@ -711,9 +764,9 @@ async function handleTextCommand(
   }
 
   // Show this group's LINE Group ID (for binding it to a team in the dashboard)
-  if (isCmd(text, 'ไอดีกลุ่ม', 'group id', 'groupid', 'หนูเก็บไอดีกลุ่ม')) {
+  if (prefixed && isCmd(text, 'ไอดีกลุ่ม')) {
     if (source.type !== 'group' || !source.groupId) {
-      await reply(event, 'คำสั่งนี้ใช้ได้ในกลุ่มเท่านั้นน้า');
+      await reply(event, 'คำสั่งนี้ใช้ในกลุ่มน้า ลองพิมพ์ในกลุ่มดูน้า 🪪');
       return;
     }
     const groupId = source.groupId;
@@ -735,13 +788,13 @@ async function handleTextCommand(
   // API can't expose group-admin role); `updated_by` records who last changed it.
   // Reached in group/room because the "หนูเก็บ" prefix passes the bot-directed guard
   // above. In 1-on-1 it just explains the command is group-only.
-  const notifyOff = isCmd(text, 'ปิดแจ้งเตือน', 'หนูเก็บปิดแจ้งเตือน');
-  const notifyOn = isCmd(text, 'เปิดแจ้งเตือน', 'หนูเก็บเปิดแจ้งเตือน');
+  const notifyOff = prefixed && isCmd(text, 'ปิดแจ้งเตือน');
+  const notifyOn = prefixed && isCmd(text, 'เปิดแจ้งเตือน');
   if (notifyOff || notifyOn) {
     // Room (OpenChat) is treated like a group; both key off the group/room id.
     const groupId = source.groupId ?? source.roomId;
     if ((source.type !== 'group' && source.type !== 'room') || !groupId) {
-      await reply(event, 'คำสั่งนี้ใช้ได้เฉพาะในกลุ่มน้า');
+      await reply(event, 'คำสั่งนี้ใช้ในกลุ่มน้า ลองพิมพ์ในกลุ่มดูน้า 📡');
       return;
     }
     const enable = notifyOn;
@@ -750,7 +803,7 @@ async function handleTextCommand(
     if (current === enable) {
       await reply(
         event,
-        enable ? 'เปิดอยู่แล้วน้า ปกติเลย' : 'ปิดอยู่แล้วน้า ไม่ต้องทำอะไรเพิ่มเลย',
+        enable ? 'เปิดแจ้งเตือนอยู่แล้วน้า 🔔' : 'ปิดแจ้งเตือนอยู่แล้วน้า ไม่ต้องทำอะไรเพิ่มเลยน้า 🔕',
       );
       return;
     }
@@ -764,38 +817,26 @@ async function handleTextCommand(
       );
     } catch (err) {
       app.log.error({ err, groupId }, 'group notify toggle failed');
-      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+      await reply(event, 'ขอโทษน้า มีอะไรผิดพลาดนิดหน่อย ลองใหม่อีกทีนะน้า 🔧').catch(() => {});
     }
     return;
   }
 
-  // Redeem a referral code. Two entry points, same shared flow:
-  //   • "/redeem XXXXXXXX"
-  //   • "กรอกโค้ด XXXXXXXX" / "ใส่โค้ด XXXXXXXX" / "โค้ด XXXXXXXX"  (easy input)
-  // Checked before the "เชิญ" contains-match so the redeem text can never be
-  // swallowed by another branch. The prefix regex requires a space after the
-  // keyword; everything after it is the code.
-  if (/^\/redeem\b/i.test(text.trim())) {
-    await handleRedeem(app, event, lineUserId, text.trim().split(/\s+/)[1]);
-    return;
-  }
-  const redeemPrefix = /^(?:กรอกโค้ด|ใส่โค้ด|โค้ด)\s+(.+)$/.exec(text.trim());
+  // Redeem a referral code: "กรอกโค้ด XXXXXXXX". Checked before the "เชิญ" match
+  // so the redeem text can never be swallowed by another branch. The regex
+  // requires a space after the keyword; everything after it is the code.
+  const redeemPrefix = /^(?:กรอกโค้ด)\s+(.+)$/.exec(text.trim());
   if (redeemPrefix) {
     await handleRedeem(app, event, lineUserId, redeemPrefix[1]);
     return;
   }
 
-  // Show my invite code — prefix-match on "เชิญ" (or "/invite").
-  // Robust for Thai text from LINE, which may arrive with zero-width chars or a
-  // non-NFC composition that broke the old exact `===` match. Strip zero-width
-  // chars, normalize to NFC, then prefix-match. startsWith (not includes) so a
-  // message that merely *contains* "เชิญ" (e.g. "ยกเลิกคำเชิญ", which ends in it)
-  // isn't swallowed here and can fall through to its own handler. Group chats
-  // never reach here: the allowlist guard at the top returns first, so bare
-  // "เชิญ" only fires 1-on-1.
+  // Show my invite code — keyword "หนูเก็บเชิญ" (prefixed + startsWith "เชิญ" on
+  // the stripped remainder). startsWith (not exact) so "หนูเก็บเชิญเพื่อน" and any
+  // trailing text still match, while a message that merely *contains* "เชิญ"
+  // (e.g. "ยกเลิกคำเชิญ") isn't swallowed here.
   const normalizedText = normalizeText(text.trim());
-  const isInviteCommand =
-    normalizedText.startsWith('เชิญ') || normalizedText.toLowerCase().startsWith('/invite');
+  const isInviteCommand = prefixed && normalizedText.startsWith('เชิญ');
   if (isInviteCommand) {
     // Same silent-fail guard as /redeem: a DB/Redis error must produce an
     // apology reply, never nothing.
@@ -811,12 +852,12 @@ async function handleTextCommand(
       // Tap-again to re-show the code, or jump straight to the dashboard —
       // saves the user from re-typing "เชิญ".
       await replyFlexWithQuickReply(event, buildInviteFlexMessage(status), [
-        { label: '📁 ดูโค้ดอีกครั้ง', text: 'เชิญ' },
+        { label: '📁 ดูโค้ดอีกครั้ง', text: 'หนูเก็บเชิญ' },
         { label: '🌐 เปิดเว็บ', uri: config.WEB_URL },
       ]);
     } catch (err) {
       app.log.error({ err, lineUserId }, 'referral: invite handler error');
-      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+      await reply(event, 'ขอโทษน้า มีอะไรผิดพลาดนิดหน่อย ลองใหม่อีกทีนะน้า 🔧').catch(() => {});
     }
     return;
   }
@@ -829,12 +870,12 @@ async function handleTextCommand(
   // mode. Starting a session always replies with the "ระบบสแกน" card (buildScanFlex-
   // Message) — NOT the merge card. Personal-chat only (a shared group space would
   // collide scan sessions).
-  const scanColor = isCmd(text, 'สแกนสี');
-  const scanBw = isCmd(text, 'สแกนขาวดำ');
-  const scanPlain = isCmd(text, 'สแกน', 'scan', '/scan');
+  const scanColor = prefixed && isCmd(text, 'สแกนสี');
+  const scanBw = prefixed && isCmd(text, 'สแกนขาวดำ');
+  const scanPlain = prefixed && isCmd(text, 'สแกน');
   if (scanColor || scanBw || scanPlain) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบสแกนใช้ได้เฉพาะแชทส่วนตัวน้า');
+      await reply(event, 'ระบบสแกนทักหนูมาในแชทส่วนตัวได้เลยน้า');
       return;
     }
     const scanMode: ScanMode = scanColor ? 'color' : 'bw';
@@ -852,7 +893,7 @@ async function handleTextCommand(
       await replyFlex(event, buildScanFlexMessage());
     } else if (scanPlain) {
       // Bare "สแกน" while already scanning → just acknowledge, keep current mode.
-      await reply(event, 'กำลังสแกนอยู่แล้วน้า');
+      await reply(event, 'หนูกำลังสแกนให้อยู่แล้วน้า 🗂️');
     } else if (scanColor) {
       await setSessionMode(app.supabase, active.id, 'color');
       await reply(event, 'เปลี่ยนเป็นโหมดสีแล้วน้า 🌈');
@@ -866,11 +907,11 @@ async function handleTextCommand(
   // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell).
   // NOTE: "สแกน"/"scan"/"/scan" are deliberately NOT triggers here — they belong to
   // the scan-session feature (Feature B above), which handles them first anyway.
-  if (isCmd(text, 'รวมรูป', 'รวมรูปเป็น pdf')) {
+  if (prefixed && isCmd(text, 'รวมรูป')) {
     // Merge-to-PDF is a personal-chat feature only — group scan sessions would
     // collide across members sharing one group space.
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบรวมรูปใช้ได้เฉพาะแชทส่วนตัวน้า');
+      await reply(event, 'ระบบรวมรูปทักหนูมาในแชทส่วนตัวได้เลยน้า');
       return;
     }
     const profile = await getProfile(lineUserId).catch(() => undefined);
@@ -892,9 +933,9 @@ async function handleTextCommand(
   // the top). Personal-chat only; one entry per Bangkok calendar day, checked
   // here at arm time so the user learns immediately instead of after sending a
   // photo (the worker + unique index re-check as backstops).
-  if (isCmd(text, 'ไดอารี่', 'ไดอารี่วันนี้', 'diary')) {
+  if (prefixed && isCmd(text, 'ไดอารี่')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ไดอารี่ใช้ได้เฉพาะแชทส่วนตัวน้า');
+      await reply(event, 'ไดอารี่ทักหนูมาในแชทส่วนตัวได้เลยน้า');
       return;
     }
     try {
@@ -908,7 +949,7 @@ async function handleTextCommand(
       const today = bangkokDateString();
       const existing = await getEntryByDate(app.supabase, user.id, today);
       if (existing) {
-        await replyWithQuickReply(event, 'บันทึกวันนี้แล้วนะ 🌸 มาพรุ่งนี้อีกครั้งได้เลย', [
+        await replyWithQuickReply(event, 'วันนี้พี่บันทึกไว้แล้วน้า 🌸 พรุ่งนี้มาทำต่อได้เลยน้า', [
           { label: 'ดูไดอารี่ของฉัน', uri: `${config.WEB_URL}/dashboard/diary` },
         ]);
         return;
@@ -927,7 +968,7 @@ async function handleTextCommand(
       // Same silent-fail guard as /redeem: a DB/Redis error must produce an
       // apology reply, never nothing.
       app.log.error({ err, lineUserId }, 'diary: arm handler error');
-      await reply(event, 'หนูเก็บ: ขอโทษนะคะ เกิดข้อผิดพลาด ลองใหม่อีกทีนะคะ 📁').catch(() => {});
+      await reply(event, 'ขอโทษน้า มีอะไรผิดพลาดนิดหน่อย ลองใหม่อีกทีนะน้า 🔧').catch(() => {});
     }
     return;
   }
@@ -937,13 +978,13 @@ async function handleTextCommand(
   // .docx instead of being archived as-is. Personal-chat only, like scan (a
   // shared group flag would convert other members' uploads). Feature-gated on
   // the Mistral key: without it the command explains it's unavailable.
-  if (isCmd(text, 'แปลงไฟล์', 'แปลงเป็นเวิร์ด', 'word', 'เวิร์ด', 'to word')) {
+  if (prefixed && isCmd(text, 'แปลงไฟล์')) {
     if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบแปลงไฟล์ใช้ได้เฉพาะแชทส่วนตัวน้า');
+      await reply(event, 'ระบบแปลงไฟล์ทักหนูมาในแชทส่วนตัวได้เลยน้า');
       return;
     }
     if (!isMistralOcrConfigured()) {
-      await reply(event, 'ระบบแปลงไฟล์ยังไม่เปิดใช้งานตอนนี้น้า รอติดตามเร็วๆ นี้เลยน้า');
+      await reply(event, 'ระบบแปลงไฟล์ยังไม่เปิดตอนนี้น้า รอติดตามเร็วๆ นี้เลยน้า 🪄');
       return;
     }
     await armDocxConvert(app.redis, lineUserId);
@@ -955,15 +996,15 @@ async function handleTextCommand(
   const session = userId ? await getActiveSession(app.supabase, userId) : null;
 
   // Finish merge → build the PDF ("รวมรูป" moved to the start triggers above)
-  if (isCmd(text, 'เสร็จ', 'done', 'finish')) {
+  if (isCmd(text, 'เสร็จ')) {
     if (!session) {
-      await reply(event, 'ยังไม่ได้เปิดโหมดรวมรูปเลยน้า พิมพ์ "รวมรูป" ก่อน แล้วค่อยส่งรูปน้า');
+      await reply(event, 'พี่ยังไม่ได้เปิดโหมดรวมรูปเลยน้า พิมพ์ "รวมรูป" ก่อนแล้วค่อยส่งรูปมาน้า 🧺');
       return;
     }
     const pages = await countPages(app.supabase, session.id);
     if (pages === 0) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยังไม่มีไฟล์ให้รวมเลยน้า หนูยกเลิกโหมดรวมรูปให้แล้วนะคะ');
+      await reply(event, 'ยังไม่มีรูปให้รวมเลยน้า หนูปิดโหมดรวมรูปให้ก่อนนะน้า 🌀');
       return;
     }
     // Compare-and-set collecting → processing: if a concurrent "เสร็จ" already
@@ -971,7 +1012,7 @@ async function handleTextCommand(
     // dedups too, but this stops the double reply as well).
     const flipped = await setSessionStatus(app.supabase, session.id, 'processing', 'collecting');
     if (!flipped) {
-      await reply(event, 'กำลังรวมไฟล์ให้อยู่น้า รอสักครู่นะคะ');
+      await reply(event, 'หนูกำลังรวมไฟล์ให้อยู่น้า รอแป๊บนึงนะน้า ⏳');
       return;
     }
     await app.fileQueue.add(
@@ -994,49 +1035,43 @@ async function handleTextCommand(
   }
 
   // Cancel merge session / convert-to-Word mode / diary mode
-  if (isCmd(text, 'ยกเลิก', 'cancel')) {
+  if (isCmd(text, 'ยกเลิก')) {
     // Disarm both one-shot flags unconditionally (harmless no-ops when not armed).
     const wasArmed = await consumeDocxConvert(app.redis, lineUserId);
     const diaryWasArmed = (await consumeDiaryMode(app.redis, lineUserId)) !== null;
     if (session) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะคะ');
+      await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า รูปที่ค้างไว้หนูไม่ได้เก็บนะน้า');
     } else if (diaryWasArmed) {
       await reply(event, 'ยกเลิกโหมดไดอารี่ให้แล้วน้า');
     } else if (wasArmed) {
       await reply(event, 'ยกเลิกโหมดแปลงไฟล์ให้แล้วน้า');
     } else {
-      await reply(event, 'ตอนนี้ไม่ได้อยู่ในโหมดรวมรูปอยู่แล้วน้า');
+      await reply(event, 'ตอนนี้พี่ยังไม่ได้อยู่ในโหมดไหนเลยน้า 💡');
     }
     return;
   }
 
   // Self-introduction (rich-menu "แนะนำตัว" cell; "หนูเก็บ" now opens the menu)
-  if (isCmd(text, 'แนะนำตัว')) {
+  if (prefixed && isCmd(text, 'แนะนำตัว')) {
     await reply(event, INTRO_TEXT);
     return;
   }
 
-  // Support (rich-menu "ช่วยเหลือ" cell)
-  if (isCmd(text, 'contact_support', 'ติดต่อหนูเก็บ', 'ช่วยเหลือ', 'support')) {
+  // Support (keyword "ติดต่อหนูเก็บ")
+  if (isCmd(text, 'ติดต่อหนูเก็บ')) {
     await reply(event, SUPPORT_TEXT);
     return;
   }
 
-  // Full command reference ("หนูเก็บคำสั่ง" — also the "คำสั่ง" quick-reply button)
-  if (isCmd(text, 'คำสั่ง', 'commands', 'คำสั่งทั้งหมด')) {
+  // Full command reference ("หนูเก็บคำสั่ง")
+  if (prefixed && isCmd(text, 'คำสั่ง')) {
     await reply(event, COMMAND_LIST_TEXT);
     return;
   }
 
-  // Scan-to-PDF (rich-menu "สแกนรูปเป็น PDF" cell) — under construction
-  if (isCmd(text, 'สแกนรูปเป็น pdf')) {
-    await reply(event, 'กำลังอัพเดต 🔧');
-    return;
-  }
-
-  // How-to / usage guide (rich-menu "วิธีใช้งาน" cell; "เมนู" now opens the menu)
-  if (isCmd(text, 'วิธีใช้', 'วิธีใช้งาน', 'help', 'หนูเก็บวิธีใช้')) {
+  // How-to / usage guide ("หนูเก็บวิธีใช้")
+  if (prefixed && isCmd(text, 'วิธีใช้')) {
     await reply(event, HELP_TEXT);
     return;
   }
@@ -1045,7 +1080,7 @@ async function handleTextCommand(
   // catch-all nudge fired on every message). Recognized bare commands are handled
   // above and have already returned.
   if (source.type === 'user' && prefixed) {
-    await reply(event, 'หนูไม่เข้าใจคำสั่งนี้น้า พิมพ์ "หนูเก็บคำสั่ง" เพื่อดูคำสั่งทั้งหมดได้เลยน้า');
+    await reply(event, 'หนูไม่เข้าใจคำสั่งนี้น้า พิมพ์ "หนูเก็บคำสั่ง" เพื่อดูคำสั่งทั้งหมดได้เลยน้า 💬');
   }
 }
 
@@ -1276,7 +1311,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
       // Pre-download cap for file messages (LINE declares fileSize for those).
       if (message.fileSize && message.fileSize > config.DOCX_CONVERT_MAX_SOURCE_BYTES) {
         const mb = Math.round(config.DOCX_CONVERT_MAX_SOURCE_BYTES / (1024 * 1024));
-        await reply(event, `ไฟล์ใหญ่เกิน ${mb}MB น้า ระบบแปลงไฟล์รับได้แค่นี้ก่อน ลองย่อไฟล์หรือแบ่งส่งน้า`);
+        await reply(event, `ไฟล์ใหญ่เกิน ${mb}MB น้า ระบบแปลงไฟล์รับได้เท่านี้ก่อนน้า ลองย่อไฟล์หรือแบ่งส่งมาใหม่ได้เลยน้า`);
         return;
       }
       const job: ConvertToDocxJob = {
