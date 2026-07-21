@@ -207,7 +207,7 @@ export default function TaskListItem({
           )}
           {task.title}
         </h3>
-        <span style={{ display: 'inline-flex', gap: 6, flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
+        <span className={styles.cardBadges}>
           <span className={task.isPersonal ? styles.scopePersonal : styles.scopeGroup}>
             {task.isPersonal ? 'ส่วนตัว' : 'กลุ่ม'}
           </span>
