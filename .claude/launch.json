@@ -8,6 +8,13 @@
       "port": 3000
     },
     {
+      "name": "web-autoport",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["exec", "--workspace=@nookeb/web", "--", "next", "dev"],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
       "name": "api",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev:api", "--workspace=@nookeb/api"],

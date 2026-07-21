@@ -1,9 +1,10 @@
 'use client';
 
+import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { TaskDto, TaskItemDto, TaskStatus } from '@nookeb/shared';
 import { ClockIcon } from '@/components/icons';
-import { formatDeadline, isOverdue, taskProgress, urgency } from './taskUtils';
+import { formatRelativeDeadline, isOverdue, taskProgress, urgency } from './taskUtils';
 import styles from './tasks.module.css';
 
 const TYPE_LABEL: Record<TaskDto['type'], string> = {
@@ -42,21 +43,65 @@ function WarnIcon({ size = 15 }: { size?: number }) {
   );
 }
 
+function StarIcon({ size = 16, filled = false }: { size?: number; filled?: boolean }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill={filled ? 'currentColor' : 'none'} aria-hidden>
+      <path
+        d="m12 3.2 2.6 5.4 5.9.8-4.3 4.1 1.1 5.8-5.3-2.8-5.3 2.8 1.1-5.8L3.5 9.4l5.9-.8L12 3.2Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function DotsIcon({ size = 17 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+      <circle cx="5" cy="12" r="1.9" />
+      <circle cx="12" cy="12" r="1.9" />
+      <circle cx="19" cy="12" r="1.9" />
+    </svg>
+  );
+}
+
+export interface TaskQuickActions {
+  /** viewer has a pending assignment → "ทำเสร็จแล้ว" */
+  onComplete?: () => void;
+  /** creator, live, non-recurring → "เลื่อน deadline" */
+  onPostpone?: () => void;
+  /** creator, live → "ยกเลิกงาน" */
+  onCancel?: () => void;
+}
+
 /** One task card in the list: title, deadline, progress, items with the
- * viewer's เสร็จแล้ว button, group/personal badge, overdue warning. Clicking
- * the card opens the detail page (same behaviour as the previous renderCard). */
+ * viewer's เสร็จแล้ว button, group/personal badge, overdue warning, plus a
+ * pin star and a quick-actions menu ("..." button or long-press). */
 export default function TaskListItem({
   task,
   viewerUid,
   busyId,
   onDone,
+  pinned,
+  onTogglePin,
+  actions,
+  leaving,
 }: {
   task: TaskDto;
   viewerUid: string;
   busyId: string | null;
   onDone: (task: TaskDto, item: TaskItemDto) => void;
+  pinned: boolean;
+  onTogglePin: () => void;
+  actions: TaskQuickActions;
+  leaving: boolean;
 }) {
   const router = useRouter();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suppressClick = useRef(false);
+
   const { done, total } = taskProgress(task);
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
   const u = urgency(task.globalDeadline);
@@ -64,6 +109,26 @@ export default function TaskListItem({
   const isDone = task.status === 'done';
   const isCancelled = task.status === 'cancelled';
   const badge = STATUS_BADGE[task.status];
+
+  const openDetail = () => router.push(`/dashboard/tasks/${task.id}`);
+
+  const startLongPress = () => {
+    longPressTimer.current = setTimeout(() => {
+      suppressClick.current = true;
+      setMenuOpen(true);
+    }, 500);
+  };
+  const cancelLongPress = () => {
+    if (longPressTimer.current) clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+  };
+
+  const menuItems: { label: string; danger?: boolean; run: () => void }[] = [
+    { label: 'ดูรายละเอียด', run: openDetail },
+  ];
+  if (actions.onComplete) menuItems.push({ label: 'ทำเสร็จแล้ว', run: actions.onComplete });
+  if (actions.onPostpone) menuItems.push({ label: 'เลื่อน deadline', run: actions.onPostpone });
+  if (actions.onCancel) menuItems.push({ label: 'ยกเลิกงาน', danger: true, run: actions.onCancel });
 
   const renderItem = (item: TaskItemDto) => {
     const mine = item.assignees.find((a) => a.lineUid === viewerUid);
@@ -82,7 +147,7 @@ export default function TaskListItem({
           <div className={`${styles.itemTitle} ${itemDone ? styles.struck : ''}`}>{item.title}</div>
           <div className={styles.itemMeta}>
             {names}
-            {item.deadline ? ` · ${formatDeadline(item.deadline)}` : ''}
+            {item.deadline ? ` · ${formatRelativeDeadline(item.deadline)}` : ''}
           </div>
         </div>
         {itemDone ? (
@@ -112,15 +177,26 @@ export default function TaskListItem({
 
   return (
     <article
-      className={`${styles.card} ${styles.cardLink} ${isDone ? styles.done : ''} ${
+      className={`${styles.card} ${styles.cardLink} ${styles.cardIn} ${isDone ? styles.done : ''} ${
         isCancelled ? styles.cancelled : ''
-      } ${overdue ? styles.cardOverdue : ''}`}
+      } ${overdue ? styles.cardOverdue : ''} ${pinned ? styles.cardPinned : ''} ${
+        leaving ? styles.cardLeaving : ''
+      }`}
       role="link"
       tabIndex={0}
-      onClick={() => router.push(`/dashboard/tasks/${task.id}`)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter') router.push(`/dashboard/tasks/${task.id}`);
+      onClick={() => {
+        if (suppressClick.current) {
+          suppressClick.current = false;
+          return;
+        }
+        openDetail();
       }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') openDetail();
+      }}
+      onTouchStart={startLongPress}
+      onTouchEnd={cancelLongPress}
+      onTouchMove={cancelLongPress}
     >
       <div className={styles.cardTop}>
         <h3 className={styles.cardTitle}>
@@ -131,7 +207,7 @@ export default function TaskListItem({
           )}
           {task.title}
         </h3>
-        <span style={{ display: 'inline-flex', gap: 6, flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <span style={{ display: 'inline-flex', gap: 6, flex: '0 0 auto', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center' }}>
           <span className={task.isPersonal ? styles.scopePersonal : styles.scopeGroup}>
             {task.isPersonal ? 'ส่วนตัว' : 'กลุ่ม'}
           </span>
@@ -139,13 +215,67 @@ export default function TaskListItem({
           <span className={styles.statusBadge} style={{ background: badge.bg, color: badge.fg }}>
             {badge.label}
           </span>
+          <button
+            type="button"
+            className={`${styles.pinBtn} ${pinned ? styles.pinBtnOn : ''}`}
+            aria-label={pinned ? 'เลิกปักหมุด' : 'ปักหมุดงานนี้'}
+            aria-pressed={pinned}
+            onClick={(e) => {
+              e.stopPropagation();
+              onTogglePin();
+            }}
+          >
+            <StarIcon filled={pinned} />
+          </button>
+          <span className={styles.menuWrap}>
+            <button
+              type="button"
+              className={styles.menuBtn}
+              aria-label="ตัวเลือกงาน"
+              aria-expanded={menuOpen}
+              onClick={(e) => {
+                e.stopPropagation();
+                setMenuOpen((o) => !o);
+              }}
+            >
+              <DotsIcon />
+            </button>
+            {menuOpen && (
+              <>
+                <span
+                  className={styles.menuBackdrop}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setMenuOpen(false);
+                  }}
+                />
+                <span className={styles.menuPop} role="menu">
+                  {menuItems.map((mi) => (
+                    <button
+                      key={mi.label}
+                      type="button"
+                      role="menuitem"
+                      className={`${styles.menuItem} ${mi.danger ? styles.menuItemDanger : ''}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMenuOpen(false);
+                        mi.run();
+                      }}
+                    >
+                      {mi.label}
+                    </button>
+                  ))}
+                </span>
+              </>
+            )}
+          </span>
         </span>
       </div>
       {task.globalDeadline && (
         <span className={`${styles.deadline} ${u ? styles[u] : ''}`}>
           <ClockIcon size={14} />
           {u === 'overdue' ? 'เลยกำหนด ' : 'กำหนดส่ง '}
-          {formatDeadline(task.globalDeadline)}
+          {formatRelativeDeadline(task.globalDeadline)}
         </span>
       )}
       <div className={styles.progressRow}>

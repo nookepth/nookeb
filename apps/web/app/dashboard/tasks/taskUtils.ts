@@ -22,6 +22,23 @@ export function formatDeadline(iso: string): string {
   ).padStart(2, '0')}`;
 }
 
+/** Human Thai deadline: วันนี้/พรุ่งนี้/เมื่อวาน + เวลา, "อีก N วัน" /
+ * "N วันที่แล้ว" within a week, absolute date beyond that. */
+export function formatRelativeDeadline(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
+  if (dayDiff === 0) return `วันนี้ ${time}`;
+  if (dayDiff === 1) return `พรุ่งนี้ ${time}`;
+  if (dayDiff === -1) return `เมื่อวาน ${time}`;
+  if (dayDiff > 1 && dayDiff <= 7) return `อีก ${dayDiff} วัน (${d.getDate()} ${THAI_MONTHS[d.getMonth()]})`;
+  if (dayDiff < -1 && dayDiff >= -7) return `${Math.abs(dayDiff)} วันที่แล้ว`;
+  return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]} ${time}`;
+}
+
 /** '' = normal, 'urgent' ≤ 24h left, 'overdue' past. */
 export function urgency(iso: string | null): '' | 'urgent' | 'overdue' {
   if (!iso) return '';

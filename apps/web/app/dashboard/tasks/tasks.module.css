@@ -1165,3 +1165,882 @@
   font-size: 13px;
   margin: 10px 0 0;
 }
+
+/* ---- polish pass (2026-07-22 #2): full-layout skeleton, search, sticky bar,
+   per-tab empty states, motivation line, micro-interactions. Append-only. ---- */
+
+/* profile: name row + motivation subtitle */
+.profileNameRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.motivation {
+  font-size: 13px;
+  color: #8c8c8c;
+}
+
+/* skeletons mirroring the real layout (heights match the live components) */
+.skelProfile {
+  height: 82px;
+  border-radius: 16px;
+  margin-bottom: 14px;
+  background: linear-gradient(90deg, #efefef 25%, #e6e6e6 37%, #efefef 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+.skelStat {
+  height: 96px;
+  border-radius: 16px;
+  background: linear-gradient(90deg, #efefef 25%, #e6e6e6 37%, #efefef 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+.skelActivity {
+  height: 148px;
+  border-radius: 16px;
+  background: linear-gradient(90deg, #efefef 25%, #e6e6e6 37%, #efefef 63%);
+  background-size: 400% 100%;
+  animation: shimmer 1.4s ease infinite;
+}
+
+/* sticky search + tab bar — stays reachable while scrolling a long list */
+.stickyBar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: #f5f5f5;
+  padding-top: 8px;
+  margin-top: 10px;
+}
+
+/* search */
+.searchBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 12px;
+  padding: 0 12px;
+  height: 42px;
+}
+.searchBar:focus-within {
+  border-color: #b53a32;
+}
+.searchIcon {
+  display: inline-flex;
+  color: #b0b0b0;
+  flex-shrink: 0;
+}
+.searchInput {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  font-size: 14px;
+  font-family: inherit;
+  color: #111;
+  height: 100%;
+}
+.searchInput::placeholder {
+  color: #b0b0b0;
+}
+.searchClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: #f0f0f0;
+  color: #8c8c8c;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.searchClear:hover {
+  background: #e5e5e5;
+  color: #111;
+}
+
+/* list area keeps a floor height so short tabs don't slam the scroll position */
+.listArea {
+  min-height: 320px;
+}
+
+/* designed empty states */
+.emptyCard {
+  background: #fff;
+  border: 1px dashed #e2e2e2;
+  border-radius: 16px;
+  padding: 40px 24px;
+  margin-top: 16px;
+  text-align: center;
+}
+.emptyHero {
+  border-style: solid;
+  border-color: #eee;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  padding: 48px 24px;
+}
+.emptyIconWrap {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: #fef2f2;
+  color: #b53a32;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+}
+.emptyTitle {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111;
+  margin: 0 0 6px;
+}
+.emptyBody {
+  font-size: 14px;
+  color: #8c8c8c;
+  margin: 0 auto;
+  max-width: 340px;
+  line-height: 1.6;
+}
+.emptyCta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+  background: #fff;
+  color: #b53a32;
+  border: 1.5px solid #b53a32;
+  border-radius: 999px;
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+}
+.emptyCta:hover {
+  background: #fef2f2;
+}
+
+/* success toast variant */
+.toastOk {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.toastIcon {
+  display: inline-flex;
+  color: #4ade80;
+}
+
+/* micro-interactions (press feedback + card entrance), motion-safe only */
+@media (prefers-reduced-motion: no-preference) {
+  .cardIn {
+    animation: cardUp 0.22s ease both;
+  }
+  .statCard:active,
+  .fab:active,
+  .doneBtn:active,
+  .emptyCta:active {
+    transform: scale(0.97);
+  }
+  .statCard,
+  .fab,
+  .doneBtn,
+  .emptyCta {
+    transition: transform 0.1s ease, box-shadow 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+  }
+}
+@keyframes cardUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* ---- redesign pass (2026-07-22 #3): focus banner, filter/sort, calendar,
+   progress ring, streak, activity feed, personal stats, pins, quick-action
+   menu. Append-only — existing classes above must never change. ---- */
+
+/* hero additions: ring + streak (profileInfo grows so the ring sits right) */
+.profileInfo {
+  flex: 1;
+}
+.ringWrap {
+  position: relative;
+  flex: 0 0 auto;
+  width: 84px;
+  height: 84px;
+}
+.ringCenter {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+.ringCount {
+  font-size: 15px;
+  font-weight: 800;
+  color: #111;
+  line-height: 1.1;
+}
+.ringLabel {
+  font-size: 10px;
+  font-weight: 600;
+  color: #8c8c8c;
+}
+.ringPct {
+  position: absolute;
+  bottom: -6px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #b53a32;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.streakChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #fff4ec;
+  color: #d9480f;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+/* today's focus banner */
+.focusBanner {
+  background: #fff;
+  border: 1px solid #f3d8d6;
+  border-left: 4px solid #b53a32;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+.focusUrgent {
+  border-color: #fca5a5;
+  border-left-color: #b91c1c;
+  background: #fffafa;
+}
+.focusHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 12px 14px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.focusIcon {
+  display: inline-flex;
+  color: #b53a32;
+  flex-shrink: 0;
+}
+.focusUrgent .focusIcon {
+  color: #b91c1c;
+}
+.focusTitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+}
+.focusChevron {
+  display: inline-flex;
+  color: #b0b0b0;
+  flex-shrink: 0;
+  transition: transform 0.18s ease;
+}
+.focusChevronUp {
+  transform: rotate(-90deg);
+}
+.focusList {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+}
+.focusItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 10px;
+  padding: 8px 8px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.focusItem:hover {
+  background: #fef2f2;
+}
+.focusDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b53a32;
+  flex-shrink: 0;
+}
+.focusDotOverdue {
+  background: #b91c1c;
+}
+.focusItemTitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: #111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.focusItemTime {
+  font-size: 12px;
+  color: #8c8c8c;
+  flex-shrink: 0;
+}
+.focusItemTimeOverdue {
+  color: #b91c1c;
+  font-weight: 700;
+}
+.focusMore {
+  font-size: 12px;
+  color: #8c8c8c;
+  padding: 4px 16px 6px;
+}
+
+/* search row + list/calendar view toggle */
+.searchRow {
+  display: flex;
+  gap: 8px;
+}
+.searchRow .searchBar {
+  flex: 1;
+  min-width: 0;
+}
+.viewToggle {
+  display: inline-flex;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-radius: 12px;
+  padding: 3px;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.viewBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  background: none;
+  border-radius: 9px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c8c8c;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.viewBtnActive {
+  background: #b53a32;
+  color: #fff;
+}
+
+/* filter chips + sort */
+.filterBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+.chipRow {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+.chipRow::-webkit-scrollbar {
+  display: none;
+}
+.chip {
+  flex-shrink: 0;
+  border: 1px solid #e5e5e5;
+  background: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.chipActive {
+  background: #b53a32;
+  border-color: #b53a32;
+  color: #fff;
+}
+.sortWrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+.sortIcon {
+  position: absolute;
+  left: 9px;
+  display: inline-flex;
+  color: #8c8c8c;
+  pointer-events: none;
+}
+.sortSelect {
+  appearance: none;
+  border: 1px solid #e5e5e5;
+  background: #fff;
+  border-radius: 999px;
+  padding: 6px 10px 6px 27px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #555;
+  cursor: pointer;
+  font-family: inherit;
+  max-width: 132px;
+}
+.sortSelect:focus {
+  outline: none;
+  border-color: #b53a32;
+}
+
+/* calendar view */
+.calCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-top: 14px;
+}
+.calHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.calNavBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #eee;
+  background: #fff;
+  border-radius: 10px;
+  color: #555;
+  cursor: pointer;
+}
+.calNavBtn:hover {
+  border-color: #b53a32;
+  color: #b53a32;
+}
+.calMonthLabel {
+  font-size: 15px;
+  font-weight: 700;
+  color: #111;
+}
+.calGrid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.calWeekday {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8c8c8c;
+  padding: 4px 0 6px;
+}
+.calCellEmpty {
+  aspect-ratio: 1;
+}
+.calCell {
+  aspect-ratio: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  border: 1px solid transparent;
+  background: none;
+  border-radius: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 0;
+}
+.calCell:hover {
+  background: #f7f7f7;
+}
+.calCellToday {
+  border-color: #b53a32;
+}
+.calCellSelected {
+  background: #b53a32;
+}
+.calCellSelected:hover {
+  background: #9c2f28;
+}
+.calCellSelected .calDayNum {
+  color: #fff;
+}
+.calDayNum {
+  font-size: 13px;
+  font-weight: 600;
+  color: #333;
+  line-height: 1;
+}
+.calDots {
+  display: flex;
+  gap: 2px;
+  height: 5px;
+}
+.calDot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #b53a32;
+}
+.calCellSelected .calDot {
+  background: #fff;
+}
+.calDotOverdue {
+  background: #e03131;
+}
+.calDotDone {
+  background: #06c755;
+}
+.calLegend {
+  display: flex;
+  gap: 14px;
+  justify-content: center;
+  margin-top: 10px;
+}
+.calLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: #8c8c8c;
+}
+.dayFilterChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  background: #fef2f2;
+  color: #93312b;
+  border-radius: 999px;
+  padding: 6px 8px 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.dayFilterClear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 50%;
+  background: #b53a32;
+  color: #fff;
+  cursor: pointer;
+}
+
+/* pin + quick-actions menu on cards */
+.pinBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  color: #c9c9c9;
+  cursor: pointer;
+  padding: 0;
+}
+.pinBtn:hover {
+  color: #d9a406;
+  background: #fdf6e3;
+}
+.pinBtnOn {
+  color: #d9a406;
+}
+.cardPinned {
+  border-color: #efd9a0;
+}
+.menuWrap {
+  position: relative;
+  display: inline-flex;
+}
+.menuBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  background: none;
+  border-radius: 8px;
+  color: #8c8c8c;
+  cursor: pointer;
+  padding: 0;
+}
+.menuBtn:hover {
+  background: #f0f0f0;
+  color: #111;
+}
+.menuBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+}
+.menuPop {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 31;
+  display: flex;
+  flex-direction: column;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.14);
+  min-width: 168px;
+  padding: 4px;
+}
+.menuItem {
+  border: none;
+  background: none;
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  color: #111;
+  padding: 10px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.menuItem:hover {
+  background: #f7f7f7;
+}
+.menuItemDanger {
+  color: #b91c1c;
+}
+.menuItemDanger:hover {
+  background: #fef2f2;
+}
+
+/* card leaving animation (complete/cancel quick action) */
+@media (prefers-reduced-motion: no-preference) {
+  .cardLeaving {
+    animation: cardOut 0.24s ease forwards;
+  }
+}
+@keyframes cardOut {
+  to {
+    opacity: 0;
+    transform: translateX(24px) scale(0.97);
+  }
+}
+
+/* activity feed */
+.feedCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-top: 20px;
+  overflow: hidden;
+}
+.feedHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 14px 16px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.feedHeadIcon {
+  display: inline-flex;
+  color: #b53a32;
+  flex-shrink: 0;
+}
+.feedTitle {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+}
+.feedEmpty {
+  font-size: 13px;
+  color: #8c8c8c;
+  padding: 0 16px 16px;
+  margin: 0;
+}
+.feedList {
+  list-style: none;
+  margin: 0;
+  padding: 0 8px 8px;
+}
+.feedItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 10px;
+  padding: 8px;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+}
+.feedItem:hover {
+  background: #f7f7f7;
+}
+.feedDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #b53a32;
+  flex-shrink: 0;
+}
+.feedDotDone {
+  background: #06c755;
+}
+.feedDotCancelled {
+  background: #b0b0b0;
+}
+.feedText {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: #333;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feedKind {
+  font-weight: 700;
+  color: #111;
+}
+.feedTime {
+  font-size: 11px;
+  color: #8c8c8c;
+  flex-shrink: 0;
+}
+
+/* personal stats */
+.pStatsCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-top: 14px;
+}
+.trendIcon {
+  display: inline-flex;
+  vertical-align: -1px;
+  margin-right: 3px;
+}
+.lateSection {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.lateTitle {
+  font-size: 12px;
+  font-weight: 700;
+  color: #8c8c8c;
+}
+.lateRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.lateLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #333;
+  width: 84px;
+  flex-shrink: 0;
+}
+.lateTrack {
+  flex: 1;
+  height: 8px;
+  background: #f0f0f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.lateFill {
+  display: block;
+  height: 100%;
+  background: #e0716a;
+  border-radius: 999px;
+}
+.lateCount {
+  font-size: 12px;
+  font-weight: 700;
+  color: #b91c1c;
+  width: 20px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.lateEmpty {
+  font-size: 13px;
+  color: #047857;
+  background: #ecfdf5;
+  border-radius: 10px;
+  padding: 9px 12px;
+  margin: 14px 0 0;
+}
