@@ -1271,3 +1271,30 @@ export function deleteTaskLink(taskId: string, linkId: string): Promise<{ task: 
 export function listGroupTaskMembers(groupId: string): Promise<{ members: GroupMemberDto[] }> {
   return apiFetch(`/groups/${encodeURIComponent(groupId)}/members`);
 }
+
+/** Create a งานส่วนตัว from the dashboard modal — same POST /tasks the LIFF
+ * flow uses, personal scope (migration 043): no groupId/assignees, owner and
+ * assignee derive from the session. Single type; deadline must be future. */
+export function createPersonalTask(input: {
+  title: string;
+  /** ISO datetime, must be in the future (API-enforced) */
+  globalDeadline: string;
+  description?: string;
+}): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      scope: 'personal',
+      type: 'single',
+      title: input.title,
+      globalDeadline: input.globalDeadline,
+      items: [
+        {
+          title: input.title,
+          ...(input.description ? { description: input.description } : {}),
+        },
+      ],
+    }),
+  });
+}

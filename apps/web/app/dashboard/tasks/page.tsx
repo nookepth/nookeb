@@ -2,76 +2,89 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Image from 'next/image';
-import { useRouter } from 'next/navigation';
-import type { TaskDto, TaskItemDto, TaskStatus } from '@nookeb/shared';
-import { ApiError, hasSession, listMyTasks, markTaskItemDone } from '@/lib/api';
+import type { TaskDto, TaskItemDto, UserDto } from '@nookeb/shared';
+import { ApiError, getMe, hasSession, listMyTasks, markTaskItemDone } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
-import { ClockIcon, ListIcon } from '@/components/icons';
+import { ListIcon, UserIcon } from '@/components/icons';
+import TaskStatsCard from './TaskStatsCard';
+import TaskActivitySummary from './TaskActivitySummary';
+import TaskListItem from './TaskListItem';
+import CreatePersonalTaskModal from './CreatePersonalTaskModal';
+import UserPlanBadge from './UserPlanBadge';
+import { effectiveDeadline, isOverdue } from './taskUtils';
 import styles from './tasks.module.css';
 
-const TYPE_LABEL: Record<TaskDto['type'], string> = {
-  single: 'งานเดียว',
-  multi: 'แยกรายการ',
-  recurring: 'งานประจำ',
+type Tab = 'active' | 'overdue' | 'done' | 'cancelled';
+
+const TAB_EMPTY: Record<Tab, string> = {
+  active: 'ยังไม่มีงานที่กำลังทำน้า',
+  overdue: 'ไม่มีงานเลยกำหนด เก่งมากน้า',
+  done: 'ยังไม่มีงานที่เสร็จน้า',
+  cancelled: 'ยังไม่มีงานที่ถูกยกเลิกน้า',
 };
 
-const STATUS_BADGE: Record<TaskStatus, { label: string; bg: string; fg: string }> = {
-  pending: { label: 'รอดำเนินการ', bg: '#f3f4f6', fg: '#374151' },
-  in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
-  done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
-  cancelled: { label: 'ยกเลิก', bg: '#fee2e2', fg: '#b91c1c' },
-};
+/* ---- small inline icons for the KPI cards (brand rule: no emoji) ---- */
 
-type Tab = 'active' | 'done' | 'cancelled';
-
-const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
-
-function formatDeadline(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]} ${String(d.getHours()).padStart(2, '0')}:${String(
-    d.getMinutes(),
-  ).padStart(2, '0')}`;
-}
-
-/** '' = normal, 'urgent' ≤ 24h left, 'overdue' past. */
-function urgency(iso: string | null): '' | 'urgent' | 'overdue' {
-  if (!iso) return '';
-  const diff = new Date(iso).getTime() - Date.now();
-  if (diff < 0) return 'overdue';
-  if (diff <= 24 * 60 * 60 * 1000) return 'urgent';
-  return '';
-}
-
-function CheckIcon({ size = 14 }: { size?: number }) {
+function PlayIcon({ size = 18 }: { size?: number }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
-      <path d="M20 6L9 17l-5-5" strokeLinecap="round" strokeLinejoin="round" />
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="2" />
+      <path d="M12 7.5v4.5l3 2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function AlertIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 3.5 21.5 20h-19L12 3.5Z" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" />
+      <path d="M12 10v4.2" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+      <circle cx="12" cy="17.2" r="1.15" fill="currentColor" />
+    </svg>
+  );
+}
+function DoneIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="2" />
+      <path d="m8.5 12.2 2.4 2.4 4.6-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+function CancelIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <circle cx="12" cy="12" r="8.5" stroke="currentColor" strokeWidth="2" />
+      <path d="m9 9 6 6M15 9l-6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+function PlusIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
     </svg>
   );
 }
 
-/** Progress: done assignee-slots / total assignee-slots across live items. */
-function taskProgress(task: TaskDto): { done: number; total: number } {
-  let done = 0;
-  let total = 0;
-  for (const item of task.items) {
-    if (item.status === 'cancelled') continue;
-    for (const a of item.assignees) {
-      total += 1;
-      if (a.doneAt) done += 1;
-    }
-  }
-  return { done, total };
+/** Sort helper: deadline ASC with null deadlines last. */
+function byDeadlineAsc(a: TaskDto, b: TaskDto): number {
+  const da = effectiveDeadline(a);
+  const db = effectiveDeadline(b);
+  if (da === null && db === null) return 0;
+  if (da === null) return 1;
+  if (db === null) return -1;
+  return da < db ? -1 : da > db ? 1 : 0;
 }
 
 export default function TasksPage() {
-  const router = useRouter();
   const [tasks, setTasks] = useState<TaskDto[] | null>(null);
   const [viewerUid, setViewerUid] = useState<string>('');
+  const [me, setMe] = useState<UserDto | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('active');
+  const [createOpen, setCreateOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -99,6 +112,12 @@ export default function TasksPage() {
 
   useEffect(() => {
     void load();
+    // profile card is best-effort — the page works without it
+    if (hasSession()) {
+      getMe()
+        .then(setMe)
+        .catch(() => {});
+    }
   }, [load]);
 
   async function handleDone(task: TaskDto, item: TaskItemDto): Promise<void> {
@@ -128,105 +147,23 @@ export default function TasksPage() {
     );
   }
 
-  const active = (tasks ?? []).filter((t) => t.status !== 'done' && t.status !== 'cancelled');
-  const finished = (tasks ?? []).filter((t) => t.status === 'done');
-  const cancelled = (tasks ?? []).filter((t) => t.status === 'cancelled');
-  const shown = tab === 'active' ? active : tab === 'done' ? finished : cancelled;
-  const TAB_EMPTY: Record<Tab, string> = {
-    active: 'ยังไม่มีงานที่กำลังทำน้า',
-    done: 'ยังไม่มีงานที่เสร็จน้า',
-    cancelled: 'ยังไม่มีงานที่ถูกยกเลิกน้า',
-  };
+  const all = tasks ?? [];
+  // เลยกำหนด is its own bucket — กำลังทำ shows only live tasks NOT past deadline
+  const overdue = all.filter(isOverdue).sort(byDeadlineAsc); // oldest deadline = most overdue first
+  const active = all
+    .filter((t) => t.status !== 'done' && t.status !== 'cancelled' && !isOverdue(t))
+    .sort(byDeadlineAsc);
+  const finished = all.filter((t) => t.status === 'done').sort(byDeadlineAsc);
+  const cancelled = all.filter((t) => t.status === 'cancelled').sort(byDeadlineAsc);
+  const shown =
+    tab === 'active' ? active : tab === 'overdue' ? overdue : tab === 'done' ? finished : cancelled;
 
-  const renderItem = (task: TaskDto, item: TaskItemDto) => {
-    const mine = item.assignees.find((a) => a.lineUid === viewerUid);
-    const itemDone = item.status === 'done';
-    const myPending = mine && !mine.doneAt && !itemDone && item.status !== 'cancelled';
-    const names = item.assignees.map((a) => a.displayName || 'สมาชิก').join(', ');
-    const dotClass = itemDone ? styles.itemDone : myPending || item.assignees.some((a) => !a.doneAt) ? styles.pending : '';
-    return (
-      <div key={item.id} className={`${styles.item} ${itemDone ? styles.itemDone : ''}`}>
-        <span className={`${styles.itemDot} ${dotClass}`} />
-        <div className={styles.itemMain}>
-          <div className={`${styles.itemTitle} ${itemDone ? styles.struck : ''}`}>{item.title}</div>
-          <div className={styles.itemMeta}>
-            {names}
-            {item.deadline ? ` · ${formatDeadline(item.deadline)}` : ''}
-          </div>
-        </div>
-        {itemDone ? (
-          <span className={styles.doneChip}>
-            <CheckIcon /> เสร็จ
-          </span>
-        ) : myPending ? (
-          <button
-            type="button"
-            className={styles.doneBtn}
-            disabled={busyId === item.id}
-            onClick={(e) => {
-              e.stopPropagation();
-              void handleDone(task, item);
-            }}
-          >
-            {busyId === item.id ? '...' : 'เสร็จแล้ว'}
-          </button>
-        ) : mine?.doneAt ? (
-          <span className={styles.doneChip}>
-            <CheckIcon /> เสร็จ
-          </span>
-        ) : null}
-      </div>
-    );
-  };
-
-  const renderCard = (task: TaskDto) => {
-    const { done, total } = taskProgress(task);
-    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-    const u = urgency(task.globalDeadline);
-    const isDone = task.status === 'done';
-    const isCancelled = task.status === 'cancelled';
-    const badge = STATUS_BADGE[task.status];
-    return (
-      <article
-        key={task.id}
-        className={`${styles.card} ${styles.cardLink} ${isDone ? styles.done : ''} ${
-          isCancelled ? styles.cancelled : ''
-        }`}
-        role="link"
-        tabIndex={0}
-        onClick={() => router.push(`/dashboard/tasks/${task.id}`)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') router.push(`/dashboard/tasks/${task.id}`);
-        }}
-      >
-        <div className={styles.cardTop}>
-          <h3 className={styles.cardTitle}>{task.title}</h3>
-          <span style={{ display: 'inline-flex', gap: 6, flex: '0 0 auto' }}>
-            <span className={styles.typeTag}>{TYPE_LABEL[task.type]}</span>
-            <span className={styles.statusBadge} style={{ background: badge.bg, color: badge.fg }}>
-              {badge.label}
-            </span>
-          </span>
-        </div>
-        {task.globalDeadline && (
-          <span className={`${styles.deadline} ${u ? styles[u] : ''}`}>
-            <ClockIcon size={14} />
-            {u === 'overdue' ? 'เลยกำหนด ' : 'กำหนดส่ง '}
-            {formatDeadline(task.globalDeadline)}
-          </span>
-        )}
-        <div className={styles.progressRow}>
-          <div className={styles.progressTrack}>
-            <div className={styles.progressFill} style={{ width: `${pct}%` }} />
-          </div>
-          <span className={styles.progressText}>
-            {done}/{total} เสร็จ
-          </span>
-        </div>
-        <div className={styles.items}>{task.items.map((item) => renderItem(task, item))}</div>
-      </article>
-    );
-  };
+  const TABS: { key: Tab; label: string; count: number; alert?: boolean }[] = [
+    { key: 'active', label: 'กำลังทำ', count: active.length },
+    { key: 'overdue', label: 'เลยกำหนด', count: overdue.length, alert: overdue.length > 0 },
+    { key: 'done', label: 'เสร็จสิ้น', count: finished.length },
+    { key: 'cancelled', label: 'ยกเลิก', count: cancelled.length },
+  ];
 
   return (
     <main className={styles.wrap}>
@@ -241,6 +178,24 @@ export default function TasksPage() {
       </h1>
       <p className={styles.hint}>งานที่เธอสร้างหรือถูกมอบหมายจากทุกกลุ่ม หนูรวมมาไว้ที่เดียวให้แล้วน้า</p>
 
+      {/* A. profile card */}
+      {me && (
+        <section className={styles.profileCard} aria-label="โปรไฟล์">
+          {me.pictureUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- LINE CDN avatar, remote domain varies
+            <img className={styles.profileAvatar} src={me.pictureUrl} alt="" />
+          ) : (
+            <span className={`${styles.profileAvatar} ${styles.profileAvatarFallback}`}>
+              <UserIcon size={24} />
+            </span>
+          )}
+          <div className={styles.profileInfo}>
+            <span className={styles.profileName}>{me.displayName || 'ผู้ใช้หนูเก็บ'}</span>
+            <UserPlanBadge plan={me.plan} />
+          </div>
+        </section>
+      )}
+
       {error && <p className={styles.error}>{error}</p>}
 
       {!error && tasks === null && (
@@ -251,54 +206,115 @@ export default function TasksPage() {
         </div>
       )}
 
-      {!error && tasks !== null && tasks.length === 0 && (
-        <div className={styles.empty}>
-          <span className={styles.emptyIcon}>
-            <ListIcon size={56} />
-          </span>
-          <h2>ยังไม่มีงานเลยน้า</h2>
-          <p>สร้างงานได้จากปุ่ม &quot;สร้างงาน&quot; ในกลุ่ม LINE ของเธอ</p>
-        </div>
-      )}
-
-      {!error && tasks !== null && tasks.length > 0 && (
+      {!error && tasks !== null && (
         <>
-          <div className={styles.tabs} role="tablist">
-            <button
-              type="button"
-              role="tab"
-              className={`${styles.tab} ${tab === 'active' ? styles.tabActive : ''}`}
+          {/* B. KPI cards — clicking filters the list below */}
+          <div className={styles.statsGrid}>
+            <TaskStatsCard
+              icon={<PlayIcon />}
+              count={active.length}
+              label="กำลังทำ"
+              tone="progress"
+              active={tab === 'active'}
               onClick={() => setTab('active')}
-            >
-              กำลังทำ ({active.length})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={`${styles.tab} ${tab === 'done' ? styles.tabActive : ''}`}
+            />
+            <TaskStatsCard
+              icon={<AlertIcon />}
+              count={overdue.length}
+              label="เลยกำหนด"
+              tone="overdue"
+              active={tab === 'overdue'}
+              onClick={() => setTab('overdue')}
+            />
+            <TaskStatsCard
+              icon={<DoneIcon />}
+              count={finished.length}
+              label="เสร็จสิ้น"
+              tone="done"
+              active={tab === 'done'}
               onClick={() => setTab('done')}
-            >
-              เสร็จแล้ว ({finished.length})
-            </button>
-            <button
-              type="button"
-              role="tab"
-              className={`${styles.tab} ${tab === 'cancelled' ? styles.tabActive : ''}`}
+            />
+            <TaskStatsCard
+              icon={<CancelIcon />}
+              count={cancelled.length}
+              label="ยกเลิก"
+              tone="cancelled"
+              active={tab === 'cancelled'}
               onClick={() => setTab('cancelled')}
-            >
-              ยกเลิก ({cancelled.length})
-            </button>
+            />
           </div>
-          {shown.length > 0 ? (
-            <div className={styles.list} style={{ marginTop: 16 }}>
-              {shown.map(renderCard)}
+
+          {/* C. activity summary (client-side, no extra endpoint) */}
+          <TaskActivitySummary tasks={all} />
+
+          {/* D. tabbed task list */}
+          {all.length === 0 ? (
+            <div className={styles.empty}>
+              <span className={styles.emptyIcon}>
+                <ListIcon size={56} />
+              </span>
+              <h2>ยังไม่มีงานเลยน้า</h2>
+              <p>สร้างงานส่วนตัวได้จากปุ่มด้านล่าง หรือกดปุ่ม &quot;สร้างงาน&quot; ในกลุ่ม LINE ของเธอ</p>
             </div>
           ) : (
-            <p className={styles.hint} style={{ marginTop: 24, textAlign: 'center' }}>
-              {TAB_EMPTY[tab]}
-            </p>
+            <>
+              <div className={styles.tabs} role="tablist">
+                {TABS.map((t) => (
+                  <button
+                    key={t.key}
+                    type="button"
+                    role="tab"
+                    aria-selected={tab === t.key}
+                    className={`${styles.tab} ${tab === t.key ? styles.tabActive : ''} ${
+                      t.alert ? styles.tabAlert : ''
+                    }`}
+                    onClick={() => setTab(t.key)}
+                  >
+                    {t.label} ({t.count})
+                  </button>
+                ))}
+              </div>
+              {shown.length > 0 ? (
+                <div className={styles.list} style={{ marginTop: 16 }}>
+                  {shown.map((task) => (
+                    <TaskListItem
+                      key={task.id}
+                      task={task}
+                      viewerUid={viewerUid}
+                      busyId={busyId}
+                      onDone={(t, item) => void handleDone(t, item)}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <p className={styles.hint} style={{ marginTop: 24, textAlign: 'center' }}>
+                  {TAB_EMPTY[tab]}
+                </p>
+              )}
+            </>
           )}
         </>
+      )}
+
+      {/* E. create personal task */}
+      {!needsLogin && !error && tasks !== null && (
+        <button type="button" className={styles.fab} onClick={() => setCreateOpen(true)}>
+          <PlusIcon /> สร้างงานส่วนตัว
+        </button>
+      )}
+      {createOpen && (
+        <CreatePersonalTaskModal
+          onClose={() => setCreateOpen(false)}
+          onCreated={() => {
+            setCreateOpen(false);
+            showToast('สร้างงานส่วนตัวแล้วน้า');
+            void load();
+          }}
+          onUnauthorized={() => {
+            setCreateOpen(false);
+            setNeedsLogin(true);
+          }}
+        />
       )}
 
       {toast && (

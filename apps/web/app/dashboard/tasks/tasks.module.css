@@ -871,3 +871,297 @@
 .tdDateInputWrap:focus-within {
   border-color: #b53a32;
 }
+
+/* ---- list-page redesign (2026-07-22): profile card, KPI stats grid,
+   activity summary, overdue styling, FAB. Append-only — the detail page
+   shares this module, so existing classes above must never change. ---- */
+
+/* A. profile card */
+.profileCard {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-bottom: 14px;
+}
+.profileAvatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.profileAvatarFallback {
+  background: #f9e3e1;
+  color: #93312b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.profileInfo {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  min-width: 0;
+}
+.profileName {
+  font-size: 16px;
+  font-weight: 700;
+  color: #111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.planBadge {
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 3px 12px;
+  white-space: nowrap;
+}
+.planBadgeFree {
+  background: #fef2f2;
+  color: #93312b;
+}
+.planBadgePro {
+  background: #b53a32;
+  color: #fff;
+}
+
+/* B. KPI stats grid — 2×2 on mobile, 4 across from tablet up */
+.statsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px;
+  margin-bottom: 14px;
+}
+@media (min-width: 640px) {
+  .statsGrid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+.statCard {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+.statCard:hover {
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.08);
+}
+.statCardActive {
+  border-color: #b53a32;
+  box-shadow: 0 0 0 1px #b53a32;
+}
+.statIcon {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.statToneProgress {
+  background: #fef3c7;
+  color: #b45309;
+}
+.statToneOverdue {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.statToneDone {
+  background: #d1fae5;
+  color: #047857;
+}
+.statToneCancelled {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+.statNum {
+  font-size: 24px;
+  font-weight: 800;
+  color: #111;
+  line-height: 1;
+}
+.statLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c8c8c;
+}
+
+/* C. activity summary */
+.activityCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-bottom: 4px;
+}
+.activityHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+.activityTitle {
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+  margin: 0;
+}
+.segmented {
+  display: inline-flex;
+  background: #f5f5f5;
+  border-radius: 999px;
+  padding: 3px;
+  gap: 2px;
+}
+.segBtn {
+  border: none;
+  background: none;
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #8c8c8c;
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+}
+.segBtnActive {
+  background: #fff;
+  color: #b53a32;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.customRange {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.customRangeField {
+  flex: 1;
+  min-width: 0;
+}
+.metricRow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+.metricBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  background: #fafafa;
+  border-radius: 12px;
+  padding: 12px 6px;
+}
+.metricNum {
+  font-size: 20px;
+  font-weight: 800;
+  color: #111;
+  line-height: 1;
+}
+.metricNumDone {
+  color: #047857;
+}
+.metricNumOverdue {
+  color: #b91c1c;
+}
+.metricLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: #8c8c8c;
+  text-align: center;
+}
+
+/* D. list additions: overdue card, scope badges, alert tab */
+.cardOverdue {
+  border-color: #fca5a5;
+  box-shadow: 0 1px 2px rgba(185, 28, 28, 0.06);
+}
+.warnIcon {
+  display: inline-flex;
+  vertical-align: -2px;
+  color: #b91c1c;
+  margin-right: 6px;
+}
+.scopePersonal,
+.scopeGroup {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.scopePersonal {
+  color: #6d28d9;
+  background: #ede9fe;
+}
+.scopeGroup {
+  color: #1971c2;
+  background: #e7f1fb;
+}
+.tabAlert {
+  color: #b91c1c;
+}
+.tabAlert.tabActive {
+  color: #b91c1c;
+  border-bottom-color: #b91c1c;
+}
+.tabs {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.tab {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* E. floating create button */
+.fab {
+  position: fixed;
+  right: 20px;
+  bottom: calc(24px + env(safe-area-inset-bottom));
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: #b53a32;
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 14px 20px;
+  font-size: 15px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(181, 58, 50, 0.4);
+  z-index: 40;
+}
+.fab:hover {
+  background: #9c2f28;
+}
+.modalError {
+  color: #e03131;
+  font-size: 13px;
+  margin: 10px 0 0;
+}
