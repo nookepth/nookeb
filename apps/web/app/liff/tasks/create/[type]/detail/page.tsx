@@ -242,6 +242,17 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                   : 'ส่งการ์ดงานเข้ากลุ่มเรียบร้อยแล้วน้า'}
               </p>
             </>
+          ) : isPersonal ? (
+            // งานส่วนตัวไม่เคยส่งการ์ดเข้ากลุ่ม (announced=false เสมอ) — ไม่มีอะไร
+            // ล้มเหลว จึงต้องไม่ขึ้นข้อความ "ส่งไม่สำเร็จ/โควตาเต็ม" ของ group
+            <>
+              <h1 className={styles.headerTitle}>บันทึกงานแล้วน้า</h1>
+              <p className={styles.headerSub}>
+                {TASK_NOTIFICATIONS_ENABLED
+                  ? 'หนูเก็บจะเตือนพี่เองก่อนถึงกำหนดน้า'
+                  : 'เปิดดูงานได้จากปุ่ม "ดูงาน" ด้านล่างน้า'}
+              </p>
+            </>
           ) : (
             <>
               <h1 className={styles.headerTitle}>บันทึกงานแล้วน้า</h1>
@@ -302,7 +313,13 @@ export default function DetailPage({ params }: { params: { type: string } }) {
     <main className={styles.page}>
       <div className={styles.heroHeader}>
         <p className={styles.heroLabel}>
-          {isRecurring ? 'งานประจำ' : isMulti ? 'แยกงานเป็นรายการ' : 'งานเดียว มอบหลายคน'}
+          {isRecurring
+            ? 'งานประจำ'
+            : isMulti
+              ? 'แยกงานเป็นรายการ'
+              : isPersonal
+                ? 'งานเดียว'
+                : 'งานเดียว มอบหลายคน'}
         </p>
         <input
           className={styles.titleInput}
@@ -509,7 +526,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             ← กลับ
           </button>
           <button type="button" className={styles.primaryBtn} disabled={submitting} onClick={submit}>
-            {submitting ? 'กำลังส่ง...' : 'ส่งงานเข้ากลุ่ม →'}
+            {submitting ? 'กำลังส่ง...' : isPersonal ? 'บันทึกงาน →' : 'ส่งงานเข้ากลุ่ม →'}
           </button>
         </div>
       </div>
