@@ -68,26 +68,24 @@
 
 .cardTop {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
 }
 .cardTitle {
+  flex: 1 1 100%;
+  min-width: 0;
   font-size: 17px;
   font-weight: 700;
   color: #111;
   margin: 0;
   word-break: break-word;
+  overflow-wrap: break-word;
 }
 .typeTag {
-  flex: 0 0 auto;
-  font-size: 11px;
-  font-weight: 700;
   color: #b53a32;
   background: #b53a3214;
-  border-radius: 999px;
-  padding: 4px 10px;
-  white-space: nowrap;
 }
 
 .deadline {
@@ -295,12 +293,7 @@
 
 /* status badge (color supplied inline) */
 .statusBadge {
-  flex: 0 0 auto;
-  font-size: 13px;
   font-weight: 700;
-  border-radius: 999px;
-  padding: 3px 12px;
-  white-space: nowrap;
 }
 
 /* ---- detail page ---- */
@@ -1106,12 +1099,7 @@
 }
 .scopePersonal,
 .scopeGroup {
-  flex: 0 0 auto;
-  font-size: 11px;
   font-weight: 700;
-  border-radius: 999px;
-  padding: 4px 10px;
-  white-space: nowrap;
 }
 .scopePersonal {
   color: #6d28d9;
@@ -2043,4 +2031,38 @@
   border-radius: 10px;
   padding: 9px 12px;
   margin: 14px 0 0;
+}
+
+/* ---- standardized card badges (ส่วนตัว/กลุ่ม/ประเภทงาน/สถานะ) ----
+   One shape for every variant — only the colors above differ. */
+.typeTag,
+.statusBadge,
+.scopePersonal,
+.scopeGroup {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+  line-height: 22px;
+  border-radius: 11px;
+  white-space: nowrap;
+}
+
+/* badge row: sits on its own line under the title; pin/menu stay hard right */
+.cardBadges {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+.cardBadges .pinBtn {
+  margin-left: auto;
+}
+.cardBadges .pinBtn,
+.cardBadges .menuWrap {
+  flex-shrink: 0;
 }
