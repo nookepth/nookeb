@@ -24,3 +24,4 @@ restartPolicyType = "on_failure"
 restartPolicyMaxRetries = 10
 
 # deploy-trigger: 2026-07-05 referral release (see 994d91d)
+# deploy-trigger: 2026-07-22 single rich menu + ฟีเจอร์เอกสาร handler (see 620f343)
