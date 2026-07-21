@@ -7,11 +7,14 @@ import { getObjectStream } from '../services/r2.service';
 // This is NOT a user-file download (engineering rule 5), just a fixed app asset.
 const GREETING_KEY = 'static/welcome.jpg';
 
-// Onboarding images sent in order (1 → 8) on the `follow` and `join` events.
-// Same public-asset pattern as welcome.jpg: LINE fetches originalContentUrl
-// directly, so these must be permanent public HTTPS URLs (not presigned).
-// Uploaded to R2 by scripts/upload-onboarding-images.ts.
-const ONBOARDING_COUNT = 8;
+// Numbered static feature images. 1 → 8 are the onboarding carousel (sent on the
+// `follow` and `join` events); 9 is a feature-preview card used only by the
+// "หนูเก็บเพิ่มเติม" carousel. Same public-asset pattern as welcome.jpg: LINE fetches
+// the hero/originalContentUrl directly, so these must be permanent public HTTPS URLs
+// (not presigned). Uploaded to R2 by scripts/upload-onboarding-images.ts — this cap
+// must stay >= the highest filename any Flex builder references, or the bubble 404s
+// and LINE renders a blank white card.
+const ONBOARDING_COUNT = 9;
 
 const staticRoutes: FastifyPluginAsync = async (app) => {
   app.get('/static/welcome.jpg', async (_request, reply) => {
@@ -22,7 +25,7 @@ const staticRoutes: FastifyPluginAsync = async (app) => {
       .send(body);
   });
 
-  // /static/onboarding/{1..8}.jpg — the numbered onboarding images. `:n` is
+  // /static/onboarding/{1..9}.jpg — the numbered static images. `:n` is
   // validated to the known range so this can only ever stream the fixed assets
   // (never an arbitrary R2 key).
   app.get<{ Params: { n: string } }>('/static/onboarding/:n.jpg', async (request, reply) => {

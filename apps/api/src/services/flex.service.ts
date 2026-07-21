@@ -790,7 +790,9 @@ export function buildFeatureCarouselMessage(): FlexMessage {
     size: 'mega',
     hero: {
       ...ONBOARDING_HERO,
-      url: `${config.APP_URL}/static/onboarding/${filename}.jpg?v=2`,
+      // v=3: `9.jpg` used to 404 (asset didn't exist) and LINE caches by URL —
+      // including the failure — so the query bump is what makes it re-fetch.
+      url: `${config.APP_URL}/static/onboarding/${filename}.jpg?v=3`,
       // no-op: display-only card
       action: { type: 'uri', uri: 'https://line.me/R/' },
     },
