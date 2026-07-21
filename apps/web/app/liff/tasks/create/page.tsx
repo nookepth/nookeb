@@ -11,11 +11,22 @@ import {
   resolveGroupId,
   type LiffState,
 } from '../../../../lib/liff';
-import { emptyDraft, saveDraft, type TaskDraft } from '../../../../lib/taskDraft';
+import {
+  emptyDraft,
+  resolveScope,
+  saveDraft,
+  type TaskDraft,
+  type TaskScope,
+} from '../../../../lib/taskDraft';
 import { IconClipboard, IconListChecks, IconRepeat, StateNotice } from '../components';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
-const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: string }[] = [
+// Don't promise auto-reminders while notification pushes are soft-disabled.
+const RECURRING_SUB = TASK_NOTIFICATIONS_ENABLED
+  ? 'ตั้งครั้งเดียว เตือนอัตโนมัติทุกรอบ'
+  : 'ตั้งครั้งเดียว วนซ้ำให้ทุกรอบ';
+
+const GROUP_TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: string }[] = [
   {
     type: 'single',
     icon: <IconClipboard />,
@@ -28,18 +39,25 @@ const TYPES: { type: TaskDraft['type']; icon: ReactNode; title: string; sub: str
     title: 'แยกงานเป็นรายการ',
     sub: 'แต่ละข้อเลือกคนรับผิดชอบและ deadline ต่างกันได้',
   },
+  { type: 'recurring', icon: <IconRepeat />, title: 'งานประจำ', sub: RECURRING_SUB },
+];
+
+// งานส่วนตัวไม่มีใครให้มอบหมาย — copy drops every assignee mention.
+const PERSONAL_TYPES: typeof GROUP_TYPES = [
+  { type: 'single', icon: <IconClipboard />, title: 'งานเดียว', sub: 'งานหนึ่งชิ้น กำหนดส่งเดียว' },
   {
-    type: 'recurring',
-    icon: <IconRepeat />,
-    title: 'งานประจำ',
-    // Don't promise auto-reminders while notification pushes are soft-disabled.
-    sub: TASK_NOTIFICATIONS_ENABLED ? 'ตั้งครั้งเดียว เตือนอัตโนมัติทุกรอบ' : 'ตั้งครั้งเดียว วนซ้ำให้ทุกรอบ',
+    type: 'multi',
+    icon: <IconListChecks />,
+    title: 'แยกงานเป็นรายการ',
+    sub: 'แต่ละข้อตั้ง deadline ต่างกันได้',
   },
+  { type: 'recurring', icon: <IconRepeat />, title: 'งานประจำ', sub: RECURRING_SUB },
 ];
 
 export default function CreateTaskPage() {
   const router = useRouter();
   const [groupId, setGroupId] = useState<string | null>(null);
+  const [scope, setScope] = useState<TaskScope>('group');
   const [state, setState] = useState<'loading' | 'ready' | 'no-group' | 'unauth' | 'error'>(
     'loading',
   );
@@ -50,6 +68,14 @@ export default function CreateTaskPage() {
     // token gets the reconnect notice; a transient failure the generic retry.
     if (!liffState.authed) {
       setState(liffState.authError === 'network' ? 'error' : 'unauth');
+      return;
+    }
+    // งานส่วนตัว (?scope=personal from the DM card): no group is involved at
+    // all, so the no-group guard below must not run.
+    if (resolveScope() === 'personal') {
+      setScope('personal');
+      setGroupId(null);
+      setState('ready');
       return;
     }
     // initLiff() is memoized — its groupId may predate the client-side
@@ -95,18 +121,25 @@ export default function CreateTaskPage() {
   };
 
   const pick = (type: TaskDraft['type']) => {
-    if (!groupId) return;
-    const draft = emptyDraft(type);
-    draft.groupId = groupId;
+    if (scope === 'group' && !groupId) return;
+    const draft = emptyDraft(type, scope);
+    draft.groupId = scope === 'personal' ? null : groupId;
     saveDraft(draft);
-    router.push(`/liff/tasks/create/${type}/members`);
+    // Personal tasks are self-assigned — the member step has nothing to pick.
+    router.push(
+      scope === 'personal'
+        ? `/liff/tasks/create/${type}/detail`
+        : `/liff/tasks/create/${type}/members`,
+    );
   };
 
   return (
     <main className={styles.page} style={{ paddingBottom: 24 }}>
       <header className={styles.header}>
         <h1 className={styles.headerTitle}>สร้างงานแบบไหนดี~</h1>
-        <p className={styles.headerSub}>เลือกรูปแบบงานที่จะมอบหมายในกลุ่ม</p>
+        <p className={styles.headerSub}>
+          {scope === 'personal' ? 'เลือกรูปแบบงานส่วนตัวของพี่' : 'เลือกรูปแบบงานที่จะมอบหมายในกลุ่ม'}
+        </p>
       </header>
 
       {state === 'loading' && (
@@ -144,7 +177,7 @@ export default function CreateTaskPage() {
 
       {state === 'ready' && (
         <div className={styles.cardList}>
-          {TYPES.map((t) => (
+          {(scope === 'personal' ? PERSONAL_TYPES : GROUP_TYPES).map((t) => (
             <button key={t.type} type="button" className={styles.typeCard} onClick={() => pick(t.type)}>
               <span className={styles.typeIcon} aria-hidden>
                 {t.icon}

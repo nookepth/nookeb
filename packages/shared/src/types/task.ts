@@ -42,7 +42,16 @@ export interface RecurrenceRule {
 export interface TaskRecord {
   id: string;
   space_id: string | null;
-  group_line_id: string;
+  /**
+   * NULL for personal tasks (migration 043). A personal task's tenant key is
+   * owner_line_uid, which comes from the verified LINE Login session — a LINE
+   * user id must NEVER be stored here (the group-id capability model only holds
+   * for unguessable group ids; see the 043 header).
+   */
+  group_line_id: string | null;
+  is_personal: boolean;
+  /** Set iff is_personal — the owner's line_uid. NULL for group tasks. */
+  owner_line_uid: string | null;
   title: string;
   type: TaskType;
   global_deadline: string | null;
@@ -174,7 +183,9 @@ export interface TaskItemDto {
 
 export interface TaskDto {
   id: string;
-  groupLineId: string;
+  /** NULL for personal tasks (migration 043) — see TaskRecord.group_line_id. */
+  groupLineId: string | null;
+  isPersonal: boolean;
   title: string;
   type: TaskType;
   globalDeadline: string | null;

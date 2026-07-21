@@ -10,7 +10,7 @@ import {
   resolveGroupId,
   type LiffState,
 } from '../../../../../lib/liff';
-import { emptyDraft, saveDraft, type TaskDraft } from '../../../../../lib/taskDraft';
+import { emptyDraft, resolveScope, saveDraft, type TaskDraft } from '../../../../../lib/taskDraft';
 import { StateNotice } from '../../components';
 
 /**
@@ -39,6 +39,13 @@ export default function CreateTypeEntryPage({ params }: { params: { type: string
       // "ต้องเชื่อมต่อ LINE" notice with no context).
       if (!liffState.authed) {
         setState(liffState.authError === 'network' ? 'error' : 'unauth');
+        return;
+      }
+      // งานส่วนตัว (?scope=personal from the DM card): no group, and the member
+      // step is skipped entirely — a personal task is self-assigned.
+      if (resolveScope() === 'personal') {
+        saveDraft(emptyDraft(params.type as TaskDraft['type'], 'personal'));
+        router.replace(`/liff/tasks/create/${params.type}/detail`);
         return;
       }
       // initLiff() is memoized — its groupId may predate the client-side

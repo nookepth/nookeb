@@ -107,8 +107,15 @@ function uriButton(label: string, uri: string): Record<string, unknown> {
  * fall back to plain web URLs so the card still works in dev. NO emoji (brand
  * rule) — the type rows use native colored dots, not icons.
  */
-export function buildCreateTaskCard(liffId: string | undefined, groupId: string): FlexMessage {
-  const gq = `?groupId=${encodeURIComponent(groupId)}`;
+export function buildCreateTaskCard(
+  liffId: string | undefined,
+  groupId: string | null,
+  scope: 'group' | 'personal' = 'group',
+): FlexMessage {
+  // personal carries NO id at all: the LIFF authenticates the owner from the
+  // session, so there is nothing in the URL to forge (migration 043). group
+  // keeps its existing ?groupId= capability exactly as before.
+  const gq = scope === 'personal' ? '?scope=personal' : `?groupId=${encodeURIComponent(groupId!)}`;
   // groupId rides BOTH link forms. liff.getContext() loses the chat context in
   // real in-group cases (LINE Desktop, login round trips, forwarded/pinned
   // links), so the query param is the reliable capability — same trust model
@@ -125,11 +132,20 @@ export function buildCreateTaskCard(liffId: string | undefined, groupId: string)
     ? `https://liff.line.me/${liffId}/create${gq}`
     : `${config.WEB_URL}/liff/tasks/create${gq}`;
 
-  const TYPES: { type: string; title: string; desc: string }[] = [
-    { type: 'single', title: 'งานเดียว', desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว' },
-    { type: 'multi', title: 'แยกรายการ', desc: 'หลายรายการ แยกคนและกำหนดส่งได้' },
-    { type: 'recurring', title: 'งานประจำ', desc: 'ทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เอง' },
-  ];
+  // Same three types either way — only the copy differs, because a personal
+  // task has nobody to assign to (migration 043).
+  const TYPES: { type: string; title: string; desc: string }[] =
+    scope === 'personal'
+      ? [
+          { type: 'single', title: 'งานเดียว', desc: 'งานหนึ่งชิ้น กำหนดส่งเดียว' },
+          { type: 'multi', title: 'แยกรายการ', desc: 'หลายรายการ แยกกำหนดส่งได้' },
+          { type: 'recurring', title: 'งานประจำ', desc: 'ทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เอง' },
+        ]
+      : [
+          { type: 'single', title: 'งานเดียว', desc: 'มอบหมายงานหนึ่งชิ้น กำหนดส่งเดียว' },
+          { type: 'multi', title: 'แยกรายการ', desc: 'หลายรายการ แยกคนและกำหนดส่งได้' },
+          { type: 'recurring', title: 'งานประจำ', desc: 'ทำซ้ำเป็นรอบ หนูตั้งรอบใหม่ให้เอง' },
+        ];
 
   // Tappable selector row: whole box deep-links to that type's create flow.
   // Brand-red dot + title in ink + one-line desc in muted gray; a light border
@@ -172,7 +188,15 @@ export function buildCreateTaskCard(liffId: string | undefined, groupId: string)
         spacing: 'xs',
         contents: [
           { type: 'text', text: 'สร้างงานใหม่', weight: 'bold', size: 'lg', color: '#FFFFFF' },
-          { type: 'text', text: 'เลือกรูปแบบงานที่จะมอบหมายในกลุ่ม', size: 'xs', color: '#FFFFFFCC' },
+          {
+            type: 'text',
+            text:
+              scope === 'personal'
+                ? 'เลือกรูปแบบงานส่วนตัวของพี่'
+                : 'เลือกรูปแบบงานที่จะมอบหมายในกลุ่ม',
+            size: 'xs',
+            color: '#FFFFFFCC',
+          },
         ],
       },
       body: {

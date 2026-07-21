@@ -439,6 +439,10 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   };
 
   const openAssigneeEditor = async (item: TaskItemDto) => {
+    // Personal tasks are self-assigned and have no roster (migration 043); the
+    // API rejects the edit with 403. The button is hidden for them, so this is
+    // a defensive guard only.
+    if (task.isPersonal || !task.groupLineId) return;
     setAssigneeItemId(item.id);
     setPicked(new Set(item.assignees.map((a) => a.lineUid)));
     setRoster(null);
@@ -648,9 +652,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                 {/* creator controls */}
                 {isCreator && !isClosed && (
                   <div className={styles.tdCreatorControls}>
-                    <button type="button" className={styles.ghostBtn} onClick={() => void openAssigneeEditor(item)}>
-                      แก้ผู้รับผิดชอบ
-                    </button>
+                    {!task.isPersonal && (
+                      <button type="button" className={styles.ghostBtn} onClick={() => void openAssigneeEditor(item)}>
+                        แก้ผู้รับผิดชอบ
+                      </button>
+                    )}
                     {task.type === 'multi' && item.status !== 'done' && item.status !== 'cancelled' && (
                       <button type="button" className={styles.ghostBtn} onClick={() => openItemEdit(item)}>
                         แก้ไขงาน

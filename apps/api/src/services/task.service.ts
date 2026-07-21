@@ -187,7 +187,11 @@ export interface CreateTaskItemInput {
 
 export interface CreateTaskInput {
   spaceId: string | null;
-  groupLineId: string;
+  /** NULL iff isPersonal — see notifyTarget() and the migration 043 header. */
+  groupLineId: string | null;
+  isPersonal: boolean;
+  /** Set iff isPersonal. Comes from the verified session, never a request body. */
+  ownerLineUid: string | null;
   title: string;
   type: TaskRecord['type'];
   globalDeadline: string | null;
@@ -206,6 +210,20 @@ export interface TaskWithDetails extends TaskRecord {
 }
 
 /**
+ * Where a task's LINE messages go: the group for a group task, the owner's own
+ * chat for a personal one (migration 043). This is the ONLY place that maps a
+ * task to a push destination — callers must never reach for group_line_id
+ * directly, or a personal task would push to `null`.
+ *
+ * Returns null when neither is set. That should be impossible (the 043 CHECK
+ * enforces exactly one), so callers treat null as "nothing to notify" and skip
+ * silently rather than throwing — a malformed row must never wedge a queue.
+ */
+export function notifyTarget(task: Pick<TaskRecord, 'is_personal' | 'owner_line_uid' | 'group_line_id'>): string | null {
+  return task.is_personal ? task.owner_line_uid : task.group_line_id;
+}
+
+/**
  * Insert task + items + assignees. No multi-statement transaction is available
  * through the Supabase client — on a mid-way failure we soft-cancel the shell
  * task so a half-created task can never be announced or reminded.
@@ -218,7 +236,13 @@ export async function createTaskWithItems(
     .from('tasks')
     .insert({
       space_id: input.spaceId,
+      // Both written straight from the caller's explicit input — NEVER derived
+      // from each other. Deriving is_personal from "group_line_id is null"
+      // would make a future bug that forgets the group id silently mint a
+      // personal task instead of failing the 043 CHECK.
       group_line_id: input.groupLineId,
+      is_personal: input.isPersonal,
+      owner_line_uid: input.ownerLineUid,
       title: input.title,
       type: input.type,
       global_deadline: input.globalDeadline,
@@ -731,6 +755,7 @@ export function toTaskDto(task: TaskWithDetails): TaskDto {
   return {
     id: task.id,
     groupLineId: task.group_line_id,
+    isPersonal: task.is_personal,
     title: task.title,
     type: task.type,
     globalDeadline: task.global_deadline,

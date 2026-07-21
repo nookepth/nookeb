@@ -499,12 +499,9 @@ async function handleTextCommand(
   if (prefixed && isCmd(text, 'สร้างงาน')) {
     const groupId = source.groupId ?? source.roomId;
     if (!groupId) {
-      // 1-on-1 chat: a card here would carry no groupId and every button would
-      // dead-end on "ต้องเปิดจากในกลุ่ม" — explain instead.
-      await reply(
-        event,
-        'สร้างงานใช้ในกลุ่มน้า 🎯 พิมพ์ "สร้างงาน" ในกลุ่ม LINE ที่พี่อยากมอบหมายงาน แล้วหนูจะส่งการ์ดให้เลือกรูปแบบงานเลยน้า',
-      );
+      // 1-on-1 chat: งานส่วนตัว (migration 043). The card carries no id — the
+      // LIFF resolves the owner from the verified session.
+      await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, null, 'personal'));
       return;
     }
     await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, groupId));

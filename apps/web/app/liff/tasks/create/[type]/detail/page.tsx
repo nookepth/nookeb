@@ -44,7 +44,9 @@ export default function DetailPage({ params }: { params: { type: string } }) {
 
   useEffect(() => {
     const stored = loadDraft();
-    if (!stored?.groupId) {
+    // A personal draft legitimately has no groupId — its owner comes from the
+    // session, so only the group flow needs one here.
+    if (!stored || (stored.scope !== 'personal' && !stored.groupId)) {
       router.replace('/liff/tasks/create');
       return;
     }
@@ -63,6 +65,8 @@ export default function DetailPage({ params }: { params: { type: string } }) {
 
   const isMulti = draft.type === 'multi';
   const isRecurring = draft.type === 'recurring';
+  // งานส่วนตัวมอบให้ตัวเองเสมอ — ไม่มีขั้นเลือกคน จึงไม่เช็ค/ไม่แสดง selected
+  const isPersonal = draft.scope === 'personal';
 
   // ---- multi: bottom sheet actions ----
 
@@ -83,7 +87,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
       setError('ตั้งชื่อรายการก่อนน้า');
       return;
     }
-    if (draft.selected.length === 0) {
+    if (!isPersonal && draft.selected.length === 0) {
       setError('เลือกคนรับผิดชอบให้รายการนี้ก่อนน้า');
       return;
     }
@@ -116,7 +120,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
       if (!draft.globalDeadline) return 'เลือก deadline ก่อนน้า';
       if (new Date(draft.globalDeadline).getTime() <= Date.now())
         return 'deadline ต้องอยู่ในอนาคตน้า';
-      if (draft.selected.length === 0) return 'ต้องมีคนรับผิดชอบอย่างน้อย 1 คนน้า';
+      if (!isPersonal && draft.selected.length === 0) return 'ต้องมีคนรับผิดชอบอย่างน้อย 1 คนน้า';
     }
     if (draft.type === 'multi') {
       if (draft.items.length === 0) return 'เพิ่มรายการงานอย่างน้อย 1 ข้อก่อนน้า';
@@ -127,7 +131,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
         if (new Date(eff).getTime() <= Date.now()) return `deadline ของ "${item.title}" ต้องอยู่ในอนาคตน้า`;
       }
     }
-    if (draft.type === 'recurring' && draft.selected.length === 0)
+    if (draft.type === 'recurring' && !isPersonal && draft.selected.length === 0)
       return 'ต้องมีคนรับผิดชอบอย่างน้อย 1 คนน้า';
     return null;
   };
@@ -141,11 +145,13 @@ export default function DetailPage({ params }: { params: { type: string } }) {
     setError(null);
     setSubmitting(true);
     try {
-      const base = {
-        groupId: draft.groupId!,
-        title: draft.title.trim(),
-        type: draft.type,
-      };
+      // personal sends NO groupId and NO assignees — the API rejects both for
+      // this scope and derives owner+assignee from the session (migration 043).
+      const base = isPersonal
+        ? { scope: 'personal' as const, title: draft.title.trim(), type: draft.type }
+        : { groupId: draft.groupId!, title: draft.title.trim(), type: draft.type };
+      const assigneesOf = (members: { lineUid: string }[]) =>
+        isPersonal ? {} : { assignees: members.map((a) => a.lineUid) };
       const payload =
         draft.type === 'multi'
           ? {
@@ -155,7 +161,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 title: item.title,
                 ...(item.description ? { description: item.description } : {}),
                 ...(item.deadline ? { deadline: localToIso(item.deadline) } : {}),
-                assignees: item.assignees.map((a) => a.lineUid),
+                ...assigneesOf(item.assignees),
               })),
             }
           : draft.type === 'recurring'
@@ -171,7 +177,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                   {
                     title: draft.title.trim(),
                     ...(draft.description ? { description: draft.description } : {}),
-                    assignees: draft.selected.map((a) => a.lineUid),
+                    ...assigneesOf(draft.selected),
                   },
                 ],
               }
@@ -182,7 +188,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                   {
                     title: draft.title.trim(),
                     ...(draft.description ? { description: draft.description } : {}),
-                    assignees: draft.selected.map((a) => a.lineUid),
+                    ...assigneesOf(draft.selected),
                   },
                 ],
               };
@@ -333,8 +339,12 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 onChange={(e) => setDraft({ ...draft, description: e.target.value })}
               />
             </div>
-            <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>
-            <AvatarStack members={draft.selected} size={32} max={8} />
+            {!isPersonal && (
+              <>
+                <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>
+                <AvatarStack members={draft.selected} size={32} max={8} />
+              </>
+            )}
           </div>
         </section>
       )}
@@ -474,8 +484,12 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 onChange={(e) => setDraft({ ...draft, description: e.target.value })}
               />
             </div>
-            <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>
-            <AvatarStack members={draft.selected} size={32} max={8} />
+            {!isPersonal && (
+              <>
+                <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>
+                <AvatarStack members={draft.selected} size={32} max={8} />
+              </>
+            )}
           </div>
         </section>
       )}
@@ -527,15 +541,17 @@ export default function DetailPage({ params }: { params: { type: string } }) {
                 />
               </div>
             </div>
-            <div className={styles.field}>
-              <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>
-              <div className={styles.footerRow}>
-                <AvatarStack members={draft.selected} size={30} max={6} />
-                <button type="button" className={styles.ghostBtn} onClick={goPickMembers}>
-                  เลือกคน →
-                </button>
+            {!isPersonal && (
+              <div className={styles.field}>
+                <label className={styles.fieldLabel}>คนรับผิดชอบ ({draft.selected.length})</label>
+                <div className={styles.footerRow}>
+                  <AvatarStack members={draft.selected} size={30} max={6} />
+                  <button type="button" className={styles.ghostBtn} onClick={goPickMembers}>
+                    เลือกคน →
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
             <button type="button" className={styles.primaryBtn} onClick={addItem}>
               เพิ่มรายการนี้
             </button>

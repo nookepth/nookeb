@@ -147,6 +147,10 @@ If replyToken is expired or missing:
   unrecognized, so they fall through to the quiet-chatter rule (silently ignored — the menu
   swap itself is done client-side by the LINE `richmenuswitch` action, no server work).
   Rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu-ab.ts`).
+- `สร้างงาน` — opens the ระบบตามงาน LIFF create flow. In a group/room it carries
+  that chat's id; in a 1-on-1 DM it opens งานส่วนตัว instead (migration 043 — see
+  the Personal Task section). Unprefixed by design, matched BEFORE the group
+  bot-directed guard.
 
 ## Rich Menu Policy (do NOT change without explicit approval)
 Fixed two-page A/B design (2500×1686 each), registered ONLY by `scripts/setup-rich-menu-ab.ts`:
@@ -395,6 +399,40 @@ sanctioned exception to the reply-only rule (see LINE Messaging section).
   change → requires explicit approval + `setup-rich-menu-ab.ts` update; until
   then the LIFF URL is shared/pinned manually or opened from task cards.
 
+### งานส่วนตัว (Personal Task) — 1-on-1 DM, migration 043
+Typing `สร้างงาน` in a DM opens the SAME LIFF create flow, but the task is
+owned by and assigned to the sender alone. Same tables as the group flow — a
+personal task is just a `tasks` row in the other mode.
+- **Tenant key is `owner_line_uid`, taken ONLY from the verified session**
+  (`request.authUser.lineUserId`, minted by `POST /auth/liff` after LINE
+  verifies the id token). `group_line_id` stays NULL and the 043 CHECK enforces
+  the two modes are mutually exclusive.
+- **A LINE user id must NEVER become a `group_line_id`.** That was the whole
+  reason for a separate mode: `ensureGroupMember` treats "holds the id" as
+  proof of membership, which is only safe for an unguessable group id. A user
+  id leaks through `task_assignees` and `GET /groups/:id/members`, so under
+  that model anyone who saw your uid could create tasks in "your" space and
+  push into your DM. The personal branch therefore skips `ensureGroupMember`,
+  `listGroupMembers` and the space lookup entirely, and never touches
+  `group_members` — a personal task has no roster.
+- The create payload carries `scope: 'personal'` and NO `groupId`/`assignees`
+  (the schema REJECTS both rather than ignoring them — silently dropping a
+  groupId would let a caller think they wrote into someone else's group). The
+  assignee snapshot comes from the caller's own `users` row.
+- **No push on create or cancel** — the only recipient would be the person who
+  just pressed the button, and pushes are metered. `announced` is false.
+  Reminders DO go to the owner's own chat via `notifyTarget()` (the single
+  task→destination mapper — never reach for `group_line_id` directly), and skip
+  the @mention (`buildMentionTextV2`) since mentioning someone in their own 1:1
+  chat is meaningless. All of that is still gated by `TASK_NOTIFICATIONS_ENABLED`,
+  which is currently false — so personal tasks ship WITHOUT working reminders.
+- `PUT /tasks/:id/items/:itemId/assignees` → 403 for personal tasks; the web
+  hides the "แก้ผู้รับผิดชอบ" button for them. `GET /tasks/mine` needed no
+  change (it keys off creator/assignee line_uid, never the group).
+- LIFF: `?scope=personal` on the card URL (no id in the URL at all) →
+  `resolveScope()` in `lib/taskDraft.ts`; the draft carries `scope`, and the
+  members step is skipped (create → detail directly).
+
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
@@ -530,6 +568,15 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     029). NOT auto-applied; the endpoints fail soft to empty/zero when the RPCs
     are missing, so it's safe to deploy code first — the new panels just read
     blank until it's applied.
+  - `043_personal_tasks.sql` — งานส่วนตัว (Personal Task): `tasks.is_personal` +
+    `tasks.owner_line_uid`, and `tasks.group_line_id` becomes NULLABLE, with a
+    `tasks_scope_exclusive` CHECK pinning a row to exactly one mode (group ⇒
+    group_line_id set + owner NULL; personal ⇒ owner set + group_line_id NULL).
+    A LINE user id must NEVER be written to `group_line_id` — see the Personal
+    Task section. NOT auto-applied; apply BEFORE the API deploy (POST /tasks
+    writes both columns). Safe to apply early: every existing row satisfies the
+    CHECK, the new columns have defaults, and dropping NOT NULL only relaxes a
+    constraint — the currently-deployed code keeps working either way.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 

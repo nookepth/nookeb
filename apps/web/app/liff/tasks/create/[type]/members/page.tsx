@@ -89,6 +89,13 @@ export default function MembersPage({ params }: { params: { type: string } }) {
 
   useEffect(() => {
     const stored = loadDraft();
+    // งานส่วนตัว never picks members (self-assigned, no roster) — this page is
+    // not part of the personal flow, so skip straight to the detail step. Covers
+    // a stale back-navigation or a hand-typed URL landing here.
+    if (stored?.scope === 'personal') {
+      router.replace(`/liff/tasks/create/${stored.type}/detail`);
+      return;
+    }
     // groupId belt: prefer the draft, but recover from the URL / sessionStorage
     // (a value that survived the login redirect) before giving up and restarting.
     const groupId = stored?.groupId ?? resolveGroupId();

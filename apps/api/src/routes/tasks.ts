@@ -18,6 +18,7 @@ import {
   listTasksForUser,
   markAssigneeAccepted,
   markAssigneeDone,
+  notifyTarget,
   replaceItemAssignees,
   rollUpCompletion,
   setDoneNote,
@@ -48,24 +49,64 @@ const recurrenceSchema = z.object({
   time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
 });
 
-const createTaskSchema = z.object({
-  groupId: z.string().min(1).max(100),
-  title: z.string().trim().min(1).max(200),
-  type: z.enum(['single', 'multi', 'recurring']),
-  globalDeadline: z.string().datetime({ offset: true }).optional(),
-  recurrenceRule: recurrenceSchema.optional(),
-  items: z
-    .array(
-      z.object({
-        title: z.string().trim().min(1).max(200),
-        description: z.string().trim().max(1000).optional(),
-        deadline: z.string().datetime({ offset: true }).optional(),
-        assignees: z.array(z.string().min(1)).min(1).max(50),
-      }),
-    )
-    .min(1)
-    .max(30),
-});
+// scope defaults to 'group' so the existing LIFF group flow (which sends no
+// scope field) is unchanged. The refinements below are the structural guard
+// behind the personal branch: a personal create carries NO groupId and NO
+// assignees, so there is no client-supplied identity for the server to trust —
+// owner and assignee come from the verified session only (migration 043).
+const createTaskSchema = z
+  .object({
+    scope: z.enum(['group', 'personal']).default('group'),
+    groupId: z.string().min(1).max(100).optional(),
+    title: z.string().trim().min(1).max(200),
+    type: z.enum(['single', 'multi', 'recurring']),
+    globalDeadline: z.string().datetime({ offset: true }).optional(),
+    recurrenceRule: recurrenceSchema.optional(),
+    items: z
+      .array(
+        z.object({
+          title: z.string().trim().min(1).max(200),
+          description: z.string().trim().max(1000).optional(),
+          deadline: z.string().datetime({ offset: true }).optional(),
+          // Optional: a personal task's assignee is always the caller, taken
+          // from the session — the field must be absent, not merely ignored.
+          assignees: z.array(z.string().min(1)).min(1).max(50).optional(),
+        }),
+      )
+      .min(1)
+      .max(30),
+  })
+  .superRefine((v, ctx) => {
+    if (v.scope === 'group') {
+      if (!v.groupId) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['groupId'], message: 'groupId required' });
+      }
+      v.items.forEach((item, i) => {
+        if (!item.assignees) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['items', i, 'assignees'],
+            message: 'assignees required',
+          });
+        }
+      });
+      return;
+    }
+    // personal: reject rather than ignore. Silently dropping a groupId would
+    // let a caller believe they created a task in someone else's group.
+    if (v.groupId) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['groupId'], message: 'groupId not allowed for personal tasks' });
+    }
+    v.items.forEach((item, i) => {
+      if (item.assignees) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['items', i, 'assignees'],
+          message: 'assignees not allowed for personal tasks',
+        });
+      }
+    });
+  });
 
 const patchTaskSchema = z
   .object({
@@ -138,10 +179,15 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     }
     const body = parsed.data;
     const lineUid = request.authUser!.lineUserId;
+    const isPersonal = body.scope === 'personal';
 
-    // Tenant guard: only members of the group can create tasks in it
+    // Tenant guard. GROUP: only members of the group can create tasks in it
     // (auto-enrolls via LINE's group-scoped profile check — no /register).
-    if (!(await ensureGroupMember(app.supabase, body.groupId, lineUid))) {
+    // PERSONAL: the verified session IS the guard — lineUid comes from the JWT
+    // minted by POST /auth/liff (id token verified against LINE), never from
+    // the body, so there is nothing to forge. Deliberately does NOT touch
+    // group_members: a personal task has no roster (migration 043).
+    if (!isPersonal && !(await ensureGroupMember(app.supabase, body.groupId!, lineUid))) {
       return reply.code(403).send({
         error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วลองใหม่อีกที',
         code: 'NOT_REGISTERED',
@@ -185,31 +231,65 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       }
     }
 
-    // Assignees must be registered group members — their stored profile is the
-    // display name/avatar snapshot the task carries (never client-supplied).
-    // Dedupe per item first: a repeated uid would trip the task_assignees
-    // UNIQUE(task_item_id, line_uid) constraint mid-insert and 500 the create.
-    const itemAssignees = body.items.map((item) => [...new Set(item.assignees)]);
-    const members = await listGroupMembers(app.supabase, body.groupId);
-    const memberByUid = new Map(members.map((m) => [m.line_uid, m]));
-    for (const uids of itemAssignees) {
-      for (const uid of uids) {
-        if (!memberByUid.has(uid)) {
-          return reply.code(400).send({ error: 'มีคนที่ยังไม่ได้ลงทะเบียนในกลุ่ม เลือกใหม่อีกทีน้า' });
+    // Resolve the assignee snapshot (display name/avatar) that each task row
+    // carries — ALWAYS server-side, never client-supplied.
+    //   GROUP:    from group_members, and every uid must already be on the roster.
+    //   PERSONAL: exactly one assignee, the caller, from their own users row
+    //             (keyed by the session's userId — no roster, no group_members
+    //             write, nothing read from the body).
+    let itemAssignees: { lineUid: string; displayName: string | null; pictureUrl: string | null }[][];
+    if (isPersonal) {
+      const { data: me } = await app.supabase
+        .from('users')
+        .select('display_name, picture_url')
+        .eq('id', request.authUser!.userId)
+        .maybeSingle();
+      const self = {
+        lineUid,
+        displayName: (me?.display_name as string | null | undefined) ?? null,
+        pictureUrl: (me?.picture_url as string | null | undefined) ?? null,
+      };
+      itemAssignees = body.items.map(() => [self]);
+    } else {
+      // Dedupe per item first: a repeated uid would trip the task_assignees
+      // UNIQUE(task_item_id, line_uid) constraint mid-insert and 500 the create.
+      const uidsPerItem = body.items.map((item) => [...new Set(item.assignees!)]);
+      const members = await listGroupMembers(app.supabase, body.groupId!);
+      const memberByUid = new Map(members.map((m) => [m.line_uid, m]));
+      for (const uids of uidsPerItem) {
+        for (const uid of uids) {
+          if (!memberByUid.has(uid)) {
+            return reply.code(400).send({ error: 'มีคนที่ยังไม่ได้ลงทะเบียนในกลุ่ม เลือกใหม่อีกทีน้า' });
+          }
         }
       }
+      itemAssignees = uidsPerItem.map((uids) =>
+        uids.map((uid) => {
+          const m = memberByUid.get(uid)!;
+          return { lineUid: uid, displayName: m.display_name, pictureUrl: m.picture_url };
+        }),
+      );
     }
 
     // Best-effort space link (informational): the group's shared file space.
-    const { data: spaceRow } = await app.supabase
-      .from('spaces')
-      .select('id')
-      .eq('line_group_id', body.groupId)
-      .maybeSingle();
+    // A personal task has no group, so no space to link — stays NULL.
+    const spaceId = isPersonal
+      ? null
+      : (((
+          await app.supabase
+            .from('spaces')
+            .select('id')
+            .eq('line_group_id', body.groupId!)
+            .maybeSingle()
+        ).data?.id as string | undefined) ?? null);
 
     const task = await createTaskWithItems(app.supabase, {
-      spaceId: (spaceRow?.id as string | undefined) ?? null,
-      groupLineId: body.groupId,
+      spaceId,
+      // Mutually exclusive by the 043 CHECK — a LINE user id must never be
+      // written to group_line_id.
+      groupLineId: isPersonal ? null : body.groupId!,
+      isPersonal,
+      ownerLineUid: isPersonal ? lineUid : null,
       title: body.title,
       type: body.type,
       globalDeadline,
@@ -219,10 +299,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         title: item.title,
         description: item.description ?? null,
         deadline: item.deadline ?? null,
-        assignees: itemAssignees[i]!.map((uid) => {
-          const m = memberByUid.get(uid)!;
-          return { lineUid: uid, displayName: m.display_name, pictureUrl: m.picture_url };
-        }),
+        assignees: itemAssignees[i]!,
       })),
     });
 
@@ -231,24 +308,33 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     // Announce into the group (push — LIFF submits have no replyToken). The
     // task exists and is scheduled either way; a failed push is logged loudly
     // (quota exhaustion is this API's silent-failure trap) but not fatal.
-    let announced = true;
-    try {
-      await pushMessage(task.group_line_id, [buildTaskCreatedFlex(task)]);
-    } catch (err) {
-      announced = false;
-      app.log.error({ err, taskId: task.id }, 'task announcement push failed');
+    //
+    // PERSONAL: no announcement at all. The only recipient would be the caller,
+    // who just submitted the form and is looking at the result — a push there
+    // buys nothing and spends metered quota.
+    let announced = false;
+    const announceTo = isPersonal ? null : notifyTarget(task);
+    if (announceTo) {
+      announced = true;
+      try {
+        await pushMessage(announceTo, [buildTaskCreatedFlex(task)]);
+      } catch (err) {
+        announced = false;
+        app.log.error({ err, taskId: task.id }, 'task announcement push failed');
+      }
     }
 
     // Analytics: task successfully created (funnel bottom for task_create_start).
     void logEvent(app.supabase, {
       eventType: 'task_create_submit',
       userId: request.authUser!.userId,
-      spaceId: (spaceRow?.id as string | undefined) ?? null,
+      spaceId,
       source: 'web',
       metadata: {
         task_type: body.type,
-        assignee_count: new Set(itemAssignees.flat()).size,
+        assignee_count: new Set(itemAssignees.flat().map((a) => a.lineUid)).size,
         has_deadline: globalDeadline != null || body.items.some((i) => i.deadline != null),
+        is_personal: isPersonal,
       },
     });
 
@@ -282,7 +368,12 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       // upgrade whoever holds a task id into a full group member. Enrollment stays
       // on the explicit register/create paths only. Creators/assignees still pass
       // via canView even when not (yet) on the roster.
-      const member = await isGroupMember(app.supabase, task.group_line_id, lineUid);
+      // Personal tasks have no roster to check — canView's owner/assignee test
+      // is the whole guard (and group_line_id is NULL, so the lookup would be
+      // meaningless anyway).
+      const member = task.is_personal
+        ? false
+        : await isGroupMember(app.supabase, task.group_line_id!, lineUid);
       if (!canView(task, lineUid, member)) {
         return reply.code(403).send({ error: 'Forbidden' });
       }
@@ -520,12 +611,17 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
       // Notify the group (push — same sanctioned exception as the announcement).
       // Best-effort: the cancel already committed; a failed push is logged only.
-      try {
-        await pushMessage(task.group_line_id, [
-          { type: 'text', text: `ยกเลิกงาน "${task.title}" แล้วน้า ไม่ต้องทำต่อแล้ว` },
-        ]);
-      } catch (err) {
-        app.log.error({ err, taskId: task.id }, 'task cancel push failed');
+      // Skipped for personal tasks for the same reason as the announcement: the
+      // only recipient is the caller who just pressed cancel.
+      const cancelTo = task.is_personal ? null : notifyTarget(task);
+      if (cancelTo) {
+        try {
+          await pushMessage(cancelTo, [
+            { type: 'text', text: `ยกเลิกงาน "${task.title}" แล้วน้า ไม่ต้องทำต่อแล้ว` },
+          ]);
+        } catch (err) {
+          app.log.error({ err, taskId: task.id }, 'task cancel push failed');
+        }
       }
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
@@ -557,12 +653,18 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (task.status === 'done' || task.status === 'cancelled') {
         return reply.code(409).send({ error: 'งานนี้จบไปแล้ว แก้ไขไม่ได้น้า' });
       }
+      // A personal task is self-assigned by definition (migration 043) — there
+      // is no roster to pick from and reassigning it to someone else would turn
+      // a private task into an unsolicited one.
+      if (task.is_personal) {
+        return reply.code(403).send({ error: 'งานส่วนตัวมอบหมายให้คนอื่นไม่ได้น้า' });
+      }
       const item = task.items.find((i) => i.id === itemParsed.data);
       if (!item) return reply.code(404).send({ error: 'Task item not found' });
 
       // Dedupe + validate every uid is a registered member of the task's group.
       const wantedUids = [...new Set(parsed.data.lineUids)];
-      const members = await listGroupMembers(app.supabase, task.group_line_id);
+      const members = await listGroupMembers(app.supabase, task.group_line_id!);
       const memberByUid = new Map(members.map((m) => [m.line_uid, m]));
       for (const uid of wantedUids) {
         if (!memberByUid.has(uid)) {

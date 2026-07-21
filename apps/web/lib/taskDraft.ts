@@ -27,7 +27,15 @@ export interface RecurrenceDraft {
   time: string;
 }
 
+export type TaskScope = 'group' | 'personal';
+
 export interface TaskDraft {
+  /**
+   * 'personal' = งานส่วนตัว created from a 1-on-1 DM (migration 043): groupId
+   * stays null, the member step is skipped, and the owner/assignee is resolved
+   * server-side from the session — the client never carries an identity.
+   */
+  scope: TaskScope;
   groupId: string | null;
   type: 'single' | 'multi' | 'recurring';
   title: string;
@@ -46,8 +54,9 @@ export interface TaskDraft {
 
 const KEY = 'nookeb_task_draft';
 
-export function emptyDraft(type: TaskDraft['type']): TaskDraft {
+export function emptyDraft(type: TaskDraft['type'], scope: TaskScope = 'group'): TaskDraft {
   return {
+    scope,
     groupId: null,
     type,
     title: '',
@@ -64,9 +73,29 @@ export function loadDraft(): TaskDraft | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = sessionStorage.getItem(KEY);
-    return raw ? (JSON.parse(raw) as TaskDraft) : null;
+    if (!raw) return null;
+    const draft = JSON.parse(raw) as TaskDraft;
+    // A draft written before scope existed is a group draft.
+    return { ...draft, scope: draft.scope ?? 'group' };
   } catch {
     return null;
+  }
+}
+
+/**
+ * ?scope=personal on the current URL — the personal counterpart of
+ * resolveGroupId(). The DM card carries no id, so this query IS the whole
+ * signal; the API still derives the owner from the session, so a forged
+ * ?scope=personal can only ever create the caller's OWN task.
+ */
+export function resolveScope(): TaskScope {
+  if (typeof window === 'undefined') return 'group';
+  try {
+    return new URLSearchParams(window.location.search).get('scope') === 'personal'
+      ? 'personal'
+      : 'group';
+  } catch {
+    return 'group';
   }
 }
 

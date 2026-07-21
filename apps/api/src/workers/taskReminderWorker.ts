@@ -15,6 +15,7 @@ import {
   getReminder,
   getTaskWithDetails,
   listOutstandingReminders,
+  notifyTarget,
   resetRecurringRound,
   stampReminder,
   updateTask,
@@ -89,14 +90,30 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
       : `อย่าลืมงาน "${task.title}" น้า`;
   const item = itemId ? (roundItems(task, itemId)[0] ?? null) : null;
 
+  // Group → the group chat; personal → the owner's own chat (migration 043).
+  // A null target can only mean a row that violates the 043 CHECK: stand down
+  // silently instead of throwing, so one malformed task can't wedge the queue.
+  const target = notifyTarget(task);
+  if (!target) {
+    console.warn(`[task-worker] task ${task.id} has no notify target — standing down`);
+    await stampReminder(supabase, reminderId, 'cancelled_at');
+    return;
+  }
+
   // ONE push carrying both messages (mention first, then the Flex card).
   // LINE renders them as two bubbles in order; a single call keeps the pair
   // atomic, so a retry can never re-send the mention without the card.
-  const messages = [
-    buildMentionTextV2(pending, header) as unknown as LineMessage,
-    buildReminderFlex(task, item, remindType),
-  ];
-  await pushMessage(task.group_line_id, messages);
+  //
+  // Personal tasks send the card ALONE: the sole recipient is the owner, and
+  // @mentioning someone in their own 1-on-1 chat is meaningless (LINE may also
+  // reject the mentionee outright there).
+  const messages: LineMessage[] = task.is_personal
+    ? [buildReminderFlex(task, item, remindType)]
+    : [
+        buildMentionTextV2(pending, header) as unknown as LineMessage,
+        buildReminderFlex(task, item, remindType),
+      ];
+  await pushMessage(target, messages);
 
   await stampReminder(supabase, reminderId, 'sent_at');
 }
