@@ -142,25 +142,44 @@ If replyToken is expired or missing:
   support text (links to `https://lin.ee/Z0ewNYb`). All four aliases hit the same handler.
 - The webhook handles `message`, `join`/`follow`, and `postback` events. The postback
   handler exists for the onboarding-carousel taps — it routes each tap's `data` (a
-  "หนูเก็บ…" text command) through the same `handleTextCommand` path as typed text. The
-  A/B rich-menu switch taps also arrive as postbacks (`data: "switch"`) but are unprefixed/
-  unrecognized, so they fall through to the quiet-chatter rule (silently ignored — the menu
-  swap itself is done client-side by the LINE `richmenuswitch` action, no server work).
-  Rich-menu buttons use `type: 'message'` actions (see `scripts/setup-rich-menu-ab.ts`).
+  "หนูเก็บ…" text command) through the same `handleTextCommand` path as typed text.
+  Rich-menu buttons use `type: 'message'` / `type: 'uri'` actions only — the single
+  menu has no page switch, so it produces no postbacks (see
+  `scripts/setup-rich-menu-single.ts`).
+- `หนูเก็บฟีเจอร์เอกสาร` — rich-menu zone 3. Replies a 3-item quick reply
+  (หนูเก็บแปลงไฟล์ / หนูเก็บสแกนสี / หนูเก็บรวมรูป). Distinct from `หนูเก็บฟีเจอร์`
+  (the full feature pick, 1-on-1 only) and matched BEFORE it — `isCmd` is exact,
+  so the two never shadow each other. Works in groups too.
 - `สร้างงาน` — opens the ระบบตามงาน LIFF create flow. In a group/room it carries
   that chat's id; in a 1-on-1 DM it opens งานส่วนตัว instead (migration 043 — see
   the Personal Task section). Unprefixed by design, matched BEFORE the group
   bot-directed guard.
 
-## Rich Menu Policy (do NOT change without explicit approval)
-Fixed two-page A/B design (2500×1686 each), registered ONLY by `scripts/setup-rich-menu-ab.ts`:
-- Menu A = `richmenu_1.jpg` (หน้าแรก) — the default for all users; Menu B = `richmenu_2.jpg`
-  (หน้าคำสั่ง). Linked via aliases `richmenu-alias-a` / `richmenu-alias-b` + `richmenuswitch`
-  actions (the switch happens client-side; the postback `data: "switch"` is ignored server-side).
-- NEVER run `setup-rich-menu-large.ts` (or `-menu.ts`) — they delete ALL menus, which once
-  destroyed the A/B pair. Old-menu deletion in the A/B script is opt-in only (`CLEANUP_OLD_MENUS=1`).
+## Rich Menu — single menu `RichMenu_Nookeb`
+ONE menu (2500×1686, image `New_1.jpg` at the repo root), registered ONLY by
+`apps/api/scripts/setup-rich-menu-single.ts`. The two-page A/B design was retired
+2026-07-22 — no aliases, no `richmenuswitch`, no page B.
+
+Run: `cd apps/api && npx tsx --env-file=../../.env scripts/setup-rich-menu-single.ts`
+(destructive by design — it deletes every existing menu + the legacy
+`richmenu-alias-a`/`-b` aliases before creating the new one).
+
+7 zones, tiling the canvas with no gaps/overlaps:
+
+| # | Zone | x, y, w, h | Action |
+|---|------|------------|--------|
+| 1 | OPEN LOCKER | 0, 0, 1250, 843 | `uri` → `WEB_URL/dashboard` |
+| 2 | สร้างงาน | 1250, 0, 1250, 843 | `message` `หนูเก็บสร้างงาน` |
+| 3 | ฟีเจอร์เอกสาร | 0, 843, 800, 843 | `message` `หนูเก็บฟีเจอร์เอกสาร` |
+| 4 | บันทึกไดอารี่ | 800, 843, 720, 843 | `message` `หนูเก็บไดอารี่` |
+| 5 | รวมคำสั่ง | 1520, 843, 430, 407 | `message` `หนูเก็บเพิ่มเติม` |
+| 6 | Nookeb Website | 1950, 843, 550, 407 | `uri` → `WEB_URL/` |
+| 7 | ช่วยเหลือ / เสนอไอเดีย | 1520, 1250, 980, 436 | `message` `ติดต่อหนูเก็บ` |
+
 - Every button's `message` text must map to a real handler in `webhook/line.ts` — keep in sync.
 - Do not add/remove/rearrange button areas without approval.
+- NEVER run `setup-rich-menu-large.ts` / `setup-rich-menu.ts` / `setup-rich-menu-ab.ts` —
+  all three are archives of retired designs and would overwrite the live menu.
 
 ## ห้องนิรภัย (Vault) — web-only, migration 031
 PIN-protected, view-only, per-user ENCRYPTED file store at `/dashboard/vault`

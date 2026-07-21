@@ -1,3 +1,5 @@
+// ARCHIVED — superseded by setup-rich-menu-single.ts. Do not run.
+// See CLAUDE.md "Rich Menu" section for current setup.
 /**
  * LINE Rich Menu setup — หนูเก็บ two-page A/B menu (2500x1686 each)
  *

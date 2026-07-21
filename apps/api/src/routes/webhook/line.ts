@@ -582,6 +582,20 @@ async function handleTextCommand(
     return;
   }
 
+  // "หนูเก็บฟีเจอร์เอกสาร" — rich-menu zone 3. Document-only quick-pick: the three
+  // LINE-bot document flows. Matched BEFORE "ฟีเจอร์" because isCmd is exact —
+  // the two are distinct commands, not prefixes of one another. Unlike "ฟีเจอร์"
+  // this works in groups too: all three targets already explain themselves when
+  // they're personal-chat only, so a group tap gets a useful reply either way.
+  if (prefixed && isCmd(text, 'ฟีเจอร์เอกสาร')) {
+    await replyWithQuickReply(event, 'เลือกฟีเจอร์เอกสารที่ต้องการ', [
+      { label: 'แปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
+      { label: 'สแกนสี', text: 'หนูเก็บสแกนสี' },
+      { label: 'รวมรูป', text: 'หนูเก็บรวมรูป' },
+    ]);
+    return;
+  }
+
   // "หนูเก็บฟีเจอร์" — feature quick-pick (1-on-1 only). Buttons only, no flex
   // card: message actions for the LINE-bot features + uri actions for the
   // web-only ones (กล่องของขวัญ / ห้องนิรภัย / งานของฉัน).
