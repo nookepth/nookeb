@@ -53,6 +53,8 @@ interface RoomResponse {
   space: { id: string; name: string; memberCount: number } | null;
   groupLineId: string;
   memberCount: number;
+  /** true only when a LIVE team is bound to this group's space (migration 007). */
+  teamLinked: boolean;
   tasks: TaskDto[];
   viewerLineUid: string;
 }
@@ -86,6 +88,30 @@ function queryParam(name: string): string | null {
 function progressOf(task: TaskDto): { done: number; total: number } {
   const done = task.items.filter((i) => i.status === 'done').length;
   return { done, total: task.items.length };
+}
+
+/** A task is live while it's neither finished nor cancelled. */
+function isLive(task: TaskDto): boolean {
+  return task.status !== 'done' && task.status !== 'cancelled';
+}
+
+/** Effective deadline: the task's global one, else the earliest live-item one
+ * (item.deadline is already item ?? global per the DTO contract). */
+function effectiveDeadline(task: TaskDto): string | null {
+  if (task.globalDeadline) return task.globalDeadline;
+  let earliest: string | null = null;
+  for (const i of task.items) {
+    if (i.status === 'cancelled' || !i.deadline) continue;
+    if (!earliest || i.deadline < earliest) earliest = i.deadline;
+  }
+  return earliest;
+}
+
+/** Overdue = a live task whose effective deadline has passed. */
+function isOverdue(task: TaskDto): boolean {
+  if (!isLive(task)) return false;
+  const d = effectiveDeadline(task);
+  return d !== null && new Date(d).getTime() < Date.now();
 }
 
 export default function TeamRoomPage() {
@@ -156,13 +182,24 @@ export default function TeamRoomPage() {
     });
   }, [room, tab, status]);
 
+  // Summary tiles — derived from the already-loaded tasks (ZERO extra API
+  // calls). Every tile counts TASKS, never task_items/assignee slots: one task
+  // is one unit here (a multi task with 18 items must read as 1, not 18).
+  const stats = useMemo(() => {
+    const tasks = room?.tasks ?? [];
+    const done = tasks.filter((t) => t.status === 'done').length;
+    const overdue = tasks.filter(isOverdue).length;
+    const inProgress = tasks.filter((t) => isLive(t) && !isOverdue(t)).length;
+    return { total: tasks.length, inProgress, done, overdue };
+  }, [room]);
+
   // ---- states ----
   if (state === 'loading') {
     return (
       <main className={styles.page}>
-        <header className={styles.header}>
-          <div className={styles.skeletonBar} style={{ width: '50%', height: 22, marginBottom: 10 }} />
-          <div className={styles.skeletonBar} style={{ width: '30%' }} />
+        <header className={styles.roomHero}>
+          <div className={styles.skeletonBar} style={{ width: '40%', height: 12, marginBottom: 12, opacity: 0.5 }} />
+          <div className={styles.skeletonBar} style={{ width: '60%', height: 22 }} />
         </header>
         <ListSkeleton rows={5} />
       </main>
@@ -218,19 +255,46 @@ export default function TeamRoomPage() {
   }
 
   const createUrl = `/liff/tasks/create?groupId=${encodeURIComponent(room.groupLineId)}`;
+  // A real team name is only trustworthy when a live team is linked; otherwise
+  // the API's space name is the generic "คลังกลุ่ม" fallback, so show a friendly
+  // neutral title and let the status pill say the group isn't linked yet.
+  const teamTitle = room.teamLinked && room.space?.name ? room.space.name : 'ทีมของกลุ่มนี้';
+
+  const STAT_TILES: { key: string; num: number; label: string; cls: string }[] = [
+    { key: 'total', num: stats.total, label: 'ทั้งหมด', cls: styles.roomStatTotal ?? '' },
+    { key: 'progress', num: stats.inProgress, label: 'กำลังทำ', cls: styles.roomStatProgress ?? '' },
+    { key: 'done', num: stats.done, label: 'เสร็จแล้ว', cls: styles.roomStatDone ?? '' },
+    { key: 'overdue', num: stats.overdue, label: 'เลยกำหนด', cls: styles.roomStatOverdue ?? '' },
+  ];
 
   return (
     <main className={styles.page} style={{ paddingBottom: 100 }}>
       <header className={styles.roomHero}>
-        <p className={styles.heroLabel}>ห้องทีม</p>
+        <div className={styles.roomHeroLabelRow}>
+          <p className={styles.heroLabel}>ห้องทีม</p>
+          <span
+            className={`${styles.roomLinkPill} ${room.teamLinked ? '' : styles.roomLinkPillOff}`}
+          >
+            {room.teamLinked ? 'เชื่อมกับทีมแล้ว' : 'ยังไม่ได้ผูกทีม'}
+          </span>
+        </div>
         <div className={styles.roomHeroRow}>
-          <h1 className={styles.roomHeroTitle}>{room.space?.name ?? 'ทีมของเรา'}</h1>
+          <h1 className={styles.roomHeroTitle}>{teamTitle}</h1>
           <span className={styles.roomMemberChip}>
             <IconUsers size={14} /> {room.memberCount} คน
           </span>
         </div>
-        <p className={styles.roomHeroMeta}>{room.tasks.length} งานในห้องนี้</p>
       </header>
+
+      {/* summary strip — read-only, derived from loaded tasks (no API calls) */}
+      <div className={styles.roomStats} role="group" aria-label="สรุปงานในห้องนี้">
+        {STAT_TILES.map((s) => (
+          <div key={s.key} className={`${styles.roomStat} ${s.cls}`}>
+            <span className={styles.roomStatNum}>{s.num}</span>
+            <span className={styles.roomStatLabel}>{s.label}</span>
+          </div>
+        ))}
+      </div>
 
       <div className={styles.roomToolbar}>
         {/* งานทั้งหมด | ของฉัน — segmented control */}
@@ -277,16 +341,21 @@ export default function TeamRoomPage() {
           visible.map((task) => {
             const pill = STATUS_PILL[task.status] ?? STATUS_PILL.pending!;
             const { done, total } = progressOf(task);
+            const overdue = isOverdue(task);
             // Show every assignee across the task's items, deduped by uid.
             const people = [
               ...new Map(
                 task.items.flatMap((i) => i.assignees).map((a) => [a.lineUid, a]),
               ).values(),
             ];
-            const deadline =
-              task.globalDeadline ?? task.items.find((i) => i.deadline)?.deadline ?? null;
+            const deadline = effectiveDeadline(task);
             return (
-              <a key={task.id} href={`/liff/tasks/${task.id}`} className={styles.roomCard}>
+              <a
+                key={task.id}
+                href={`/liff/tasks/${task.id}`}
+                className={`${styles.roomCard} ${overdue ? styles.roomCardOverdue : ''}`}
+              >
+                {/* priority: name → status → deadline → assignees */}
                 <div className={styles.roomCardTop}>
                   <h3 className={styles.roomCardTitle}>{task.title}</h3>
                   <span

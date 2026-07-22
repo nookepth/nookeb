@@ -29,6 +29,14 @@ export interface TeamRoom {
   space: TeamRoomSpace | null;
   groupLineId: string;
   memberCount: number;
+  /**
+   * true only when a LIVE team is bound to this group's space (migration 007).
+   * When false the group is running its room WITHOUT a team behind it, so the
+   * only name available is the generic auto-created space name ("คลังกลุ่ม").
+   * The client uses this to show a linked/unlinked status instead of leaking
+   * that fallback as if it were a real team name.
+   */
+  teamLinked: boolean;
   tasks: TaskDto[];
 }
 
@@ -54,6 +62,7 @@ export async function getTeamRoom(
   ]);
 
   let space: TeamRoomSpace | null = null;
+  let teamLinked = false;
   if (spaceRow) {
     // Prefer the bound team's name over the generic "คลังกลุ่ม" space name.
     let teamName: string | null = null;
@@ -66,6 +75,9 @@ export async function getTeamRoom(
         .maybeSingle();
       teamName = ((data as { name: string } | null)?.name) ?? null;
     }
+    // teamLinked reflects a LIVE bound team specifically — a team_id pointing at
+    // a soft-deleted team resolves teamName to null and is treated as unlinked.
+    teamLinked = teamName !== null;
     space = { id: spaceRow.id, name: teamName ?? spaceRow.name, memberCount: members.length };
   }
 
@@ -73,6 +85,7 @@ export async function getTeamRoom(
     space,
     groupLineId,
     memberCount: members.length,
+    teamLinked,
     tasks: tasks.map(toTaskDto),
   };
 }

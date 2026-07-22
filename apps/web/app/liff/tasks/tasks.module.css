@@ -921,12 +921,57 @@
   color: #fff;
 }
 
+/* label + linked/unlinked status pill on one row above the title */
+.roomHeroLabelRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.roomHeroLabelRow .heroLabel {
+  margin: 0;
+}
+
+/* "เชื่อมกับทีมแล้ว" — a soft translucent pill on the red hero */
+.roomLinkPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.roomLinkPill::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #7ee2a8; /* live/linked = green dot */
+}
+
+/* unlinked — amber dot + faintly dimmer pill (still readable on red) */
+.roomLinkPillOff {
+  background: rgba(255, 255, 255, 0.14);
+  color: #ffe9e7;
+}
+
+.roomLinkPillOff::before {
+  background: #ffd27a;
+}
+
 .roomHeroRow {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 2px;
+  margin-top: 8px;
 }
 
 .roomHeroTitle {
@@ -935,6 +980,87 @@
   margin: 0;
   line-height: 1.25;
   overflow-wrap: anywhere;
+  color: #fff; /* explicit — must always read white on the brand-red hero */
+}
+
+/* ---- summary strip: Total / In Progress / Done / Overdue ----
+ * Derived entirely from the loaded task list (zero extra API calls). Scrolls
+ * horizontally on a phone, becomes a full 4-up row from 640px. */
+.roomStats {
+  display: flex;
+  gap: 10px;
+  padding: 14px 20px 2px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.roomStats::-webkit-scrollbar {
+  display: none;
+}
+
+.roomStat {
+  flex: 0 0 auto;
+  min-width: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 14px;
+  padding: 12px 14px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.roomStatNum {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.1;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.roomStatLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+/* tone accents — left border + number colour */
+.roomStatTotal {
+  border-left-color: var(--brand);
+}
+.roomStatTotal .roomStatNum {
+  color: var(--brand);
+}
+.roomStatProgress {
+  border-left-color: #d9a300;
+}
+.roomStatProgress .roomStatNum {
+  color: #b45309;
+}
+.roomStatDone {
+  border-left-color: #059669;
+}
+.roomStatDone .roomStatNum {
+  color: #047857;
+}
+.roomStatOverdue {
+  border-left-color: #dc2626;
+}
+.roomStatOverdue .roomStatNum {
+  color: #b91c1c;
+}
+
+@media (min-width: 640px) {
+  .roomStats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    overflow: visible;
+  }
+  .roomStat {
+    min-width: 0;
+  }
 }
 
 .roomMemberChip {
@@ -1034,7 +1160,7 @@
   padding: 4px 20px 20px;
 }
 
-@media (min-width: 600px) {
+@media (min-width: 640px) {
   .roomGrid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1057,6 +1183,11 @@
 .roomCard:hover {
   border-color: var(--brand);
   box-shadow: 0 4px 14px rgba(181, 58, 50, 0.1);
+}
+
+/* a live, past-deadline task gets a red left accent so it stands out in the grid */
+.roomCardOverdue {
+  border-left: 3px solid #dc2626;
 }
 
 .roomCardTop {

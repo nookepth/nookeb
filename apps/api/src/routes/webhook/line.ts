@@ -66,7 +66,7 @@ import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { logEvent, type EventType } from '../../services/events.service';
 import { handleRegisterCommand, handleTaskPostback } from './task-handlers';
-import { buildCreateTaskCard, buildTeamRoomCard } from '../../services/lineMessage';
+import { buildCreateTaskCard, buildGroupWelcomeCard, buildTeamRoomCard } from '../../services/lineMessage';
 import { upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
 
@@ -135,18 +135,21 @@ const REFERRAL_GB = 1024 * 1024 * 1024;
  * scrollable carousel Flex message (builder in flex.service.ts). The carousel's
  * per-bubble postback taps are routed by the postback handler in handleEvent.
  *
- * On a GROUP join it also carries the ห้องทีม card — that chat's one and only
- * "here is where your team's work lives" moment. It must ship in THIS reply:
- * a join event grants exactly one replyToken, and pushing a follow-up is
- * forbidden (reply-only rule; the task-manager push exception covers task
- * announcements and reminders, not a greeting).
+ * On a GROUP join it also carries the group welcome card — that chat's one and
+ * only "here is how to set up your team" moment (a freshly-joined group has no
+ * team yet, so this walks the admin through สร้างทีม → เพิ่มสมาชิก → ผูกกลุ่ม,
+ * rather than dropping them into an empty room; the plain ห้องทีม card stays for
+ * the later "หนูเก็บห้องทีม" intent). It must ship in THIS reply: a join event
+ * grants exactly one replyToken, and pushing a follow-up is forbidden
+ * (reply-only rule; the task-manager push exception covers task announcements
+ * and reminders, not a greeting).
  */
 async function sendOnboarding(event: LineMessageEvent): Promise<void> {
   if (!event.replyToken) return;
   const groupId = event.source.groupId ?? event.source.roomId;
   await replyMessage(event.replyToken, [
     buildOnboardingCarouselMessage(),
-    ...(groupId ? [buildTeamRoomCard(config.LINE_LIFF_ID, groupId)] : []),
+    ...(groupId ? [buildGroupWelcomeCard(config.LINE_LIFF_ID, groupId)] : []),
   ]);
 }
 
@@ -1224,7 +1227,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     return;
   }
 
-  // (ห้องทีม's welcome card rides along inside sendOnboarding for group joins —
+  // (The group welcome card rides along inside sendOnboarding for group joins —
   //  see that function; a `join` event has one replyToken, so both messages must
   //  go out in the SAME reply or the second one is lost.)
 

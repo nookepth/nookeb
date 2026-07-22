@@ -322,6 +322,113 @@ export function buildTeamRoomCard(liffId: string | undefined, groupId: string): 
   };
 }
 
+/**
+ * NEW-GROUP welcome card — REPLIED once, only when the bot JOINS a group (see
+ * sendOnboarding in webhook/line.ts). Distinct from buildTeamRoomCard (which the
+ * "หนูเก็บห้องทีม" intent still uses): a freshly-joined group has no team behind
+ * it yet, so this card walks the admin through the 3 setup steps instead of
+ * dropping them straight into an empty room.
+ *
+ *  1. สร้างทีม        → dashboard/teams (create-team lives there)
+ *  2. เพิ่มสมาชิก     → done inside the team page (เชิญสมาชิก via LINE/email)
+ *  3. ผูกกลุ่มนี้เข้าทีม → the team page's "ผูกกลุ่ม" picker, then open the room here
+ *
+ * Buttons: [สร้างทีม →] (primary, the first action) + [เปิดห้องทีม] (secondary →
+ * the LIFF team room, the same deep link buildTeamRoomCard uses). NO emoji
+ * (brand rule) — the step numbers are native colored badges.
+ */
+export function buildGroupWelcomeCard(liffId: string | undefined, groupId: string): FlexMessage {
+  const q = `?groupId=${encodeURIComponent(groupId)}`;
+  const roomUrl = liffId
+    ? `https://liff.line.me/${liffId}/team${q}`
+    : `${config.WEB_URL}/liff/tasks/team${q}`;
+  const teamsUrl = `${config.WEB_URL}/dashboard/teams`;
+
+  const step = (n: number, title: string, desc: string): Record<string, unknown> => ({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    contents: [
+      {
+        type: 'box',
+        layout: 'vertical',
+        width: '26px',
+        height: '26px',
+        cornerRadius: '13px',
+        backgroundColor: BRAND_RED,
+        justifyContent: 'center',
+        alignItems: 'center',
+        flex: 0,
+        contents: [{ type: 'text', text: String(n), color: '#FFFFFF', size: 'sm', weight: 'bold', align: 'center' }],
+      },
+      {
+        type: 'box',
+        layout: 'vertical',
+        flex: 1,
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: title, weight: 'bold', size: 'sm', color: INK, wrap: true },
+          { type: 'text', text: desc, size: 'xs', color: MUTED, wrap: true },
+        ],
+      },
+    ],
+  });
+
+  return {
+    type: 'flex',
+    altText: 'หนูเก็บเข้ากลุ่มแล้ว มาตั้งค่าทีมกันน้า',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: BRAND_RED,
+        paddingAll: '16px',
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: 'หนูเก็บเข้ากลุ่มแล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: 'ตั้งค่าทีมแค่ 3 ขั้น กลุ่มนี้ก็ตามงานกันได้เลย', size: 'xs', color: '#FFFFFFCC', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        paddingAll: '18px',
+        spacing: 'lg',
+        contents: [
+          step(1, 'สร้างทีม', 'ไปที่เมนูทีม แล้วกดสร้างทีมได้เลยน้า'),
+          step(2, 'เพิ่มสมาชิก', 'เพิ่มสมาชิกเข้าทีมผ่าน LINE หรืออีเมลได้เลยน้า'),
+          step(3, 'ผูกกลุ่มนี้เข้ากับทีม', "กลับมากด 'ผูกกลุ่ม' แล้วเลือกกลุ่มนี้ หนูเก็บจะได้รู้ว่ากลุ่มนี้เป็นทีมไหนน้า"),
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: BRAND_RED,
+            action: { type: 'uri', label: 'สร้างทีม →', uri: teamsUrl },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: { type: 'uri', label: 'เปิดห้องทีม', uri: roomUrl },
+          },
+        ],
+      },
+    },
+  };
+}
+
 /** Flex pushed into the group right after a task is created from LIFF. */
 export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
   const deadlineText = task.global_deadline
