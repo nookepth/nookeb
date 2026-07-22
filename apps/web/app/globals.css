@@ -1757,6 +1757,13 @@ button:active,
    Modals / sheets
    ============================================================ */
 
+/* Divider between the drawer's nav links and the appended profile items. */
+.menu-divider {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 4px 0;
+}
+
 .modal-overlay {
   position: fixed;
   inset: 0;

@@ -52,35 +52,37 @@ export default function FilterSortBar({
           </button>
         ))}
       </div>
-      <label className={styles.sortWrap}>
-        <span className={styles.sortIcon}>
-          <SortIcon />
-        </span>
-        <select
-          className={styles.sortSelect}
-          value={sort}
-          onChange={(e) => onSort(e.target.value as TaskSort)}
-          aria-label="เรียงตาม"
-        >
-          {(Object.keys(SORT_LABEL) as TaskSort[]).map((s) => (
-            <option key={s} value={s}>
-              {SORT_LABEL[s]}
-            </option>
-          ))}
-        </select>
-      </label>
-      {onExport && (
-        <button
-          type="button"
-          className={styles.exportBtn}
-          onClick={onExport}
-          disabled={exporting}
-          aria-label="ดาวน์โหลดงานเป็นไฟล์ Excel"
-        >
-          <DownloadIcon />
-          {exporting ? 'กำลังสร้าง...' : 'Export Excel'}
-        </button>
-      )}
+      <div className={styles.filterActions}>
+        <label className={styles.sortWrap}>
+          <span className={styles.sortIcon}>
+            <SortIcon />
+          </span>
+          <select
+            className={styles.sortSelect}
+            value={sort}
+            onChange={(e) => onSort(e.target.value as TaskSort)}
+            aria-label="เรียงตาม"
+          >
+            {(Object.keys(SORT_LABEL) as TaskSort[]).map((s) => (
+              <option key={s} value={s}>
+                {SORT_LABEL[s]}
+              </option>
+            ))}
+          </select>
+        </label>
+        {onExport && (
+          <button
+            type="button"
+            className={styles.exportBtn}
+            onClick={onExport}
+            disabled={exporting}
+            aria-label="ดาวน์โหลดงานเป็นไฟล์ Excel"
+          >
+            <DownloadIcon />
+            {exporting ? 'กำลังสร้างไฟล์...' : 'Export Excel'}
+          </button>
+        )}
+      </div>
     </div>
   );
 }

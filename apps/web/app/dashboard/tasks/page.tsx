@@ -6,7 +6,6 @@ import type { TaskDto, TaskItemDto, UserDto } from '@nookeb/shared';
 import {
   ApiError,
   cancelTask,
-  exportTasksXlsx,
   getMe,
   hasSession,
   listMyTasks,
@@ -280,15 +279,23 @@ export default function TasksPage() {
     if (exporting) return;
     setExporting(true);
     try {
-      await exportTasksXlsx();
-      showToast('ดาวน์โหลดไฟล์ Excel แล้วน้า', true);
+      // Auth is the HttpOnly session cookie (app-signed JWT) — client JS cannot
+      // read it, and there is no Bearer token to append. So a top-level
+      // navigation to the same-origin export endpoint is the ONLY path that
+      // stays authenticated: it carries the cookie, and the API's
+      // Content-Disposition: attachment triggers a download instead of a page
+      // change. This works identically in the LINE in-app browser (same-origin,
+      // shares the cookie) and in normal browsers. Do NOT use
+      // liff.openWindow({ external: true }) — the external browser is a separate
+      // cookie jar and would 401. Deliberately param-free: export EVERYTHING,
+      // never the active tab/filter.
+      window.location.href = `${window.location.origin}/api-proxy/tasks/export`;
+      // An attachment download does NOT unload this page, so there is no event
+      // to await — clear the loading state after a short beat for feedback.
+      setTimeout(() => setExporting(false), 1500);
     } catch (err) {
-      showToast(
-        err instanceof ApiError && err.status === 401
-          ? 'เซสชันหมดอายุ ลองเข้าสู่ระบบใหม่น้า'
-          : 'สร้างไฟล์ Excel ไม่สำเร็จ ลองใหม่อีกทีน้า',
-      );
-    } finally {
+      console.error(err);
+      showToast('สร้างไฟล์ Excel ไม่สำเร็จ ลองใหม่อีกทีน้า');
       setExporting(false);
     }
   }

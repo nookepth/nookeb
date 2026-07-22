@@ -86,8 +86,8 @@ export default function DashboardPage() {
   const [sort, setSort] = useState<SortKey>('newest');
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [activeTab, setActiveTab] = useState<BottomTab>('vault');
-  const [profileOpen, setProfileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false); // hamburger nav drawer (mobile)
+  const [menuProfile, setMenuProfile] = useState(false); // append profile items in the drawer
   const [referralOpen, setReferralOpen] = useState(false); // ชวนเพื่อน sheet
   const [previewFile, setPreviewFile] = useState<FileDto | null>(null);
 
@@ -263,13 +263,22 @@ export default function DashboardPage() {
     if (tab === 'vault') {
       changeTypeFilter('all');
       window.scrollTo({ top: 0, behavior: 'smooth' });
+    } else if (tab === 'tasks') {
+      window.location.href = '/dashboard/tasks';
     } else if (tab === 'search') {
       setSearchOpen(true);
-    } else if (tab === 'recent') {
-      document.getElementById('recent')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     } else if (tab === 'profile') {
-      setProfileOpen(true);
+      // Reuse the hamburger drawer's open() handler; the drawer appends the
+      // profile items (logout etc.) below a divider when opened this way.
+      setMenuProfile(true);
+      setMenuOpen(true);
     }
+  }
+
+  function closeMenu(): void {
+    setMenuOpen(false);
+    setMenuProfile(false);
+    setActiveTab((t) => (t === 'profile' ? 'vault' : t));
   }
 
   // ---------- derived lists (client-side filter + sort) ----------
@@ -340,7 +349,10 @@ export default function DashboardPage() {
         user={user}
         onLogout={handleLogout}
         trashCount={trashCount}
-        onMenu={() => setMenuOpen(true)}
+        onMenu={() => {
+          setMenuProfile(false);
+          setMenuOpen(true);
+        }}
         searchOpen={searchOpen}
         onSearchOpenChange={(open) => {
           setSearchOpen(open);
@@ -621,57 +633,13 @@ export default function DashboardPage() {
 
       {previewFile && <FilePreviewModal files={[previewFile]} onClose={() => setPreviewFile(null)} />}
 
-      {/* ---------- profile sheet (mobile) ---------- */}
-      {profileOpen && (
-        <div
-          className="modal-overlay"
-          onClick={() => {
-            setProfileOpen(false);
-            setActiveTab('vault');
-          }}
-        >
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="profile-sheet-head">
-              {user?.pictureUrl ? (
-                <img className="avatar" src={user.pictureUrl} alt="" />
-              ) : (
-                <span className="avatar-fallback">{(user?.displayName ?? 'ห').charAt(0)}</span>
-              )}
-              <div>
-                <div className="profile-sheet-name">{user?.displayName ?? 'ผู้ใช้'}</div>
-                {usage && (
-                  <div className="profile-sheet-sub">
-                    ใช้ไป {formatBytes(usage.storageUsed)} จาก {formatBytes(usage.storageLimit)}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="profile-sheet-actions">
-              {isAdmin && (
-                <a className="btn secondary" href="/admin">
-                  หน้าผู้ดูแล
-                </a>
-              )}
-              <button className="btn danger" onClick={handleLogout}>
-                ออกจากระบบ
-              </button>
-              <button
-                className="btn ghost-muted"
-                onClick={() => {
-                  setProfileOpen(false);
-                  setActiveTab('vault');
-                }}
-              >
-                ปิด
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---------- hamburger nav drawer (mobile) ---------- */}
+      {/* ---------- hamburger nav drawer (mobile) ----------
+          Opened either by the ☰ button (nav destinations only) or by the
+          โปรไฟล์ bottom-nav tab, which sets menuProfile → the profile items
+          (account / logout) are appended below a divider. Same sheet, one
+          open() handler — never duplicated. */}
       {menuOpen && (
-        <div className="modal-overlay" onClick={() => setMenuOpen(false)}>
+        <div className="modal-overlay" onClick={closeMenu}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3 className="modal-title">เมนู</h3>
             <div className="profile-sheet-actions">
@@ -691,6 +659,7 @@ export default function DashboardPage() {
                 className="btn secondary"
                 onClick={() => {
                   setMenuOpen(false);
+                  setMenuProfile(false);
                   setReferralOpen(true);
                 }}
               >
@@ -705,7 +674,27 @@ export default function DashboardPage() {
               <a className="btn secondary" href="/dashboard/settings">
                 การเชื่อมต่อ
               </a>
-              <button className="btn ghost-muted" onClick={() => setMenuOpen(false)}>
+
+              {menuProfile && (
+                <>
+                  <hr className="menu-divider" />
+                  {usage && (
+                    <div className="profile-sheet-sub" role="status">
+                      ใช้ไป {formatBytes(usage.storageUsed)} จาก {formatBytes(usage.storageLimit)}
+                    </div>
+                  )}
+                  {isAdmin && (
+                    <a className="btn secondary" href="/admin">
+                      หน้าผู้ดูแล
+                    </a>
+                  )}
+                  <button className="btn danger" onClick={handleLogout}>
+                    ออกจากระบบ
+                  </button>
+                </>
+              )}
+
+              <button className="btn ghost-muted" onClick={closeMenu}>
                 ปิด
               </button>
             </div>

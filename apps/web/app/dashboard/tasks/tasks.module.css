@@ -1564,9 +1564,17 @@
 /* filter chips + sort */
 .filterBar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
   margin-top: 8px;
+}
+/* Row 2 — sort + export, right-aligned under the full-width chip row. */
+.filterActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .chipRow {
   display: flex;
