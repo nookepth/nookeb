@@ -67,10 +67,17 @@ const envSchema = z.object({
 
   // Security
   JWT_SECRET: z.string().min(32),
-  // Signs one-time download tokens (?dl_token=). Optional — falls back to a
-  // string derived from JWT_SECRET so download tokens can never be confused
-  // with session JWTs even if both secrets are the same base value.
-  DOWNLOAD_TOKEN_SECRET: z.string().min(32).optional(),
+  // Signs one-time download tokens (?dl_token=). REQUIRED and independent of
+  // JWT_SECRET so a download token can never be confused with a session JWT.
+  // Previously this fell back to `${JWT_SECRET}:download` when unset — a
+  // predictable derived secret. It is now mandatory so a weak/derived default
+  // can never ship: config fails fast at startup if it is missing or too short.
+  DOWNLOAD_TOKEN_SECRET: z
+    .string({
+      required_error:
+        'DOWNLOAD_TOKEN_SECRET must be set (min 32 chars). Generate with: openssl rand -hex 32',
+    })
+    .min(32, 'DOWNLOAD_TOKEN_SECRET must be at least 32 chars. Generate with: openssl rand -hex 32'),
 
   // Quota — free tier default (bytes). 1 GB (raise it by inviting friends —
   // see referral_tiers / referral.service).

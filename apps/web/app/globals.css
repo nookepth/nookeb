@@ -151,6 +151,58 @@
   animation: shimmer 1.4s infinite linear;
 }
 
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Shared route-loading spinner (app/loading.tsx + route-level loading.tsx).
+   Brand-tinted ring with a solid top arc so the rotation reads clearly. */
+.spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  border: 3px solid var(--color-primary-soft);
+  border-top-color: var(--color-primary);
+  animation: spin 720ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation-duration: 1.6s;
+  }
+}
+
+/* ============================================================
+   Error / not-found boundaries (error.tsx, not-found.tsx,
+   global-error.tsx) — layout reuses .center-page + .btn.
+   ============================================================ */
+
+.error-code {
+  font-size: 4.5rem;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: -2px;
+  color: var(--color-primary);
+}
+
+.error-desc {
+  max-width: 340px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+}
+
+.error-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 4px;
+}
+
 /* ============================================================
    Base
    ============================================================ */

@@ -910,6 +910,18 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     `/box/[slug]` (PUBLIC gift reveal — noindex, generic OG image)
   - LIFF routes all live under `/liff/tasks/` — see the ห้องทีม note in the Task
     Manager section for why nothing may sit outside that subtree.
+  - App Router boundaries: root `app/error.tsx` (client), `app/global-error.tsx`
+    (client, ships its own `<html>`/`<body>` + inline styles since it replaces the
+    root layout and can't rely on globals.css), `app/not-found.tsx` (server), and
+    `app/loading.tsx` (server). Scoped boundaries add `app/dashboard/error.tsx` +
+    `app/dashboard/loading.tsx` (mutation-heavy core) and `app/admin/error.tsx`
+    (data-heavy). All reuse existing globals.css classes — `.center-page`, `.btn`,
+    plus the shared `.spinner`/`@keyframes spin` and `.error-code`/`.error-desc`/
+    `.error-actions` added for these. Error boundaries log ONLY `error.digest` to the
+    console — never the raw message to the user. Thai copy: "เกิดข้อผิดพลาด" /
+    "ไม่พบหน้าที่ต้องการ". Don't add per-route loading.tsx to the client-rendered
+    dashboard pages — they self-handle loading with in-component skeletons, and the
+    root/dashboard fallbacks already cover segment suspense.
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 
@@ -942,7 +954,12 @@ that server-side to the Railway API.
   BOTH (config throws in production if `APP_URL`/`WEB_URL` are localhost). Required (see
   `.env.example`): `NODE_ENV=production`, `APP_URL`, `WEB_URL`, `LINE_CHANNEL_*`,
   `LINE_LOGIN_CHANNEL_ID`, `LINE_LOGIN_CHANNEL_SECRET`, `SUPABASE_*`, `R2_*`, `REDIS_URL`
-  (`rediss://`), `JWT_SECRET`, plus quota/admin/limit vars.
+  (`rediss://`), `JWT_SECRET`, `DOWNLOAD_TOKEN_SECRET`, plus quota/admin/limit vars.
+  `DOWNLOAD_TOKEN_SECRET` is now REQUIRED (min 32 chars, `config.ts`) — the old
+  `${JWT_SECRET}:download` fallback was removed (predictable derived secret), so the
+  API/worker fail fast at startup if it is unset. Must be on BOTH services (shared
+  `config.ts` validates the whole schema) and SHOULD differ from `JWT_SECRET`.
+  Generate with `openssl rand -hex 32`. See `DEPLOYMENT.md`.
   Feature keys that MUST be on both or the feature half-works: `VAULT_MASTER_KEY`
   (vault files AND the encrypted Google refresh token), `GOOGLE_CLIENT_ID` /
   `GOOGLE_CLIENT_SECRET` (the API runs the OAuth flow, the WORKER runs the sync —
@@ -993,6 +1010,9 @@ Skipping step 2 is safe: Sheets sync just stays dormant (routes 503, jobs no-op)
 
 ## Key Env Vars (see `.env.example`)
 - Core (API): `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`
+- `DOWNLOAD_TOKEN_SECRET` — REQUIRED (min 32 chars). Signs one-time `?dl_token=` file-download
+  tokens; kept separate from `JWT_SECRET` so a download token can't be replayed as a session
+  JWT. No fallback — the API/worker refuse to start if unset. Generate: `openssl rand -hex 32`.
 - Web (Vercel, see `apps/web/.env.example`): `API_PROXY_TARGET` (server-side rewrite target =
   Railway API origin, no trailing slash — login breaks if unset), `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID`
 - `DEFAULT_STORAGE_LIMIT` — free-tier quota in bytes (default 1 GB; raised via referral tiers)
@@ -1050,4 +1070,7 @@ Skipping step 2 is safe: Sheets sync just stays dormant (routes 503, jobs no-op)
   migration needed to close; tracked as a separate project, not yet scheduled.
   Accepted 2026-07-19. Compensating control: the `/api-proxy` rewrite is a
   single fixed-target passthrough with no user-controlled destination (see
-  `apps/web/next.config.mjs`).
+  `apps/web/next.config.mjs`). Migration blockers + plan tracked in `ROADMAP.md`
+  (the pin note also lives in the `"//next"` key of `apps/web/package.json` — a
+  top-level key npm ignores, since JSON forbids inline comments). The actual
+  `package.json` spec is `^14.2.4`, which resolves to 14.2.35.

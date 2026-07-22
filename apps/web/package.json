@@ -2,6 +2,7 @@
   "name": "@nookeb/web",
   "version": "0.1.0",
   "private": true,
+  "//next": "Pinned to the Next 14.2.x branch — upgrade to 16.x tracked in ROADMAP.md. JSON forbids inline comments, so this note lives in a top-level key npm ignores.",
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "next build",

@@ -18,8 +18,10 @@ import { incrementTeamStorage } from '../services/team.service';
 // that is atomically consumed on first redemption.
 const DOWNLOAD_TOKEN_TTL_SECONDS = 60;
 // Separate secret so a download token can never be replayed as a session JWT
-// (different signing key) even though both are HS256.
-const downloadTokenSecret = config.DOWNLOAD_TOKEN_SECRET ?? `${config.JWT_SECRET}:download`;
+// (different signing key) even though both are HS256. DOWNLOAD_TOKEN_SECRET is
+// required and validated at startup (config.ts) — no derived-from-JWT_SECRET
+// fallback, which was a predictable secret.
+const downloadTokenSecret = config.DOWNLOAD_TOKEN_SECRET;
 
 interface DownloadTokenPayload {
   fileId: string;
