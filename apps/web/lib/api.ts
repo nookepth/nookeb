@@ -1217,6 +1217,84 @@ export function updateTask(
   });
 }
 
+// ---- Google Sheets integration (migration 046) ----
+
+export interface GoogleIntegrationStatus {
+  connected: boolean;
+  email?: string | null;
+  sheetUrl?: string | null;
+  lastSyncedAt?: string | null;
+  /** set when the last sync failed — usually "reconnect needed" */
+  lastError?: string | null;
+}
+
+/** Connection status. A 503 means the feature isn't configured on this
+ * deployment (no OAuth client) — surfaced as `null` so the card can hide. */
+export async function getGoogleIntegration(): Promise<GoogleIntegrationStatus | null> {
+  try {
+    return await apiFetch<GoogleIntegrationStatus>('/integrations/google');
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) return null;
+    throw err;
+  }
+}
+
+/**
+ * Start the OAuth flow. The API returns the consent URL as JSON and WE do the
+ * top-level navigation — a 302 from the API would be followed by fetch() and
+ * land Google's HTML in a JSON parse instead of moving the browser.
+ */
+export async function startGoogleConnect(): Promise<void> {
+  const { url } = await apiFetch<{ url: string }>('/integrations/google/auth');
+  window.location.href = url;
+}
+
+export function disconnectGoogle(): Promise<{ success: boolean }> {
+  return apiFetch('/integrations/google', { method: 'DELETE' });
+}
+
+export interface TaskExportOptions {
+  /** 'YYYY-MM-DD', Bangkok calendar days; both bounds inclusive */
+  from?: string;
+  to?: string;
+  /** item status to keep; 'all' (default) keeps every one */
+  status?: 'all' | 'pending' | 'in_progress' | 'done' | 'cancelled' | 'submitted' | 'rejected';
+}
+
+/**
+ * Download the caller's tasks as .xlsx and hand the file to the browser.
+ *
+ * Not routed through apiFetch: that helper parses every response as JSON, and
+ * this one is a binary body whose FILENAME lives in Content-Disposition. The
+ * object URL is revoked right after the click — leaving it alive pins the whole
+ * workbook in memory for the life of the tab.
+ */
+export async function exportTasksXlsx(opts: TaskExportOptions = {}): Promise<void> {
+  const query = new URLSearchParams({ format: 'xlsx' });
+  if (opts.from) query.set('from', opts.from);
+  if (opts.to) query.set('to', opts.to);
+  if (opts.status && opts.status !== 'all') query.set('status', opts.status);
+
+  const res = await fetch(`${API_URL}/tasks/export?${query}`);
+  if (res.status === 401) {
+    clearSession();
+    throw new ApiError(401, 'Unauthorized');
+  }
+  if (!res.ok) throw new ApiError(res.status, `API error ${res.status}`);
+
+  const disposition = res.headers.get('Content-Disposition') ?? '';
+  const filename = /filename="([^"]+)"/.exec(disposition)?.[1] ?? 'nookeb-tasks.xlsx';
+
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 /** Creator cancels the task (withdraws reminders, notifies the group). */
 export function cancelTask(taskId: string): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks/${taskId}`, { method: 'DELETE' });

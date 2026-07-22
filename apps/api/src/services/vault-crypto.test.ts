@@ -8,8 +8,11 @@ import { Readable } from 'node:stream';
 import './vault-crypto.test.setup';
 import {
   byteRange,
+  decryptSecret,
   decryptStream,
+  deriveSecretKey,
   deriveUserKey,
+  encryptSecret,
   encryptStream,
   generateDek,
   generateFileIv,
@@ -105,4 +108,39 @@ void test('byteRange: exact window regardless of chunk boundaries', async () => 
     const out = await collect(chunked(data, 3_333).pipe(byteRange(start, length)));
     assert.deepEqual(out, data.subarray(start, start + length));
   }
+});
+
+// ---- generic secret box (Google refresh tokens, migration 046) ----
+
+void test('encryptSecret/decryptSecret roundtrip, including unicode and long values', async () => {
+  const key = await deriveSecretKey('user-1');
+  for (const secret of ['1//0abcXYZ-refresh_token', 'สวัสดีน้า', 'x'.repeat(4096), '']) {
+    assert.equal(decryptSecret(key, encryptSecret(key, secret)), secret);
+  }
+});
+
+void test('encryptSecret is non-deterministic (fresh IV per call)', async () => {
+  const key = await deriveSecretKey('user-1');
+  assert.notEqual(encryptSecret(key, 'same'), encryptSecret(key, 'same'));
+});
+
+void test("another user's secret key cannot decrypt, and tampering is rejected", async () => {
+  const a = await deriveSecretKey('user-a');
+  const b = await deriveSecretKey('user-b');
+  const packed = encryptSecret(a, 'refresh-token');
+  assert.throws(() => decryptSecret(b, packed));
+
+  const raw = Buffer.from(packed, 'base64');
+  const last = raw.length - 1;
+  raw.writeUInt8(raw.readUInt8(last) ^ 0xff, last); // flip a ciphertext bit
+  assert.throws(() => decryptSecret(a, raw.toString('base64')));
+});
+
+void test('secret keys are namespaced away from vault file keys', async () => {
+  // Same input string, different derivation salt — a vault key must never be
+  // able to open a stored secret (domain separation).
+  const secretKey = await deriveSecretKey('user-1');
+  const vaultKey = await deriveUserKey('user-1');
+  assert.notDeepEqual(secretKey, vaultKey);
+  assert.throws(() => decryptSecret(vaultKey, encryptSecret(secretKey, 'token')));
 });

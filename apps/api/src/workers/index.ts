@@ -1,13 +1,20 @@
 import http from 'node:http';
 import { createUploadWorker, closeWorkerQueue, scheduleRepeatableJobs } from './upload.worker';
 import { createTaskReminderWorker } from './taskReminderWorker';
+import { createSheetsWorker } from './sheetsWorker';
 import { closeTaskQueue, scheduleTaskRepeatableJobs } from '../services/taskScheduler';
+import { closeSheetsQueue } from '../services/sheetsQueue';
+import { isGoogleSheetsConfigured } from '../services/google-sheets.service';
 import { createRedis } from '../plugins/redis';
 import { config } from '../config';
 
 // Worker entry point — run as a separate process (npm run dev:worker / start:worker)
 const uploadWorker = createUploadWorker();
 const taskWorker = createTaskReminderWorker();
+// Google Sheets sync — only spun up when the feature is configured, so an
+// unconfigured deployment doesn't hold an idle Redis connection open for a
+// queue nothing ever writes to.
+const sheetsWorker = isGoogleSheetsConfigured() ? createSheetsWorker() : null;
 
 // --- Liveness ------------------------------------------------------------
 // The worker has no request surface, so a crash/hang used to silently stop
@@ -70,7 +77,8 @@ scheduleTaskRepeatableJobs().catch((err) => {
 console.log(
   `[worker] nookeb file worker started ` +
     `(scanEnhance=${config.SCAN_ENHANCE_ENABLED} scanOcr=${config.SCAN_OCR_ENABLED} ` +
-    `scanDefaultMode=${config.SCAN_DEFAULT_MODE} virusScan=${config.ENABLE_VIRUS_SCAN})`,
+    `scanDefaultMode=${config.SCAN_DEFAULT_MODE} virusScan=${config.ENABLE_VIRUS_SCAN} ` +
+    `sheetsSync=${sheetsWorker !== null})`,
 );
 
 async function shutdown(): Promise<void> {
@@ -78,7 +86,9 @@ async function shutdown(): Promise<void> {
   healthServer.close();
   await uploadWorker.close();
   await taskWorker.close();
+  await sheetsWorker?.close();
   await closeTaskQueue();
+  await closeSheetsQueue();
   await closeWorkerQueue();
   await healthRedis.quit().catch(() => {});
   process.exit(0);

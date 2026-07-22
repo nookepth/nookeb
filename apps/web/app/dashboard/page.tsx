@@ -702,6 +702,9 @@ export default function DashboardPage() {
               <a className="btn secondary" href="/dashboard/trash">
                 ถังขยะ{trashCount > 0 ? ` (${trashCount})` : ''}
               </a>
+              <a className="btn secondary" href="/dashboard/settings">
+                การเชื่อมต่อ
+              </a>
               <button className="btn ghost-muted" onClick={() => setMenuOpen(false)}>
                 ปิด
               </button>

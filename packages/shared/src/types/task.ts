@@ -18,6 +18,15 @@ export const TASK_QUEUE = 'nookeb-task-reminders';
 
 export type TaskType = 'single' | 'multi' | 'recurring';
 export type TaskStatus = 'pending' | 'in_progress' | 'done' | 'cancelled';
+/**
+ * Per-item status (migration 045). A task ITEM can additionally sit in the
+ * review loop — 'submitted' (ผู้รับผิดชอบส่งงานกลับ, รอคนสั่งตรวจ) and
+ * 'rejected' (คนสั่งตีกลับพร้อมเหตุผล). `tasks.status` deliberately does NOT
+ * gain these: reviewing is a conversation about one item, and widening the
+ * task-level vocabulary would break every roll-up/filter that assumes four
+ * states.
+ */
+export type TaskItemStatus = TaskStatus | 'submitted' | 'rejected';
 export type RemindType = '3_days' | '1_day' | '3_hours' | 'overdue';
 
 /** Ordered mapping of reminder type → offset from the deadline (minutes;
@@ -68,9 +77,17 @@ export interface TaskItemRecord {
   title: string;
   description: string | null;
   deadline: string | null;
-  status: TaskStatus;
+  status: TaskItemStatus;
   sort_order: number;
   deleted_at: string | null;
+  /** migration 045 — review loop. Stamped when the item is submitted for review. */
+  submitted_at: string | null;
+  /** migration 045 — stamped when the creator sends it back. */
+  rejected_at: string | null;
+  /** migration 045 — why it was sent back; cleared on the next submit. */
+  rejection_note: string | null;
+  /** migration 045 — note that came with the latest submission. */
+  submission_note: string | null;
 }
 
 export interface TaskAssigneeRecord {
@@ -95,6 +112,25 @@ export interface TaskLinkRecord {
   created_by_line_uid: string;
   created_at: string;
 }
+
+/**
+ * File attached to a task (migration 045). The bytes live in a normal `files`
+ * row — space, quota ledger and soft-delete all behave exactly as for a LINE
+ * upload; this row only binds that file to a task.
+ */
+export interface TaskFileRecord {
+  id: string;
+  task_id: string;
+  /** NULL = task-level (แนบตอนสร้างงาน); set = attached to one item's submission */
+  task_item_id: string | null;
+  file_id: string;
+  uploaded_by_line_uid: string;
+  kind: TaskFileKind;
+  note: string | null;
+  created_at: string;
+}
+
+export type TaskFileKind = 'brief' | 'submission';
 
 export interface TaskReminderRecord {
   id: string;
@@ -152,6 +188,30 @@ export interface TaskRecurSweepJob {
 
 export type TaskJob = TaskReminderJob | TaskRecurNextJob | TaskRecurSweepJob;
 
+/**
+ * BullMQ queue for Google Sheets sync (migration 046) — its OWN queue, separate
+ * from both file processing and task reminders. A Google outage backs up here
+ * and nowhere else: a time-sensitive reminder must never wait behind a retrying
+ * third-party HTTP call.
+ */
+export const SHEETS_QUEUE = 'nookeb-sheets-sync';
+
+/**
+ * Job: mirror one task into its owner's sheet. The payload deliberately carries
+ * NO userId — the owner is resolved from the task at run time. Callers that
+ * mutate a task (an assignee marking done, the creator editing) don't all know
+ * the OWNER's user id, and resolving at enqueue time would mean either an extra
+ * query in every route or a payload that's wrong half the time.
+ */
+export interface SheetsSyncJob {
+  type: 'sheets_sync';
+  taskId: string;
+  /** 'delete' strikes the row through; it never removes it (audit trail). */
+  action: 'upsert' | 'delete';
+}
+
+export type SheetsJob = SheetsSyncJob;
+
 // ---- DTOs (LIFF web ↔ API) ----
 
 export interface TaskAssigneeDto {
@@ -176,9 +236,33 @@ export interface TaskItemDto {
   description: string | null;
   /** effective deadline (item deadline ?? task global_deadline) */
   deadline: string | null;
-  status: TaskStatus;
+  status: TaskItemStatus;
   sortOrder: number;
   assignees: TaskAssigneeDto[];
+  /** migration 045 — review loop */
+  submittedAt: string | null;
+  rejectedAt: string | null;
+  rejectionNote: string | null;
+  submissionNote: string | null;
+}
+
+/**
+ * A task attachment as the LIFF/web sees it. `url` is a presigned GET (rule 5 —
+ * binary is NEVER proxied through the API) and is minted per read, so it is
+ * omitted from list payloads that don't need it.
+ */
+export interface TaskFileDto {
+  id: string;
+  fileId: string;
+  taskItemId: string | null;
+  name: string;
+  size: number;
+  mimeType: string;
+  kind: TaskFileKind;
+  uploadedByLineUid: string;
+  createdAt: string;
+  /** presigned download URL (1h) — null while the file row isn't 'ready' */
+  url: string | null;
 }
 
 export interface TaskDto {
@@ -195,6 +279,13 @@ export interface TaskDto {
   createdAt: string;
   items: TaskItemDto[];
   links: TaskLinkDto[];
+  /**
+   * Attachments (migration 045). Carried WITHOUT presigned urls (`url: null`)
+   * on the task payload — minting one per file on every task read would burn
+   * signing work nobody looks at. The LIFF fetches signed urls on demand from
+   * GET /tasks/:id/files.
+   */
+  files: TaskFileDto[];
 }
 
 export interface GroupMemberDto {

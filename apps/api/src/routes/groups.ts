@@ -6,6 +6,7 @@ import {
   listGroupMembers,
   syncGroupRoster,
 } from '../services/task.service';
+import { getTeamRoom } from '../services/team-room.service';
 
 /**
  * ระบบตามงาน group roster (migration 036). The roster fills itself three ways
@@ -72,6 +73,33 @@ const groupsRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(204).send();
     },
   );
+
+  // GET /groups/:groupId/room — ห้องทีม, keyed by the GROUP.
+  //
+  // This is the entry point the welcome card uses, and it has to be the
+  // group-keyed one: a `join` event fires before any space exists (a space is
+  // created on the first stored FILE, and its creation needs a user id the join
+  // event doesn't carry), so a space-keyed link would be dead on arrival in a
+  // brand-new group. GET /spaces/:id/tasks is the same room reached from the
+  // dashboard side; both share getTeamRoom().
+  //
+  // Same capability model as every other group route: the unguessable group id
+  // is the proof, and holding it already grants task creation here today.
+  app.get<{ Params: { groupId: string } }>('/groups/:groupId/room', async (request, reply) => {
+    const parsed = groupIdSchema.safeParse(request.params.groupId);
+    if (!parsed.success) return reply.code(400).send({ error: 'Invalid group id' });
+    const lineUid = request.authUser!.lineUserId;
+
+    if (!(await ensureGroupMember(app.supabase, parsed.data, lineUid))) {
+      return reply.code(403).send({
+        error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วเปิดใหม่อีกที',
+        code: 'NOT_REGISTERED',
+      });
+    }
+
+    const room = await getTeamRoom(app.supabase, app.redis, parsed.data);
+    return { ...room, viewerLineUid: lineUid };
+  });
 };
 
 export default groupsRoutes;

@@ -66,7 +66,7 @@ import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { logEvent, type EventType } from '../../services/events.service';
 import { handleRegisterCommand, handleTaskPostback } from './task-handlers';
-import { buildCreateTaskCard } from '../../services/lineMessage';
+import { buildCreateTaskCard, buildTeamRoomCard } from '../../services/lineMessage';
 import { upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
 
@@ -134,11 +134,19 @@ const REFERRAL_GB = 1024 * 1024 * 1024;
  * Onboarding sent on `follow` (1-1 chat) and `join` (group/room): an 8-bubble
  * scrollable carousel Flex message (builder in flex.service.ts). The carousel's
  * per-bubble postback taps are routed by the postback handler in handleEvent.
+ *
+ * On a GROUP join it also carries the ห้องทีม card — that chat's one and only
+ * "here is where your team's work lives" moment. It must ship in THIS reply:
+ * a join event grants exactly one replyToken, and pushing a follow-up is
+ * forbidden (reply-only rule; the task-manager push exception covers task
+ * announcements and reminders, not a greeting).
  */
 async function sendOnboarding(event: LineMessageEvent): Promise<void> {
   if (!event.replyToken) return;
+  const groupId = event.source.groupId ?? event.source.roomId;
   await replyMessage(event.replyToken, [
     buildOnboardingCarouselMessage(),
+    ...(groupId ? [buildTeamRoomCard(config.LINE_LIFF_ID, groupId)] : []),
   ]);
 }
 
@@ -307,6 +315,7 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บงานของฉัน — ดูงานที่ต้องทำ
 
 👥 ทีม (ใช้ในกลุ่ม)
+หนูเก็บห้องทีม — เปิดห้องทีม ดูงานทั้งกลุ่ม
 หนูเก็บสร้างงาน — มอบหมายงานในกลุ่ม
 หนูเก็บคู่มือทีม — วิธีเริ่มใช้งานแบบทีม
 หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
@@ -513,6 +522,25 @@ async function handleTextCommand(
     return;
   }
 
+  // ห้องทีม — the group's task room. Group/room only: the room is defined by
+  // the LINE group, and a 1-on-1 chat has none (งานส่วนตัว is the DM's
+  // equivalent, reached via "หนูเก็บสร้างงาน"). Matched BEFORE the group
+  // bot-directed guard for the same reason as สร้างงาน.
+  if (prefixed && isCmd(text, 'ห้องทีม')) {
+    const groupId = source.groupId ?? source.roomId;
+    if (!groupId) {
+      await sendReply(event, [
+        {
+          type: 'text',
+          text: 'ห้องทีมใช้ได้ในกลุ่มน้า ถ้าอยากจัดงานของตัวเอง พิมพ์ "หนูเก็บสร้างงาน" ได้เลย',
+        },
+      ]);
+      return;
+    }
+    await replyFlex(event, buildTeamRoomCard(config.LINE_LIFF_ID, groupId));
+    return;
+  }
+
   if (source.type === 'group' || source.type === 'room') {
     const isBindTeam = /^(?:ผูกทีม)\s+\d+$/i.test(text.trim());
     if (!prefixed && !isBindTeam) return;
@@ -569,6 +597,7 @@ async function handleTextCommand(
     const buttons: QuickReplyButton[] = inGroup
       ? [
           { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' },
+          { label: 'หนูเก็บห้องทีม', text: 'หนูเก็บห้องทีม' },
           { label: 'หนูเก็บสร้างงาน', text: 'หนูเก็บสร้างงาน' },
           { label: 'หนูเก็บคู่มือทีม', text: 'หนูเก็บคู่มือทีม' },
           { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' },
@@ -1192,6 +1221,10 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     await sendOnboarding(event);
     return;
   }
+
+  // (ห้องทีม's welcome card rides along inside sendOnboarding for group joins —
+  //  see that function; a `join` event has one replyToken, so both messages must
+  //  go out in the SAME reply or the second one is lost.)
 
   // A member JOINED the group/room → enroll them in the assignee roster
   // IMMEDIATELY (ระบบตามงาน), before they've typed a single message. This is the

@@ -1,10 +1,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { Redis } from 'ioredis';
 import type {
+  FileRecord,
   GroupMemberRecord,
   RemindType,
   TaskAssigneeRecord,
   TaskDto,
+  TaskFileDto,
+  TaskFileKind,
+  TaskFileRecord,
   TaskItemRecord,
   TaskLinkRecord,
   TaskRecord,
@@ -204,9 +208,27 @@ export interface TaskItemWithAssignees extends TaskItemRecord {
   assignees: TaskAssigneeRecord[];
 }
 
+/** A task_files row joined to the `files` row that holds the actual bytes. */
+export interface TaskFileWithFile extends TaskFileRecord {
+  file: Pick<
+    FileRecord,
+    | 'id'
+    | 'original_name'
+    | 'display_name'
+    | 'mime_type'
+    | 'file_size'
+    | 'r2_key'
+    | 'status'
+    // uploaded_by is what the detach path refunds quota to — the caller removing
+    // an attachment isn't necessarily the person who was charged for it.
+    | 'uploaded_by'
+  >;
+}
+
 export interface TaskWithDetails extends TaskRecord {
   items: TaskItemWithAssignees[];
   links: TaskLinkRecord[];
+  files: TaskFileWithFile[];
 }
 
 /**
@@ -293,6 +315,7 @@ export async function createTaskWithItems(
         assignees: assigneeRecords.filter((a) => a.task_item_id === row.id),
       })),
       links: [], // freshly created — links are attached later via POST …/links
+      files: [], // …and files via POST …/files
     };
   } catch (err) {
     // Soft-cancel the shell so nothing downstream ever sees a half-built task.
@@ -337,7 +360,10 @@ export async function getTaskWithDetails(
     assigneeRecords = (assignees ?? []) as TaskAssigneeRecord[];
   }
 
-  const links = await listTaskLinks(supabase, taskId);
+  const [links, files] = await Promise.all([
+    listTaskLinks(supabase, taskId),
+    listTaskFiles(supabase, taskId),
+  ]);
 
   return {
     ...(task as TaskRecord),
@@ -346,6 +372,7 @@ export async function getTaskWithDetails(
       assignees: assigneeRecords.filter((a) => a.task_item_id === row.id),
     })),
     links,
+    files,
   };
 }
 
@@ -399,6 +426,48 @@ export async function listTasksForUser(
   const tasks = details.filter((t): t is TaskWithDetails => t !== null);
 
   // Newest activity first: nearest live deadline, then created_at.
+  tasks.sort((a, b) => {
+    const da = a.global_deadline ? new Date(a.global_deadline).getTime() : Infinity;
+    const db = b.global_deadline ? new Date(b.global_deadline).getTime() : Infinity;
+    if (da !== db) return da - db;
+    return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+  });
+  return tasks;
+}
+
+/**
+ * Every live task in one LINE group — the ห้องทีม view. Group-scoped, unlike
+ * listTasksForUser (which is scoped to one person across all their groups), so
+ * the caller MUST have already proved they belong to this group; this function
+ * applies no access check of its own.
+ *
+ * Cancelled tasks are included (they stay visible in their own tab, per
+ * cancelTask's contract); soft-deleted ones are not. Newest deadline first,
+ * same ordering as the personal list so both views feel identical.
+ */
+export async function listTasksForGroup(
+  supabase: SupabaseClient,
+  groupLineId: string,
+  cap = 200,
+): Promise<TaskWithDetails[]> {
+  const { data, error } = await supabase
+    .from('tasks')
+    .select('id')
+    .eq('group_line_id', groupLineId)
+    // Defence in depth: a personal task must never be reachable through a group
+    // view. The 043 CHECK already makes group_line_id NULL for personal rows, so
+    // this can't match one — the filter documents the invariant at the query.
+    .eq('is_personal', false)
+    .is('deleted_at', null)
+    .order('created_at', { ascending: false })
+    .limit(cap);
+  if (error) throw error;
+
+  const ids = ((data ?? []) as { id: string }[]).map((r) => r.id);
+  if (ids.length === 0) return [];
+
+  const details = await Promise.all(ids.map((id) => getTaskWithDetails(supabase, id)));
+  const tasks = details.filter((t): t is TaskWithDetails => t !== null);
   tasks.sort((a, b) => {
     const da = a.global_deadline ? new Date(a.global_deadline).getTime() : Infinity;
     const db = b.global_deadline ? new Date(b.global_deadline).getTime() : Infinity;
@@ -560,9 +629,17 @@ export async function resetRecurringRound(supabase: SupabaseClient, taskId: stri
     .in('task_item_id', itemIds);
   if (assigneeErr) throw assigneeErr;
 
+  // Clear the review loop too (migration 045) — a new round starts fresh, so a
+  // stale "ตีกลับเพราะ…" from last month must not greet the assignee.
   const { error: itemErr } = await supabase
     .from('task_items')
-    .update({ status: 'pending' })
+    .update({
+      status: 'pending',
+      submitted_at: null,
+      rejected_at: null,
+      rejection_note: null,
+      submission_note: null,
+    })
     .in('id', itemIds);
   if (itemErr) throw itemErr;
 }
@@ -668,6 +745,161 @@ export async function deleteTaskLink(
   return (data ?? []).length > 0;
 }
 
+// ---- task files (migration 045) ----
+
+/** Columns of `files` a task attachment ever needs — never `SELECT *`. */
+const TASK_FILE_SELECT =
+  '*, file:files!inner(id, original_name, display_name, mime_type, file_size, r2_key, status, uploaded_by)';
+
+/**
+ * Attachments of a task, newest last. Soft-deleted `files` rows are filtered
+ * OUT: detaching an attachment soft-deletes its file row, and a trashed file
+ * must not keep rendering on the task (its R2 object is on the purge clock).
+ */
+export async function listTaskFiles(
+  supabase: SupabaseClient,
+  taskId: string,
+): Promise<TaskFileWithFile[]> {
+  const { data, error } = await supabase
+    .from('task_files')
+    .select(TASK_FILE_SELECT)
+    .eq('task_id', taskId)
+    .is('files.deleted_at', null)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as unknown as TaskFileWithFile[];
+}
+
+/** One attachment by its task_files id, scoped to the task it claims to be in. */
+export async function getTaskFile(
+  supabase: SupabaseClient,
+  taskId: string,
+  attachmentId: string,
+): Promise<TaskFileWithFile | null> {
+  const { data, error } = await supabase
+    .from('task_files')
+    .select(TASK_FILE_SELECT)
+    .eq('task_id', taskId)
+    .eq('id', attachmentId)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as unknown as TaskFileWithFile | null) ?? null;
+}
+
+export async function attachTaskFile(
+  supabase: SupabaseClient,
+  input: {
+    taskId: string;
+    taskItemId: string | null;
+    fileId: string;
+    uploadedByLineUid: string;
+    kind: TaskFileKind;
+    note?: string | null;
+  },
+): Promise<TaskFileRecord> {
+  const { data, error } = await supabase
+    .from('task_files')
+    .insert({
+      task_id: input.taskId,
+      task_item_id: input.taskItemId,
+      file_id: input.fileId,
+      uploaded_by_line_uid: input.uploadedByLineUid,
+      kind: input.kind,
+      note: input.note ?? null,
+    })
+    .select('*')
+    .single();
+  if (error) throw error;
+  return data as TaskFileRecord;
+}
+
+/**
+ * Unbind an attachment from its task. Deletes the junction row only — the
+ * `files` row is soft-deleted by the CALLER (which also owns the quota refund),
+ * so rule 6 is upheld where the bytes actually live. Returns false when the id
+ * doesn't belong to the task.
+ */
+export async function detachTaskFile(
+  supabase: SupabaseClient,
+  taskId: string,
+  attachmentId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('task_files')
+    .delete()
+    .eq('id', attachmentId)
+    .eq('task_id', taskId)
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+// ---- review loop: submit / accept / reject (migration 045) ----
+
+/**
+ * ผู้รับผิดชอบส่งงานกลับ: item → 'submitted'. Clears any previous rejection so
+ * the item doesn't render as both "ตีกลับ" and "รอตรวจ" at once.
+ *
+ * Deliberately does NOT stamp done_at: submitting asks for a review, it does
+ * not complete the work. Only the creator accepting (markAssigneeDone on every
+ * assignee) can roll the item to 'done' — otherwise "ส่งงานกลับ" would silently
+ * become a self-approval and the review loop would be decorative.
+ */
+export async function submitTaskItem(
+  supabase: SupabaseClient,
+  itemId: string,
+  note: string | null,
+): Promise<void> {
+  const { error } = await supabase
+    .from('task_items')
+    .update({
+      status: 'submitted',
+      submitted_at: new Date().toISOString(),
+      submission_note: note,
+      rejected_at: null,
+      rejection_note: null,
+    })
+    .eq('id', itemId);
+  if (error) throw error;
+}
+
+/**
+ * คนสั่ง "รับงาน": stamp done_at on every assignee of the item that isn't
+ * already done, so the normal rollUpCompletion path takes the item (and
+ * possibly the task) to 'done'. Approving is therefore expressed in the SAME
+ * done-marks the rest of the system already reasons about — no second notion of
+ * completeness that progress bars and reminders would have to learn about.
+ */
+export async function markAllAssigneesDone(
+  supabase: SupabaseClient,
+  itemId: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('task_assignees')
+    .update({ done_at: new Date().toISOString() })
+    .eq('task_item_id', itemId)
+    .is('done_at', null);
+  if (error) throw error;
+}
+
+/** คนสั่งตีกลับพร้อมเหตุผล: item → 'rejected'. The submission note is kept so
+ * the assignee can see what they sent alongside why it came back. */
+export async function rejectTaskItem(
+  supabase: SupabaseClient,
+  itemId: string,
+  note: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('task_items')
+    .update({
+      status: 'rejected',
+      rejected_at: new Date().toISOString(),
+      rejection_note: note,
+    })
+    .eq('id', itemId);
+  if (error) throw error;
+}
+
 // ---- cancel ----
 
 /**
@@ -751,6 +983,26 @@ export async function stampReminder(
 
 // ---- DTO ----
 
+/**
+ * Attachment → DTO. `url` is supplied by the CALLER (a presigned GET, rule 5) —
+ * this mapper never signs, so a task payload can carry the attachment list
+ * without minting URLs nobody clicks.
+ */
+export function toTaskFileDto(row: TaskFileWithFile, url: string | null = null): TaskFileDto {
+  return {
+    id: row.id,
+    fileId: row.file_id,
+    taskItemId: row.task_item_id,
+    name: row.file.display_name ?? row.file.original_name,
+    size: row.file.file_size,
+    mimeType: row.file.mime_type,
+    kind: row.kind,
+    uploadedByLineUid: row.uploaded_by_line_uid,
+    createdAt: row.created_at,
+    url,
+  };
+}
+
 export function toTaskDto(task: TaskWithDetails): TaskDto {
   return {
     id: task.id,
@@ -771,7 +1023,12 @@ export function toTaskDto(task: TaskWithDetails): TaskDto {
       status: item.status,
       sortOrder: item.sort_order,
       assignees: item.assignees.map(assigneeDto),
+      submittedAt: item.submitted_at,
+      rejectedAt: item.rejected_at,
+      rejectionNote: item.rejection_note,
+      submissionNote: item.submission_note,
     })),
     links: task.links.map(linkDto),
+    files: task.files.map((f) => toTaskFileDto(f)),
   };
 }

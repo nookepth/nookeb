@@ -12,8 +12,10 @@ import {
   type TaskDraft,
 } from '../../../../../../lib/taskDraft';
 import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../components';
+import { FileAttach } from '../../../FileAttach';
 import { ProFeatureSection } from '../../../ProFeatureSection';
 import { trackEvent } from '../../../../../../lib/track';
+import { describeRejection, uploadTaskFiles } from '../../../../../../lib/taskFiles';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface CreatedTask {
@@ -35,6 +37,13 @@ export default function DetailPage({ params }: { params: { type: string } }) {
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [created, setCreated] = useState<CreatedTask | null>(null);
+  // Attachments picked BEFORE the task exists — they can only be uploaded once
+  // POST /tasks returns an id, so they ride in component state (not the
+  // sessionStorage draft: a File can't be serialised, and re-picking after a
+  // LIFF reload is far less confusing than a phantom filename with no bytes).
+  const [attachFiles, setAttachFiles] = useState<File[]>([]);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  const [attachWarning, setAttachWarning] = useState<string | null>(null);
 
   // Update state + sessionStorage together (LIFF may reload at any navigation).
   const setDraft = (next: TaskDraft) => {
@@ -209,6 +218,26 @@ export default function DetailPage({ params }: { params: { type: string } }) {
       }
       const body = (await res.json()) as { task: { id: string }; announced?: boolean };
       clearDraft();
+
+      // Attachments go up AFTER the task exists. A failure here must NOT read as
+      // "งานไม่ถูกสร้าง" — the task is saved and announced already, so we surface
+      // the per-file problem on the success screen instead of blocking on it.
+      if (attachFiles.length > 0) {
+        setUploadProgress({ done: 0, total: attachFiles.length });
+        const result = await uploadTaskFiles(body.task.id, attachFiles, {
+          kind: 'brief',
+          onProgress: (done, total) => setUploadProgress({ done, total }),
+        });
+        setUploadProgress(null);
+        if (result.rejected.length > 0) {
+          setAttachWarning(
+            `แนบไฟล์ไม่สำเร็จ ${result.rejected.length} ไฟล์ — ${result.rejected
+              .map(describeRejection)
+              .join(' · ')}`,
+          );
+        }
+      }
+
       setCreated({ id: body.task.id, announced: body.announced !== false });
     } catch {
       setError('ส่งงานไม่สำเร็จ ลองใหม่อีกทีน้า');
@@ -264,6 +293,7 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             </>
           )}
         </div>
+        {attachWarning && <div className={styles.errorBox}>{attachWarning}</div>}
         <div className={styles.cardList}>
           {!created.announced && (
             <a
@@ -511,6 +541,17 @@ export default function DetailPage({ params }: { params: { type: string } }) {
         </section>
       )}
 
+      {/* ไฟล์ประกอบโจทย์ — อัปโหลดหลังงานถูกสร้างแล้ว (ดู submit()) */}
+      <section className={styles.section}>
+        <p className={styles.sectionLabel}>ไฟล์ประกอบ (ไม่บังคับ)</p>
+        <FileAttach
+          files={attachFiles}
+          onChange={setAttachFiles}
+          disabled={submitting}
+          progress={uploadProgress}
+        />
+      </section>
+
       {/* Pro fake-door demand test — below the assignees, above submit. */}
       <ProFeatureSection />
 
@@ -526,7 +567,13 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             ← กลับ
           </button>
           <button type="button" className={styles.primaryBtn} disabled={submitting} onClick={submit}>
-            {submitting ? 'กำลังส่ง...' : isPersonal ? 'บันทึกงาน →' : 'ส่งงานเข้ากลุ่ม →'}
+            {uploadProgress
+              ? `กำลังแนบไฟล์ ${uploadProgress.done}/${uploadProgress.total}...`
+              : submitting
+                ? 'กำลังส่ง...'
+                : isPersonal
+                  ? 'บันทึกงาน →'
+                  : 'ส่งงานเข้ากลุ่ม →'}
           </button>
         </div>
       </div>

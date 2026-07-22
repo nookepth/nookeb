@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
-import type { TaskDto, TaskItemDto, TaskStatus, GroupMemberDto } from '@nookeb/shared';
+import type { TaskDto, TaskItemDto, TaskItemStatus, TaskStatus, GroupMemberDto } from '@nookeb/shared';
 import {
   ApiError,
   hasSession,
@@ -35,12 +35,18 @@ const STATUS_BADGE: Record<TaskStatus, { label: string; bg: string; fg: string }
   cancelled: { label: 'ยกเลิก', bg: '#fee2e2', fg: '#b91c1c' },
 };
 
-/** Per-sub-task status pill: กำลังทำ=yellow, เสร็จแล้ว=green, ยกเลิก/ยังไม่เริ่ม=gray. */
-const ITEM_STATUS_PILL: Record<TaskStatus, { label: string; bg: string; fg: string }> = {
+/**
+ * Per-sub-task status pill: กำลังทำ=yellow, เสร็จแล้ว=green, ยกเลิก/ยังไม่เริ่ม=gray,
+ * plus the review loop (migration 045) — รอตรวจ=blue, ตีกลับ=red. Keyed by
+ * TaskItemStatus, which is wider than the task-level TaskStatus.
+ */
+const ITEM_STATUS_PILL: Record<TaskItemStatus, { label: string; bg: string; fg: string }> = {
   pending: { label: 'ยังไม่เริ่ม', bg: '#f3f4f6', fg: '#6b7280' },
   in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
   done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
   cancelled: { label: 'ยกเลิก', bg: '#f3f4f6', fg: '#6b7280' },
+  submitted: { label: 'รอตรวจ', bg: '#dbeafe', fg: '#1d4ed8' },
+  rejected: { label: 'ตีกลับ', bg: '#fee2e2', fg: '#b91c1c' },
 };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];

@@ -11,18 +11,31 @@ function SortIcon({ size = 14 }: { size?: number }) {
   );
 }
 
-/** Scope-filter chips + sort dropdown. Selection persists in sessionStorage
- * (handled by the page). Chips scroll horizontally at 375px. */
+function DownloadIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <path d="M12 3.5v11m0 0 4-4m-4 4-4-4" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M4.5 17.5v1.2a1.8 1.8 0 0 0 1.8 1.8h11.4a1.8 1.8 0 0 0 1.8-1.8v-1.2" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** Scope-filter chips + sort dropdown + Excel export. Selection persists in
+ * sessionStorage (handled by the page). Chips scroll horizontally at 375px. */
 export default function FilterSortBar({
   filter,
   sort,
   onFilter,
   onSort,
+  onExport,
+  exporting = false,
 }: {
   filter: TaskFilter;
   sort: TaskSort;
   onFilter: (f: TaskFilter) => void;
   onSort: (s: TaskSort) => void;
+  onExport?: () => void;
+  exporting?: boolean;
 }) {
   return (
     <div className={styles.filterBar}>
@@ -56,6 +69,18 @@ export default function FilterSortBar({
           ))}
         </select>
       </label>
+      {onExport && (
+        <button
+          type="button"
+          className={styles.exportBtn}
+          onClick={onExport}
+          disabled={exporting}
+          aria-label="ดาวน์โหลดงานเป็นไฟล์ Excel"
+        >
+          <DownloadIcon />
+          {exporting ? 'กำลังสร้าง...' : 'Export Excel'}
+        </button>
+      )}
     </div>
   );
 }

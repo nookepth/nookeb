@@ -16,16 +16,22 @@ import {
   isGroupMember,
   listGroupMembers,
   listTasksForUser,
+  markAllAssigneesDone,
   markAssigneeAccepted,
   markAssigneeDone,
   notifyTarget,
+  rejectTaskItem,
   replaceItemAssignees,
   rollUpCompletion,
   setDoneNote,
+  submitTaskItem,
   toTaskDto,
   updateTask,
+  type TaskItemWithAssignees,
   type TaskWithDetails,
 } from '../services/task.service';
+import { exportFilename, exportTasksToExcel, type TaskExportRow } from '../services/export.service';
+import { enqueueSheetsSync } from '../services/sheetsQueue';
 import {
   cancelReminders,
   computeNextOccurrence,
@@ -135,6 +141,9 @@ const itemDeadlineSchema = z.object({
 // A done-note is optional and short; an empty/blank string clears it.
 const doneSchema = z.object({ note: z.string().trim().max(500).optional() });
 const noteSchema = z.object({ note: z.string().trim().max(500) });
+// ส่งงานกลับ: หมายเหตุไม่บังคับ · ตีกลับ: เหตุผลบังคับ (ตีกลับเปล่าๆ ไม่ช่วยใคร)
+const submitSchema = z.object({ note: z.string().trim().max(1000).optional() });
+const rejectSchema = z.object({ note: z.string().trim().min(1).max(500) });
 const assigneesSchema = z.object({ lineUids: z.array(z.string().min(1)).min(1).max(50) });
 const linkSchema = z.object({
   url: z.string().trim().url().max(2000),
@@ -154,6 +163,37 @@ function isHttpUrl(url: string): boolean {
 
 const MAX_LINKS_PER_TASK = 20;
 
+// ---- export ----
+const EXPORT_TASK_CAP = 500;
+
+const exportQuerySchema = z.object({
+  // Only xlsx exists. Kept in the schema (rather than ignored) so a caller
+  // asking for csv gets a clear 400 instead of a silently wrong file.
+  format: z.literal('xlsx').default('xlsx'),
+  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  status: z
+    .enum(['all', 'pending', 'in_progress', 'done', 'cancelled', 'submitted', 'rejected'])
+    .default('all'),
+});
+
+/**
+ * Newest activity on an item. `tasks`/`task_items` carry no updated_at column,
+ * so instead of inventing one (a migration + every write path remembering to
+ * touch it) the export derives it from the stamps that already exist: the
+ * review-loop marks and the per-assignee accept/done marks. Null when nothing
+ * has happened yet — the caller falls back to created_at.
+ */
+function resolveUpdatedAt(item: TaskItemWithAssignees): string | null {
+  const stamps = [
+    item.submitted_at,
+    item.rejected_at,
+    ...item.assignees.flatMap((a) => [a.done_at, a.accepted_at]),
+  ].filter((s): s is string => s !== null);
+  if (stamps.length === 0) return null;
+  return stamps.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
+}
+
 function canView(task: TaskWithDetails, lineUid: string, isMember: boolean): boolean {
   return (
     isMember ||
@@ -163,6 +203,30 @@ function canView(task: TaskWithDetails, lineUid: string, isMember: boolean): boo
 }
 
 const tasksRoutes: FastifyPluginAsync = async (app) => {
+  /**
+   * Google Sheets mirror (migration 046). ONE hook instead of a call at each of
+   * the dozen mutation routes: every write that reaches a 2xx on a `/tasks/:id…`
+   * path queues a sync for that task. A new task route added later is covered
+   * automatically — which is the whole point, because the failure mode of the
+   * per-route approach is a silently stale row nobody notices for weeks.
+   *
+   * onResponse (not onSend): the response is already out, so this can never
+   * delay or fail the request. enqueueSheetsSync is itself fire-and-forget and
+   * no-ops when Google isn't configured, so there is nothing to guard here.
+   *
+   * POST /tasks (create) has no :id in its params — it enqueues explicitly at
+   * its own return, where the new id first exists.
+   */
+  app.addHook('onResponse', async (request, reply) => {
+    if (request.method === 'GET' || reply.statusCode >= 300) return;
+    const taskId = (request.params as { id?: string } | undefined)?.id;
+    if (!taskId) return;
+    // DELETE /tasks/:id is the cancel path — the row gets struck through, never
+    // removed. Every other write is an upsert.
+    const isCancel = request.method === 'DELETE' && /^\/tasks\/[^/]+$/.test(request.url.split('?')[0] ?? '');
+    enqueueSheetsSync(taskId, isCancel ? 'delete' : 'upsert');
+  });
+
   // ---- POST /tasks — create + announce + schedule reminders ----
   // Each create fires a metered LINE push (announcement) and schedules more
   // (reminders), so it's cost-bearing — cap it tighter than the 100/min global.
@@ -338,6 +402,10 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       },
     });
 
+    // Mirror into the creator's Google Sheet, if they connected one. The
+    // onResponse hook above can't cover this route — the id only exists now.
+    enqueueSheetsSync(task.id, 'upsert');
+
     const dto: TaskDto = toTaskDto(task);
     return reply.code(201).send({ task: dto, announced });
   });
@@ -349,6 +417,99 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     const lineUid = request.authUser!.lineUserId;
     const tasks = await listTasksForUser(app.supabase, lineUid);
     return { tasks: tasks.map(toTaskDto), viewerLineUid: lineUid };
+  });
+
+  // ---- GET /tasks/export — .xlsx of everything the caller can see ----
+  // Static path, so Fastify matches it ahead of `/tasks/:id`. Scoped by
+  // listTasksForUser (creator OR assignee), so it can never export a task the
+  // caller has no stake in — the filters below only NARROW that set.
+  //
+  // Streams the workbook straight back as a buffer; nothing is written to disk
+  // (rule 3's spirit — and there is nothing to clean up if the client aborts).
+  // Building a workbook is CPU work, so it gets a tighter per-IP cap.
+  app.get('/tasks/export', {
+    preHandler: app.authenticate,
+    config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
+  }, async (request, reply) => {
+    const parsed = exportQuerySchema.safeParse(request.query);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid query', issues: parsed.error.issues });
+    }
+    const { from, to, status } = parsed.data;
+    const lineUid = request.authUser!.lineUserId;
+    const tasks = await listTasksForUser(app.supabase, lineUid, EXPORT_TASK_CAP);
+
+    // Resolve every line_uid that appears as a CREATOR. Assignees already carry
+    // a display-name snapshot on their own rows; creators don't, so they're
+    // looked up in users + group_members (either can know the name — a creator
+    // may have logged into the web but never been synced into a roster, or the
+    // other way round).
+    const creatorUids = [...new Set(tasks.map((t) => t.created_by_line_uid))];
+    const nameByUid = new Map<string, string>();
+    if (creatorUids.length > 0) {
+      const [{ data: userRows }, { data: memberRows }] = await Promise.all([
+        app.supabase.from('users').select('line_user_id, display_name').in('line_user_id', creatorUids),
+        app.supabase.from('group_members').select('line_uid, display_name').in('line_uid', creatorUids),
+      ]);
+      for (const row of (memberRows ?? []) as { line_uid: string; display_name: string | null }[]) {
+        if (row.display_name) nameByUid.set(row.line_uid, row.display_name);
+      }
+      // users wins on conflict — it's the name the person set on their account.
+      for (const row of (userRows ?? []) as { line_user_id: string; display_name: string | null }[]) {
+        if (row.display_name) nameByUid.set(row.line_user_id, row.display_name);
+      }
+    }
+
+    const fromMs = from ? new Date(`${from}T00:00:00+07:00`).getTime() : null;
+    // `to` is INCLUSIVE of its whole Bangkok day — a user picking 22/07 means
+    // "up to the end of the 22nd", not "up to 00:00 on the 22nd".
+    const toMs = to ? new Date(`${to}T23:59:59.999+07:00`).getTime() : null;
+
+    const rows: TaskExportRow[] = [];
+    for (const task of tasks) {
+      for (const item of task.items) {
+        if (status !== 'all' && item.status !== status) continue;
+
+        const deadline = effectiveDeadline(task, item);
+        // Range filter: on the deadline when there is one, else on created_at.
+        // Falling back keeps deadline-less rows (a recurring round mid-reset)
+        // from silently vanishing from a dated report.
+        const whenMs = new Date(deadline ?? task.created_at).getTime();
+        if (fromMs !== null && whenMs < fromMs) continue;
+        if (toMs !== null && whenMs > toMs) continue;
+
+        rows.push({
+          title: task.type === 'multi' ? `${task.title} — ${item.title}` : task.title,
+          description: item.description,
+          type: task.type,
+          deadline,
+          createdBy: nameByUid.get(task.created_by_line_uid) ?? 'ไม่ทราบชื่อ',
+          assignees: item.assignees.map((a) => a.display_name || 'สมาชิก'),
+          status: item.status,
+          createdAt: task.created_at,
+          updatedAt: resolveUpdatedAt(item),
+        });
+      }
+    }
+
+    const buffer = await exportTasksToExcel(rows);
+    void logEvent(app.supabase, {
+      eventType: 'task_export',
+      userId: request.authUser!.userId,
+      source: 'web',
+      metadata: { rows: rows.length, filtered: status !== 'all' || from != null || to != null },
+    });
+
+    return reply
+      .header(
+        'Content-Type',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      )
+      .header('Content-Disposition', `attachment; filename="${exportFilename()}"`)
+      .header('Content-Length', buffer.length)
+      .header('Cache-Control', 'no-store')
+      .header('X-Robots-Tag', 'noindex')
+      .send(buffer);
   });
 
   // ---- GET /tasks/:id — detail (group member / creator / assignee only) ----
@@ -581,6 +742,166 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       return { task: toTaskDto(updated), taskDone };
+    },
+  );
+
+  // ---- review loop: submit → approve / reject (migration 045) ----
+  //
+  // Deliberately NOT routed through BullMQ. Every notification here is a single
+  // best-effort push fired from an HTTP route the user is waiting on — exactly
+  // what POST /tasks (announce) and DELETE /tasks/:id (cancel notice) already
+  // do. A queue would buy retry for a message whose whole value is immediacy,
+  // at the cost of a new job type + worker branch. The scheduled reminders stay
+  // on the queue, where the delay is the point.
+  //
+  // Personal tasks skip the push entirely (same rule as announce/cancel): the
+  // only recipient would be the person who just pressed the button.
+  async function notifyTaskChat(
+    task: TaskWithDetails,
+    text: string,
+    context: string,
+  ): Promise<void> {
+    const to = task.is_personal ? null : notifyTarget(task);
+    if (!to) return;
+    try {
+      await pushMessage(to, [{ type: 'text', text }]);
+    } catch (err) {
+      app.log.error({ err, taskId: task.id, context }, 'task review push failed');
+    }
+  }
+
+  // ---- POST /tasks/:id/items/:itemId/submit — assignee sends work back for review ----
+  app.post<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId/submit',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const parsed = submitSchema.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+      if (item.status === 'done' || item.status === 'cancelled') {
+        return reply.code(409).send({ error: 'ข้อนี้จบไปแล้วน้า' });
+      }
+
+      const lineUid = request.authUser!.lineUserId;
+      const me = item.assignees.find((a) => a.line_uid === lineUid);
+      if (!me) return reply.code(403).send({ error: 'ข้อนี้ไม่ได้มอบหมายให้เราน้า' });
+
+      const note = parsed.data.note ? parsed.data.note : null;
+      await submitTaskItem(app.supabase, item.id, note);
+      // The submitter's own note also lands on their assignee row so the
+      // existing per-person note UI keeps showing something sensible.
+      if (note) await setDoneNote(app.supabase, item.id, lineUid, note);
+
+      const who = me.display_name || 'สมาชิก';
+      const what = task.type === 'single' ? task.title : `${task.title} — ${item.title}`;
+      await notifyTaskChat(task, `${who} ส่งงาน "${what}" กลับมาแล้วน้า รอคนสั่งตรวจอยู่`, 'submit');
+
+      void logEvent(app.supabase, {
+        eventType: 'task_mark_done',
+        userId: request.authUser!.userId,
+        spaceId: task.space_id,
+        source: 'web',
+        metadata: { task_type: task.type, submitted: true },
+      });
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated) };
+    },
+  );
+
+  // ---- POST /tasks/:id/items/:itemId/approve — creator accepts the submission ----
+  app.post<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId/approve',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      if (task.created_by_line_uid !== request.authUser!.lineUserId) {
+        return reply.code(403).send({ error: 'เฉพาะคนสั่งงานเท่านั้นที่รับงานได้น้า' });
+      }
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+      if (item.status !== 'submitted') {
+        return reply.code(409).send({ error: 'ข้อนี้ยังไม่ได้ส่งงานกลับมาน้า' });
+      }
+
+      // Approval is expressed as done-marks so rollUpCompletion — the single
+      // owner of item/task status — takes it from here.
+      await markAllAssigneesDone(app.supabase, item.id);
+      const { taskDone } = await rollUpCompletion(app.supabase, task.id);
+      if (taskDone) await cancelReminders(app.supabase, task);
+
+      const what = task.type === 'single' ? task.title : `${task.title} — ${item.title}`;
+      await notifyTaskChat(task, `งาน "${what}" ผ่านแล้วน้า ขอบคุณมากน้า`, 'approve');
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated), taskDone };
+    },
+  );
+
+  // ---- POST /tasks/:id/items/:itemId/reject — creator sends it back with a reason ----
+  app.post<{ Params: { id: string; itemId: string } }>(
+    '/tasks/:id/items/:itemId/reject',
+    { preHandler: app.authenticate },
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      const itemParsed = z.string().uuid().safeParse(request.params.itemId);
+      if (!idParsed.success || !itemParsed.success) {
+        return reply.code(400).send({ error: 'Invalid id' });
+      }
+      const parsed = rejectSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'ใส่เหตุผลที่ตีกลับด้วยน้า', issues: parsed.error.issues });
+      }
+
+      const task = await getTaskWithDetails(app.supabase, idParsed.data);
+      if (!task) return reply.code(404).send({ error: 'Task not found' });
+      if (task.created_by_line_uid !== request.authUser!.lineUserId) {
+        return reply.code(403).send({ error: 'เฉพาะคนสั่งงานเท่านั้นที่ตีกลับได้น้า' });
+      }
+      if (task.status === 'cancelled') {
+        return reply.code(409).send({ error: 'งานนี้ถูกยกเลิกไปแล้วน้า' });
+      }
+      const item = task.items.find((i) => i.id === itemParsed.data);
+      if (!item) return reply.code(404).send({ error: 'Task item not found' });
+      if (item.status !== 'submitted') {
+        return reply.code(409).send({ error: 'ข้อนี้ยังไม่ได้ส่งงานกลับมาน้า' });
+      }
+
+      await rejectTaskItem(app.supabase, item.id, parsed.data.note);
+
+      const what = task.type === 'single' ? task.title : `${task.title} — ${item.title}`;
+      await notifyTaskChat(
+        task,
+        `งาน "${what}" ถูกตีกลับน้า\nเหตุผล: ${parsed.data.note}`,
+        'reject',
+      );
+
+      const updated = (await getTaskWithDetails(app.supabase, task.id))!;
+      return { task: toTaskDto(updated) };
     },
   );
 

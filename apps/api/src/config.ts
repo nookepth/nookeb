@@ -161,6 +161,16 @@ const envSchema = z.object({
   // Soft-deleted vault files are hard-purged (R2 object + DB row) after N days.
   VAULT_PURGE_RETENTION_DAYS: z.coerce.number().int().positive().default(30),
 
+  // Google Sheets sync (migration 046) — OAuth client from Google Cloud Console
+  // with the Sheets + Drive-file scopes enabled. The feature is DISABLED (routes
+  // reply 503, the sync job no-ops) until BOTH are set; it ALSO needs
+  // VAULT_MASTER_KEY, which is what encrypts the stored refresh token — the
+  // deliberate lesson from migration 002/017, where plaintext tokens got the
+  // whole table dropped. Authorized redirect URI in the console must be exactly
+  // `${APP_URL}/integrations/google/callback`.
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+
   // Storage warning thresholds (% of the uploader's storage_limit)
   STORAGE_WARN_THRESHOLD_LOW: z.coerce.number().int().min(1).max(100).default(80),
   STORAGE_WARN_THRESHOLD_HIGH: z.coerce.number().int().min(1).max(100).default(95),

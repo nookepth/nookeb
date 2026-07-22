@@ -6,7 +6,10 @@ import {
   type SpaceRecord,
   type SpaceRole,
 } from '@nookeb/shared';
+import { z } from 'zod';
 import { getMemberRole } from '../services/space.service';
+import { ensureGroupMember, isGroupMember } from '../services/task.service';
+import { getTeamRoom } from '../services/team-room.service';
 
 // Team creation / invites / joins moved to /api/teams (see team.router.ts).
 // This module keeps only the read endpoints the dashboard still uses to list
@@ -115,6 +118,75 @@ const spacesRoutes: FastifyPluginAsync = async (app) => {
     }));
     return { members };
   });
+
+  // ---- GET /spaces/:id/tasks — ห้องทีม: every task in the space's LINE group ----
+  //
+  // Why this lives on the SPACE and not the group: the team room is the file
+  // space's companion view, and a space id is what the dashboard and the welcome
+  // card already have. Tasks are keyed by `group_line_id` (never space_id — that
+  // column is informational, see migration 036), so the space's `line_group_id`
+  // is the bridge. A personal space has none → 404, which is correct: there is
+  // no "team room" for a space with no group behind it.
+  //
+  // Access, in order of strength:
+  //  1. `?groupId=` matching the space's own line_group_id — the same
+  //     unguessable-group-id capability the สร้างงาน card already relies on, so
+  //     it enrolls the caller (ensureGroupMember). Holding it already grants
+  //     task creation in that group today; this widens nothing.
+  //  2. an EXISTING roster row (read-only, no enrolment), or space membership.
+  // Without the group id, a leaked space id alone reveals nothing.
+  app.get<{ Params: { id: string }; Querystring: { groupId?: string } }>(
+    '/spaces/:id/tasks',
+    async (request, reply) => {
+      const idParsed = z.string().uuid().safeParse(request.params.id);
+      if (!idParsed.success) return reply.code(400).send({ error: 'Invalid space id' });
+
+      const { data: space, error } = await app.supabase
+        .from('spaces')
+        .select('id, name, type, line_group_id, team_id')
+        .eq('id', idParsed.data)
+        .maybeSingle();
+      if (error) throw error;
+      if (!space) return reply.code(404).send({ error: 'Space not found' });
+
+      const row = space as {
+        id: string;
+        name: string;
+        type: string;
+        line_group_id: string | null;
+        team_id: string | null;
+      };
+      if (!row.line_group_id) {
+        return reply.code(404).send({
+          error: 'ห้องนี้ยังไม่ได้ผูกกับกลุ่ม LINE น้า',
+          code: 'NOT_A_GROUP_SPACE',
+        });
+      }
+
+      const lineUid = request.authUser!.lineUserId;
+      const userId = request.authUser!.userId;
+      const claimedGroupId = request.query.groupId;
+
+      let allowed = false;
+      if (claimedGroupId && claimedGroupId === row.line_group_id) {
+        // Capability path — enrolls, exactly like opening the create flow.
+        allowed = await ensureGroupMember(app.supabase, row.line_group_id, lineUid);
+      } else {
+        allowed =
+          (await isGroupMember(app.supabase, row.line_group_id, lineUid)) ||
+          Boolean(await getMemberRole(app.supabase, row.id, userId));
+      }
+      if (!allowed) {
+        return reply.code(403).send({
+          error: 'ยังไม่เห็นเราในกลุ่มนี้เลยน้า ลองส่งข้อความในกลุ่มแล้วเปิดใหม่อีกที',
+          code: 'NOT_REGISTERED',
+        });
+      }
+
+      const room = await getTeamRoom(app.supabase, app.redis, row.line_group_id);
+      return { ...room, viewerLineUid: lineUid };
+    },
+  );
 };
 
 export default spacesRoutes;

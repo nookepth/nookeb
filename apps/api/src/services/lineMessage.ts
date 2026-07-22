@@ -235,6 +235,93 @@ export function buildCreateTaskCard(
   };
 }
 
+/**
+ * ห้องทีม entry card — replied when the bot joins a group, and whenever someone
+ * types "หนูเก็บห้องทีม".
+ *
+ * The link carries `?groupId=` and NOT a space id: a `join` event fires before
+ * any file space exists for the group (and carries no user id to create one
+ * with), so a space-keyed link would be dead in exactly the chat this card
+ * greets. Same unguessable-group-id capability as the สร้างงาน card — the API
+ * re-verifies membership on every call.
+ *
+ * NO emoji (brand rule) — the stat rows use native colored dots.
+ */
+export function buildTeamRoomCard(liffId: string | undefined, groupId: string): FlexMessage {
+  const q = `?groupId=${encodeURIComponent(groupId)}`;
+  const roomUrl = liffId
+    ? `https://liff.line.me/${liffId}/team${q}`
+    : `${config.WEB_URL}/liff/tasks/team${q}`;
+  const createUrl = liffId
+    ? `https://liff.line.me/${liffId}/create${q}`
+    : `${config.WEB_URL}/liff/tasks/create${q}`;
+
+  const bullet = (text: string): Record<string, unknown> => ({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    alignItems: 'center',
+    contents: [
+      dot(BRAND_RED),
+      { type: 'text', text, size: 'sm', color: INK, wrap: true, flex: 1 },
+    ],
+  });
+
+  return {
+    type: 'flex',
+    altText: 'เปิดห้องทีม',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: BRAND_RED,
+        paddingAll: '16px',
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: 'หนูเก็บพร้อมช่วยงานทีมแล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: 'เปิดห้องทีมเพื่อดูงานของกลุ่มนี้ทั้งหมด', size: 'xs', color: '#FFFFFFCC', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        paddingAll: '16px',
+        spacing: 'md',
+        contents: [
+          bullet('ดูงานทั้งหมดของทีม ใครทำอะไรค้างอยู่'),
+          bullet('สั่งงาน มอบหมาย แนบไฟล์ ได้ในที่เดียว'),
+          bullet('ส่งไฟล์เข้ากลุ่ม หนูเก็บให้อัตโนมัติ'),
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: BRAND_RED,
+            action: { type: 'uri', label: 'เปิดห้องทีม', uri: roomUrl },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: { type: 'uri', label: 'สร้างงานใหม่', uri: createUrl },
+          },
+        ],
+      },
+    },
+  };
+}
+
 /** Flex pushed into the group right after a task is created from LIFF. */
 export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
   const deadlineText = task.global_deadline

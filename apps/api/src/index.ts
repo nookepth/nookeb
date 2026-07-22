@@ -25,9 +25,11 @@ import diaryRoutes from './routes/diary';
 import vaultRoutes from './routes/vault';
 import legacyBoxRoutes from './routes/legacy-box';
 import tasksRoutes from './routes/tasks';
+import taskFilesRoutes from './routes/task-files';
 import groupsRoutes from './routes/groups';
 import proInterestRoutes from './routes/pro-interest';
 import eventsRoutes from './routes/events';
+import integrationsRoutes from './routes/integrations';
 import staticRoutes from './routes/static';
 import { flushAll } from './services/upload-queue';
 
@@ -151,9 +153,13 @@ async function main(): Promise<void> {
   await app.register(vaultRoutes);
   await app.register(legacyBoxRoutes);
   await app.register(tasksRoutes);
+  // Own scope: it registers @fastify/multipart, which would otherwise install a
+  // content-type parser across every route sharing tasksRoutes' scope.
+  await app.register(taskFilesRoutes);
   await app.register(groupsRoutes);
   await app.register(proInterestRoutes);
   await app.register(eventsRoutes);
+  await app.register(integrationsRoutes);
   await app.register(staticRoutes);
 
   await app.listen({ port: config.PORT, host: '0.0.0.0' });

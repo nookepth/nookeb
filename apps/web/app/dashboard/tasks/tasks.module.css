@@ -1605,6 +1605,33 @@
   align-items: center;
   flex-shrink: 0;
 }
+/* Export to .xlsx — white with a brand-red outline, filling in on hover so it
+   reads as an action without competing with the primary buttons. */
+.exportBtn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #b53a32;
+  background: #fff;
+  color: #b53a32;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.exportBtn:hover:not(:disabled) {
+  background: #b53a32;
+  color: #fff;
+}
+.exportBtn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
 .sortIcon {
   position: absolute;
   left: 9px;

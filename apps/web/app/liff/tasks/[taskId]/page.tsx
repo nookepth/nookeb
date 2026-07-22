@@ -21,6 +21,7 @@ import {
 } from '../components';
 import { ProFeatureSection } from '../ProFeatureSection';
 import { trackEvent } from '../../../../lib/track';
+import { listTaskFiles, type TaskFileDto } from '../../../../lib/taskFiles';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface AssigneeDto {
@@ -40,6 +41,11 @@ interface ItemDto {
   deadline: string | null;
   status: string;
   assignees: AssigneeDto[];
+  /** review loop (migration 045) */
+  submittedAt: string | null;
+  rejectedAt: string | null;
+  rejectionNote: string | null;
+  submissionNote: string | null;
 }
 
 interface LinkDto {
@@ -101,7 +107,16 @@ const ITEM_STATUS_PILL: Record<string, { label: string; bg: string; fg: string }
   in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
   done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
   cancelled: { label: 'ยกเลิก', bg: '#f3f4f6', fg: '#6b7280' },
+  // review loop (migration 045) — blue = waiting on the creator, red = sent back
+  submitted: { label: 'รอตรวจ', bg: '#dbeafe', fg: '#1d4ed8' },
+  rejected: { label: 'ตีกลับ', bg: '#fee2e2', fg: '#b91c1c' },
 };
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
 
 /** ISO → 'YYYY-MM-DDTHH:mm' local, for <input type="datetime-local">. */
 function toLocalInput(iso: string | null): string {
@@ -155,6 +170,12 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
   const [assigneeItemId, setAssigneeItemId] = useState<string | null>(null);
   const [roster, setRoster] = useState<GroupMemberDto[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
+  // attachments — fetched separately from the task payload because their
+  // download links are presigned per read (the task DTO carries url: null)
+  const [attachments, setAttachments] = useState<TaskFileDto[]>([]);
+  // ตีกลับ sheet
+  const [rejectItemId, setRejectItemId] = useState<string | null>(null);
+  const [rejectNote, setRejectNote] = useState('');
 
   function showToast(msg: string) {
     setToast(msg);
@@ -177,6 +198,8 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     setTask(body.task);
     setViewerUid(body.viewerLineUid);
     setState('ready');
+    // Best-effort: the task renders fine without its attachment links.
+    void listTaskFiles(params.taskId).then(setAttachments).catch(() => {});
     trackEvent('task_view', { task_type: body.task.type });
     if (body.task.type === 'recurring') trackEvent('task_repeat_view');
   }, [params.taskId]);
@@ -404,6 +427,24 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
       showToast('โหลดรายชื่อสมาชิกไม่สำเร็จน้า');
     }
   };
+  // ---- review loop (migration 045) ----
+  const doApprove = (item: ItemDto) =>
+    mutate(`/items/${item.id}/approve`, { method: 'POST' }, 'รับงานแล้วน้า');
+  const doReject = async () => {
+    if (!rejectItemId) return;
+    const note = rejectNote.trim();
+    if (!note) return showToast('ใส่เหตุผลที่ตีกลับด้วยน้า');
+    const ok = await mutate(
+      `/items/${rejectItemId}/reject`,
+      { method: 'POST', body: JSON.stringify({ note }) },
+      'ตีกลับแล้วน้า',
+    );
+    if (ok) {
+      setRejectItemId(null);
+      setRejectNote('');
+    }
+  };
+
   const saveAssignees = async () => {
     if (!assigneeItemId) return;
     if (picked.size === 0) return showToast('ต้องมีผู้รับผิดชอบอย่างน้อย 1 คนน้า');
@@ -584,6 +625,52 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
         )}
       </section>
 
+      {/* attachments (migration 045). Links are presigned per read, so this list
+          comes from GET /tasks/:id/files, not the task payload. */}
+      {attachments.length > 0 && (
+        <section className={styles.section}>
+          <p className={styles.sectionLabel}>ไฟล์ที่แนบ ({attachments.length})</p>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {attachments.map((f) => (
+              <a
+                key={f.id}
+                className={styles.card}
+                href={f.url ?? undefined}
+                target="_blank"
+                rel="noreferrer"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                  padding: '10px 12px',
+                  textDecoration: 'none',
+                  opacity: f.url ? 1 : 0.5,
+                }}
+              >
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <p
+                    style={{
+                      margin: 0,
+                      fontSize: 14,
+                      color: '#1971c2',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    {f.name}
+                  </p>
+                  <p style={{ margin: '2px 0 0', fontSize: 12, color: '#8c8c8c' }}>
+                    {formatBytes(f.size)}
+                    {f.kind === 'submission' ? ' · ไฟล์ที่ส่งกลับ' : ''}
+                  </p>
+                </div>
+              </a>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* items */}
       <section className={styles.section}>
         <p className={styles.sectionLabel}>รายการงาน</p>
@@ -648,6 +735,62 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                   </div>
                 )}
 
+                {/* ส่งงานกลับแล้ว — the creator's accept / send-back controls */}
+                {item.status === 'submitted' && (
+                  <div
+                    className={styles.card}
+                    style={{ width: '100%', background: '#eff6ff', borderColor: '#bfdbfe' }}
+                  >
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#1d4ed8' }}>
+                      {item.assignees.map((a) => a.displayName || 'สมาชิก').join(', ')} ส่งงานกลับแล้ว
+                    </p>
+                    {item.submissionNote && (
+                      <p style={{ margin: '6px 0 0', fontSize: 13, color: '#555', whiteSpace: 'pre-wrap' }}>
+                        {item.submissionNote}
+                      </p>
+                    )}
+                    {isCreator && !isClosed && (
+                      <div style={{ display: 'flex', gap: 10, marginTop: 10 }}>
+                        <button
+                          type="button"
+                          className={styles.doneBtn}
+                          onClick={() => void doApprove(item)}
+                          disabled={busy}
+                        >
+                          รับงาน
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.ghostBtn}
+                          style={{ color: '#b91c1c', borderColor: '#e5b3b0' }}
+                          onClick={() => {
+                            setRejectNote('');
+                            setRejectItemId(item.id);
+                          }}
+                          disabled={busy}
+                        >
+                          ตีกลับ
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ถูกตีกลับ — the reason, shown to everyone on the item */}
+                {item.status === 'rejected' && item.rejectionNote && (
+                  <div
+                    className={styles.card}
+                    style={{ width: '100%', background: '#fef2f2', borderColor: '#fecaca' }}
+                  >
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#b91c1c' }}>
+                      ตีกลับให้แก้
+                    </p>
+                    <p style={{ margin: '6px 0 0', fontSize: 13, color: '#555', whiteSpace: 'pre-wrap' }}>
+                      {item.rejectionNote}
+                    </p>
+                  </div>
+                )}
+
                 {/* per-assignee status + notes */}
                 <div style={{ marginTop: 10, width: '100%' }}>
                   {item.assignees.map((a) => {
@@ -686,7 +829,9 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 </div>
 
                 {/* viewer controls */}
-                {mine && !isClosed && !myDone && (
+                {/* An item awaiting review shows no assignee controls — the ball
+                    is in the creator's court until they accept or send it back. */}
+                {mine && !isClosed && !myDone && item.status !== 'submitted' && (
                   <div style={{ marginTop: 10, width: '100%' }}>
                     <textarea
                       className={styles.textarea}
@@ -711,6 +856,22 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                         </button>
                       )}
                     </div>
+                    {/* ส่งงานกลับ = the reviewed path (files + note → creator
+                        accepts or sends back). "เสร็จแล้ว" above stays the quick
+                        path for work that needs no review. */}
+                    <a
+                      className={styles.secondaryBtn}
+                      href={`/liff/tasks/${task.id}/submit?item=${item.id}`}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        marginTop: 8,
+                        textDecoration: 'none',
+                      }}
+                    >
+                      ส่งงานกลับ (แนบไฟล์) →
+                    </a>
                   </div>
                 )}
 
@@ -874,6 +1035,42 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
                 ใช้ของงาน (ล้างกำหนดของข้อนี้)
               </button>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ตีกลับ sheet — a reason is mandatory (the API rejects an empty note):
+          sending work back without saying why just restarts the same guess. */}
+      {rejectItemId && (
+        <div className={styles.sheetOverlay} onClick={() => setRejectItemId(null)}>
+          <div className={styles.sheet} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.sheetHandle} />
+            <p className={styles.sectionLabel}>ตีกลับเพราะอะไรน้า</p>
+            <textarea
+              className={styles.textarea}
+              style={{ minHeight: 100 }}
+              placeholder="เช่น ยอดหน้า 2 ยังไม่ตรง ช่วยเช็คอีกทีน้า"
+              value={rejectNote}
+              maxLength={500}
+              onChange={(e) => setRejectNote(e.target.value)}
+            />
+            <button
+              type="button"
+              className={styles.primaryBtn}
+              style={{ marginTop: 16 }}
+              onClick={() => void doReject()}
+              disabled={busy || !rejectNote.trim()}
+            >
+              ตีกลับให้แก้
+            </button>
+            <button
+              type="button"
+              className={styles.ghostBtn}
+              style={{ marginTop: 10 }}
+              onClick={() => setRejectItemId(null)}
+            >
+              ยกเลิก
+            </button>
           </div>
         </div>
       )}

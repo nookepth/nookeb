@@ -6,6 +6,7 @@ import type { TaskDto, TaskItemDto, UserDto } from '@nookeb/shared';
 import {
   ApiError,
   cancelTask,
+  exportTasksXlsx,
   getMe,
   hasSession,
   listMyTasks,
@@ -241,6 +242,7 @@ export default function TasksPage() {
   const [search, setSearch] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok?: boolean } | null>(null);
+  const [exporting, setExporting] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -267,6 +269,29 @@ export default function TasksPage() {
     setFocusCollapsed(loadCollapsed('focus'));
     setFeedCollapsed(loadCollapsed('feed'));
   }, []);
+
+  /**
+   * Export every task the user can see — deliberately NOT the current
+   * tab/filter selection. Those are browsing aids (scope chips, an "เกินกำหนด"
+   * tab); a downloaded report that silently omitted rows because a chip was
+   * active is the kind of thing people only notice after they've sent it on.
+   */
+  async function handleExport(): Promise<void> {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      await exportTasksXlsx();
+      showToast('ดาวน์โหลดไฟล์ Excel แล้วน้า', true);
+    } catch (err) {
+      showToast(
+        err instanceof ApiError && err.status === 401
+          ? 'เซสชันหมดอายุ ลองเข้าสู่ระบบใหม่น้า'
+          : 'สร้างไฟล์ Excel ไม่สำเร็จ ลองใหม่อีกทีน้า',
+      );
+    } finally {
+      setExporting(false);
+    }
+  }
 
   function showToast(msg: string, ok = false): void {
     if (toastTimer.current) clearTimeout(toastTimer.current);
@@ -692,7 +717,14 @@ export default function TasksPage() {
                     </button>
                   </div>
                 </div>
-                <FilterSortBar filter={filter} sort={sort} onFilter={changeFilter} onSort={changeSort} />
+                <FilterSortBar
+                  filter={filter}
+                  sort={sort}
+                  onFilter={changeFilter}
+                  onSort={changeSort}
+                  onExport={() => void handleExport()}
+                  exporting={exporting}
+                />
                 <div className={styles.tabs} role="tablist">
                   {TABS.map((t) => (
                     <button

@@ -5,8 +5,10 @@ LINE-integrated file archiving SaaS. Users send files via LINE OA → stored per
 in Cloudflare R2 → accessible via Next.js Web Dashboard. Supports folders/tags/search,
 multi-page scan-to-PDF, LINE group shared spaces, team invites, image OCR, storage
 quota + analytics, and an admin panel. A public SEO landing page lives at `/` (see
-`apps/web` below). (Google Drive export was removed — see migration 017; rebuild
-securely later if ever needed.)
+`apps/web` below). (Google Drive EXPORT was removed — see migration 017. The
+Google integration that exists today is Sheets sync for ระบบตามงาน, migration 046:
+`drive.file` scope only, refresh token encrypted — the "rebuilt securely" of that
+note, not a revival of the old Drive feature.)
 
 ## Tech Stack (FIXED — do not change without asking)
 - API: Node.js + TypeScript + Fastify 4.x
@@ -177,6 +179,9 @@ If replyToken is expired or missing:
   (หนูเก็บแปลงไฟล์ / หนูเก็บสแกนสี / หนูเก็บรวมรูป / หนูเก็บรวมไฟล์). Distinct from `หนูเก็บฟีเจอร์`
   (the full feature pick, 1-on-1 only) and matched BEFORE it — `isCmd` is exact,
   so the two never shadow each other. Works in groups too.
+- `หนูเก็บห้องทีม` — group/room only: replies the ห้องทีม card (เปิดห้องทีม /
+  สร้างงานใหม่). In a 1-on-1 DM it explains there is no room and points at
+  งานส่วนตัว. The same card is auto-replied when the bot JOINS a group.
 - `สร้างงาน` — opens the ระบบตามงาน LIFF create flow. In a group/room it carries
   that chat's id; in a 1-on-1 DM it opens งานส่วนตัว instead (migration 043 — see
   the Personal Task section). Unprefixed by design, matched BEFORE the group
@@ -441,6 +446,133 @@ sanctioned exception to the reply-only rule (see LINE Messaging section).
   for recurring) — UNAUTHENTICATED by design (the Flex button opens an external
   browser with no cookie): task UUID is the capability, own 30/min per-IP
   limit, noindex + no-store. No Google OAuth, ever — ICS only.
+- Attachments + review loop (migration 045, `routes/task-files.ts` — its own
+  plugin scope because it registers `@fastify/multipart`, which would otherwise
+  install a content-type parser across everything sharing `tasks.ts`'s scope):
+  `POST/GET/DELETE /tasks/:taskId/files`. Upload is multipart THROUGH the API —
+  deliberately NO presigned PUT (same lesson as the legacy-box voice clip: a
+  presigned PUT lands bytes the API never sees, so the 20 MB cap and the quota
+  charge would both be advisory). Rule 3 still holds (streamed straight to R2)
+  and downloads DO use presigned GETs (rule 5). Caps: 5 ไฟล์/ครั้ง, 20 MB/ไฟล์,
+  30 ไฟล์/งาน. The bytes live in a NORMAL `files` row (space, ledger,
+  soft-delete all behave as usual): stored in the task's linked group space when
+  it has one, else the uploader's personal space, and ALWAYS charged to the
+  UPLOADER's personal pool (`charged_to` keeps its default) — enforced AFTER the
+  stream is counted, so an over-quota file is removed again rather than kept.
+  Detach = delete the junction row + SOFT-delete the file + refund the uploader
+  once (affected-rows guard). `task_files.kind` separates 'brief' (คนสั่งแนบ)
+  from 'submission' (ส่งกลับ).
+- Review loop: `POST …/items/:itemId/submit` (assignee, item → 'submitted') →
+  `…/approve` (creator; expressed as done-marks on every assignee so
+  `rollUpCompletion` stays the single owner of item/task status) or `…/reject`
+  (creator, reason MANDATORY → 'rejected'). Submitting deliberately does NOT
+  stamp `done_at` — otherwise "ส่งงานกลับ" would be a self-approval. All three
+  fire ONE best-effort inline push (same class as the create announcement, NOT
+  the queue: the value is immediacy, and `TASK_NOTIFICATIONS_ENABLED` gates
+  scheduled reminders only); personal tasks skip it, since the only recipient
+  would be the person who pressed the button. `resetRecurringRound` clears the
+  review fields so a new round starts clean.
+- LIFF: `FileAttach.tsx` (picker only — never uploads; the parent owns the
+  upload because the task must exist first) + `lib/taskFiles.ts` (one request
+  PER FILE, so a dropped mobile upload costs one file, not the batch) +
+  `[taskId]/submit/page.tsx` (ส่งงานกลับ: files upload FIRST, then the status
+  flip — the creator must never see "รอตรวจ" on evidence still in flight).
+- Excel export: `GET /tasks/export?format=xlsx&from&to&status` → .xlsx built by
+  `services/export.service.ts` (pure/env-free, unit-tested — same shape as
+  docx-builder/pdf-merge; `exceljs`, the only chart/spreadsheet lib in the repo).
+  Scoped by `listTasksForUser`, so it can only ever contain tasks the caller
+  created or is assigned to; the filters NARROW that set, never widen it. ONE
+  ROW PER ITEM (a multi task's per-item assignee/deadline/status is the whole
+  point of the report). Style: header `#B91C1C` + white bold + frozen row 1 +
+  auto-filter, zebra `#F9FAFB` on alternate DATA rows, Calibri 11.
+  **Dates are written +07:00-shifted on purpose**: Excel renders a serial with
+  no timezone while exceljs serialises a Date from its UTC parts, so the raw
+  instant would show a 09:00 Bangkok deadline as 02:00 — the shift keeps them
+  real (sortable/filterable) date cells reading Bangkok wall clock. There is no
+  `updated_at` column on tasks/task_items; "อัปเดตล่าสุด" is DERIVED from the
+  existing stamps (`resolveUpdatedAt` in routes/tasks.ts) rather than adding a
+  column every write path would have to remember to touch. Web: the Export
+  button lives in `dashboard/tasks/FilterSortBar.tsx` and exports EVERYTHING —
+  never the active tab/chip, so a shared report can't silently omit rows.
+- ห้องทีม (Team Room) — the group-scoped task view. **Tenant key is
+  `group_line_id`, NOT `space_id`**: tasks have always been stored against the
+  LINE group (`tasks.space_id` is informational, migration 036) and a group is
+  often active before any space exists (a space is created on the first stored
+  FILE, and the `join` event that greets a new group carries no user id to
+  create one with). So `services/team-room.service.ts` `getTeamRoom()` is
+  group-keyed and returns `space: null` when there isn't one yet. Two doors,
+  same room: `GET /groups/:groupId/room` (capability — the card's entry point)
+  and `GET /spaces/:id/tasks` (dashboard side; maps space → `line_group_id`,
+  404s `NOT_A_GROUP_SPACE` for a personal space, and accepts an optional
+  `?groupId=` to take the capability path). Access is never widened: without a
+  matching group id it needs an EXISTING roster row or space membership —
+  read-only, no enrolment. `listTasksForGroup` also filters `is_personal=false`
+  as defence in depth so a personal task can never surface in a group view.
+- LIFF page lives at `/liff/tasks/team` — **inside** the `/liff/tasks` subtree
+  on purpose: the LIFF app's endpoint URL is `${WEB_URL}/liff/tasks` and a
+  `https://liff.line.me/{id}/…` deep link resolves RELATIVE to it, so a
+  top-level `/liff/team-room` would be unreachable from LINE without
+  registering a second LIFF app. Identity comes from `?groupId=` (preferred) or
+  `?spaceId=`. Tabs: งานทั้งหมด/ของฉัน × กำลังดำเนินการ/เสร็จแล้ว/ยกเลิก.
+- Entry points: `หนูเก็บห้องทีม` (group/room only — a DM has no room; it points
+  the user at งานส่วนตัว instead), and the same card auto-replied on `join`.
+  The join card ships in the SAME reply as the onboarding carousel — a join
+  event grants exactly one replyToken and a follow-up push is forbidden
+  (the task-manager push exception covers announcements/reminders, not a
+  greeting). Builder: `buildTeamRoomCard` in `services/lineMessage.ts`.
+### Google Sheets sync — migration 046
+Each user connects THEIR OWN Google account and gets a spreadsheet they own,
+"หนูเก็บ — งานของฉัน", that mirrors their tasks. Free (Sheets API costs nothing).
+- **The token rule**: the refresh token is stored AES-256-GCM encrypted via
+  `vault-crypto`'s secret box (`deriveSecretKey`/`encryptSecret`) — a distinct
+  scrypt salt namespace from vault FILE keys, so neither key can open the
+  other's data, but the same `VAULT_MASTER_KEY`. The feature is therefore
+  dormant unless `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `VAULT_MASTER_KEY`
+  are all set (`isGoogleSheetsConfigured`). Do not re-introduce a plaintext
+  column (see migration 002/017).
+- **Scope is `drive.file`, never `drive`** — the app can only touch files it
+  created itself, so connecting can't expose the user's existing Drive.
+  `access_type: 'offline'` + `prompt: 'consent'` are BOTH required or Google
+  silently omits the refresh token on re-authorization.
+- **CSRF**: the OAuth `state` is a single-use Redis nonce bound to the caller's
+  user id and consumed with GETDEL; the callback also runs authenticated and
+  requires the nonce to match THAT user. Without the binding, anyone could
+  graft their Google account onto another user's account via a forged callback.
+- **Sync is ALWAYS queued, never inline** — own queue `nookeb-sheets-sync`
+  (`services/sheetsQueue.ts` + `workers/sheetsWorker.ts`), separate from files
+  and reminders so a Google outage backs up nowhere else. 3 attempts, 5-min
+  exponential backoff. jobId `sheets-{taskId}-{action}` collapses edit bursts
+  into one job (the handler always reads current state). Enqueued from ONE
+  `onResponse` hook in `routes/tasks.ts` covering every 2xx write on
+  `/tasks/:id…` (plus an explicit call on create, where the id doesn't exist
+  yet) — a new task route is covered automatically, because the failure mode of
+  per-route calls is a silently stale row.
+- **Failure policy** (the distinction that matters): no integration / not
+  configured / no task → complete silently (normal states, not errors); an AUTH
+  error → record `last_error` and complete, since retrying can't fix a revoked
+  grant and the dashboard tells the user to reconnect; anything else (5xx, rate
+  limit, network) → throw so BullMQ retries.
+- Sheet: ONE ROW PER TASK (unlike the .xlsx export's row-per-item) — the sheet
+  is a live mirror keyed by task id, and one row keeps "find the row, update it"
+  cheap. The sync key is a hidden last column `รหัสงาน`; it must live in the
+  SHEET, not our DB, because the user can sort/delete rows at will so any cached
+  row index would be wrong. Header `#B91C1C` + white bold + frozen + basic
+  filter; row fill by status (pending white / in_progress `#FEF9C3` / done
+  `#DCFCE7` / submitted `#DBEAFE` / rejected `#FEE2E2`); a cancelled/deleted task
+  is struck through + grey `#9CA3AF`, NEVER removed (audit trail). Font is Arial
+  — the Sheets API cannot install a custom font, so IBM Plex Sans Thai is only
+  reachable through the .xlsx export.
+- The sheet is created LAZILY on first sync (and re-created if the user deletes
+  it), so connecting costs zero API calls. Disconnect DELETES the credential row
+  outright — the one justified hard delete in this codebase: rule 6 protects the
+  user's content, while this row is a third-party credential with nothing to
+  restore. The user's Sheet and tasks are untouched.
+- Routes `routes/integrations.ts`: `GET /integrations/google` (status; never
+  returns the token) · `GET …/auth` (returns the consent URL as JSON — a 302
+  would be swallowed by the client's fetch) · `GET …/callback` (browser
+  redirect → `/dashboard/settings?google=…`) · `DELETE /integrations/google`.
+  Web: `/dashboard/settings`.
+
 - Rich menu: NOT touched (policy). The "สร้างงาน" entry point needs a rich-menu
   change → requires explicit approval + `setup-rich-menu-ab.ts` update; until
   then the LIFF URL is shared/pinned manually or opened from task cards.
@@ -481,7 +613,10 @@ personal task is just a `tasks` row in the other mode.
 
 ## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
-`add_scan_page` · `finalize_scan` · `convert_to_docx` (image/PDF → Mistral OCR → editable
+`add_scan_page` · `finalize_scan` (both branch on `scan_sessions.session_kind` — 'scan'
+enhances + embeds images, 'merge' embeds them as-is, 'pdf' stores each source PDF raw and
+concatenates them with `copyPages`; see the `หนูเก็บรวมไฟล์` command) · `convert_to_docx`
+(image/PDF → Mistral OCR → editable
 .docx; attempts: 3, retry-safe via a `docx-<lineMessageId>` line_message_id marker row —
 a failed store soft-deletes its row so the retry can re-insert) · `create_diary_entry`
 (ไดอารี่ photo → validate jpg/png/webp ≤10MB → R2 `diary/…` → `diary_entries` row +
@@ -623,6 +758,21 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     writes both columns). Safe to apply early: every existing row satisfies the
     CHECK, the new columns have defaults, and dropping NOT NULL only relaxes a
     constraint — the currently-deployed code keeps working either way.
+  - `046_google_sheets_integration.sql` — Google Sheets sync: `google_integrations`
+    (one row per user, UNIQUE user_id). `encrypted_token` holds the Google refresh
+    token as base64(iv||tag||ciphertext) — **never plaintext, not even temporarily
+    for debugging**: migration 002's `google_accounts` stored one in the clear and
+    017 dropped the table specifically for that. RLS enabled with no policies
+    (deny-all backstop — it holds a third-party credential). NOT auto-applied;
+    apply BEFORE the API deploy. Additive — either order is safe.
+  - `045_task_files.sql` — ระบบตามงาน แนบไฟล์ + วงจรส่งงานกลับ: `task_files`
+    (junction งาน↔`files`, ไม่ใช่ `files.task_id` — ไฟล์ใบเดียวผูกได้หลายงาน และ
+    `files` เป็นตารางร้อน) + สถานะระดับ "ข้อ" ใหม่ `submitted`/`rejected` (widens
+    the `task_items` status CHECK; `tasks.status` ไม่ถูกแตะ) + `submitted_at` /
+    `rejected_at` / `rejection_note` / `submission_note`. NOT auto-applied, and
+    the blast radius is WIDER than additive: `getTaskWithDetails()` now also
+    SELECTs `task_files` and it backs EVERY task read — deploying the code first
+    makes every task read throw. Apply 045, THEN deploy.
   - `044_pdf_merge_session_kind.sql` — ระบบรวมไฟล์ PDF: widens the
     `scan_sessions.session_kind` CHECK from ('scan','merge') to add 'pdf' (see the
     `หนูเก็บรวมไฟล์` command). No new table, no new column — the whole feature rides
@@ -673,8 +823,10 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     (Pro fake-door demand tests — anonymous gift-box `POST /api/pro-interest` +
     authenticated task `POST/GET /pro-interest`, see migration 040), `events`
     (`POST /api/events/track` — the ONE client-event ingest: whitelist + payload
-    sanitiser + server-derived `plan_tier`, feeds `usage_events`), `tasks`, `groups`
-    (ระบบตามงาน — see the Task Manager section), `static`
+    sanitiser + server-derived `plan_tier`, feeds `usage_events`), `integrations`
+    (Google OAuth connect/disconnect — see the Google Sheets section), `tasks`, `groups`,
+    `task-files` (ระบบตามงาน — see the Task Manager section; `task-files` owns the
+    only multipart scope outside the vault/legacy-box), `static`
   - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
     (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
     (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
@@ -688,13 +840,19 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     `pdf-merge` (PDF source validation + `copyPages` concatenation for ระบบรวมไฟล์ PDF —
     pure/env-free, unit-tested; distinct from `scan-enhance`'s `buildScanPdf`, which
     builds a PDF from IMAGES),
+    `export` (ระบบตามงาน → styled .xlsx via `exceljs` — pure/env-free, unit-tested),
+    `team-room` (ห้องทีม — group-keyed room payload shared by
+    `GET /groups/:id/room` and `GET /spaces/:id/tasks`; holds NO access check,
+    both callers gate first),
     `diary` (diary_entries data access + Bangkok-day/streak helpers), `diary-mode`
     (diary one-shot Redis flag; caption piggybacks on the flag value),
     `vault-crypto` (envelope encryption, pure/unit-tested), `vault-session`
     (Redis unlock sessions + per-user PIN lockout), `vault` (vault_files data
     access + view watermarking), `legacy-box` (legacy_boxes/photos data access +
     R2 key builder + DTO mapper)
-  - `src/workers/` — `upload.worker` (all job handlers), `index` (entry + repeatable schedule)
+  - `src/workers/` — `upload.worker` (all job handlers), `taskReminderWorker`,
+    `sheetsWorker` (Google Sheets sync — only started when the feature is
+    configured), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
   - `scripts/` — `setup-rich-menu-ab` (CURRENT: two-page A/B menu — see rich-menu policy
@@ -811,7 +969,12 @@ and `supabase/backfills/` for specifics.
   product of the two — raise both together, and only deliberately.
 - `VAULT_MASTER_KEY` / `VAULT_MAX_FILE_SIZE_MB` / `VAULT_PURGE_RETENTION_DAYS` —
   ห้องนิรภัย (Vault); routes reply 503 until the key (32-byte hex) is set.
-  NEVER rotate/lose the key — existing vault files become unreadable.
+  NEVER rotate/lose the key — existing vault files become unreadable, AND every
+  stored Google refresh token (migration 046) becomes undecryptable.
+- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google Sheets sync (migration
+  046). Feature is OFF until both are set (routes 503, sync job no-ops); it also
+  needs `VAULT_MASTER_KEY`. Authorized redirect URI must be exactly
+  `${APP_URL}/integrations/google/callback`. Set on BOTH Railway services.
 - `LINE_LIFF_ID` (API) / `NEXT_PUBLIC_LIFF_ID` (web) — ระบบตามงาน LIFF app id
   (create under the LINE Login channel, endpoint `<WEB_URL>/liff/tasks`).
   Optional: unset → LINE messages link to plain WEB_URL; LIFF pages run
@@ -821,6 +984,8 @@ and `supabase/backfills/` for specifics.
 - Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.
 - Phase 2 — Organize: folders, tags, rename/move, name+OCR search, thumbnails, rich menu.
 - Phase 3 — Scan & Team: scan-to-PDF, LINE group shared spaces, team invites, image OCR.
+  Document flows now number four: สแกน · รวมรูป · แปลงไฟล์ (→Word) · รวมไฟล์ PDF
+  (migration 044) — the first, second and fourth all ride one `scan_sessions` row.
 - Phase 4 — SaaS (minus billing): storage quota + enforcement (1 GB free tier, referral
   tiers up to 4 GB — migrations 010/030, `referral.service`), analytics/usage, admin panel,
   daily R2 purge of long-deleted files. (Google Drive export removed — migration 017.)

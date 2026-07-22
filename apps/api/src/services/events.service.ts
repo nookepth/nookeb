@@ -85,6 +85,7 @@ export const EVENT_TYPES = [
   'task_mark_done', // an assignee marked their item done (metadata: time_to_complete seconds)
   'task_ics_download', // "บันทึกลงปฏิทิน" tapped
   'task_repeat_view', // a recurring task was viewed
+  'task_export', // tasks exported to .xlsx (metadata: rows, filtered)
   // --- Pro fake-door demand test (migrations 040/041) ---
   'pro_interest_view', // a Pro lock modal was shown (metadata: feature_id)
   'pro_interest_click', // "แจ้งเตือนฉัน" tapped (metadata: feature_id)

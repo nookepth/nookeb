@@ -11,7 +11,7 @@
     "start:worker": "node dist/workers/index.js",
     "typecheck": "tsc --noEmit",
     "postinstall": "node scripts/download-tessdata.js || exit 0",
-    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts src/services/docx-builder.service.test.ts src/services/pdf-merge.service.test.ts src/services/vault-crypto.test.ts src/services/task-recurrence.test.ts",
+    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts src/services/docx-builder.service.test.ts src/services/pdf-merge.service.test.ts src/services/vault-crypto.test.ts src/services/task-recurrence.test.ts src/services/export.service.test.ts",
     "setup:rich-menu": "tsx --env-file=../../.env scripts/setup-rich-menu-large.ts"
   },
   "dependencies": {
@@ -30,8 +30,10 @@
     "bullmq": "^5.8.0",
     "dayjs": "^1.11.21",
     "docx": "^9.7.1",
+    "exceljs": "^4.4.0",
     "fastify": "^4.28.0",
     "fastify-plugin": "^4.5.1",
+    "googleapis": "^173.0.0",
     "ical-generator": "^11.0.0",
     "ioredis": "5.10.1",
     "jsonwebtoken": "^9.0.2",

@@ -70,6 +70,57 @@ export function generateDek(): Buffer {
   return randomBytes(DEK_BYTES);
 }
 
+// ---- generic secret box (non-vault callers) ----
+//
+// Small AES-256-GCM string box for secrets that must never sit in the DB as
+// plaintext — currently the Google refresh token (migration 046; migration 002
+// stored one in the clear and 017 dropped the table for exactly that reason).
+//
+// It shares VAULT_MASTER_KEY (one key to protect, one key to never rotate) but
+// derives through a DISTINCT scrypt salt namespace, so a vault file key can
+// never decrypt a secret and vice versa. Losing the master key loses these too.
+
+const SECRET_SALT_PREFIX = 'nookeb:secret:v1:';
+const secretKeyCache = new Map<string, Buffer>();
+
+/** Per-namespace secret key: scrypt(VAULT_MASTER_KEY, 'nookeb:secret:v1:'+ns). */
+export async function deriveSecretKey(namespace: string): Promise<Buffer> {
+  const cacheKey = SECRET_SALT_PREFIX + namespace;
+  const cached = secretKeyCache.get(cacheKey);
+  if (cached) return cached;
+
+  const key = await new Promise<Buffer>((resolve, reject) => {
+    scrypt(masterKey(), cacheKey, DEK_BYTES, (err, derived) =>
+      err ? reject(err) : resolve(derived),
+    );
+  });
+  if (secretKeyCache.size >= USER_KEY_CACHE_MAX) {
+    const oldest = secretKeyCache.keys().next().value;
+    if (oldest !== undefined) secretKeyCache.delete(oldest);
+  }
+  secretKeyCache.set(cacheKey, key);
+  return key;
+}
+
+/** Encrypt a UTF-8 secret → base64(iv || tag || ciphertext). */
+export function encryptSecret(key: Buffer, plaintext: string): string {
+  const iv = randomBytes(IV_BYTES);
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  return Buffer.concat([iv, cipher.getAuthTag(), ciphertext]).toString('base64');
+}
+
+/** Decrypt a secret produced by encryptSecret — throws on tampering/wrong key. */
+export function decryptSecret(key: Buffer, packed: string): string {
+  const raw = Buffer.from(packed, 'base64');
+  const iv = raw.subarray(0, IV_BYTES);
+  const tag = raw.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
+  const ciphertext = raw.subarray(IV_BYTES + TAG_BYTES);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString('utf8');
+}
+
 export function generateFileIv(): Buffer {
   return randomBytes(IV_BYTES);
 }
