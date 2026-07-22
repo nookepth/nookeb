@@ -318,7 +318,6 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บงานของฉัน — ดูงานที่ต้องทำ
 
 👥 ทีม (ใช้ในกลุ่ม)
-หนูเก็บห้องทีม — เปิดห้องทีม ดูงานทั้งกลุ่ม
 หนูเก็บสร้างงาน — มอบหมายงานในกลุ่ม
 หนูเก็บคู่มือทีม — วิธีเริ่มใช้งานแบบทีม
 หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
@@ -527,25 +526,6 @@ async function handleTextCommand(
     return;
   }
 
-  // ห้องทีม — the group's task room. Group/room only: the room is defined by
-  // the LINE group, and a 1-on-1 chat has none (งานส่วนตัว is the DM's
-  // equivalent, reached via "หนูเก็บสร้างงาน"). Matched BEFORE the group
-  // bot-directed guard for the same reason as สร้างงาน.
-  if (prefixed && isCmd(text, 'ห้องทีม')) {
-    const groupId = source.groupId ?? source.roomId;
-    if (!groupId) {
-      await sendReply(event, [
-        {
-          type: 'text',
-          text: 'ห้องทีมใช้ได้ในกลุ่มน้า ถ้าอยากจัดงานของตัวเอง พิมพ์ "หนูเก็บสร้างงาน" ได้เลย',
-        },
-      ]);
-      return;
-    }
-    await replyFlex(event, buildTeamRoomCard(config.LINE_LIFF_ID, groupId));
-    return;
-  }
-
   if (source.type === 'group' || source.type === 'room') {
     const isBindTeam = /^(?:ผูกทีม)\s+\d+$/i.test(text.trim());
     if (!prefixed && !isBindTeam) return;
@@ -602,7 +582,6 @@ async function handleTextCommand(
     const buttons: QuickReplyButton[] = inGroup
       ? [
           { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' },
-          { label: 'หนูเก็บห้องทีม', text: 'หนูเก็บห้องทีม' },
           { label: 'หนูเก็บสร้างงาน', text: 'หนูเก็บสร้างงาน' },
           { label: 'หนูเก็บคู่มือทีม', text: 'หนูเก็บคู่มือทีม' },
           { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' },
