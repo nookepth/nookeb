@@ -504,21 +504,23 @@ async function handleTextCommand(
     return;
   }
 
-  // ระบบตามงาน "สร้างงาน" entry point — replies ONE self-contained card with an
-  // in-card type selector (single/multi/recurring) + สร้างงาน/ดูงานทั้งหมด
-  // buttons (was a 3-bubble carousel). Deliberately UNPREFIXED and matched BEFORE
+  // ระบบตามงาน "สร้างงาน" entry point. Deliberately UNPREFIXED and matched BEFORE
   // the group bot-directed guard so it works when typed straight into a group.
+  // In a GROUP/ROOM this replies the ห้องทีม card (buildTeamRoomCard) — the group
+  // entry point, with เปิดห้องทีม + สร้างงานใหม่ buttons — so the group sees its
+  // room first rather than jumping straight into the create flow. In a 1-on-1
+  // chat it stays งานส่วนตัว (migration 043): the self-contained create card.
   // The roster is populated automatically by the message-event auto-upsert (no
   // "/register" typing needed), so the card can offer assignees right away.
   if (prefixed && isCmd(text, 'สร้างงาน')) {
     const groupId = source.groupId ?? source.roomId;
     if (!groupId) {
-      // 1-on-1 chat: งานส่วนตัว (migration 043). The card carries no id — the
-      // LIFF resolves the owner from the verified session.
+      // 1-on-1 chat: งานส่วนตัว. The card carries no id — the LIFF resolves the
+      // owner from the verified session.
       await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, null, 'personal'));
       return;
     }
-    await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, groupId));
+    await replyFlex(event, buildTeamRoomCard(config.LINE_LIFF_ID, groupId));
     return;
   }
 

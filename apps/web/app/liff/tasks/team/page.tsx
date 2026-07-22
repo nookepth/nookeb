@@ -221,151 +221,106 @@ export default function TeamRoomPage() {
 
   return (
     <main className={styles.page} style={{ paddingBottom: 100 }}>
-      <div className={styles.heroHeader}>
+      <header className={styles.roomHero}>
         <p className={styles.heroLabel}>ห้องทีม</p>
-        <div className={styles.headerRow} style={{ alignItems: 'flex-start' }}>
-          <h1 className={styles.headerTitle} style={{ overflowWrap: 'anywhere' }}>
-            {room.space?.name ?? 'ทีมของเรา'}
-          </h1>
-          <span
-            className={styles.statusBadge}
-            style={{
-              background: '#f3f4f6',
-              color: '#374151',
-              flexShrink: 0,
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 4,
-            }}
-          >
-            <IconUsers size={13} /> {room.memberCount}
+        <div className={styles.roomHeroRow}>
+          <h1 className={styles.roomHeroTitle}>{room.space?.name ?? 'ทีมของเรา'}</h1>
+          <span className={styles.roomMemberChip}>
+            <IconUsers size={14} /> {room.memberCount} คน
           </span>
         </div>
-      </div>
+        <p className={styles.roomHeroMeta}>{room.tasks.length} งานในห้องนี้</p>
+      </header>
 
-      {/* งานทั้งหมด | ของฉัน */}
-      <section className={styles.section} style={{ paddingTop: 4 }}>
-        <div style={{ display: 'flex', gap: 8 }}>
+      <div className={styles.roomToolbar}>
+        {/* งานทั้งหมด | ของฉัน — segmented control */}
+        <div className={styles.roomSegment} role="tablist">
           {(['all', 'mine'] as Tab[]).map((t) => (
             <button
               key={t}
               type="button"
+              role="tab"
               onClick={() => setTab(t)}
-              className={styles.secondaryBtn}
-              style={{
-                flex: 1,
-                padding: '11px 10px',
-                ...(tab === t
-                  ? { background: '#b53a32', color: '#fff', borderColor: '#b53a32' }
-                  : {}),
-              }}
-              aria-pressed={tab === t}
+              aria-selected={tab === t}
+              className={`${styles.roomSegmentBtn} ${tab === t ? styles.roomSegmentBtnActive : ''}`}
             >
               {t === 'all' ? 'งานทั้งหมด' : 'ของฉัน'}
             </button>
           ))}
         </div>
-      </section>
 
-      {/* status filter chips */}
-      <section className={styles.section} style={{ paddingTop: 0 }}>
-        <div style={{ display: 'flex', gap: 6, overflowX: 'auto', paddingBottom: 2 }}>
+        {/* status filter chips */}
+        <div className={styles.roomChips}>
           {STATUS_TABS.map((s) => (
             <button
               key={s.key}
               type="button"
               onClick={() => setStatus(s.key)}
               aria-pressed={status === s.key}
-              style={{
-                flexShrink: 0,
-                border: `1px solid ${status === s.key ? '#b53a32' : '#e5e5e5'}`,
-                background: status === s.key ? '#b53a32' : '#fff',
-                color: status === s.key ? '#fff' : '#555',
-                borderRadius: 999,
-                padding: '6px 14px',
-                fontSize: 12,
-                fontWeight: 600,
-                fontFamily: 'inherit',
-                cursor: 'pointer',
-                whiteSpace: 'nowrap',
-              }}
+              className={`${styles.roomChip} ${status === s.key ? styles.roomChipActive : ''}`}
             >
               {s.label}
             </button>
           ))}
         </div>
-      </section>
+      </div>
 
-      {/* task cards */}
-      <section className={styles.section} style={{ paddingTop: 4 }}>
+      {/* task grid */}
+      <section className={styles.roomGrid}>
         {visible.length === 0 ? (
-          <div className={styles.card}>
-            <p className={styles.typeSub} style={{ margin: 0 }}>
-              {tab === 'mine'
-                ? 'ยังไม่มีงานที่เกี่ยวกับเราในหมวดนี้น้า'
-                : 'ยังไม่มีงานในหมวดนี้น้า กดปุ่มด้านล่างสร้างงานแรกได้เลย'}
-            </p>
-          </div>
+          <p className={styles.roomEmpty}>
+            {tab === 'mine'
+              ? 'ยังไม่มีงานที่เกี่ยวกับเราในหมวดนี้น้า'
+              : 'ยังไม่มีงานในหมวดนี้น้า กดปุ่มด้านล่างสร้างงานแรกได้เลย'}
+          </p>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {visible.map((task) => {
-              const pill = STATUS_PILL[task.status] ?? STATUS_PILL.pending!;
-              const { done, total } = progressOf(task);
-              // Show every assignee across the task's items, deduped by uid.
-              const people = [
-                ...new Map(
-                  task.items.flatMap((i) => i.assignees).map((a) => [a.lineUid, a]),
-                ).values(),
-              ];
-              const deadline =
-                task.globalDeadline ?? task.items.find((i) => i.deadline)?.deadline ?? null;
-              return (
-                <a
-                  key={task.id}
-                  href={`/liff/tasks/${task.id}`}
-                  className={styles.card}
-                  style={{ display: 'block', textDecoration: 'none' }}
-                >
-                  <div className={styles.headerRow} style={{ alignItems: 'flex-start', gap: 8 }}>
-                    <p
-                      className={styles.itemTitle}
-                      style={{ margin: 0, overflowWrap: 'anywhere', color: '#333' }}
-                    >
-                      {task.title}
-                    </p>
-                    <span
-                      className={styles.statusBadge}
-                      style={{ background: pill.bg, color: pill.fg, flexShrink: 0 }}
-                    >
-                      {pill.label}
-                    </span>
-                  </div>
+          visible.map((task) => {
+            const pill = STATUS_PILL[task.status] ?? STATUS_PILL.pending!;
+            const { done, total } = progressOf(task);
+            // Show every assignee across the task's items, deduped by uid.
+            const people = [
+              ...new Map(
+                task.items.flatMap((i) => i.assignees).map((a) => [a.lineUid, a]),
+              ).values(),
+            ];
+            const deadline =
+              task.globalDeadline ?? task.items.find((i) => i.deadline)?.deadline ?? null;
+            return (
+              <a key={task.id} href={`/liff/tasks/${task.id}`} className={styles.roomCard}>
+                <div className={styles.roomCardTop}>
+                  <h3 className={styles.roomCardTitle}>{task.title}</h3>
+                  <span
+                    className={styles.statusBadge}
+                    style={{ background: pill.bg, color: pill.fg, flexShrink: 0 }}
+                  >
+                    {pill.label}
+                  </span>
+                </div>
 
-                  <div className={styles.itemMeta} style={{ marginTop: 10 }}>
-                    <AvatarStack members={people} size={24} max={4} />
-                    <DeadlineChip iso={deadline} />
-                  </div>
+                <div className={styles.roomCardMeta}>
+                  <DeadlineChip iso={deadline} />
+                  <AvatarStack members={people} size={24} max={4} />
+                </div>
 
-                  {total > 1 && (
-                    <div style={{ marginTop: 10 }}>
-                      <div className={styles.headerRow} style={{ marginBottom: 5 }}>
-                        <span style={{ fontSize: 11, color: '#8c8c8c' }}>ความคืบหน้า</span>
-                        <span style={{ fontSize: 11, color: '#8c8c8c' }}>
-                          {done}/{total}
-                        </span>
-                      </div>
-                      <div className={styles.progressTrack}>
-                        <div
-                          className={styles.progressFill}
-                          style={{ width: `${Math.round((done / total) * 100)}%` }}
-                        />
-                      </div>
+                {total > 1 && (
+                  <div className={styles.roomProgress}>
+                    <div className={styles.roomProgressHead}>
+                      <span>ความคืบหน้า</span>
+                      <span>
+                        {done}/{total}
+                      </span>
                     </div>
-                  )}
-                </a>
-              );
-            })}
-          </div>
+                    <div className={styles.progressTrack}>
+                      <div
+                        className={styles.progressFill}
+                        style={{ width: `${Math.round((done / total) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </a>
+            );
+          })
         )}
       </section>
 

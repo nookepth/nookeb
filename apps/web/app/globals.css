@@ -4188,6 +4188,20 @@ a.stat-chip {
 .settings-card-title {
   font-size: var(--font-size-lg);
   margin: 0 0 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-pro-badge {
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  background: var(--color-primary);
+  border-radius: 999px;
+  padding: 2px 9px;
+  line-height: 1.4;
 }
 
 .settings-card-sub,

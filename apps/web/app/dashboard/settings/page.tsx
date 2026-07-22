@@ -6,11 +6,13 @@ import {
   ApiError,
   disconnectGoogle,
   getGoogleIntegration,
+  getMe,
   hasSession,
   startGoogleConnect,
   type GoogleIntegrationStatus,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { ProLockModal } from '@/components/ProLockModal';
 
 /**
  * การเชื่อมต่อ — third-party integrations. Currently just Google Sheets
@@ -55,6 +57,11 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [notice, setNotice] = useState<{ msg: string; ok: boolean } | null>(null);
+  // Google Sheets sync is a Pro feature — free users see the fake-door upsell
+  // (same <ProLockModal> pattern as the task Pro features). null while loading.
+  const [plan, setPlan] = useState<string | null>(null);
+  const [proLockOpen, setProLockOpen] = useState(false);
+  const [proNotified, setProNotified] = useState(false);
 
   const load = useCallback(async () => {
     if (!hasSession()) {
@@ -63,10 +70,11 @@ export default function SettingsPage() {
       return;
     }
     try {
-      const res = await getGoogleIntegration();
+      const [res, me] = await Promise.all([getGoogleIntegration(), getMe()]);
       // null = the deployment has no Google OAuth client configured.
       setAvailable(res !== null);
       setStatus(res);
+      setPlan(me.plan);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
       else setNotice({ msg: 'โหลดสถานะการเชื่อมต่อไม่สำเร็จน้า', ok: false });
@@ -118,6 +126,9 @@ export default function SettingsPage() {
     }
   };
 
+  // null = plan not loaded yet (avoids flashing the wrong state).
+  const isPro = plan === null ? null : plan !== 'free';
+
   if (needsLogin) {
     return (
       <div className="center-page">
@@ -152,7 +163,10 @@ export default function SettingsPage() {
             <SheetIcon />
           </span>
           <div>
-            <h2 className="settings-card-title">Google Sheets</h2>
+            <h2 className="settings-card-title">
+              Google Sheets
+              {isPro === false && <span className="settings-pro-badge">Pro</span>}
+            </h2>
             <p className="settings-card-sub">
               ทุกครั้งที่สร้างหรืออัปเดตงาน หนูจะ sync ลง Sheet ของพี่เองให้อัตโนมัติ
             </p>
@@ -188,6 +202,21 @@ export default function SettingsPage() {
               </button>
             </div>
           </>
+        ) : isPro === false ? (
+          <>
+            <p className="settings-card-state">
+              ต่อ Sheet อัตโนมัติเป็นฟีเจอร์ของแผน Pro น้า — เร็ว ๆ นี้
+            </p>
+            <div className="settings-card-actions">
+              <button className="btn small" onClick={() => setProLockOpen(true)}>
+                ดูรายละเอียด Pro →
+              </button>
+            </div>
+            <p className="settings-card-note">
+              หนูขอสิทธิ์แค่ Sheet ที่หนูสร้างเองเท่านั้น (drive.file) — ไฟล์อื่นใน Google Drive
+              ของพี่ หนูมองไม่เห็นน้า
+            </p>
+          </>
         ) : (
           <>
             <p className="settings-card-state">ยังไม่ได้เชื่อมต่อ</p>
@@ -203,6 +232,18 @@ export default function SettingsPage() {
           </>
         )}
       </section>
+
+      <ProLockModal
+        open={proLockOpen}
+        accent="var(--color-primary)"
+        title="Google Sheets sync อยู่ในแผน Pro"
+        subtitle="เร็ว ๆ นี้น้า — กดไว้ เดี๋ยวหนูมาบอกพี่เป็นคนแรกเลย"
+        ctaLabel="แจ้งเตือนฉัน"
+        notified={proNotified}
+        notifiedLabel="เดี๋ยวหนูรีบมาบอกพี่เลยน้า"
+        onNotify={() => setProNotified(true)}
+        onDismiss={() => setProLockOpen(false)}
+      />
     </main>
   );
 }

@@ -909,3 +909,202 @@
   height: 11px;
   display: flex;
 }
+
+/* ---------- ห้องทีม (Team Room) — team/page.tsx ----------
+ * Redesign: one clean brand hero, a segmented งานทั้งหมด/ของฉัน control + status
+ * chips in a sticky toolbar, and a responsive task grid (1 col phone, 2 col
+ * desktop within the 860px content column). Tokens + reused components only. */
+
+.roomHero {
+  background: linear-gradient(135deg, #b53a32, #93312b);
+  padding: 22px 20px 20px;
+  color: #fff;
+}
+
+.roomHeroRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 2px;
+}
+
+.roomHeroTitle {
+  font-size: 22px;
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.roomMemberChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  border-radius: 999px;
+  padding: 5px 11px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.roomHeroMeta {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #f3c8c5;
+  font-weight: 500;
+}
+
+.roomToolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  padding: 14px 20px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.roomSegment {
+  display: inline-flex;
+  align-self: stretch;
+  gap: 2px;
+  background: #ececec;
+  border-radius: 12px;
+  padding: 3px;
+}
+
+.roomSegmentBtn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 12px;
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+.roomSegmentBtnActive {
+  background: #fff;
+  color: var(--brand);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.roomChips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.roomChips::-webkit-scrollbar {
+  display: none;
+}
+
+.roomChip {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 7px 15px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+
+.roomChipActive {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
+}
+
+.roomGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+  padding: 4px 20px 20px;
+}
+
+@media (min-width: 600px) {
+  .roomGrid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.roomCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  padding: 16px;
+  text-decoration: none;
+  color: inherit;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.roomCard:hover {
+  border-color: var(--brand);
+  box-shadow: 0 4px 14px rgba(181, 58, 50, 0.1);
+}
+
+.roomCardTop {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.roomCardTitle {
+  font-size: 15.5px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--text);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.roomCardMeta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.roomProgress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.roomProgressHead {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.roomEmpty {
+  grid-column: 1 / -1;
+  text-align: center;
+  padding: 40px 24px;
+  background: var(--card);
+  border: 1px dashed var(--border);
+  border-radius: 16px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.6;
+}

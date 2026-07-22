@@ -4,7 +4,8 @@
 LINE-integrated file archiving SaaS. Users send files via LINE OA → stored permanently
 in Cloudflare R2 → accessible via Next.js Web Dashboard. Supports folders/tags/search,
 multi-page scan-to-PDF, LINE group shared spaces, team invites, image OCR, storage
-quota + analytics, and an admin panel. A public SEO landing page lives at `/` (see
+quota + analytics, ระบบตามงาน (task manager with attachments, a review loop, ห้องทีม,
+.xlsx export and Google Sheets sync), and an admin panel. A public SEO landing page lives at `/` (see
 `apps/web` below). (Google Drive EXPORT was removed — see migration 017. The
 Google integration that exists today is Sheets sync for ระบบตามงาน, migration 046:
 `drive.file` scope only, refresh token encrypted — the "rebuilt securely" of that
@@ -18,6 +19,9 @@ note, not a revival of the old Drive feature.)
 - Queue: BullMQ + Redis (Upstash) — REDIS_URL must be `rediss://` (TLS) for Upstash
 - Auth: LINE Login → app-signed JWT (HS256, `jsonwebtoken`)
 - Images: `sharp` (thumbnails, page normalization) · PDF: `pdf-lib` · OCR: `tesseract.js` (tha+eng)
+- Documents out: `docx` (→Word) · `exceljs` (→.xlsx task export — the ONLY
+  spreadsheet lib; there is still NO chart library, see the Admin Dashboard note)
+  · `ical-generator` (→.ics) · `googleapis` (Sheets sync only, migration 046)
 
 ## LINE Messaging — Critical Rules
 
@@ -262,8 +266,10 @@ LINE-webhook/worker write path, unreachable from every share/team/space flow.
   `isUnlocked` (`lib/useVaultSummary.ts`). Note the aggregate size still leaks via the shared
   `storage_used` in `GET /me/usage`, which is ungated — inherent to the shared
   pool, not an oversight.
-- Upload is the app's ONLY web multipart endpoint (`@fastify/multipart`,
-  registered only in the vault route scope).
+- Upload was the app's FIRST web multipart endpoint; there are now three, each
+  registering `@fastify/multipart` in its OWN plugin scope (vault, legacy-box,
+  task-files). That isolation is the rule, not an accident: registering it in a
+  shared scope installs a content-type parser across every route in that scope.
 
 ## ถังขยะ (Trash Bin) — web-only, migration 032
 `/dashboard/trash` (API routes `apps/api/src/routes/trash.ts`). A "trashed" file is just a
@@ -430,8 +436,9 @@ sanctioned exception to the reply-only rule (see LINE Messaging section).
   `action=task_accept` (routed in `webhook/task-handlers.ts` BEFORE the
   carousel postback path), replies confirm; all-assignees-done rolls item →
   task done and cancels remaining reminders.
-- LIFF: pages under `apps/web/app/liff/tasks/` (create 4-step flow + task view
-  with optimistic done). UI: brand-red palette tokens + Prompt Thai font
+- LIFF: pages under `apps/web/app/liff/tasks/` — `create/` (4-step flow),
+  `[taskId]/` (task view, optimistic done), `[taskId]/submit/` (ส่งงานกลับ,
+  migration 045), `team/` (ห้องทีม). UI: brand-red palette tokens + Prompt Thai font
   (next/font `--font-liff`, set in `liff/tasks/layout.tsx`; LINE Seed isn't
   redistributable) — both live in `tasks.module.css` `.page`; NO emoji (SVG
   icons in `components.tsx`). `@line/liff` via npm (no CDN); CSP `connect-src`
@@ -574,7 +581,7 @@ Each user connects THEIR OWN Google account and gets a spreadsheet they own,
   Web: `/dashboard/settings`.
 
 - Rich menu: NOT touched (policy). The "สร้างงาน" entry point needs a rich-menu
-  change → requires explicit approval + `setup-rich-menu-ab.ts` update; until
+  change → requires explicit approval + a `setup-rich-menu-single.ts` update; until
   then the LIFF URL is shared/pinned manually or opened from task cards.
 
 ### งานส่วนตัว (Personal Task) — 1-on-1 DM, migration 043
@@ -611,7 +618,18 @@ personal task is just a `tasks` row in the other mode.
   `resolveScope()` in `lib/taskDraft.ts`; the draft carries `scope`, and the
   members step is skipped (create → detail directly).
 
-## BullMQ Jobs (queue `nookeb-file-processing`, all handled in `workers/upload.worker.ts`)
+## BullMQ Queues — three, deliberately separate
+| Queue | Worker | Why it's its own queue |
+|---|---|---|
+| `nookeb-file-processing` | `workers/upload.worker.ts` | the heavy one (R2, sharp, OCR, pdf-lib) |
+| `nookeb-task-reminders` | `workers/taskReminderWorker.ts` | a file backlog must never delay a time-sensitive reminder |
+| `nookeb-sheets-sync` | `workers/sheetsWorker.ts` | a Google outage backs up here and nowhere else (migration 046) |
+
+All three run in the SAME worker process (`workers/index.ts`); the sheets worker
+is only constructed when the feature is configured. Keep them separate — merging
+them re-couples exactly the failure domains they were split to isolate.
+
+### `nookeb-file-processing` jobs (all handled in `workers/upload.worker.ts`)
 `upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
 `add_scan_page` · `finalize_scan` (both branch on `scan_sessions.session_kind` — 'scan'
 enhances + embeds images, 'merge' embeds them as-is, 'pdf' stores each source PDF raw and
@@ -855,8 +873,9 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     configured), `index` (entry + repeatable schedule)
   - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
     HMAC signature — used ONLY on `/webhook/line`)
-  - `scripts/` — `setup-rich-menu-ab` (CURRENT: two-page A/B menu — see rich-menu policy
-    below), `setup-rich-menu`(`-large`) (LEGACY — do NOT run `-large`, it deletes ALL menus),
+  - `scripts/` — `setup-rich-menu-single` (CURRENT — the ONLY script that may be run;
+    see the Rich Menu section), `setup-rich-menu-ab` / `setup-rich-menu` / `-large`
+    (all RETIRED designs — running any of them overwrites the live menu),
     `backfill-quota`, `backfill-referral-codes`, `purge-deleted` (dry-run by default),
     `upload-greeting-image`
 - `apps/web` — Next.js dashboard + public landing page.
@@ -885,8 +904,12 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
   - Dashboard routes: `/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook viewer),
     `/dashboard/vault` (ห้องนิรภัย), `/dashboard/trash` (ถังขยะ),
     `/dashboard/legacy-box` (+ `/new` create flow), `/dashboard/teams`
-    (+ `/[teamId]`), `/admin`, `/join`, `/auth/callback`, `/share/[token]`,
+    (+ `/[teamId]`), `/dashboard/tasks` (+ `/[taskId]`), `/dashboard/settings`
+    (การเชื่อมต่อ — the Google OAuth callback's redirect target, which is why it
+    needs a URL of its own), `/admin`, `/join`, `/auth/callback`, `/share/[token]`,
     `/box/[slug]` (PUBLIC gift reveal — noindex, generic OG image)
+  - LIFF routes all live under `/liff/tasks/` — see the ห้องทีม note in the Task
+    Manager section for why nothing may sit outside that subtree.
 - `packages/shared` — TypeScript types + DTO mappers shared between apps
   (rebuild with `npm run build` after changing; API/web import the built `dist`)
 
@@ -920,6 +943,11 @@ that server-side to the Railway API.
   `.env.example`): `NODE_ENV=production`, `APP_URL`, `WEB_URL`, `LINE_CHANNEL_*`,
   `LINE_LOGIN_CHANNEL_ID`, `LINE_LOGIN_CHANNEL_SECRET`, `SUPABASE_*`, `R2_*`, `REDIS_URL`
   (`rediss://`), `JWT_SECRET`, plus quota/admin/limit vars.
+  Feature keys that MUST be on both or the feature half-works: `VAULT_MASTER_KEY`
+  (vault files AND the encrypted Google refresh token), `GOOGLE_CLIENT_ID` /
+  `GOOGLE_CLIENT_SECRET` (the API runs the OAuth flow, the WORKER runs the sync —
+  setting it on the API alone gives a connect button whose syncs never happen),
+  `MISTRAL_API_KEY`.
 - `trustProxy: true` is set in `index.ts` — REQUIRED: Railway's ingress + the /api-proxy hop
   make every request arrive from one socket; without it `request.ip` is shared and the per-IP
   rate limiters (global 100/min, `POST /auth/line` 10/min + ban:5) count all users as one and
@@ -950,6 +978,18 @@ that server-side to the Railway API.
 Migrations that RPCs/columns depend on go BEFORE the API/worker deploy; deploy API BEFORE web
 (the web bundle authenticates only via the cookie + `/api-proxy`). See the migration headers
 and `supabase/backfills/` for specifics.
+
+**Outstanding at time of writing — migrations 045 and 046 are NOT applied yet.**
+045 is the blocking one: `getTaskWithDetails()` SELECTs `task_files`, and that
+function backs EVERY task read, so deploying the API before applying 045 breaks
+the whole task feature, not just attachments. Order:
+1. apply `045_task_files.sql`, then `046_google_sheets_integration.sql`;
+2. set `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` on BOTH Railway services
+   (with `VAULT_MASTER_KEY` already present), and register the OAuth redirect URI
+   `${APP_URL}/integrations/google/callback` in Google Cloud Console — Sheets API
+   + Drive API enabled;
+3. deploy API + worker, then web.
+Skipping step 2 is safe: Sheets sync just stays dormant (routes 503, jobs no-op).
 
 ## Key Env Vars (see `.env.example`)
 - Core (API): `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`
@@ -989,10 +1029,19 @@ and `supabase/backfills/` for specifics.
 - Phase 4 — SaaS (minus billing): storage quota + enforcement (1 GB free tier, referral
   tiers up to 4 GB — migrations 010/030, `referral.service`), analytics/usage, admin panel,
   daily R2 purge of long-deleted files. (Google Drive export removed — migration 017.)
+- Phase 5 — ระบบตามงาน complete (migrations 036/037/040/043/045/046): group + personal
+  tasks, scheduled reminders (soft-disabled, see `TASK_NOTIFICATIONS_ENABLED`),
+  attachments + the ส่งงานกลับ / รับงาน / ตีกลับ review loop, ห้องทีม, .xlsx export,
+  and Google Sheets sync. The last three are dormant until their prerequisites are
+  set (see the deploy checklist below).
 
 ## Deferred / NOT built
 - Plans / Billing / subscriptions (free tier only for now)
-- Approval workflows, anything ERP-related
+- Anything ERP-related. NOTE: a generic "approval workflow" is still not built —
+  the ระบบตามงาน review loop (migration 045) is a fixed two-party
+  ส่งงาน→รับงาน/ตีกลับ handshake between an assignee and the task's creator,
+  not a configurable multi-step approval chain. Do not grow it into one without
+  a deliberate decision.
 
 ## Known accepted risks
 - **Next.js pinned to 14.2.35 (latest 14.x patch)** — request-smuggling /
