@@ -136,6 +136,13 @@ const envSchema = z.object({
   // ~50 MB, but conversion buffers the source in worker memory — keep it small.
   DOCX_CONVERT_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
 
+  // ระบบรวมไฟล์ PDF (migration 044) — per-source-PDF size cap (bytes) and the
+  // max number of PDFs in one merge. Both sources AND the merged output are
+  // buffered in worker memory by pdf-lib, so the worst case is roughly
+  // MAX_SOURCE_BYTES × MAX_SOURCES — keep both modest. 20 MB × 20 files.
+  PDF_MERGE_MAX_SOURCE_BYTES: z.coerce.number().int().positive().default(20 * 1024 * 1024),
+  PDF_MERGE_MAX_SOURCES: z.coerce.number().int().positive().default(20),
+
   // ไดอารี่ 365 วัน — per-photo size cap (bytes). Diary photos are buffered in
   // worker memory for validation + thumbnailing, so keep this small. 10 MB.
   DIARY_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),

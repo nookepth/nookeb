@@ -23,6 +23,7 @@ import {
   buildFeatureCarouselMessage,
   buildHelpFlexMessage,
   buildOnboardingCarouselMessage,
+  buildPdfMergeFlexMessage,
   buildRedeemSuccessFlexMessage,
   buildScanFlexMessage,
   buildTeamGuideFlexMessage,
@@ -266,6 +267,7 @@ const HELP_TEXT = `วิธีใช้หนูเก็บน้า
 
 • ส่งรูปหรือไฟล์เข้ามาในแชทได้เลยน้า เดี๋ยวหนูเก็บให้พี่เอง
 • อยากรวมรูปหลายหน้าเป็น PDF พิมพ์ "หนูเก็บรวมรูป" ได้เลยน้า
+• อยากรวมไฟล์ PDF หลายไฟล์เป็นไฟล์เดียว พิมพ์ "หนูเก็บรวมไฟล์" น้า
 • อยากสแกนเป็น PDF พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" น้า
 • อยากได้ไฟล์ Word แก้ต่อได้ พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF มาน้า
 • อยากทำไดอารี่ 365 วัน พิมพ์ "หนูเก็บไดอารี่" แล้วส่งรูป 1 รูปมาน้า
@@ -292,6 +294,7 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 ✨ ฟีเจอร์
 หนูเก็บฟีเจอร์ — ดูฟีเจอร์ทั้งหมด
 หนูเก็บรวมรูป — รวมรูปหลายใบเป็น PDF
+หนูเก็บรวมไฟล์ — รวมไฟล์ PDF หลายไฟล์เป็นไฟล์เดียว
 หนูเก็บสแกน — สแกนเอกสารเป็น PDF
 หนูเก็บสแกนสี — สแกนแบบสี
 หนูเก็บสแกนขาวดำ — สแกนแบบขาวดำ
@@ -366,6 +369,8 @@ function isCmd(text: string, ...matches: string[]): boolean {
 function classifyIntent(text: string, prefixed: boolean): EventType | null {
   if (prefixed && isCmd(text, 'สแกน')) return 'cmd_scan';
   if (prefixed && isCmd(text, 'รวมรูป')) return 'cmd_merge';
+  // isCmd is an EXACT match, so รวมไฟล์ / รวมรูป / แปลงไฟล์ never shadow each other.
+  if (prefixed && isCmd(text, 'รวมไฟล์')) return 'cmd_pdf_merge';
   if (isCmd(text, 'เสร็จ')) return 'cmd_done';
   if (isCmd(text, 'ยกเลิก')) return 'cmd_cancel';
   if (prefixed && isCmd(text, 'แปลงไฟล์')) return 'cmd_convert_arm';
@@ -592,6 +597,7 @@ async function handleTextCommand(
       { label: 'แปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
       { label: 'สแกนสี', text: 'หนูเก็บสแกนสี' },
       { label: 'รวมรูป', text: 'หนูเก็บรวมรูป' },
+      { label: 'รวมไฟล์ PDF', text: 'หนูเก็บรวมไฟล์' },
     ]);
     return;
   }
@@ -609,6 +615,7 @@ async function handleTextCommand(
       { label: 'หนูเก็บแปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
       { label: 'หนูเก็บสแกนสี', text: 'หนูเก็บสแกนสี' },
       { label: 'หนูเก็บรวมรูป', text: 'หนูเก็บรวมรูป' },
+      { label: 'หนูเก็บรวมไฟล์', text: 'หนูเก็บรวมไฟล์' },
       { label: 'หนูเก็บกล่องของขวัญ', uri: 'https://nookeb-web.vercel.app/dashboard/legacy-box' },
       { label: 'หนูเก็บห้องนิรภัย', uri: 'https://nookeb-web.vercel.app/dashboard/vault' },
       { label: 'หนูเก็บงานของฉัน', uri: 'https://nookeb-web.vercel.app/dashboard/tasks' },
@@ -899,6 +906,30 @@ async function handleTextCommand(
     return;
   }
 
+  // Start PDF-merge mode ("หนูเก็บรวมไฟล์", migration 044) — the same session
+  // machinery as รวมรูป above, kind 'pdf': the collected items are whole PDF
+  // documents and finalize_scan concatenates them instead of embedding images.
+  // Personal-chat only, like every other session mode (a shared group space
+  // would collide sessions across members). startSession auto-cancels any
+  // session already collecting for this user, so switching modes mid-flight
+  // (e.g. รวมรูป → รวมไฟล์) needs no special handling here.
+  if (prefixed && isCmd(text, 'รวมไฟล์')) {
+    if (source.type === 'group' || source.type === 'room') {
+      await reply(event, 'ระบบรวมไฟล์ทักหนูมาในแชทส่วนตัวได้เลยน้า 📄');
+      return;
+    }
+    const profile = await getProfile(lineUserId).catch(() => undefined);
+    const { user, space } = await ensureUserAndSpace(
+      app.supabase,
+      lineUserId,
+      profile?.displayName,
+      profile?.pictureUrl,
+    );
+    await startSession(app.supabase, user.id, space.id, config.SCAN_DEFAULT_MODE, 'pdf');
+    await replyFlex(event, buildPdfMergeFlexMessage({ kind: 'opened' }));
+    return;
+  }
+
   // ไดอารี่ 365 วัน ("หนูเก็บไดอารี่") — arms a one-shot Redis flag like
   // แปลงไฟล์: the NEXT image this user sends becomes today's diary entry
   // (optionally captioned by text typed while armed — see the capture block at
@@ -967,16 +998,24 @@ async function handleTextCommand(
   const userId = await findUserId(app, lineUserId);
   const session = userId ? await getActiveSession(app.supabase, userId) : null;
 
-  // Finish merge → build the PDF ("รวมรูป" moved to the start triggers above)
+  // Finish merge → build the PDF ("รวมรูป" moved to the start triggers above).
+  // Kind-aware copy: one "เสร็จ" serves all three session modes (สแกน / รวมรูป /
+  // รวมไฟล์ PDF), so every message here names the mode the user is actually in.
   if (isCmd(text, 'เสร็จ')) {
     if (!session) {
-      await reply(event, 'พี่ยังไม่ได้เปิดโหมดรวมรูปเลยน้า พิมพ์ "รวมรูป" ก่อนแล้วค่อยส่งรูปมาน้า 🧺');
+      await reply(event, 'พี่ยังไม่ได้เปิดโหมดไหนเลยน้า พิมพ์ "หนูเก็บรวมรูป" หรือ "หนูเก็บรวมไฟล์" ก่อนแล้วค่อยส่งมาน้า 🧺');
       return;
     }
+    const kind = session.session_kind ?? 'merge';
     const pages = await countPages(app.supabase, session.id);
     if (pages === 0) {
       await cancelSession(app.supabase, session.id);
-      await reply(event, 'ยังไม่มีรูปให้รวมเลยน้า หนูปิดโหมดรวมรูปให้ก่อนนะน้า 🌀');
+      await reply(
+        event,
+        kind === 'pdf'
+          ? 'ยังไม่มีไฟล์เลยน้า ส่งไฟล์ PDF มาก่อนได้เลยน้า หนูปิดโหมดให้ก่อนนะน้า 🌀'
+          : 'ยังไม่มีรูปให้รวมเลยน้า หนูปิดโหมดรวมรูปให้ก่อนนะน้า 🌀',
+      );
       return;
     }
     // Compare-and-set collecting → processing: if a concurrent "เสร็จ" already
@@ -998,7 +1037,7 @@ async function handleTextCommand(
     await replyFlex(
       event,
       buildFinalizingFlexMessage({
-        kind: session.session_kind ?? 'merge',
+        kind,
         count: pages,
         dashboardUrl: `${config.WEB_URL}/dashboard`,
       }),
@@ -1016,8 +1055,11 @@ async function handleTextCommand(
       // Message keys off the session kind (scan vs merge) so the confirmation
       // names the mode the user was actually in. session_kind is existing state
       // (set at startSession); this only picks the copy, not the logic.
-      if ((session.session_kind ?? 'merge') === 'scan') {
+      const cancelledKind = session.session_kind ?? 'merge';
+      if (cancelledKind === 'scan') {
         await reply(event, 'ยกเลิกโหมดสแกนให้แล้วน้า 🚫');
+      } else if (cancelledKind === 'pdf') {
+        await reply(event, 'ยกเลิกโหมดรวมไฟล์ให้แล้วน้า 🚫');
       } else {
         await reply(event, 'ยกเลิกโหมดรวมรูปให้แล้วน้า 🚫');
       }
@@ -1316,15 +1358,51 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     }
   }
 
-  // An image sent while a scan session is collecting becomes a scan page.
+  // An image (สแกน/รวมรูป) or a PDF file (รวมไฟล์ PDF) sent while a session is
+  // collecting becomes a page of that session.
   // 1-on-1 chats ONLY (matching where sessions can be opened): without the
   // source check, a user with an open personal scan/merge session who posts an
   // image in a GROUP would have it swallowed into their personal session
   // instead of stored in the group's shared space.
-  if (message.type === 'image' && source.type === 'user') {
+  if ((message.type === 'image' || message.type === 'file') && source.type === 'user') {
     const userId = await findUserId(app, lineUserId);
     const session = userId ? await getActiveSession(app.supabase, userId) : null;
-    if (session) {
+    const sessionKind = session?.session_kind ?? 'merge';
+
+    // A รวมไฟล์ PDF session (migration 044) collects FILES, not images. Reject
+    // anything else here rather than letting it fall through to the normal
+    // upload path: the user is mid-flow and would otherwise get a silent
+    // "archived to locker" with no hint why it didn't join the merge.
+    if (session && sessionKind === 'pdf') {
+      const name = message.type === 'file' ? (message.fileName ?? '') : '';
+      if (message.type !== 'file' || !/\.pdf$/i.test(name)) {
+        await reply(event, 'ส่งเฉพาะไฟล์ .pdf น้า หนูรับแค่ PDF ในโหมดนี้เองน้า 📄');
+        return;
+      }
+      if (message.fileSize && message.fileSize > config.PDF_MERGE_MAX_SOURCE_BYTES) {
+        const mb = Math.round(config.PDF_MERGE_MAX_SOURCE_BYTES / (1024 * 1024));
+        await reply(event, `ไฟล์ใหญ่เกิน ${mb}MB น้า ระบบรวมไฟล์รับได้เท่านี้ก่อนน้า ลองแบ่งไฟล์แล้วส่งมาใหม่ได้เลยน้า`);
+        return;
+      }
+      // Soft cap on sources — everything is buffered in worker memory at merge
+      // time. expected_pages counts events already ACCEPTED (including ones
+      // whose job hasn't landed), so it leads the stored count during a burst.
+      const accepted = Math.max(
+        session.expected_pages ?? 0,
+        await countPages(app.supabase, session.id),
+      );
+      if (accepted >= config.PDF_MERGE_MAX_SOURCES) {
+        await reply(
+          event,
+          `รอบนี้รับได้สูงสุด ${config.PDF_MERGE_MAX_SOURCES} ไฟล์น้า พิมพ์ "เสร็จ" เพื่อรวมเท่าที่มีก่อนได้เลยน้า`,
+        );
+        return;
+      }
+    }
+
+    // Non-image messages only join image sessions (สแกน/รวมรูป) — a file sent
+    // during those falls through to the normal upload path, as before.
+    if (session && (sessionKind === 'pdf' || message.type === 'image')) {
       const job: AddScanPageJob = {
         type: 'add_scan_page',
         sessionId: session.id,
@@ -1354,7 +1432,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
         replyToken: event.replyToken ?? null,
         target: source.groupId ?? lineUserId,
         basePageCount,
-        kind: session.session_kind ?? 'merge',
+        kind: sessionKind,
       });
       return;
     }

@@ -3,8 +3,15 @@ export type ScanStatus = 'collecting' | 'processing' | 'done' | 'cancelled';
 /** Color mode for the scan-enhance pipeline (migration 019). */
 export type ScanMode = 'bw' | 'color';
 
-/** Which feature opened the session — 'merge' (รวมรูป) or 'scan' (สแกน). Migration 020. */
-export type SessionKind = 'merge' | 'scan';
+/**
+ * Which feature opened the session (migration 020; 'pdf' added by 044):
+ *   'merge' — รวมรูป       images merged into one PDF (DB default)
+ *   'scan'  — สแกน         scan-enhance pipeline → PDF
+ *   'pdf'   — รวมไฟล์ PDF  PDF files concatenated into one PDF
+ * All three share the scan_sessions/scan_pages plumbing and the finalize_scan
+ * job; the kind picks the page-processing path, the PDF name prefix and the cards.
+ */
+export type SessionKind = 'merge' | 'scan' | 'pdf';
 
 export interface ScanSessionRecord {
   id: string;

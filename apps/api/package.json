@@ -11,7 +11,7 @@
     "start:worker": "node dist/workers/index.js",
     "typecheck": "tsc --noEmit",
     "postinstall": "node scripts/download-tessdata.js || exit 0",
-    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts src/services/docx-builder.service.test.ts src/services/vault-crypto.test.ts src/services/task-recurrence.test.ts",
+    "test": "tsx --test src/services/referral.service.test.ts src/services/scan-enhance.service.test.ts src/services/docx-builder.service.test.ts src/services/pdf-merge.service.test.ts src/services/vault-crypto.test.ts src/services/task-recurrence.test.ts",
     "setup:rich-menu": "tsx --env-file=../../.env scripts/setup-rich-menu-large.ts"
   },
   "dependencies": {

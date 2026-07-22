@@ -41,6 +41,7 @@ export const EVENT_TYPES = [
   // --- LINE intent (command tapped/typed) — the top of each funnel ---
   'cmd_scan', // สแกน — start scan mode
   'cmd_merge', // รวมรูป — start merge-to-PDF mode
+  'cmd_pdf_merge', // รวมไฟล์ — start PDF-merge mode (migration 044)
   'cmd_done', // เสร็จ — finalize a scan/merge session
   'cmd_cancel', // ยกเลิก
   'cmd_convert_arm', // แปลงไฟล์ — arm convert-to-Word

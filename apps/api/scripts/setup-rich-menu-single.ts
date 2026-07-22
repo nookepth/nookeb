@@ -7,8 +7,7 @@
  *
  * Every `message` action's text is an existing handler in
  * src/routes/webhook/line.ts — keep them in sync:
- *   หนูเก็บสร้างงาน · หนูเก็บฟีเจอร์เอกสาร · หนูเก็บไดอารี่ ·
- *   หนูเก็บเพิ่มเติม · ติดต่อหนูเก็บ
+ *   หนูเก็บฟีเจอร์เอกสาร · หนูเก็บไดอารี่ · หนูเก็บเพิ่มเติม · ติดต่อหนูเก็บ
  *
  * DESTRUCTIVE: this script deletes EVERY existing rich menu on the channel
  * (and the two legacy aliases) before creating the new one. That is the point —
@@ -81,10 +80,10 @@ function buildMenu(webUrl: string): object {
         bounds: { x: 0, y: 0, width: 1250, height: 843 },
         action: { type: 'uri', label: 'ล็อคเกอร์', uri: `${webUrl}/dashboard` },
       },
-      // 2 — สร้างงาน (top-right)
+      // 2 — สร้างงาน (top-right) — opens the web task dashboard directly
       {
         bounds: { x: 1250, y: 0, width: 1250, height: 843 },
-        action: { type: 'message', label: 'สร้างงาน', text: 'หนูเก็บสร้างงาน' },
+        action: { type: 'uri', label: 'สร้างงาน', uri: `${webUrl}/dashboard/tasks` },
       },
       // 3 — ฟีเจอร์เอกสาร (bottom-left)
       {

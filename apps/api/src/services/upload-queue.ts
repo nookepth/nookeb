@@ -2,7 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
-import { buildMergeFlexMessage, buildProgressFlexMessage, buildScanFlexMessage } from './flex.service';
+import {
+  buildMergeFlexMessage,
+  buildPdfMergeFlexMessage,
+  buildProgressFlexMessage,
+  buildScanFlexMessage,
+} from './flex.service';
 import { replyMessage, type LineMessage } from './line.service';
 import { addPendingNotify, drainPendingNotify } from './pending-notify.service';
 
@@ -229,7 +234,9 @@ async function flushScanReply(app: FastifyInstance, lineUserId: string): Promise
   const card =
     entry.kind === 'scan'
       ? buildScanFlexMessage({ kind: 'page', count: entry.count })
-      : buildMergeFlexMessage({ kind: 'page', count: entry.count });
+      : entry.kind === 'pdf'
+        ? buildPdfMergeFlexMessage({ kind: 'page', count: entry.count })
+        : buildMergeFlexMessage({ kind: 'page', count: entry.count });
   // Reply-only (no paid push fallback). Scan/merge is a personal-chat feature, so
   // the debounced first-event token is present and fresh (~1.5s) here; if it's
   // somehow gone we skip silently and log rather than push.

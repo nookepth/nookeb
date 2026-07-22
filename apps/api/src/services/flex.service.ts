@@ -10,6 +10,7 @@
  * `{ type: 'image', url: '<https-png>' }` component.
  */
 
+import type { SessionKind } from '@nookeb/shared';
 import { config } from '../config';
 import { documentTypeDisplayName, formatThaiBuddhistDate, type DocumentType } from './docx-builder.service';
 
@@ -410,24 +411,129 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
   };
 }
 
+// ระบบรวมไฟล์ PDF (migration 044) — deep navy header, blue CTA. Deliberately
+// distinct from the merge card's brand red (รวมรูป) and the scan card's lighter
+// blue (SCAN_BLUE) so the three document modes are never confused at a glance.
+const PDF_NAVY = '#1E3A5F';
+const PDF_BLUE = '#2563EB';
+
+/** Which "ระบบรวมไฟล์ PDF" card to build. Mirrors {@link MergeCardVariant}. */
+export type PdfMergeCardVariant =
+  | { kind: 'opened' }
+  | { kind: 'page'; count: number };
+
+/**
+ * "ระบบรวมไฟล์ PDF" session cards — same kilo-bubble structure as the merge/scan
+ * cards, navy header. One builder, two variants: 'opened' (session start) and
+ * 'page' (per-file confirmation). Copy says "ไฟล์" throughout, not "รูป"/"หน้า":
+ * this mode takes whole PDF documents, each of which may be many pages.
+ */
+export function buildPdfMergeFlexMessage(
+  variant: PdfMergeCardVariant = { kind: 'opened' },
+): FlexMessage {
+  const header = {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '16px',
+    contents: [
+      { type: 'text', text: 'ระบบรวมไฟล์ PDF', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+    ],
+  };
+  const styles = { header: { backgroundColor: PDF_NAVY }, body: { backgroundColor: '#FFFFFF' } };
+
+  if (variant.kind === 'page') {
+    const headline = `เพิ่มไฟล์ ${variant.count} รายการแล้วน้า`;
+    return {
+      type: 'flex',
+      altText: headline,
+      contents: {
+        type: 'bubble',
+        size: 'kilo',
+        header,
+        body: {
+          type: 'box',
+          layout: 'vertical',
+          spacing: 'md',
+          paddingAll: '16px',
+          contents: [
+            {
+              type: 'box',
+              layout: 'horizontal',
+              spacing: 'md',
+              alignItems: 'center',
+              contents: [
+                statusDot(LINE_GREEN),
+                { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
+              ],
+            },
+            { type: 'text', text: 'ครบทุกไฟล์แล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
+          ],
+        },
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          paddingAll: '12px',
+          contents: [scanCancelButton()],
+        },
+        styles,
+      },
+    };
+  }
+
+  return {
+    type: 'flex',
+    altText: 'เปิดโหมดรวมไฟล์แล้วน้า',
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header,
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'เปิดโหมดรวมไฟล์แล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
+          {
+            type: 'text',
+            text: 'ส่งไฟล์ PDF ทีละไฟล์ได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้',
+            size: 'sm',
+            color: '#333333',
+            wrap: true,
+          },
+        ],
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [scanCancelButton()],
+      },
+      styles,
+    },
+  };
+}
+
 /**
  * Finalize-in-progress card — replied at "เสร็จ" (the moment the user asks to
  * build the PDF), replacing the old worker-side completion PUSH. The reply token
  * is fresh here, so this always lands for free; the merged PDF then appears in the
  * locker (the button target). One compact kilo bubble, same header colors as the
  * scan (blue) / merge (red) session cards:
- *   • header  — "ระบบสแกน" / "ระบบรวมรูป"
+ *   • header  — "ระบบสแกน" / "ระบบรวมรูป" / "ระบบรวมไฟล์ PDF"
  *   • body    — green-dot status line + a soft "แป๊บนึงน้าพี่" note
  *   • footer  — coral/red "ดูล็อคเกอร์ได้เลย" button → dashboard
  */
 export function buildFinalizingFlexMessage(params: {
-  kind: 'scan' | 'merge';
+  kind: SessionKind;
   count: number;
   dashboardUrl: string;
 }): FlexMessage {
   const { kind, count, dashboardUrl } = params;
-  const headerColor = kind === 'scan' ? SCAN_BLUE : BRAND_RED;
-  const title = kind === 'scan' ? 'ระบบสแกน' : 'ระบบรวมรูป';
+  const headerColor = kind === 'scan' ? SCAN_BLUE : kind === 'pdf' ? PDF_NAVY : BRAND_RED;
+  const accent = kind === 'pdf' ? PDF_BLUE : BRAND_RED;
+  const title =
+    kind === 'scan' ? 'ระบบสแกน' : kind === 'pdf' ? 'ระบบรวมไฟล์ PDF' : 'ระบบรวมรูป';
   const statusLine =
     kind === 'scan'
       ? `หนูกำลังสแกน ${count} หน้าเป็น PDF ให้น้า`
@@ -438,11 +544,11 @@ export function buildFinalizingFlexMessage(params: {
     ? {
         type: 'button',
         style: 'primary',
-        color: BRAND_RED,
+        color: accent,
         height: 'sm',
         action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: dashboardUrl },
       }
-    : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${dashboardUrl}`, size: 'xs', color: BRAND_RED, wrap: true };
+    : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${dashboardUrl}`, size: 'xs', color: accent, wrap: true };
 
   return {
     type: 'flex',
@@ -887,8 +993,11 @@ export function buildHelpFlexMessage(): FlexMessage {
       ],
     },
     {
-      header: '🖼️ รวมรูป',
-      lines: ['• "หนูเก็บรวมรูป" → ส่งรูปทีละใบ พิมพ์ "เสร็จ" เมื่อครบ'],
+      header: '🖼️ รวมรูป & รวมไฟล์',
+      lines: [
+        '• "หนูเก็บรวมรูป" → ส่งรูปทีละใบ พิมพ์ "เสร็จ" เมื่อครบ',
+        '• "หนูเก็บรวมไฟล์" → ส่ง PDF ทีละไฟล์ รวมเป็นไฟล์เดียว',
+      ],
     },
     {
       header: '📓 ไดอารี่',

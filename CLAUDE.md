@@ -113,6 +113,33 @@ If replyToken is expired or missing:
 - images while collecting → `add_scan_page` (stored under `spaces/{sid}/scan-temp/...`)
 - `เสร็จ` / `done` — `finalize_scan`: merge pages into one PDF (pdf-lib) → store as a file
 - `ยกเลิก` / `cancel` — cancel the session
+- `หนูเก็บรวมไฟล์` — ระบบรวมไฟล์ PDF (migration 044): merge several PDF FILES into one.
+  The 4th document feature, and deliberately NOT a system of its own — it is a third
+  `session_kind` ('pdf') on the SAME `scan_sessions`/`scan_pages`/`finalize_scan`
+  plumbing as สแกน/รวมรูป, so `เสร็จ`/`ยกเลิก`, the one-active-session-per-user rule
+  (opening any mode auto-cancels the previous one), `page_seq` ordering, the
+  `expected_pages` wait-gate, the `result_file_id` retry marker and the scan-temp
+  cleanup all apply unchanged. Do NOT split it into a parallel session table — the
+  ambiguity of "เสร็จ" across two session systems is exactly what that would buy.
+  Differences from รวมรูป, all keyed off the kind: personal chat only; only `file`
+  messages whose name ends `.pdf` are accepted (an image/other file mid-session is
+  REJECTED with a reply rather than falling through to the normal upload path — the
+  user is mid-flow and a silent archive would look like a bug); each source is
+  validated at accept time in `add_scan_page` (`loadSourcePdf` — magic bytes, then
+  a real `PDFDocument.load`, so a corrupt/encrypted/mis-named file is reported while
+  the session is still open instead of sinking the whole merge at `เสร็จ`) and stored
+  RAW under `spaces/{sid}/scan-temp/{session}/{id}.pdf` (no sharp, no re-encode);
+  `finalize_scan` concatenates with `mergePdfs` (pdf-lib `copyPages`) preserving each
+  source page's size/orientation, no OCR layer (source PDFs carry their own), and
+  names the result `รวมไฟล์_….pdf`. A bad source is USER error: reported and
+  swallowed, never thrown — throwing would burn all 3 BullMQ attempts and send the
+  same message 3×. Caps: `PDF_MERGE_MAX_SOURCE_BYTES` / `PDF_MERGE_MAX_SOURCES`
+  (sources AND output are buffered in worker memory). Quota is charged ONLY for the
+  merged result — the collected sources live in scan-temp, never in the locker.
+  Card: `buildPdfMergeFlexMessage`, navy `#1E3A5F` header + `#2563EB` CTA (distinct
+  from รวมรูป's brand red and สแกน's `#1E88E5`). Reply-only like everything else:
+  the "ดูล็อคเกอร์" button on the finalize-in-progress card IS the completion
+  notice — there is no push when the merge finishes.
 - `วิธีใช้` / `help` — usage text
 - `แปลงไฟล์` / `word` — convert-to-Word mode (personal chat only; needs `MISTRAL_API_KEY`,
   else replies "not available"). Arms a one-shot Redis flag (`docx-convert.service`, TTL
@@ -146,8 +173,8 @@ If replyToken is expired or missing:
   Rich-menu buttons use `type: 'message'` / `type: 'uri'` actions only — the single
   menu has no page switch, so it produces no postbacks (see
   `scripts/setup-rich-menu-single.ts`).
-- `หนูเก็บฟีเจอร์เอกสาร` — rich-menu zone 3. Replies a 3-item quick reply
-  (หนูเก็บแปลงไฟล์ / หนูเก็บสแกนสี / หนูเก็บรวมรูป). Distinct from `หนูเก็บฟีเจอร์`
+- `หนูเก็บฟีเจอร์เอกสาร` — rich-menu zone 3. Replies a 4-item quick reply
+  (หนูเก็บแปลงไฟล์ / หนูเก็บสแกนสี / หนูเก็บรวมรูป / หนูเก็บรวมไฟล์). Distinct from `หนูเก็บฟีเจอร์`
   (the full feature pick, 1-on-1 only) and matched BEFORE it — `isCmd` is exact,
   so the two never shadow each other. Works in groups too.
 - `สร้างงาน` — opens the ระบบตามงาน LIFF create flow. In a group/room it carries
@@ -169,7 +196,7 @@ Run: `cd apps/api && npx tsx --env-file=../../.env scripts/setup-rich-menu-singl
 | # | Zone | x, y, w, h | Action |
 |---|------|------------|--------|
 | 1 | OPEN LOCKER | 0, 0, 1250, 843 | `uri` → `WEB_URL/dashboard` |
-| 2 | สร้างงาน | 1250, 0, 1250, 843 | `message` `หนูเก็บสร้างงาน` |
+| 2 | สร้างงาน | 1250, 0, 1250, 843 | `uri` → `WEB_URL/dashboard/tasks` |
 | 3 | ฟีเจอร์เอกสาร | 0, 843, 800, 843 | `message` `หนูเก็บฟีเจอร์เอกสาร` |
 | 4 | บันทึกไดอารี่ | 800, 843, 720, 843 | `message` `หนูเก็บไดอารี่` |
 | 5 | รวมคำสั่ง | 1520, 843, 430, 407 | `message` `หนูเก็บเพิ่มเติม` |
@@ -596,6 +623,13 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     writes both columns). Safe to apply early: every existing row satisfies the
     CHECK, the new columns have defaults, and dropping NOT NULL only relaxes a
     constraint — the currently-deployed code keeps working either way.
+  - `044_pdf_merge_session_kind.sql` — ระบบรวมไฟล์ PDF: widens the
+    `scan_sessions.session_kind` CHECK from ('scan','merge') to add 'pdf' (see the
+    `หนูเก็บรวมไฟล์` command). No new table, no new column — the whole feature rides
+    the existing scan-session plumbing. NOT auto-applied; apply BEFORE the API
+    deploy (startSession writes 'pdf' and the old CHECK would reject it). Purely a
+    constraint widening, so the currently-deployed code keeps working once applied —
+    either order is safe.
 - No direct DB (pg) connection / DDL access from tooling — schema changes go through
   migration files applied manually.
 
@@ -651,6 +685,9 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     next 1-on-1 text/postback and prepends the messages to that reply),
     `mistral-ocr` (Mistral OCR REST client), `docx-builder` (markdown → editable .docx,
     pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag),
+    `pdf-merge` (PDF source validation + `copyPages` concatenation for ระบบรวมไฟล์ PDF —
+    pure/env-free, unit-tested; distinct from `scan-enhance`'s `buildScanPdf`, which
+    builds a PDF from IMAGES),
     `diary` (diary_entries data access + Bangkok-day/streak helpers), `diary-mode`
     (diary one-shot Redis flag; caption piggybacks on the flag value),
     `vault-crypto` (envelope encryption, pure/unit-tested), `vault-session`
@@ -769,6 +806,9 @@ and `supabase/backfills/` for specifics.
 - `MISTRAL_API_KEY` / `MISTRAL_OCR_MODEL` / `DOCX_CONVERT_MAX_SOURCE_BYTES` — convert-to-Word
   ("แปลงไฟล์"); feature is OFF (command replies "not available") until the key is set
 - `DIARY_MAX_IMAGE_BYTES` — ไดอารี่ per-photo cap (default 10 MB; jpg/png/webp only)
+- `PDF_MERGE_MAX_SOURCE_BYTES` / `PDF_MERGE_MAX_SOURCES` — ระบบรวมไฟล์ PDF caps
+  (defaults 20 MB per source, 20 sources). Worst-case worker memory is roughly the
+  product of the two — raise both together, and only deliberately.
 - `VAULT_MASTER_KEY` / `VAULT_MAX_FILE_SIZE_MB` / `VAULT_PURGE_RETENTION_DAYS` —
   ห้องนิรภัย (Vault); routes reply 503 until the key (32-byte hex) is set.
   NEVER rotate/lose the key — existing vault files become unreadable.

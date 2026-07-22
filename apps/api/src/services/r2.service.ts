@@ -25,8 +25,18 @@ export function buildThumbnailKey(spaceId: string, fileId: string): string {
   return `spaces/${spaceId}/thumbnails/${fileId}/thumb.webp`;
 }
 
-export function buildScanPageKey(spaceId: string, sessionId: string, pageId: string): string {
-  return `spaces/${spaceId}/scan-temp/${sessionId}/${pageId}.jpg`;
+/**
+ * Temp object for one collected page. `ext` is 'jpg' for image sessions
+ * (สแกน/รวมรูป) and 'pdf' for a รวมไฟล์ PDF session (migration 044) — the
+ * prefix is shared, so deleteScanTempObjects/the purge sweep cover both.
+ */
+export function buildScanPageKey(
+  spaceId: string,
+  sessionId: string,
+  pageId: string,
+  ext: 'jpg' | 'pdf' = 'jpg',
+): string {
+  return `spaces/${spaceId}/scan-temp/${sessionId}/${pageId}.${ext}`;
 }
 
 /** Stream download from R2 — used by the thumbnail worker, never buffers to disk. */

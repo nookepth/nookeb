@@ -69,6 +69,12 @@ import {
   setSessionStatus,
 } from '../services/scan.service';
 import { processScanPage, plainNormalize, buildScanPdf, MSG_PDF_FAILED } from '../services/scan-enhance.service';
+import {
+  loadSourcePdf,
+  mergePdfs,
+  PdfSourceError,
+  type PdfRejectReason,
+} from '../services/pdf-merge.service';
 import { extractText, terminateOcr } from '../services/ocr.service';
 import { isMistralOcrConfigured, mistralOcr, MistralOcrRejectedError } from '../services/mistral-ocr.service';
 import { buildDocxFromMarkdown, detectDocumentType } from '../services/docx-builder.service';
@@ -154,6 +160,18 @@ const MSG_SCAN_PAGES_INCOMPLETE = 'พบว่าบางหน้าอาจ
 // (user typed "เสร็จ" and finalize started) — the page couldn't join the PDF.
 const MSG_SCAN_PAGE_TOO_LATE =
   'หน้านี้ส่งมาช้าไปน้า หนูปิดการสแกนรอบนี้ไปแล้ว ถ้าอยากได้หน้านี้ด้วยต้องเริ่มสแกนใหม่น้า';
+// ระบบรวมไฟล์ PDF — why one source PDF couldn't join the merge. The session stays
+// open, so the user can just send a fixed file; nothing else is affected.
+const PDF_REJECT_TEXT: Record<PdfRejectReason, string> = {
+  not_pdf: 'ไฟล์นี้ไม่ใช่ PDF จริงๆ น้า หนูรับแค่ไฟล์ .pdf เองน้า ลองส่งใหม่ได้เลย 📄',
+  encrypted: 'ไฟล์นี้ใส่รหัสผ่านไว้น้า หนูเลยเปิดไม่ได้ ลองปลดรหัสก่อนแล้วส่งมาใหม่น้า 🔐',
+  corrupt: 'ไฟล์นี้เสียหรือเปิดไม่ได้น้า หนูเลยรวมให้ไม่ได้ ลองส่งไฟล์ใหม่อีกทีน้า 🛠️',
+  empty: 'ไฟล์นี้ไม่มีหน้าข้างในเลยน้า ลองส่งไฟล์อื่นมาได้เลยน้า 📄',
+};
+// Queued when the merge itself hits a bad source at finalize time (a file that
+// passed the accept-time check but can't be copied) — the session is cancelled.
+const MSG_PDF_MERGE_SOURCE_FAILED =
+  'มีไฟล์บางไฟล์เปิดไม่ได้ตอนรวมน้า หนูเลยรวมให้ไม่สำเร็จ ลองเริ่ม "หนูเก็บรวมไฟล์" ใหม่แล้วส่งเฉพาะไฟล์ที่เปิดได้น้า';
 
 function extensionOf(name: string): string | null {
   const dot = name.lastIndexOf('.');
@@ -748,6 +766,9 @@ async function processOcrImage(job: OcrImageJob): Promise<void> {
  *   kind 'merge' (รวมรูป) → plain normalize ONLY — merge combines the images
  *                           as-is; running the document pipeline here would
  *                           grayscale/flatten the user's photos.
+ *   kind 'pdf' (รวมไฟล์)  → no image processing at all: validate the bytes are
+ *                           a loadable, unencrypted PDF and store them as-is
+ *                           (migration 044).
  * Quality warnings are pushed best-effort AFTER the page is stored, so a push
  * failure can never retry-and-duplicate the page.
  */
@@ -782,6 +803,36 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   // kind falls back to 'merge' (migration 020's default) and scan_mode to the
   // config default (migration 019) if either migration isn't applied yet.
   const kind = session.session_kind ?? 'merge';
+
+  // ระบบรวมไฟล์ PDF (migration 044): the collected item is a whole PDF document.
+  // Validate it HERE, while the user is still collecting — a source that can't
+  // be loaded must be reported now, not at "เสร็จ" when it would sink the whole
+  // merge. A bad source is USER error, so it's reported and swallowed (return),
+  // never thrown: throwing would burn all three BullMQ attempts re-downloading
+  // the same broken file and send the message three times.
+  if (kind === 'pdf') {
+    try {
+      await loadSourcePdf(original);
+    } catch (err) {
+      if (err instanceof PdfSourceError) {
+        console.warn(
+          `[upload.worker] add_scan_page session=${session.id} msg=${job.lineMessageId} ` +
+            `rejected PDF source (${err.reason}): ${err.message}`,
+        );
+        if (job.lineUserId) {
+          await notifyUser(job.lineUserId, [{ type: 'text', text: PDF_REJECT_TEXT[err.reason] }]);
+        }
+        return;
+      }
+      throw err;
+    }
+    const pdfPageId = randomUUID();
+    const pdfKey = buildScanPageKey(session.space_id, session.id, pdfPageId, 'pdf');
+    await uploadStream(r2, pdfKey, Readable.from(original), 'application/pdf');
+    await insertPage(supabase, session.id, pdfKey, job.lineMessageId);
+    return;
+  }
+
   const mode = session.scan_mode ?? config.SCAN_DEFAULT_MODE;
   let jpeg: Buffer;
   let warnings: string[] = [];
@@ -904,25 +955,41 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   // BullMQ like any other throw; on the LAST attempt we cancel the session and
   // tell the user instead of crashing silently — the retake message asks them
   // to run รวมรูป again.
+  const sessionKind = session.session_kind ?? 'merge';
   let pdfBytes: Uint8Array;
   try {
-    const jpegs: Buffer[] = [];
+    const sources: Buffer[] = [];
     for (const page of pages) {
-      jpegs.push(await readAll(await getObjectStream(r2, page.r2_key)));
+      sources.push(await readAll(await getObjectStream(r2, page.r2_key)));
     }
-    pdfBytes = await buildScanPdf(jpegs, {
-      ocrEnabled: config.SCAN_OCR_ENABLED,
-      logTag: `session=${session.id}`,
-    });
-    log('pdf-built', `bytes=${pdfBytes.length} ocr=${config.SCAN_OCR_ENABLED}`);
+    if (sessionKind === 'pdf') {
+      // ระบบรวมไฟล์ PDF (migration 044): concatenate the collected documents,
+      // preserving each source page's own size/orientation. No OCR layer —
+      // source PDFs carry their own text layer already.
+      pdfBytes = await mergePdfs(sources);
+      log('pdf-merged', `bytes=${pdfBytes.length} sources=${sources.length}`);
+    } else {
+      pdfBytes = await buildScanPdf(sources, {
+        ocrEnabled: config.SCAN_OCR_ENABLED,
+        logTag: `session=${session.id}`,
+      });
+      log('pdf-built', `bytes=${pdfBytes.length} ocr=${config.SCAN_OCR_ENABLED}`);
+    }
   } catch (err) {
     console.error(`[upload.worker] finalize_scan PDF assembly failed (${session.id}):`, err);
-    if (!isLastAttempt) throw err; // let BullMQ retry transient R2 read failures
+    // A bad SOURCE pdf is not transient — retrying re-reads the same bytes and
+    // fails identically, so fail fast with a message that names the cause
+    // instead of burning all three attempts. Everything else (R2 read blips)
+    // keeps the existing retry behaviour.
+    const badSource = err instanceof PdfSourceError;
+    if (!badSource && !isLastAttempt) throw err; // let BullMQ retry transient R2 read failures
     await setSessionStatus(supabase, session.id, 'cancelled');
     // The merged PDF will never be produced — free the temp page images now so
     // this permanently-cancelled session doesn't leak them (best-effort).
     await deleteScanTempObjects(supabase, session.id);
-    await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
+    await notifyUser(job.lineUserId, [
+      { type: 'text', text: badSource ? MSG_PDF_MERGE_SOURCE_FAILED : MSG_PDF_FAILED },
+    ]);
     return;
   }
 
@@ -983,11 +1050,11 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     }
   }
 
-  // Scan sessions name the PDF "สแกน_…"; merge sessions "รวมรูป_…" (migration 020).
-  const kind = session.session_kind ?? 'merge';
+  // Scan sessions name the PDF "สแกน_…", merge sessions "รวมรูป_…" (migration
+  // 020), PDF-merge sessions "รวมไฟล์_…" (044).
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
-  const prefix = kind === 'scan' ? 'สแกน' : 'รวมรูป';
+  const prefix = sessionKind === 'scan' ? 'สแกน' : sessionKind === 'pdf' ? 'รวมไฟล์' : 'รวมรูป';
   const name = `${prefix}_${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}.pdf`;
 
   const fileId = randomUUID();
@@ -1067,7 +1134,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
     userId: session.user_id,
     spaceId: session.space_id,
     source: 'worker',
-    metadata: { pages: pages.length, kind, bytes: pdfBytes.length },
+    metadata: { pages: pages.length, kind: sessionKind, bytes: pdfBytes.length },
   });
 
   // Clean up temporary page images (best-effort)
@@ -1085,7 +1152,7 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
   // in the locker, so tapping that button shows it. (Error paths above — empty
   // session / PDF-assembly failure / team-full — defer their text notices via
   // pending-notify: rare events with no reply token, never pushed.)
-  log('done-no-push', `kind=${kind} file=${name}`);
+  log('done-no-push', `kind=${sessionKind} file=${name}`);
 }
 
 // ---------------------------------------------------------------------------
