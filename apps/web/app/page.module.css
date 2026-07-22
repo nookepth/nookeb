@@ -5,13 +5,26 @@
    ============================================================ */
 
 .landing {
-  /* landing-only accents */
+  /* DESIGN DECISION: the playbook (ส่วนที่ 5) puts Brand Red at #B53A32, while
+     globals.css --color-primary is #C0392B. They are close enough that mixing
+     them reads as a rendering artifact rather than a choice, so the landing
+     page — the one surface the brand guide governs — pins the playbook value
+     locally. The dashboard keeps the app token; nothing here leaks out. */
+  --color-primary: #b53a32;
+  --color-primary-dark: #8e2a24;
+  --color-primary-soft: #fbeceb;
+
+  /* landing-only accents (playbook ส่วนที่ 5 อัตลักษณ์ภาพ) */
   --pink: #e85d8a;
   --pink-soft: #fdeef3;
   --line-green: #06c755;
   --green-soft: #e6f7ec;
   --gold: #d9a53f;
   --gold-soft: #f7edd6;
+  --navy: #2b4c7e;
+  --navy-soft: #eaf0f8;
+  --rose: #9e2b2b;
+  --rose-soft: #fbecec;
   --paper: #fffdf9;
   --nav-h: 64px;
 
@@ -64,13 +77,13 @@
 .btnPrimary {
   background: var(--color-primary);
   color: #ffffff;
-  box-shadow: 0 6px 18px rgba(192, 57, 43, 0.28);
+  box-shadow: 0 6px 18px rgba(181, 58, 50, 0.28);
 }
 
 .btnPrimary:hover {
   background: var(--color-primary-dark);
   transform: translateY(-1px);
-  box-shadow: 0 10px 24px rgba(192, 57, 43, 0.32);
+  box-shadow: 0 10px 24px rgba(181, 58, 50, 0.32);
 }
 
 .btnSecondary {
@@ -110,7 +123,7 @@
 .landing a:focus-visible,
 .landing button:focus-visible,
 .landing summary:focus-visible {
-  outline: 3px solid rgba(192, 57, 43, 0.35);
+  outline: 3px solid rgba(181, 58, 50, 0.35);
   outline-offset: 2px;
   border-radius: 8px;
 }
@@ -218,7 +231,7 @@
   position: relative;
   padding: 72px 0 84px;
   background:
-    radial-gradient(560px 320px at 8% -4%, rgba(192, 57, 43, 0.07), transparent 70%),
+    radial-gradient(560px 320px at 8% -4%, rgba(181, 58, 50, 0.07), transparent 70%),
     radial-gradient(520px 320px at 96% 12%, rgba(13, 148, 136, 0.07), transparent 70%),
     radial-gradient(var(--color-border) 1px, transparent 1.5px);
   background-size: auto, auto, 26px 26px;
@@ -688,21 +701,97 @@
 }
 
 /* ============================================================
-   Features
+   Locker wall — "ฝากอะไรกับหนูเก็บได้บ้าง"
+
+   The spine of the page. Each card is one tagline variant from playbook
+   ส่วนที่ 1, illustrated by its own official card from R2 static/onboarding/.
+   The artwork is square and already carries the hook line, so the card keeps
+   it full-bleed at the top and lets the copy underneath do the specifics.
    ============================================================ */
 
-.featureGrid {
+.depositHead {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 18px;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 40px;
+  margin-bottom: 44px;
 }
 
-.featureCard {
+.depositHead .sectionSub {
+  text-align: left;
+  max-width: 34em;
+}
+
+.depositHeroCard {
   position: relative;
+  flex-shrink: 0;
+  width: 260px;
+  padding: 10px 10px 12px;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  transform: rotate(2.2deg);
+  transition: transform 240ms var(--ease-lift), box-shadow 240ms ease;
+}
+
+.depositHeroCard:hover {
+  transform: rotate(0deg) scale(1.03);
+  box-shadow: var(--shadow-lg);
+}
+
+.depositHeroImg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+}
+
+/* washi tape holding the card to the wall */
+.tape {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  width: 86px;
+  height: 24px;
+  transform: translateX(-50%) rotate(-3deg);
+  background: rgba(217, 165, 63, 0.38);
+  border-left: 1px dashed rgba(156, 115, 37, 0.35);
+  border-right: 1px dashed rgba(156, 115, 37, 0.35);
+  border-radius: 2px;
+}
+
+@media (max-width: 900px) {
+  .depositHead {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    text-align: center;
+    gap: 30px;
+  }
+
+  .depositHead .sectionSub {
+    text-align: center;
+  }
+
+  .depositHeroCard {
+    order: -1;
+    width: 220px;
+  }
+}
+
+/* ---------- cards ---------- */
+
+.depositGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.depositCard {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 24px 22px;
+  height: 100%;
+  overflow: hidden;
   background: var(--paper);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -710,49 +799,178 @@
   transition: transform 220ms var(--ease-lift), box-shadow 220ms ease, border-color 150ms ease;
 }
 
-.featureCard:hover {
-  transform: translateY(-4px) rotate(-0.4deg);
+.depositCard:hover {
+  transform: translateY(-5px);
   box-shadow: var(--shadow-lg);
-  border-color: var(--color-primary);
+  border-color: var(--accent, var(--color-primary));
 }
 
-.featureIcon {
+/* per-card accent — drives the kicker, the bullets and the hover border */
+.red {
+  --accent: var(--color-primary);
+  --accent-soft: var(--color-primary-soft);
+}
+
+.gold {
+  --accent: #9c7325;
+  --accent-soft: var(--gold-soft);
+}
+
+.navy {
+  --accent: var(--navy);
+  --accent-soft: var(--navy-soft);
+}
+
+.teal {
+  --accent: var(--color-teal);
+  --accent-soft: var(--color-teal-soft);
+}
+
+.pink {
+  --accent: var(--pink);
+  --accent-soft: var(--pink-soft);
+}
+
+.rose {
+  --accent: var(--rose);
+  --accent-soft: var(--rose-soft);
+}
+
+.depositImg {
+  display: block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+  border-bottom: 1px solid var(--color-border);
+}
+
+/* ---------- CSS stand-in artwork ----------
+   Mirrors the photo series (locker door + vent slats + torn note) for the one
+   card whose official image carries a claim the product cannot back yet.
+   See the TODO in page.tsx. */
+
+.depositArt {
+  position: relative;
+  aspect-ratio: 1 / 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 46px;
-  height: 46px;
-  border-radius: 14px;
-  background: var(--color-primary-soft);
-  color: var(--color-primary);
+  padding: 12%;
+  overflow: hidden;
+  border-bottom: 1px solid var(--color-border);
+  /* Fallback first: an unsupported color-mix() invalidates the WHOLE
+     declaration, and a lot of the LINE in-app browsers we ship to are older
+     WKWebViews. Without this the card would render on transparent. */
+  background:
+    linear-gradient(112deg, rgba(0, 0, 0, 0.22) 0 6%, transparent 6% 12%),
+    linear-gradient(160deg, var(--accent) 0%, rgba(5, 34, 31, 0.86) 100%);
+  background:
+    linear-gradient(112deg, rgba(0, 0, 0, 0.22) 0 6%, transparent 6% 12%),
+    linear-gradient(160deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 62%, #05221f) 100%);
 }
 
-.featureIcon.teal {
-  background: var(--color-teal-soft);
-  color: var(--color-teal);
+.depositArtVent {
+  position: absolute;
+  top: 11%;
+  right: 12%;
+  width: 26%;
+  height: 15%;
+  border-radius: 4px;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.2) 0 4px,
+    transparent 4px 11px
+  );
 }
 
-.featureIcon.pink {
-  background: var(--pink-soft);
-  color: var(--pink);
+.depositArtNote {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+  padding: 22px 20px;
+  background: #fdf9ec;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.26);
+  transform: rotate(-1.4deg);
+  /* torn edges, top and bottom */
+  clip-path: polygon(
+    0 6%, 8% 2%, 20% 5%, 33% 1%, 47% 5%, 61% 1%, 74% 5%, 87% 2%, 100% 6%,
+    100% 94%, 88% 99%, 74% 95%, 60% 99%, 46% 95%, 32% 99%, 19% 95%, 7% 98%, 0 94%
+  );
+  /* ruled-notebook lines */
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0 25px,
+    rgba(43, 76, 126, 0.18) 25px 26px
+  );
 }
 
-.featureIcon.gold {
-  background: var(--gold-soft);
-  color: #9c7325;
+.depositArtNote em {
+  font-style: normal;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
 }
 
-.featureTitle {
+.depositArtNote strong {
+  font-size: clamp(1.25rem, 2.6vw, 1.65rem);
+  font-weight: 700;
+  line-height: 1.3;
+  color: var(--accent);
+}
+
+/* ---------- card copy ---------- */
+
+.depositBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  padding: 20px 20px 22px;
+}
+
+.depositKicker {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  padding: 3px 14px;
+  border-radius: var(--radius-full);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 1.05rem;
+  line-height: 1.5;
+}
+
+.depositTitle {
   font-size: var(--font-size-lg);
   font-weight: 700;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
-.featureDesc {
-  font-size: var(--font-size-sm);
-  line-height: 1.75;
-  color: var(--color-text-secondary);
+.depositList {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
   flex: 1;
+  list-style: none;
+  margin: 2px 0 4px;
+  padding: 0;
+}
+
+.depositList li {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: var(--font-size-sm);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+}
+
+.depositList svg {
+  flex-shrink: 0;
+  margin-top: 5px;
+  color: var(--accent);
 }
 
 .cmdChip {
@@ -776,107 +994,24 @@
 
 .finePrint {
   font-size: 0.6875rem;
+  line-height: 1.6;
   color: var(--color-text-muted);
 }
 
 @media (max-width: 980px) {
-  .featureGrid {
+  .depositGrid {
     grid-template-columns: repeat(2, 1fr);
   }
 }
 
 @media (max-width: 620px) {
-  .featureGrid {
+  .depositGrid {
     grid-template-columns: 1fr;
+    max-width: 420px;
+    margin: 0 auto;
   }
 }
 
-/* ============================================================
-   Scrapbook gallery (brand cards 1–7)
-   ============================================================ */
-
-.gallery {
-  display: flex;
-  gap: 26px;
-  justify-content: center;
-  flex-wrap: wrap;
-  padding: 10px 4px 6px;
-}
-
-.polaroid {
-  position: relative;
-  width: 224px;
-  padding: 10px 10px 12px;
-  background: #ffffff;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-  box-shadow: var(--shadow-md);
-  transition: transform 240ms var(--ease-lift), box-shadow 240ms ease;
-}
-
-.polaroid:nth-child(odd) {
-  transform: rotate(-2.4deg);
-}
-
-.polaroid:nth-child(even) {
-  transform: rotate(2deg) translateY(10px);
-}
-
-.polaroid:hover {
-  transform: rotate(0deg) translateY(-6px) scale(1.03);
-  box-shadow: var(--shadow-lg);
-  z-index: 2;
-}
-
-.polaroidImg {
-  display: block;
-  width: 100%;
-  height: auto;
-  border-radius: 4px;
-}
-
-.polaroidCap {
-  margin-top: 9px;
-  text-align: center;
-  font-size: 1.02rem;
-  color: var(--color-text-secondary);
-  line-height: 1.3;
-}
-
-.tape {
-  position: absolute;
-  top: -12px;
-  left: 50%;
-  width: 86px;
-  height: 24px;
-  transform: translateX(-50%) rotate(-3deg);
-  background: rgba(217, 165, 63, 0.38);
-  border-left: 1px dashed rgba(156, 115, 37, 0.35);
-  border-right: 1px dashed rgba(156, 115, 37, 0.35);
-  border-radius: 2px;
-}
-
-@media (max-width: 640px) {
-  .gallery {
-    flex-wrap: nowrap;
-    justify-content: flex-start;
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    padding: 16px 18px 22px;
-    margin: 0 -18px;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-  }
-
-  .gallery::-webkit-scrollbar {
-    display: none;
-  }
-
-  .polaroid {
-    flex-shrink: 0;
-    scroll-snap-align: center;
-  }
-}
 
 /* ============================================================
    3 steps
@@ -974,14 +1109,39 @@
 
 .freeCard {
   display: grid;
-  grid-template-columns: 0.9fr 1.1fr;
+  grid-template-columns: 0.82fr 1.18fr;
   align-items: center;
-  gap: 40px;
-  padding: 44px 46px;
+  gap: 44px;
+  padding: 40px 44px;
   background: var(--paper);
   border: 1.5px solid var(--color-teal);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-md);
+}
+
+/* IMAGE: static/onboarding/9.jpg — the "ชวนเพื่อน ได้พื้นที่ฟรี" locker card.
+   It states the offer in the brand's own handwriting, so it anchors this
+   section instead of a generic illustration. */
+.freeArt {
+  position: relative;
+  padding: 10px 10px 12px;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-md);
+  transform: rotate(-2deg);
+  transition: transform 240ms var(--ease-lift);
+}
+
+.freeArt:hover {
+  transform: rotate(0deg) scale(1.02);
+}
+
+.freeArtImg {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
 }
 
 .freeKicker {
@@ -1014,6 +1174,7 @@
   align-items: stretch;
   flex-wrap: wrap;
   gap: 8px;
+  margin-top: 22px;
 }
 
 .rung {
@@ -1096,7 +1257,7 @@
 
 .trustRow {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 18px;
 }
 
@@ -1495,8 +1656,18 @@
     animation: none;
   }
 
-  .featureCard:hover,
-  .polaroid:hover,
+  /* These two sit at a base rotation; zeroing only :hover would make them
+     JUMP on hover, which is exactly what reduced motion asks us not to do.
+     Flatten both states instead. */
+  .depositHeroCard,
+  .depositHeroCard:hover,
+  .freeArt,
+  .freeArt:hover {
+    transform: none;
+    transition: none;
+  }
+
+  .depositCard:hover,
   .rung:hover,
   .btnPrimary:hover,
   .btnWhite:hover,

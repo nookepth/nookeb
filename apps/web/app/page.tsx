@@ -3,6 +3,7 @@ import Image from 'next/image';
 import Link from 'next/link';
 import { Itim } from 'next/font/google';
 
+import ChatDemo from '@/components/landing/ChatDemo';
 import Reveal from '@/components/landing/Reveal';
 import { INSTAGRAM_URL, LINE_ADD_FRIEND_URL, LINE_ID, SITE_URL, TIKTOK_URL } from '@/lib/site';
 import styles from './page.module.css';
@@ -15,10 +16,33 @@ const itim = Itim({
   display: 'swap',
 });
 
-const TITLE = 'หนูเก็บ (Nookeb) — ฝากไฟล์ใน LINE เก็บถาวรไม่หมดอายุ ฟรี 1 GB';
+/* ============================================================
+   V2 — "ฝากไว้กับหนูเก็บ"
+
+   The v1 page sold ONE feature (a file locker). Playbook v2 ส่วนที่ 1 retires
+   that position: หนูเก็บ is now "ที่ฝากของใจกลางไลน์" and the brand leads with
+   the umbrella verb ฝาก, with a variant per feature family. This page is built
+   around that system — the "ฝากอะไรได้บ้าง" locker wall is the spine, and every
+   other section either proves it (demo, steps) or removes a reason to leave
+   (free space, trust, FAQ).
+
+   Every claim below is checked against the playbook's ตาราง 2.2 (เคลมได้) and
+   2.3 (ห้ามเคลม). The three that bite hardest, because the live v1 page broke
+   two of them:
+   - NO auto-reminder claim for ตามงาน — reminders exist in code but ship
+     disabled (TASK_NOTIFICATIONS_ENABLED=false).
+   - NO group notify toggle — "หนูเก็บปิดแจ้งเตือน" was retired; groups now
+     store silently, always. (v1's FAQ still taught the dead command.)
+   - NO unconditional "เก็บถาวรตลอดไป" — say "ไม่หมดอายุเหมือนไฟล์ในแชท" and
+     be upfront about ถังขยะ.
+   Also absent on purpose: Google Sheets sync (Pro-locked, not on sale).
+   ============================================================ */
+
+const TITLE = 'หนูเก็บ (Nookeb) — ฝากไฟล์ งาน และความทรงจำไว้ในไลน์ ฟรี 1 GB';
 const DESCRIPTION =
-  'ส่งรูปหรือไฟล์เข้าแชท LINE ให้หนูเก็บ เก็บเข้าล็อคเกอร์บนคลาวด์ถาวร ไม่มีวันหมดอายุ ' +
-  'ค้นหาเจอแม้จำชื่อไฟล์ไม่ได้ สแกนเอกสารเป็น PDF แปลงรูปเป็น Word ไดอารี่ 365 วัน ' +
+  'ฝากไว้กับหนูเก็บ — ส่งรูปหรือไฟล์เข้าแชท LINE แล้วเก็บเข้าล็อคเกอร์บนคลาวด์ทันที ' +
+  'ไม่หมดอายุเหมือนไฟล์ในแชท ค้นหาเจอแม้จำชื่อไฟล์ไม่ได้ สแกนเอกสารเป็น PDF รวมไฟล์ PDF ' +
+  'แปลงรูปเป็น Word ตั้งงานตามในกลุ่ม ไดอารี่ 365 วัน ห้องนิรภัย และกล่องของขวัญ ' +
   'เริ่มฟรี 1 GB ไม่ต้องโหลดแอป ไม่ต้องสมัครสมาชิก';
 
 export const metadata: Metadata = {
@@ -27,13 +51,15 @@ export const metadata: Metadata = {
   keywords: [
     'หนูเก็บ',
     'nookeb',
+    'ฝากไว้กับหนูเก็บ',
     'เก็บไฟล์ LINE',
     'ฝากไฟล์ออนไลน์',
     'ไฟล์หมดอายุ LINE',
     'สแกนเอกสารเป็น PDF ฟรี',
+    'รวมไฟล์ PDF',
     'แปลงรูปเป็น Word',
     'ไดอารี่ 365 วัน',
-    'คลังเก็บไฟล์ออนไลน์',
+    'ตามงานในกลุ่มไลน์',
     'LINE bot เก็บไฟล์',
   ],
   alternates: { canonical: '/' },
@@ -45,7 +71,7 @@ export const metadata: Metadata = {
     siteName: 'หนูเก็บ (Nookeb)',
     title: TITLE,
     description: DESCRIPTION,
-    images: [{ url: '/landing/og.jpg', width: 1200, height: 1360, alt: 'หนูเก็บ — ผู้ช่วยในการเก็บข้อมูล' }],
+    images: [{ url: '/landing/og.jpg', width: 1200, height: 1360, alt: 'หนูเก็บ — ฝากไว้กับหนูเก็บ' }],
   },
   twitter: {
     card: 'summary_large_image',
@@ -56,81 +82,139 @@ export const metadata: Metadata = {
 };
 
 /* ============================================================
-   Content (ยึดตาราง "เคลมได้/ห้ามเคลม" ใน brand playbook ส่วนที่ 2)
+   Content
    ============================================================ */
 
+/* The umbrella verb, one item per tagline variant (playbook ส่วนที่ 1). */
 const MARQUEE_ITEMS = [
-  'เก็บรูปและไฟล์ถาวร',
-  'ไม่มีวันหมดอายุ',
-  'สแกนเป็น PDF',
-  'แปลงรูปเป็น Word',
-  'ไดอารี่ 365 วัน',
-  'ใช้กับแก๊งในกลุ่ม',
-  'ค้นหาเจอเสมอ',
-  'ฟรี 1 GB',
+  'ฝากไฟล์',
+  'ฝากเอกสาร',
+  'ฝากไว้ทั้งกลุ่ม',
+  'ฝากตามงาน',
+  'ฝากความทรงจำ',
+  'ฝากของลับ',
+  'ฝากส่งให้กัน',
+  'ฝากไว้กับหนูเก็บ',
 ];
 
-const FEATURES: {
-  icon: React.ReactNode;
-  tint: 'red' | 'teal' | 'pink' | 'gold';
+/* IMAGE: the R2 static/onboarding/ set is one card per ฝาก variant — locker
+   door, torn note, hook line, and a "ฝาก___" pill. It IS the v2 tagline system
+   drawn out, so it drives this section rather than decorating it. */
+interface Deposit {
+  /** Card artwork. `art` renders a CSS locker door instead (see note below). */
+  img?: { src: string; alt: string };
+  art?: { tint: string; hook: string; line: string };
+  tint: 'red' | 'gold' | 'navy' | 'teal' | 'pink' | 'rose';
+  kicker: string;
   title: string;
-  desc: string;
+  bullets: string[];
   chip: string;
   fine?: string;
-}[] = [
+}
+
+const DEPOSITS: Deposit[] = [
   {
-    icon: <IcoInbox />,
+    img: {
+      src: '/landing/onboarding/files.webp',
+      alt: 'การ์ดหนูเก็บ: ไฟล์สำคัญในไลน์หมดอายุแล้ว — ฝากไว้กับหนูเก็บ ไม่หายอีกแล้ว',
+    },
     tint: 'red',
-    title: 'เก็บทุกอย่างจากแชท',
-    desc: 'รูป เอกสาร วิดีโอ เสียง — แค่ส่งเข้าแชท หนูเก็บเก็บเข้าล็อคเกอร์ให้ทันที ไฟล์ละไม่เกิน 1 GB เก็บถาวร ไม่หมดอายุเหมือนไฟล์ในแชทไลน์',
-    chip: 'แค่ส่งไฟล์เข้าแชท',
+    kicker: 'ฝากไฟล์',
+    title: 'ไฟล์หมดอายุ ไม่ต้องเจออีกแล้วน้า',
+    bullets: [
+      'ส่งรูป เอกสาร วิดีโอ หรือเสียงเข้าแชท เก็บให้ทันที ไฟล์ละไม่เกิน 1 GB',
+      'จำชื่อไฟล์ไม่ได้ก็หาเจอ — พิมพ์คำที่อยู่ในใบเสร็จหรือเอกสารได้เลย',
+      'จัดโฟลเดอร์ ติดแท็ก เปลี่ยนชื่อ ดาวน์โหลด ทำได้หมดบนเว็บล็อคเกอร์',
+    ],
+    chip: 'ส่งไฟล์เข้าแชทได้เลย ไม่ต้องพิมพ์คำสั่ง',
   },
   {
-    icon: <IcoSearchImg />,
-    tint: 'red',
-    title: 'ค้นหาเจอแม้จำชื่อไฟล์ไม่ได้',
-    desc: 'หนูอ่านตัวหนังสือในรูปให้อัตโนมัติ (ไทย + อังกฤษ) พิมพ์คำที่อยู่ในใบเสร็จหรือเอกสารลงช่องค้นหา ก็เจอรูปนั้นเลยน้า',
-    chip: 'พิมพ์คำที่อยู่ในรูป',
-  },
-  {
-    icon: <IcoUsers />,
-    tint: 'teal',
-    title: 'ใช้กับแก๊งในกลุ่ม',
-    desc: 'เชิญหนูเก็บเข้ากลุ่มไลน์ ไฟล์ที่ทุกคนส่งหลังจากนั้นถูกเก็บเข้าพื้นที่กลางของกลุ่มอัตโนมัติ ตั้งทีมและจัดการสมาชิกผ่านแดชบอร์ดได้',
-    chip: 'เชิญหนูเก็บเข้ากลุ่ม',
-  },
-  {
-    icon: <IcoDocEdit />,
-    tint: 'red',
-    title: 'แปลงรูปเป็นไฟล์ Word',
-    desc: 'ส่งรูปหรือ PDF (ไม่เกิน 10 MB) หนูอ่านเอกสารแล้วสร้างเป็นไฟล์ .docx ให้เอาไปแก้ต่อได้เลย — เอกสารตัวพิมพ์ชัด ๆ ได้ผลดีที่สุด',
-    chip: '"หนูเก็บแปลงไฟล์"',
+    img: {
+      src: '/landing/onboarding/docs.webp',
+      alt: 'การ์ดหนูเก็บ: แปลงไฟล์ สแกน และรวมรูป — ฝากทำเอกสาร หนูเก็บคอยช่วย',
+    },
+    tint: 'gold',
+    kicker: 'ฝากเอกสาร',
+    title: 'ร้านถ่ายเอกสารอยู่ในไลน์พี่แล้ว',
+    bullets: [
+      'ถ่ายเอกสารทีละหน้า พิมพ์ "เสร็จ" ได้ PDF ไฟล์เดียว คมชัดเหมือนเครื่องสแกน',
+      'มี PDF หลายไฟล์ ส่งให้หนูรวมเป็นไฟล์เดียวได้ (ไฟล์ละไม่เกิน 20 MB สูงสุด 20 ไฟล์)',
+      'ถ่ายรูปเอกสารมา หนูแปลงเป็นไฟล์ Word ให้เอาไปแก้ต่อได้เลย',
+    ],
+    chip: '"หนูเก็บฟีเจอร์เอกสาร"',
     fine: 'ใช้ในแชทส่วนตัวกับหนูเก็บ',
   },
   {
-    icon: <IcoCalHeart />,
+    img: {
+      src: '/landing/onboarding/group.webp',
+      alt: 'การ์ดหนูเก็บ: ดึงหนูเก็บเข้ากลุ่ม ไฟล์ไม่หายอีก — ฝากเก็บไฟล์ในทีม',
+    },
+    tint: 'navy',
+    kicker: 'ฝากไว้ทั้งกลุ่ม',
+    title: 'ดึงหนูเข้ากลุ่ม ไฟล์ทั้งกลุ่มไม่หายอีกเลย',
+    bullets: [
+      'ไฟล์ที่สมาชิกส่งหลังจากนั้น เก็บเข้าพื้นที่กลางของกลุ่มอัตโนมัติ',
+      'ทุกคนเปิดดูย้อนหลังได้ ไม่ต้องไล่ขอไฟล์ใหม่จากใคร',
+      'ในกลุ่มหนูเก็บให้เงียบ ๆ เสมอ ไม่เด้งกวนแชทเลยน้า',
+    ],
+    chip: 'เชิญหนูเก็บเข้ากลุ่มไลน์',
+  },
+  {
+    /* IMAGE: static/onboarding/3.jpg is this card's official artwork, but the
+       note baked into it reads "หนูเก็บเตือนให้ / หนูเก็บเตือนส่ง" — the auto
+       reminder is the playbook's own red line (ตาราง 2.3) because
+       TASK_NOTIFICATIONS_ENABLED is false. Shipping the image would make the
+       claim no matter what the caption says, so this one card is drawn in CSS
+       to match the series instead.
+       // TODO: confirm with team — reprint 3.jpg with a claim-safe note (or
+       // ship the reminders) and this card can use the photo like the rest. */
+    art: {
+      tint: 'teal',
+      hook: 'งานที่ลืมทำ...',
+      line: 'เพราะคิดว่าทุกคนจะทำ',
+    },
+    tint: 'teal',
+    kicker: 'ฝากตามงาน',
+    title: 'สั่งงานในกลุ่ม แล้วรู้ว่าใครทำถึงไหน',
+    bullets: [
+      'เลือกได้ 3 แบบ — งานเดียวมอบหลายคน · แยกงานเป็นรายการ · งานประจำทำซ้ำตามรอบ',
+      'หนูโพสต์การ์ดประกาศงานเข้ากลุ่มให้ กด "รับงาน" หรือ "เสร็จแล้ว" ได้ในแชทเลย',
+      'แนบไฟล์ประกอบงาน ส่งงานกลับให้คนสั่งตรวจ และโหลดสรุปเป็นไฟล์ Excel ได้ฟรี',
+    ],
+    chip: '"หนูเก็บสร้างงาน"',
+    fine: 'อยู่คนเดียวก็ใช้ได้ — พิมพ์ในแชทส่วนตัวจะได้งานส่วนตัวที่มีแค่พี่คนเดียว',
+  },
+  {
+    img: {
+      src: '/landing/onboarding/diary.webp',
+      alt: 'การ์ดหนูเก็บ: บันทึกไดอารี่ 365 วัน — ฝากความทรงจำ',
+    },
     tint: 'pink',
-    title: 'ไดอารี่ 365 วัน',
-    desc: 'ถ่ายรูปวันละรูปพร้อมเขียนแคปชั่น หนูเรียงเป็นตาราง 365 ช่อง สะสม streak วันติดต่อกัน เปิดย้อนดูความทรงจำได้ทั้งปี',
+    kicker: 'ฝากความทรงจำ',
+    title: 'วันละรูป ครบปีได้หนังชีวิตตัวเอง',
+    bullets: [
+      'ส่งรูปวันละ 1 รูป พิมพ์แคปชั่นไปด้วยก็ได้',
+      'หนูเรียงให้เป็นตาราง 365 ช่อง พร้อมนับ streak วันติดต่อกัน',
+      'เปิดย้อนดูได้ว่า "วันนี้เมื่อ 100 วันก่อน" พี่ทำอะไรอยู่',
+    ],
     chip: '"หนูเก็บไดอารี่"',
     fine: 'ใช้ในแชทส่วนตัวกับหนูเก็บ',
   },
   {
-    icon: <IcoScan />,
-    tint: 'gold',
-    title: 'สแกนเอกสารเป็น PDF',
-    desc: 'ถ่ายรูปเอกสารทีละหน้า พอครบพิมพ์ "เสร็จ" หนูรวมเป็น PDF ไฟล์เดียว ปรับภาพคมชัดเหมือนเครื่องสแกน เลือกได้ทั้งสีและขาวดำ',
-    chip: '"หนูเก็บสแกนสี"',
-    fine: 'ใช้ในแชทส่วนตัวกับหนูเก็บ',
+    img: {
+      src: '/landing/onboarding/gift.webp',
+      alt: 'การ์ดหนูเก็บ: ส่งของขวัญให้คนพิเศษ — ฝากส่งกล่องของขวัญดิจิทัล',
+    },
+    tint: 'rose',
+    kicker: 'ฝากส่งให้กัน',
+    title: 'อยากบอกรัก แต่ไม่รู้จะพูดยังไง',
+    bullets: [
+      'ใส่รูป 1–10 รูป ข้อความ และเสียงพูดสั้น ๆ ของพี่เอง',
+      'เลือกโอกาสและธีมสี แล้วได้ลิงก์ไว้ส่งให้คนพิเศษ',
+      'คนรับกดเปิดเป็นแอนิเมชันแกะกล่อง เซอร์ไพรส์กว่าส่งรูปเปล่า ๆ',
+    ],
+    chip: 'สร้างที่เว็บล็อคเกอร์',
   },
-];
-
-const GALLERY: { src: string; alt: string; cap: string }[] = [
-  { src: '/landing/card-2.jpg', alt: 'การ์ดแนะนำหนูเก็บ ผู้ช่วยในการเก็บข้อมูล', cap: 'แนะนำตัวหน่อยน้า' },
-  { src: '/landing/card-4.jpg', alt: 'การ์ดฟีเจอร์ รวมรูปเป็น PDF และสแกนเอกสาร', cap: 'รวมรูปเป็น PDF ได้น้า' },
-  { src: '/landing/card-5.jpg', alt: 'การ์ดฟีเจอร์ ใช้หนูเก็บกับกลุ่มเพื่อน', cap: 'ชวนแก๊งมาเก็บด้วยกัน' },
-  { src: '/landing/card-6.jpg', alt: 'การ์ดสติกเกอร์ไลน์ของหนูเก็บ', cap: 'มีสติกเกอร์ด้วยน้า' },
-  { src: '/landing/card-1.jpg', alt: 'การ์ดแนะนำวิธีเรียกหนูเก็บ', cap: 'เรียกหนูว่า "หนูเก็บ"' },
 ];
 
 const STEPS: { title: string; desc: string; quote?: string }[] = [
@@ -159,44 +243,57 @@ const TRUST: { icon: React.ReactNode; title: string; desc: string }[] = [
   {
     icon: <IcoBellOff />,
     title: 'หนูไม่ทักก่อน ไม่สแปม',
-    desc: 'หนูเก็บตอบเฉพาะตอนพี่ทักหรือส่งไฟล์มา ไม่มีโฆษณายิงใส่แชท — แชทของพี่คือพื้นที่ของพี่',
+    desc: 'ในแชทส่วนตัว หนูเก็บตอบเฉพาะตอนพี่ทักหรือส่งไฟล์มา ไม่มีโฆษณายิงใส่แชท — แชทของพี่คือพื้นที่ของพี่น้า',
   },
   {
-    icon: <IcoShield />,
-    title: 'ล็อคเกอร์ที่มีหนูเฝ้า',
-    desc: 'ไฟล์อยู่บนคลาวด์ระดับองค์กร แยกพื้นที่ของแต่ละบัญชีชัดเจน หนูเฝ้าให้ตลอดน้า',
+    icon: <IcoLock />,
+    title: 'ของลับ ๆ ก็ฝากได้',
+    desc: 'ห้องนิรภัยบนเว็บ ล็อกด้วย PIN 6 หลักของพี่คนเดียว ไฟล์ถูกเข้ารหัสไว้ เปิดดูได้อย่างเดียว ไม่มีปุ่มดาวน์โหลด — PIN รีเซ็ตไม่ได้ ตั้งให้จำได้แน่ ๆ น้า',
+  },
+  {
+    icon: <IcoUndo />,
+    title: 'ลบผิดยังกู้คืนได้',
+    desc: 'ไฟล์ที่ลบไปพักในถังขยะก่อน กู้คืนได้ภายใน 5 วัน (แผนโปร 30 วัน) แล้วค่อยถูกล้างจริง',
   },
   {
     icon: <IcoTimer />,
-    title: 'ลิงก์ดาวน์โหลดปลอดภัย',
-    desc: 'ลิงก์ดาวน์โหลดเป็นลิงก์ชั่วคราว หมดอายุใน 1 ชั่วโมง ป้องกันไฟล์ถูกส่งต่อโดยไม่ตั้งใจ',
+    title: 'ลิงก์ดาวน์โหลดชั่วคราว',
+    desc: 'ลิงก์ดาวน์โหลดหมดอายุใน 1 ชั่วโมง ป้องกันไฟล์หลุดต่อโดยไม่ตั้งใจ',
   },
 ];
 
 const FAQS: { q: string; a: string }[] = [
   {
     q: 'หนูเก็บฟรีจริงไหม? มีเก็บเงินทีหลังหรือเปล่า?',
-    a: 'ตอนนี้ทุกฟีเจอร์ใช้ฟรี เริ่มต้นได้ 1 GB โดยไม่ต้องผูกบัตรหรือกรอกข้อมูลจ่ายเงินใด ๆ อยากได้พื้นที่เพิ่มก็ชวนเพื่อนมาใช้ด้วยกัน — ชวนครบ 5 คนได้ 4 GB ถาวร ยังไม่มีแพ็กเกจเสียเงินในระบบเลยน้า',
+    a: 'ตอนนี้ทุกฟีเจอร์ใช้ฟรี เริ่มต้นได้ 1 GB โดยไม่ต้องผูกบัตรหรือกรอกข้อมูลจ่ายเงินใด ๆ ยังไม่มีระบบชำระเงินในหนูเก็บเลยน้า อยากได้พื้นที่เพิ่มก็ชวนเพื่อนมาใช้ด้วยกัน — ชวนครบ 5 คนได้ 4 GB ถาวร',
   },
   {
     q: 'ต้องโหลดแอปเพิ่มไหม?',
-    a: 'ไม่ต้องน้า หนูเก็บอยู่ใน LINE ที่พี่ใช้อยู่ทุกวันแล้ว ส่วนการเปิดดูและจัดระเบียบไฟล์ทำผ่านเว็บเบราว์เซอร์ ล็อกอินด้วย LINE ได้เลย ไม่ต้องสมัครสมาชิกใหม่ ไม่ต้องจำรหัสผ่าน',
+    a: 'ไม่ต้องน้า หนูเก็บอยู่ใน LINE ที่พี่ใช้อยู่ทุกวันแล้ว ไม่มีแอปหนูเก็บให้โหลด ส่วนการเปิดดูและจัดระเบียบไฟล์ทำผ่านเว็บเบราว์เซอร์ ล็อกอินด้วย LINE ได้เลย ไม่ต้องสมัครสมาชิกใหม่ ไม่ต้องจำรหัสผ่าน',
   },
   {
-    q: 'เก็บไฟล์แบบไหนได้บ้าง ใหญ่สุดแค่ไหน?',
-    a: 'รูปภาพ ไฟล์เอกสาร วิดีโอ และเสียงที่ส่งในแชท ขนาดไฟล์ละไม่เกิน 1 GB เก็บแล้วอยู่ถาวรในล็อคเกอร์ ไม่หมดอายุเหมือนไฟล์ในแชทไลน์',
+    q: 'ฝากอะไรกับหนูเก็บได้บ้าง?',
+    a: 'ฝากไฟล์ (รูป เอกสาร วิดีโอ เสียง ไฟล์ละไม่เกิน 1 GB) · ฝากเอกสาร (สแกนเป็น PDF รวมรูป รวมไฟล์ PDF แปลงเป็น Word) · ฝากไว้ทั้งกลุ่ม (พื้นที่กลางของกลุ่มไลน์) · ฝากตามงาน (สร้างและมอบหมายงานในกลุ่ม หรือจดงานส่วนตัว) · ฝากความทรงจำ (ไดอารี่ 365 วัน) · ฝากของลับ (ห้องนิรภัยล็อก PIN) · และฝากส่งให้กัน (กล่องของขวัญ) น้า',
   },
   {
     q: 'ไฟล์ที่ขึ้น "หมดอายุ" ในไลน์ไปแล้ว กู้คืนได้ไหม?',
     a: 'อันนี้หนูช่วยไม่ได้จริง ๆ น้า — ไฟล์ที่หมดอายุไปแล้ว ระบบไหนก็เปิดไม่ได้ วิธีที่ดีที่สุดคือเก็บก่อนหมดอายุ เห็นไฟล์สำคัญเมื่อไหร่ ฟอร์เวิร์ดมาให้หนูทันทีเลยน้า',
   },
   {
-    q: 'ไฟล์ของฉันปลอดภัยแค่ไหน?',
-    a: 'ไฟล์ถูกเก็บบนคลาวด์ระดับองค์กร แยกพื้นที่ของแต่ละบัญชีชัดเจน ลิงก์ดาวน์โหลดเป็นลิงก์ปลอดภัยแบบชั่วคราวที่หมดอายุใน 1 ชั่วโมง และหนูเก็บไม่เคยทักหาใครก่อน ไม่ส่งโฆษณาใส่แชทน้า',
+    q: 'เผลอลบไฟล์ในล็อคเกอร์ กู้คืนได้ไหม?',
+    a: 'ได้น้า ไฟล์ที่ลบจะไปพักในถังขยะก่อน กดกู้คืนได้ภายใน 5 วัน (แผนโปร 30 วัน) พ้นกำหนดแล้วถึงจะถูกล้างจริง — เพราะงั้นหนูเลยไม่กล้าพูดว่า "เก็บถาวรตลอดไป" แบบไม่มีเงื่อนไขน้า แต่ไฟล์ที่พี่ไม่ได้ลบ อยู่ในล็อคเกอร์ต่อไป ไม่หมดอายุเหมือนไฟล์ในแชท',
   },
   {
-    q: 'ใช้ในกลุ่มไลน์ได้ไหม?',
-    a: 'ได้น้า เชิญหนูเก็บเข้ากลุ่ม แล้วไฟล์ที่สมาชิกส่งหลังจากนั้นจะถูกเก็บเข้าพื้นที่กลางของกลุ่มอัตโนมัติ (โหมดสแกน แปลงไฟล์ และไดอารี่ ใช้ในแชทส่วนตัวกับหนูเก็บ) ถ้าอยากให้เก็บแบบเงียบ ๆ พิมพ์ "หนูเก็บปิดแจ้งเตือน" ในกลุ่มได้เลย',
+    q: 'ไฟล์ของฉันปลอดภัยแค่ไหน?',
+    a: 'ไฟล์ถูกเก็บบนคลาวด์ระดับองค์กร แยกพื้นที่ของแต่ละบัญชีชัดเจน ลิงก์ดาวน์โหลดเป็นลิงก์ชั่วคราวที่หมดอายุใน 1 ชั่วโมง ถ้าเป็นของลับจริง ๆ ใช้ "ห้องนิรภัย" บนเว็บได้ — ล็อกด้วย PIN 6 หลัก ไฟล์ถูกเข้ารหัสไว้ เปิดดูได้อย่างเดียวและมีลายน้ำชื่อผู้ดู ใส่ PIN ผิด 5 ครั้งล็อก 15 นาที และไม่มีระบบรีเซ็ต PIN น้า',
+  },
+  {
+    q: 'ใช้ในกลุ่มไลน์ได้ไหม? หนูเก็บจะกวนแชทหรือเปล่า?',
+    a: 'ใช้ได้น้า เชิญหนูเก็บเข้ากลุ่ม แล้วไฟล์ที่สมาชิกส่งหลังจากนั้นจะถูกเก็บเข้าพื้นที่กลางของกลุ่มอัตโนมัติ — และในกลุ่มหนูเก็บให้เงียบ ๆ เสมอ ไม่ตอบอะไรกลับเลย ไม่ต้องตั้งค่าอะไรทั้งนั้น ยกเว้นตอนมีคนสร้างงานในระบบตามงาน หนูถึงจะโพสต์การ์ดประกาศงานให้ทั้งกลุ่มเห็น (ส่วนสแกน รวมรูป รวมไฟล์ แปลงไฟล์ และไดอารี่ ใช้ในแชทส่วนตัวกับหนูเก็บน้า)',
+  },
+  {
+    q: 'ระบบตามงานเตือนให้อัตโนมัติไหม?',
+    a: 'ยังไม่เตือนอัตโนมัติน้า ตอนนี้หนูทำได้คือประกาศงานเข้ากลุ่มตอนที่มีคนสร้างงาน แล้วทุกคนกด "รับงาน" หรือ "เสร็จแล้ว" ได้จากการ์ดในแชท ส่วนการตามงานพี่เปิดดูได้ที่ห้องทีมหรือแดชบอร์ดเว็บ โหลดไฟล์ปฏิทิน (.ics) เข้าปฏิทินมือถือไว้เตือนตัวเองก็ได้น้า ถ้าเมื่อไหร่หนูเตือนเองได้ จะรีบมาบอกเลยน้า',
   },
   {
     q: 'ทำไมถึงชื่อ "หนูเก็บ"?',
@@ -263,7 +360,8 @@ export default function Home() {
             <span className={styles.beta}>beta</span>
           </Link>
           <nav className={styles.navLinks} aria-label="เมนูหลัก">
-            <a href="#features" className={styles.navLink}>ฟีเจอร์</a>
+            <a href="#deposit" className={styles.navLink}>ฝากอะไรได้บ้าง</a>
+            <a href="#try" className={styles.navLink}>ลองเล่น</a>
             <a href="#how" className={styles.navLink}>วิธีใช้</a>
             <a href="#free" className={styles.navLink}>พื้นที่ฟรี</a>
             <a href="#faq" className={styles.navLink}>คำถามพบบ่อย</a>
@@ -287,17 +385,18 @@ export default function Home() {
             <div>
               <p className={styles.heroBadge}>
                 <IcoStarFill size={15} />
-                ล็อคเกอร์เก็บไฟล์ใน LINE — ฟรี ไม่ต้องโหลดแอป
+                ที่ฝากของใจกลางไลน์ — ฟรี ไม่ต้องโหลดแอป
               </p>
               <h1 className={styles.heroTitle}>
-                <span className={styles.noWrap}>ส่งเข้าไลน์ปุ๊บ</span>{' '}
-                <span className={styles.noWrap}>เก็บถาวรปั๊บ</span>
-                <span className={`${styles.heroTitleAccent} ${styles.hand}`}>— หนูเก็บให้เองน้า</span>
+                <span className={styles.noWrap}>ฝากไว้กับหนูเก็บ</span>
+                <span className={`${styles.heroTitleAccent} ${styles.hand}`}>
+                  — เดี๋ยวหนูดูแลให้เองน้า
+                </span>
               </h1>
               <p className={styles.heroSub}>
-                เคยเปิดรูปในแชทแล้วเจอ &ldquo;ไฟล์หมดอายุ&rdquo; ไหม? แค่ส่งรูปหรือไฟล์เข้าแชทหนูเก็บ{' '}
-                <strong>ทุกอย่างจะถูกเก็บเข้าล็อคเกอร์บนคลาวด์ทันที</strong> ไม่หมดอายุ ค้นหาเจอ
-                เปิดดูได้ทุกที่
+                เคยเปิดรูปในแชทแล้วเจอ &ldquo;ไฟล์หมดอายุ&rdquo; ไหมน้า? ส่งไฟล์ ฝากงาน
+                หรือเก็บความทรงจำ — <strong>ส่งเข้าแชทหนูเก็บแล้วจบ</strong>{' '}
+                ไม่หมดอายุเหมือนไฟล์ในแชท ค้นหาเจอ เปิดดูได้ทุกที่
               </p>
               <div className={styles.heroCtas}>
                 <a href={LINE_ADD_FRIEND_URL} className={styles.btnPrimary}>
@@ -359,7 +458,7 @@ export default function Home() {
                       <IcoFolder size={20} />
                       <span className={styles.fileName}>
                         ใบเสร็จค่าเทอม.jpg
-                        <span className={styles.fileHint}>อยู่ในล็อคเกอร์แล้ว · เก็บถาวร ไม่หมดอายุ</span>
+                        <span className={styles.fileHint}>อยู่ในล็อคเกอร์แล้ว · ไม่หมดอายุเหมือนไฟล์ในแชท</span>
                       </span>
                     </div>
                   </div>
@@ -392,36 +491,80 @@ export default function Home() {
           </div>
         </div>
 
-        {/* ============ Features ============ */}
-        <section id="features" className={styles.section} aria-labelledby="features-title">
+        {/* ============ Locker wall — "ฝากอะไรได้บ้าง" ============ */}
+        <section id="deposit" className={styles.section} aria-labelledby="deposit-title">
           <div className={styles.wrap}>
             <Reveal className={styles.reveal}>
-              <div className={styles.sectionHead}>
-                <p className={`${styles.kicker} ${styles.hand}`}>
-                  <IcoSparkle size={18} />
-                  ฟีเจอร์ทั้งหมด
-                </p>
-                <h2 id="features-title" className={styles.sectionTitle}>หนูเก็บทำอะไรได้บ้างน้า</h2>
-                <p className={styles.sectionSub}>
-                  ครบทุกอย่างที่ &ldquo;ที่เก็บไฟล์ของคนไทย&rdquo; ควรมี — ใช้ผ่านแชทที่พี่เปิดอยู่ทุกวัน
-                  ไม่ต้องเปลี่ยนพฤติกรรมอะไรเลย
-                </p>
+              <div className={styles.depositHead}>
+                <div>
+                  <p className={`${styles.kicker} ${styles.hand}`}>
+                    <IcoSparkle size={18} />
+                    ล็อคเกอร์ของหนูเก็บ
+                  </p>
+                  <h2 id="deposit-title" className={styles.sectionTitle}>
+                    ฝากอะไรกับหนูเก็บได้บ้างน้า
+                  </h2>
+                  <p className={styles.sectionSub}>
+                    หนูเก็บโตจาก &ldquo;ที่เก็บไฟล์&rdquo; มาเป็น &ldquo;ที่ฝากของ&rdquo; หลายแบบแล้วน้า
+                    — เปิดล็อคเกอร์ดูได้เลยว่าฝากอะไรไว้กับหนูได้บ้าง
+                  </p>
+                </div>
+                <figure className={styles.depositHeroCard}>
+                  <span className={styles.tape} aria-hidden="true" />
+                  <Image
+                    src="/landing/onboarding/umbrella.webp"
+                    alt="การ์ดหนูเก็บ: ฝากไว้กับหนูเก็บ — เก็บทุกอย่างไว้อย่างปลอดภัย"
+                    width={450}
+                    height={450}
+                    className={styles.depositHeroImg}
+                  />
+                </figure>
               </div>
             </Reveal>
-            <div className={styles.featureGrid}>
-              {FEATURES.map((f, i) => (
-                <Reveal className={styles.reveal} delay={(i % 3) * 90} key={f.title}>
-                  <article className={styles.featureCard}>
-                    <div className={`${styles.featureIcon} ${f.tint !== 'red' ? styles[f.tint] : ''}`}>
-                      {f.icon}
+
+            <div className={styles.depositGrid}>
+              {DEPOSITS.map((d, i) => (
+                <Reveal className={styles.reveal} delay={(i % 3) * 90} key={d.kicker}>
+                  <article className={`${styles.depositCard} ${styles[d.tint]}`}>
+                    {d.img ? (
+                      <Image
+                        src={d.img.src}
+                        alt={d.img.alt}
+                        width={380}
+                        height={380}
+                        className={styles.depositImg}
+                        sizes="(max-width: 620px) 92vw, (max-width: 980px) 46vw, 32vw"
+                      />
+                    ) : null}
+                    {d.art ? (
+                      /* CSS stand-in for the one card whose official artwork
+                         carries a claim we may not make — see the TODO above. */
+                      <div className={styles.depositArt} aria-hidden="true">
+                        <span className={styles.depositArtVent} />
+                        <span className={styles.depositArtNote}>
+                          <em>{d.art.hook}</em>
+                          <strong>{d.art.line}</strong>
+                        </span>
+                      </div>
+                    ) : null}
+
+                    <div className={styles.depositBody}>
+                      <p className={`${styles.depositKicker} ${styles.hand}`}>{d.kicker}</p>
+                      <h3 className={styles.depositTitle}>{d.title}</h3>
+                      <ul className={styles.depositList}>
+                        {d.bullets.map((b) => (
+                          <li key={b}>
+                            <IcoCheck size={15} />
+                            <span>{b}</span>
+                          </li>
+                        ))}
+                      </ul>
+                      <span className={styles.cmdChip}>
+                        <IcoChat size={13} />
+                        {d.chip}
+                      </span>
+                      {d.fine ? <span className={styles.finePrint}>{d.fine}</span> : null}
                     </div>
-                    <h3 className={styles.featureTitle}>{f.title}</h3>
-                    <p className={styles.featureDesc}>{f.desc}</p>
-                    <span className={styles.cmdChip}>
-                      <IcoChat size={13} />
-                      {f.chip}
-                    </span>
-                    {f.fine ? <span className={styles.finePrint}>{f.fine}</span> : null}
                   </article>
                 </Reveal>
               ))}
@@ -429,27 +572,31 @@ export default function Home() {
           </div>
         </section>
 
-        {/* ============ Scrapbook gallery ============ */}
-        <section className={`${styles.section} ${styles.sectionAlt}`} aria-label="บอร์ดภาพแนะนำหนูเก็บ">
+        {/* ============ Interactive demo ============ */}
+        <section id="try" className={`${styles.section} ${styles.sectionAlt}`} aria-labelledby="try-title">
           <div className={styles.wrap}>
             <Reveal className={styles.reveal}>
               <div className={styles.sectionHead}>
                 <p className={`${styles.kicker} ${styles.hand}`}>
                   <IcoSparkle size={18} />
-                  จากบอร์ดของหนูเก็บ
+                  ลองก่อนเพิ่มเพื่อนก็ได้
                 </p>
-                <h2 className={styles.sectionTitle}>แปะไว้ให้พี่ดูน้า</h2>
+                <h2 id="try-title" className={styles.sectionTitle}>ลองคุยกับหนูดูน้า</h2>
+                <p className={styles.sectionSub}>
+                  กดคำสั่งดูได้เลยว่าหนูตอบว่าอะไร — พิมพ์แค่นี้จริง ๆ ไม่มีเมนูซ้อนเมนู
+                  ไม่ต้องตั้งค่าอะไรเลยน้า
+                </p>
               </div>
             </Reveal>
-            <Reveal className={styles.reveal} delay={120}>
-              <div className={styles.gallery}>
-                {GALLERY.map((g) => (
-                  <figure className={styles.polaroid} key={g.src}>
-                    <span className={styles.tape} aria-hidden="true" />
-                    <Image src={g.src} alt={g.alt} width={204} height={204} className={styles.polaroidImg} />
-                    <figcaption className={`${styles.polaroidCap} ${styles.hand}`}>{g.cap}</figcaption>
-                  </figure>
-                ))}
+            <Reveal className={styles.reveal} delay={100}>
+              <ChatDemo />
+            </Reveal>
+            <Reveal className={styles.reveal} delay={160}>
+              <div className={styles.stepsCta}>
+                <a href={LINE_ADD_FRIEND_URL} className={styles.btnPrimary}>
+                  <IcoChat size={19} />
+                  ลองของจริงเลยน้า
+                </a>
               </div>
             </Reveal>
           </div>
@@ -490,14 +637,6 @@ export default function Home() {
                 </Reveal>
               ))}
             </div>
-            <Reveal className={styles.reveal} delay={200}>
-              <div className={styles.stepsCta}>
-                <a href={LINE_ADD_FRIEND_URL} className={styles.btnPrimary}>
-                  <IcoChat size={19} />
-                  ลองส่งไฟล์แรกเลยน้า
-                </a>
-              </div>
-            </Reveal>
           </div>
         </section>
 
@@ -515,6 +654,16 @@ export default function Home() {
             </Reveal>
             <Reveal className={styles.reveal} delay={120}>
               <div className={styles.freeCard}>
+                <figure className={styles.freeArt}>
+                  <Image
+                    src="/landing/onboarding/referral.webp"
+                    alt="การ์ดหนูเก็บ: ชวนเพื่อนได้พื้นที่ฟรี — ได้พื้นที่เพิ่มทั้งคู่"
+                    width={430}
+                    height={430}
+                    className={styles.freeArtImg}
+                    sizes="(max-width: 900px) 84vw, 40vw"
+                  />
+                </figure>
                 <div>
                   <p className={`${styles.freeKicker} ${styles.hand}`}>เริ่มต้นที่</p>
                   <p className={styles.freeBig}>
@@ -522,10 +671,8 @@ export default function Home() {
                   </p>
                   <p className={styles.freeDesc}>
                     ไม่ต้องผูกบัตร ไม่มีค่ารายเดือน ตอนนี้ทุกฟีเจอร์ใช้ฟรีทั้งหมด
-                    อยากได้พื้นที่เพิ่ม แค่ชวนเพื่อนมาใช้ด้วยกันน้า
+                    อยากได้พื้นที่เพิ่ม แค่ชวนเพื่อนมาใช้ด้วยกัน — ได้พื้นที่เพิ่มทั้งคู่เลยน้า
                   </p>
-                </div>
-                <div>
                   <div className={styles.ladder}>
                     {RUNGS.map((r) => (
                       <div className={`${styles.rung} ${r.top ? styles.rungTop : ''}`} key={r.gb}>
@@ -546,7 +693,7 @@ export default function Home() {
                     </p>
                     <p className={styles.freeNote}>
                       <IcoCheck size={16} />
-                      ชวนสำเร็จ 3 · 5 คน พื้นที่รวมเป็น 2.5 · 4 GB ถาวร
+                      ชวนสำเร็จ 3 · 5 คน พื้นที่รวมเป็น 2.5 · 4 GB ถาวร (5 คนคือขั้นสูงสุด)
                     </p>
                     <p className={styles.freeNote}>
                       <IcoCheck size={16} />
@@ -560,11 +707,20 @@ export default function Home() {
         </section>
 
         {/* ============ Trust ============ */}
-        <section className={styles.section} aria-label="ความเป็นส่วนตัวและความปลอดภัย">
+        <section className={styles.section} aria-labelledby="trust-title">
           <div className={styles.wrap}>
+            <Reveal className={styles.reveal}>
+              <div className={styles.sectionHead}>
+                <p className={`${styles.kicker} ${styles.hand}`}>
+                  <IcoSparkle size={18} />
+                  เชื่อหนูได้น้า
+                </p>
+                <h2 id="trust-title" className={styles.sectionTitle}>ฝากของไว้กับหนู แล้วสบายใจได้</h2>
+              </div>
+            </Reveal>
             <div className={styles.trustRow}>
               {TRUST.map((t, i) => (
-                <Reveal className={styles.reveal} delay={i * 100} key={t.title}>
+                <Reveal className={styles.reveal} delay={(i % 2) * 100} key={t.title}>
                   <div className={styles.trustItem}>
                     <div className={styles.trustIcon}>{t.icon}</div>
                     <div>
@@ -616,11 +772,11 @@ export default function Home() {
                 <div className={styles.ctaInner}>
                   <div>
                     <h2 id="cta-title" className={styles.ctaTitle}>
-                      พร้อมให้หนูดูแลไฟล์ของพี่หรือยังน้า
+                      มีอะไรอยากฝากหนูไหมน้า
                     </h2>
                     <p className={styles.ctaSub}>
                       เพิ่มเพื่อนแล้วลองส่งไฟล์แรกได้เลย — ฟรี ไม่ต้องโหลดแอป ไม่ต้องสมัครสมาชิก
-                      เดี๋ยวหนูเก็บให้เองน้า
+                      ฝากไว้กับหนูเก็บ เดี๋ยวหนูดูแลให้เองน้า
                     </p>
                     <div className={styles.ctaBtns}>
                       <a href={LINE_ADD_FRIEND_URL} className={styles.btnWhite}>
@@ -636,13 +792,13 @@ export default function Home() {
                   <div className={styles.ctaMascotWrap}>
                     <figure className={styles.ctaPolaroid}>
                       <Image
-                        src="/landing/card-7.jpg"
-                        alt="หนูเก็บชวนลองใช้งาน — ส่งรูปหรือเอกสารเข้ามา หนูเก็บช่วยจัดเก็บให้ทันที"
+                        src="/landing/onboarding/cover.webp"
+                        alt="การ์ดหนูเก็บ: ลองเขียนว่า หนูเก็บ ในแชทไลน์"
                         width={280}
                         height={280}
                       />
                       <figcaption className={`${styles.ctaPolaroidCap} ${styles.hand}`}>
-                        ลองใช้งานเลยน้า
+                        ลองพิมพ์ว่า &ldquo;หนูเก็บ&rdquo; น้า
                       </figcaption>
                     </figure>
                   </div>
@@ -664,14 +820,15 @@ export default function Home() {
                 <span className={styles.beta}>beta</span>
               </div>
               <p className={styles.footTagline}>
-                ล็อคเกอร์เก็บไฟล์ของคนไทย — อยู่ในแอปที่พี่เปิดทุกวันอยู่แล้ว
+                ที่ฝากของของคนไทย — อยู่ในแอปที่พี่เปิดทุกวันอยู่แล้ว
               </p>
-              <p className={`${styles.footHandwrite} ${styles.hand}`}>เก็บให้ ไม่ลืม ไม่หาย ไม่หมดอายุ</p>
+              <p className={`${styles.footHandwrite} ${styles.hand}`}>ฝากไว้กับหนูเก็บ เดี๋ยวหนูดูแลให้เองน้า</p>
             </div>
             <div>
               <h3 className={styles.footColTitle}>เมนู</h3>
               <div className={styles.footLinks}>
-                <a href="#features" className={styles.footLink}>ฟีเจอร์</a>
+                <a href="#deposit" className={styles.footLink}>ฝากอะไรได้บ้าง</a>
+                <a href="#try" className={styles.footLink}>ลองเล่น</a>
                 <a href="#how" className={styles.footLink}>วิธีใช้</a>
                 <a href="#free" className={styles.footLink}>พื้นที่ฟรี</a>
                 <a href="#faq" className={styles.footLink}>คำถามพบบ่อย</a>
@@ -810,75 +967,22 @@ function IcoSparkle({ size = 18 }: IconProps) {
   );
 }
 
-function IcoInbox({ size = 24 }: IconProps) {
+function IcoLock({ size = 22 }: IconProps) {
   return (
     <svg {...base(size)}>
-      <path d="M22 12h-6l-2 3h-4l-2-3H2" />
-      <path d="M5.4 5.1 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.4-6.9A2 2 0 0 0 16.8 4H7.2a2 2 0 0 0-1.8 1.1Z" />
+      <rect x="4.5" y="10" width="15" height="10.5" rx="2.5" />
+      <path d="M8 10V7.5a4 4 0 0 1 8 0V10" />
+      <circle cx="12" cy="15.2" r="1.3" fill="currentColor" stroke="none" />
+      <path d="M12 16.4v1.5" />
     </svg>
   );
 }
 
-function IcoSearchImg({ size = 24 }: IconProps) {
+function IcoUndo({ size = 22 }: IconProps) {
   return (
     <svg {...base(size)}>
-      <rect x="3" y="4" width="13" height="12" rx="2" />
-      <path d="m3 13 3.2-3.2L9.5 13" />
-      <circle cx="8" cy="8" r="1.1" />
-      <circle cx="16.5" cy="15.5" r="4" />
-      <path d="m19.5 18.5 2.5 2.5" />
-    </svg>
-  );
-}
-
-function IcoScan({ size = 24 }: IconProps) {
-  return (
-    <svg {...base(size)}>
-      <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
-      <path d="M6 12h12" />
-    </svg>
-  );
-}
-
-function IcoDocEdit({ size = 24 }: IconProps) {
-  return (
-    <svg {...base(size)}>
-      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
-      <path d="M14 3v5h5" />
-      <path d="m10.5 16.5 5.5-5.5 1.5 1.5-5.5 5.5H10.5v-1.5Z" />
-    </svg>
-  );
-}
-
-function IcoCalHeart({ size = 24 }: IconProps) {
-  return (
-    <svg {...base(size)}>
-      <rect x="3" y="5" width="18" height="16" rx="2.5" />
-      <path d="M3 10h18M8 3v4M16 3v4" />
-      <path
-        d="M12 18.2s-2.8-1.9-2.8-3.6c0-1 .8-1.7 1.6-1.7.7 0 1.2.5 1.2.5s.5-.5 1.2-.5c.8 0 1.6.7 1.6 1.7 0 1.7-2.8 3.6-2.8 3.6Z"
-        fill="currentColor"
-        stroke="none"
-      />
-    </svg>
-  );
-}
-
-function IcoUsers({ size = 24 }: IconProps) {
-  return (
-    <svg {...base(size)}>
-      <circle cx="9" cy="8" r="3.5" />
-      <path d="M2.5 20v-1.5A5 5 0 0 1 7.5 13.5h3a5 5 0 0 1 5 5V20" />
-      <path d="M16 4.7a3.5 3.5 0 0 1 0 6.6M21.5 20v-1.5a5 5 0 0 0-3.5-4.8" />
-    </svg>
-  );
-}
-
-function IcoShield({ size = 22 }: IconProps) {
-  return (
-    <svg {...base(size)}>
-      <path d="M12 21.5s7.5-3.4 7.5-9.3V5.5L12 2.8 4.5 5.5v6.7c0 5.9 7.5 9.3 7.5 9.3Z" />
-      <path d="m9 11.5 2.2 2.2 4-4.5" />
+      <path d="M3.5 9.5h6V3.6" />
+      <path d="M4.6 15a8 8 0 1 0 1.3-7.2" />
     </svg>
   );
 }
@@ -959,8 +1063,8 @@ function IcoStarBig() {
 function IcoPin() {
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
-      <circle cx="10" cy="7" r="5" fill="#c0392b" stroke="#962d22" strokeWidth="1.2" />
-      <circle cx="8.3" cy="5.4" r="1.5" fill="#e74c3c" />
+      <circle cx="10" cy="7" r="5" fill="#b53a32" stroke="#8e2a24" strokeWidth="1.2" />
+      <circle cx="8.3" cy="5.4" r="1.5" fill="#d4574d" />
       <path d="M10 12v6" stroke="#6b6b6b" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
   );
@@ -1010,7 +1114,7 @@ function IcoReceiptPhoto() {
       <path d="M64 26h62M64 38h48M64 50h56M64 62h40" stroke="#c9c2b8" strokeWidth="3" strokeLinecap="round" />
       <path d="M64 78h62" stroke="#e8e4df" strokeWidth="2" strokeDasharray="4 4" />
       <path d="M64 92h30" stroke="#c9c2b8" strokeWidth="3" strokeLinecap="round" />
-      <path d="M104 92h22" stroke="#c0392b" strokeWidth="4" strokeLinecap="round" />
+      <path d="M104 92h22" stroke="#b53a32" strokeWidth="4" strokeLinecap="round" />
       <circle cx="30" cy="96" r="14" fill="#eec95e" opacity="0.85" />
       <circle cx="163" cy="26" r="9" fill="#fdeaea" />
     </svg>
