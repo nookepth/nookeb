@@ -910,16 +910,38 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     `/box/[slug]` (PUBLIC gift reveal — noindex, generic OG image)
   - LIFF routes all live under `/liff/tasks/` — see the ห้องทีม note in the Task
     Manager section for why nothing may sit outside that subtree.
-  - File preview (`components/FilePreviewModal.tsx`): images render inline; PDFs
-    and text render in a native browser viewer via `<iframe src={presignedUrl}>`
-    (`.preview-frame`). On desktop the iframe gives the browser's built-in PDF UI —
-    page-thumbnail sidebar, zoom, all pages — which is why `.preview-modal` is
-    widened to `min(92vw, 900px)` and the iframe fills the modal (the iframe owns
-    its own scroll; the modal is `overflow: hidden`). No pdf.js, no `pdfjs-dist`,
-    no canvas rendering, and no R2 CORS requirement — the iframe streams the
-    presigned URL directly. (An earlier pdf.js/`<canvas>` renderer was reverted;
-    do NOT reintroduce it — no `copy-pdf-worker` script, no `public/pdf.worker.*`,
-    no webpack `canvas:false` alias.)
+  - File preview (`components/FilePreviewModal.tsx`): images render inline; text
+    and DESKTOP PDFs render in a native browser viewer via
+    `<iframe src={presignedUrl}>` (`.preview-frame`). On desktop the iframe gives
+    the browser's built-in PDF UI — page-thumbnail sidebar, zoom, all pages —
+    which is why `.preview-modal` is widened to `min(92vw, 900px)` and the iframe
+    fills the modal (the iframe owns its own scroll; the modal is
+    `overflow: hidden`).
+    - **PDF on MOBILE is the ONE exception** — pdf.js, not the iframe. iOS Safari
+      and the LINE in-app browser (WKWebView) render a PDF `<iframe>` as a single,
+      static, NON-scrollable snapshot of page 1. So the modal detects mobile at
+      render time (`isMobile = window.innerWidth < 768 || 'ontouchstart' in
+      window`, `typeof window` guarded for SSR) and routes PDFs to the `PdfViewer`
+      component there: a dynamic `import('pdfjs-dist')` renders EVERY page to its
+      own `<canvas>` (fit-to-width, sequential render queue + `MAX_RENDER_DPR` cap
+      so a many-page doc doesn't blow up mobile canvas memory, `page.cleanup()`
+      after each), in a `.pdf-viewer-mobile` vertical scroll container with a
+      sticky "หน้า X / Y" indicator (IntersectionObserver, threshold 0.5). Desktop
+      PDFs and all text files still use the iframe — do NOT change that branch.
+    - This is why `pdfjs-dist` is a web dependency again: the worker is served
+      same-origin from `public/pdf.worker.min.mjs` (git-ignored, copied by
+      `scripts/copy-pdf-worker.mjs` on the `predev`/`prebuild` hook — NOT via a
+      webpack `new URL(...worker.mjs)`, which Next's Terser pass fails to minify),
+      referenced as `workerSrc = '/pdf.worker.min.mjs'` so CSP `script-src 'self'`
+      allows it; `next.config.mjs` needs the `canvas: false` webpack alias
+      (pdfjs-dist optionally requires the Node `canvas` pkg we never use) AND a
+      `connect-src` entry for `https://*.r2.cloudflarestorage.com` (the mobile
+      viewer `fetch()`es the PDF bytes cross-origin from the presigned R2 URL —
+      R2 bucket CORS is the R2-side gate, connect-src is the browser-side gate;
+      without it the fetch is CSP-blocked and the viewer falls back to
+      "เปิดไฟล์ในแท็บใหม่"). The earlier all-platforms pdf.js renderer was reverted
+      for being needlessly heavy on desktop; this mobile-only split is the
+      deliberate re-introduction — keep it scoped to mobile.
     - The modal JS-pins `<body>` (position:fixed + saved offset) to lock background
       scroll iOS-safely — do NOT add a CSS `body:has(.modal-overlay)` rule; it fires
       without the saved offset and collapses the page.
