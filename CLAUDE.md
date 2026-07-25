@@ -910,6 +910,34 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
     `/box/[slug]` (PUBLIC gift reveal — noindex, generic OG image)
   - LIFF routes all live under `/liff/tasks/` — see the ห้องทีม note in the Task
     Manager section for why nothing may sit outside that subtree.
+  - File preview (`components/FilePreviewModal.tsx`): images render inline; PDFs
+    render every page to its OWN `<canvas>` via **pdf.js** (`pdfjs-dist`), NOT a
+    native `<iframe src={pdf}>`. The iframe showed only a single, non-scrollable
+    snapshot of page 1 on iOS Safari and the LINE in-app browser (WKWebView) — the
+    reported bug. pdf.js draws with JS so behaviour is identical across browsers:
+    all pages, fit-to-width, vertical scroll inside the modal. Non-obvious pieces,
+    all load-bearing:
+    - **Worker is served from `public/pdf.worker.min.mjs`** (same-origin static
+      asset, so CSP `script-src 'self'` allows it), NOT emitted by webpack. Letting
+      webpack emit the `.mjs` worker makes Next's Terser pass fail with
+      "'import'/'export' cannot be used outside of module code". The file is COPIED
+      into `public/` by `apps/web/scripts/copy-pdf-worker.mjs`, run from the
+      `predev`/`prebuild` npm hooks so it always matches the installed `pdfjs-dist`
+      version. It is git-ignored (a 1.3 MB generated artifact regenerated on every
+      build) — do NOT commit it or reference a bundler-emitted path.
+    - `next.config.mjs` aliases `canvas: false` in webpack — pdf.js optionally
+      `require`s the Node `canvas` package for server-side rendering (which we never
+      do), and without the stub the build fails "Can't resolve 'canvas'".
+    - pdf.js is `import()`ed dynamically inside the client component (it touches
+      `DOMMatrix` at module init, so it must stay out of the server render).
+    - PDF bytes are fetched whole as an ArrayBuffer from the R2 presigned URL —
+      requires CORS `Access-Control-Allow-Origin` on the R2 bucket, but avoids
+      exposing `Content-Range`/`Accept-Ranges` (no ranged requests).
+    - Pages render sequentially (a render queue) and DPR is capped at 2, both to
+      avoid canvas-memory spikes on high-DPR phones.
+    - The modal JS-pins `<body>` (position:fixed + saved offset) to lock background
+      scroll iOS-safely — do NOT add a CSS `body:has(.modal-overlay)` rule; it fires
+      without the saved offset and collapses the page.
   - App Router boundaries: root `app/error.tsx` (client), `app/global-error.tsx`
     (client, ships its own `<html>`/`<body>` + inline styles since it replaces the
     root layout and can't rely on globals.css), `app/not-found.tsx` (server), and

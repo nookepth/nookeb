@@ -2268,6 +2268,72 @@ button:active,
     height: 100%;
     flex: 1;
   }
+  .pdf-viewer {
+    height: 100%;
+    max-height: none;
+    flex: 1;
+  }
+}
+
+/* ---- Multi-page PDF viewer (pdf.js canvases) ----------------------------
+   The .preview-body flex box centres its child; for a PDF we want the viewer
+   to fill and own the scroll instead, so .preview-body-pdf stretches it and
+   drops the padding (the viewer has its own). */
+.preview-body-pdf {
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 0;
+}
+
+.pdf-viewer {
+  width: 100%;
+  height: 74dvh;
+  max-height: 74dvh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch; /* iOS momentum scroll */
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px; /* clear spacing between pages */
+  padding: 12px;
+  background: var(--color-surface-2);
+  border-radius: var(--radius-md);
+}
+
+/* Sticky "หน้า X / Y" pill floating at the top of the scroll area. */
+.pdf-indicator {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 4px 14px;
+  border-radius: 999px;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  color: #fff;
+  background: rgba(26, 26, 26, 0.72);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+}
+
+.pdf-page {
+  width: 100%;
+  background: #fff;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm); /* subtle divider so page edges are obvious */
+  overflow: hidden;
+}
+
+.pdf-canvas {
+  display: block;
+  width: 100%; /* fit modal content width — no horizontal scroll */
+  height: auto; /* preserve aspect ratio */
+}
+
+.pdf-rendering-hint {
+  padding: 8px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
 }
 
 .preview-fallback {
