@@ -54,11 +54,18 @@ import {
   startSession,
 } from '../../services/scan.service';
 import { addPendingNotify, drainPendingNotify } from '../../services/pending-notify.service';
-import { armDocxConvert, consumeDocxConvert } from '../../services/docx-convert.service';
+import {
+  armDocxConvert,
+  consumeDocxConvert,
+  docxConvertKey,
+} from '../../services/docx-convert.service';
 import {
   armDiaryMode,
   consumeDiaryMode,
+  diaryModeKey,
+  parseDiaryModeValue,
   setDiaryCaption,
+  type DiaryModeState,
 } from '../../services/diary-mode.service';
 import { bangkokDateString, countEntries, getEntryByDate } from '../../services/diary.service';
 import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
@@ -1297,26 +1304,51 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   // 1-on-1 only (matching where the command can arm it). The Bangkok calendar
   // day is fixed HERE, so an entry can't slip to the next day while the job
   // waits in the queue.
+  // Consume the one-shot mode flags (ไดอารี่ / แปลงไฟล์). For an IMAGE both can
+  // apply, so read them in ONE pipeline round-trip (GETDEL ×2) instead of two
+  // sequential awaits; for a FILE only แปลงไฟล์ applies. Priority is unchanged —
+  // diary is claimed first, and if diary wins while convert was ALSO armed,
+  // convert is re-armed so it still claims the user's NEXT image (exact prior
+  // behavior). The Bangkok calendar day for a diary entry is fixed just below,
+  // so it can't slip to the next day while the job waits in the queue.
+  let diaryOneShot: DiaryModeState | null = null;
+  let docxArmed = false;
   if (source.type === 'user' && message.type === 'image') {
-    const diary = await consumeDiaryMode(app.redis, lineUserId);
-    if (diary) {
-      const job: CreateDiaryEntryJob = {
-        type: 'create_diary_entry',
-        lineMessageId: message.id,
-        lineUserId,
-        caption: (diary.caption ?? '').slice(0, 500),
-        entryDate: bangkokDateString(),
-        // Reply-only messaging: the token is NOT spent on an ack — the worker
-        // replies the result card with it (same pattern as convert_to_docx);
-        // a spent/expired token falls back to pending-notify, never a push.
-        replyToken: event.replyToken ?? null,
-      };
-      await app.fileQueue.add('create_diary_entry', job, {
-        jobId: sanitizeJobId('diary', message.id),
-        ...RETRY_OPTS,
-      });
-      return;
+    const oneShots = await app.redis
+      .pipeline()
+      .getdel(diaryModeKey(lineUserId))
+      .getdel(docxConvertKey(lineUserId))
+      .exec();
+    diaryOneShot = parseDiaryModeValue((oneShots?.[0]?.[1] ?? null) as string | null);
+    docxArmed = ((oneShots?.[1]?.[1] ?? null) as string | null) !== null;
+    if (diaryOneShot && docxArmed) {
+      await armDocxConvert(app.redis, lineUserId);
+      docxArmed = false;
     }
+  } else if (source.type === 'user' && message.type === 'file') {
+    docxArmed = await consumeDocxConvert(app.redis, lineUserId);
+  }
+
+  // Diary one-shot (armed by "ไดอารี่"). Checked FIRST among the image claims —
+  // subsequent images in the same burst fall through to the docx/scan/normal-
+  // upload paths below. 1-on-1 only (matching where the command can arm it).
+  if (source.type === 'user' && message.type === 'image' && diaryOneShot) {
+    const job: CreateDiaryEntryJob = {
+      type: 'create_diary_entry',
+      lineMessageId: message.id,
+      lineUserId,
+      caption: (diaryOneShot.caption ?? '').slice(0, 500),
+      entryDate: bangkokDateString(),
+      // Reply-only messaging: the token is NOT spent on an ack — the worker
+      // replies the result card with it (same pattern as convert_to_docx);
+      // a spent/expired token falls back to pending-notify, never a push.
+      replyToken: event.replyToken ?? null,
+    };
+    await app.fileQueue.add('create_diary_entry', job, {
+      jobId: sanitizeJobId('diary', message.id),
+      ...RETRY_OPTS,
+    });
+    return;
   }
 
   // Convert-to-Word one-shot (armed by "แปลงไฟล์"). Checked BEFORE the scan
@@ -1327,8 +1359,7 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
   // normal upload path (flag already consumed) — rare, and the jobId dedup
   // prevents a double conversion; worst case the source gets archived too.
   if (source.type === 'user' && (message.type === 'image' || message.type === 'file')) {
-    const armed = await consumeDocxConvert(app.redis, lineUserId);
-    if (armed) {
+    if (docxArmed) {
       // Pre-download cap for file messages (LINE declares fileSize for those).
       if (message.fileSize && message.fileSize > config.DOCX_CONVERT_MAX_SOURCE_BYTES) {
         const mb = Math.round(config.DOCX_CONVERT_MAX_SOURCE_BYTES / (1024 * 1024));

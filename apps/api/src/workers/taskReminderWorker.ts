@@ -225,7 +225,10 @@ export function createTaskReminderWorker(): Worker<TaskJob> {
           return processRecurSweep();
       }
     },
-    { connection: createRedis(), concurrency: 5 },
+    // drainDelay 20s (default 5s): fewer idle blocking-poll commands. Delayed
+    // reminder jobs still fire on schedule — this only affects the empty-queue
+    // wait, not delayed-job promotion.
+    { connection: createRedis(), concurrency: 5, drainDelay: 20000 },
   );
 
   worker.on('failed', (job, err) => {

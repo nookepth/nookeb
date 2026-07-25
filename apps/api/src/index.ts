@@ -122,7 +122,11 @@ async function main(): Promise<void> {
     timeWindow: '1 minute',
     redis: app.redis,
     allowList: (request) =>
-      request.url === '/health' || request.url.startsWith('/webhook/line'),
+      request.url === '/health' ||
+      request.url.startsWith('/webhook/line') ||
+      // The upload-progress page polls this on a timer; it's already bounded by
+      // the short-TTL Redis key, so the limiter only adds a command per poll.
+      request.url.startsWith('/progress/'),
   });
 
   await app.register(authPlugin);

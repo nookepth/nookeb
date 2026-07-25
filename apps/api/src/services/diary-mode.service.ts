@@ -15,7 +15,22 @@ export interface DiaryModeState {
   caption?: string;
 }
 
-const key = (lineUserId: string): string => `diary:pending:${lineUserId}`;
+export const diaryModeKey = (lineUserId: string): string => `diary:pending:${lineUserId}`;
+const key = diaryModeKey;
+
+/**
+ * Parse a raw diary-mode flag value (as returned by GETDEL). Shared by
+ * consumeDiaryMode and the webhook's batched image one-shot pipeline so the
+ * null/corrupt handling can't drift. null value → not armed.
+ */
+export function parseDiaryModeValue(val: string | null): DiaryModeState | null {
+  if (val === null) return null;
+  try {
+    return JSON.parse(val) as DiaryModeState;
+  } catch {
+    return {};
+  }
+}
 
 export async function armDiaryMode(redis: Redis, lineUserId: string): Promise<void> {
   await redis.set(key(lineUserId), JSON.stringify({}), 'EX', FLAG_TTL_SECONDS);
@@ -33,13 +48,7 @@ export async function consumeDiaryMode(
   redis: Redis,
   lineUserId: string,
 ): Promise<DiaryModeState | null> {
-  const val = await redis.getdel(key(lineUserId));
-  if (val === null) return null;
-  try {
-    return JSON.parse(val) as DiaryModeState;
-  } catch {
-    return {};
-  }
+  return parseDiaryModeValue(await redis.getdel(key(lineUserId)));
 }
 
 export async function isDiaryModeArmed(redis: Redis, lineUserId: string): Promise<boolean> {

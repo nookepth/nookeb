@@ -47,8 +47,12 @@ export function getTaskQueue(): Queue<TaskJob> {
         // independent; removeOnFail keeps Redis bounded).
         attempts: 3,
         backoff: { type: 'exponential', delay: 10_000 },
-        removeOnComplete: { count: 1000 },
-        removeOnFail: { count: 5000 },
+        // Low retention on purpose: this queue also holds the 30-min
+        // `task-recur-sweep` repeatable, whose fired iterations complete as
+        // `repeat:<hash>:<ms>` jobs. A high count let ~48/day of those pile up
+        // (TTL-less) — 100 keeps only a couple of days of history.
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 500 },
       },
     });
   }

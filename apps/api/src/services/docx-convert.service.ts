@@ -10,7 +10,8 @@ import type { Redis } from 'ioredis';
 
 const FLAG_TTL_SECONDS = 10 * 60;
 
-const key = (lineUserId: string): string => `docx:pending:${lineUserId}`;
+export const docxConvertKey = (lineUserId: string): string => `docx:pending:${lineUserId}`;
+const key = docxConvertKey;
 
 export async function armDocxConvert(redis: Redis, lineUserId: string): Promise<void> {
   await redis.set(key(lineUserId), '1', 'EX', FLAG_TTL_SECONDS);

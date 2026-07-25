@@ -171,6 +171,8 @@ export function createSheetsWorker(): Worker<SheetsJob> {
     // Low concurrency on purpose: Google's per-project quota is shared across
     // every user, and each sync is several API calls.
     concurrency: 3,
+    // drainDelay 20s (default 5s): fewer idle blocking-poll commands.
+    drainDelay: 20000,
   });
   worker.on('failed', (job, err) => {
     console.error(`[sheets] job ${job?.id} failed (attempt ${job?.attemptsMade}):`, err);

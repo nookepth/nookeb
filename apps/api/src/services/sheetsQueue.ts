@@ -26,8 +26,8 @@ export function getSheetsQueue(): Queue<SheetsJob> {
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5 * 60_000 },
-        removeOnComplete: { count: 500 },
-        removeOnFail: { count: 2000 },
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 500 },
       },
     });
   }

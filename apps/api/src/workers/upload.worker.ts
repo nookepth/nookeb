@@ -98,8 +98,18 @@ const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_
 });
 const r2 = createR2Client();
 
-// Same queue the API uses — the worker enqueues follow-up jobs (thumbnails) here
-const fileQueue = new Queue<FileJob>(FILE_QUEUE, { connection: createRedis() });
+// Same queue the API uses — the worker enqueues follow-up jobs (thumbnails) here.
+// Mirror the API-side plugin's job retention (plugins/bullmq.ts): without it, the
+// jobs the WORKER adds (generate_thumbnail/ocr_image — 2 per image, plus
+// finalize_scan wait re-enqueues) default to keep-forever and pile up completed/
+// failed keys in Redis unbounded.
+const fileQueue = new Queue<FileJob>(FILE_QUEUE, {
+  connection: createRedis(),
+  defaultJobOptions: {
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 500 },
+  },
+});
 
 const THUMBNAIL_WIDTH = 480;
 
@@ -1864,6 +1874,11 @@ export function createUploadWorker(): Worker<FileJob> {
     {
       connection: createRedis(),
       concurrency: 5,
+      // Longer blocking-poll timeout (default 5s) so an idle worker fires ~3x
+      // fewer BRPOPLPUSH/BZPOPMIN commands — the dominant idle Redis cost on a
+      // pay-per-command host (Upstash). Jobs are still picked up immediately on
+      // arrival; this only lengthens the empty-queue wait.
+      drainDelay: 20000,
     },
   );
 

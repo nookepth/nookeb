@@ -99,7 +99,7 @@ const VIEW_HTML = `<!DOCTYPE html>
   }
 
   poll();
-  timer = setInterval(poll, 1500);
+  timer = setInterval(poll, 4000);
 </script>
 </body>
 </html>`;

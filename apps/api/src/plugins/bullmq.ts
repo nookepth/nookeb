@@ -9,8 +9,8 @@ export default fp(async (app) => {
     defaultJobOptions: {
       attempts: 3,
       backoff: { type: 'exponential', delay: 3000 },
-      removeOnComplete: { count: 1000 },
-      removeOnFail: { count: 5000 },
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 500 },
     },
   });
   app.decorate('fileQueue', queue);
