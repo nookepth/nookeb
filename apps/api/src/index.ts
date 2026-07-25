@@ -1,3 +1,4 @@
+import { STATUS_CODES } from 'node:http';
 import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
@@ -62,21 +63,35 @@ async function main(): Promise<void> {
   // same-origin through the Next.js /api-proxy rewrite (so its requests never
   // need CORS at all); this remains for the transition period while older
   // deployed bundles still call the API cross-origin with a Bearer header, and
-  // for the Vercel PREVIEW deploys (`*-nookeb.vercel.app`), which are a
-  // different origin than config.WEB_URL.
+  // for the Vercel PREVIEW deploys, which are a different origin than
+  // config.WEB_URL.
   //
-  // Explicit allowlist (never wildcard with credentials): the production web
-  // origin plus the preview-domain pattern. @fastify/cors reflects only a
-  // matched origin back and sets `Vary: Origin`, so caches never cross origins.
-  // A request with no Origin header (server-to-server, e.g. the LINE webhook) is
-  // allowed through — CORS response headers are irrelevant to it.
-  const PREVIEW_ORIGIN = /^https:\/\/[a-z0-9-]+-nookeb\.vercel\.app$/;
+  // Explicit env-var allowlist (never a wildcard/regex with credentials): the
+  // production web origin, plus any extra origins in CORS_EXTRA_ORIGINS
+  // (comma-separated — e.g. Vercel preview URLs), plus localhost in development.
+  // The old `*-nookeb.vercel.app` regex let anyone register an "evil-nookeb"
+  // project on Vercel and pass CORS — an explicit list closes that.
+  // @fastify/cors reflects only a matched origin back and sets `Vary: Origin`,
+  // so caches never cross origins. A request with no Origin header
+  // (server-to-server, e.g. the LINE webhook) is allowed through — CORS response
+  // headers are irrelevant to it.
+  const allowedOrigins = new Set<string>([config.WEB_URL]);
+  for (const extra of (config.CORS_EXTRA_ORIGINS ?? '')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean)) {
+    allowedOrigins.add(extra);
+  }
+  if (config.NODE_ENV !== 'production') {
+    allowedOrigins.add('http://localhost:3000');
+    allowedOrigins.add('http://localhost:3001');
+  }
   await app.register(cors, {
     origin(origin, cb) {
-      if (!origin || origin === config.WEB_URL || PREVIEW_ORIGIN.test(origin)) {
+      if (!origin || allowedOrigins.has(origin)) {
         return cb(null, true);
       }
-      cb(null, false);
+      cb(new Error('Not allowed by CORS'), false);
     },
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -165,6 +180,38 @@ async function main(): Promise<void> {
   await app.register(eventsRoutes);
   await app.register(integrationsRoutes);
   await app.register(staticRoutes);
+
+  // Root error handler — sanitizes every error the routes let bubble up
+  // (previously Fastify's default handler echoed error.message, which could leak
+  // DB column names / constraints / internal detail). Team routes still have
+  // their own handler; this covers the rest.
+  //  - 5xx: never expose anything but a generic message (no message, no stack).
+  //  - 4xx: return the standard HTTP status name; keep the error's own message
+  //    ONLY when it came from a deliberate throw (Fastify / @fastify/error and
+  //    validation errors carry a `code`) — a plain thrown DB error has no
+  //    statusCode and falls into the 5xx branch, so it never leaks here.
+  app.setErrorHandler((error, request, reply) => {
+    app.log.error({ err: error, reqId: request.id }, 'unhandled route error');
+    reply.header('Content-Type', 'application/json');
+
+    const statusCode =
+      typeof error.statusCode === 'number' && error.statusCode >= 400 && error.statusCode < 600
+        ? error.statusCode
+        : 500;
+
+    if (statusCode >= 500) {
+      return reply.code(500).send({ statusCode: 500, error: 'Internal Server Error' });
+    }
+
+    const body: { statusCode: number; error: string; message?: string } = {
+      statusCode,
+      error: STATUS_CODES[statusCode] ?? 'Error',
+    };
+    if (typeof (error as { code?: unknown }).code === 'string' && error.message) {
+      body.message = error.message;
+    }
+    return reply.code(statusCode).send(body);
+  });
 
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
   app.log.info(`nookeb API listening on :${config.PORT}`);

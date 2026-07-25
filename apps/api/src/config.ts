@@ -12,6 +12,11 @@ const envSchema = z.object({
   WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),
   APP_URL: z.string().url().default('http://localhost:3001'),
   WEB_URL: z.string().url().default('http://localhost:3000'),
+  // Extra CORS origins allowed IN ADDITION to WEB_URL (comma-separated), e.g.
+  // Vercel preview URLs like https://nookeb-web-git-dev-team.vercel.app. This is
+  // an explicit allowlist — the previous `*-nookeb.vercel.app` regex let anyone
+  // register an "evil-nookeb" project on Vercel and pass CORS.
+  CORS_EXTRA_ORIGINS: z.string().optional(),
 
   // Reverse-proxy assumption: dashboard traffic reaches this API through TWO
   // hops (Vercel /api-proxy rewrite → Railway ingress), while webhooks arrive
@@ -97,6 +102,11 @@ const envSchema = z.object({
 
   // Admin — comma-separated LINE user ids that get admin access (no DB column needed)
   ADMIN_LINE_USER_IDS: z.string().optional(),
+
+  // Single LINE user id that receives CRITICAL ops alerts (e.g. a BullMQ job that
+  // exhausted all retries — see the worker's 'failed' handler). Optional: unset →
+  // failures are logged at ERROR level only, no push.
+  ADMIN_LINE_USER_ID: z.string().optional(),
 
   // Upload hard cap per file (bytes). Default 1 GB.
   MAX_FILE_SIZE_BYTES: z.coerce.number().int().positive().default(1_073_741_824),

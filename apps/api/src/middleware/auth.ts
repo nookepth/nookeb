@@ -36,7 +36,7 @@ export function signAppToken(payload: TokenPayload): string {
 
 export function verifyAppToken(token: string): (AuthUser & { sessionVersion: number }) | null {
   try {
-    const decoded = jwt.verify(token, config.JWT_SECRET) as jwt.JwtPayload;
+    const decoded = jwt.verify(token, config.JWT_SECRET, { algorithms: ['HS256'] }) as jwt.JwtPayload;
     if (!decoded.sub || typeof decoded['lineUserId'] !== 'string') return null;
     return {
       userId: decoded.sub,

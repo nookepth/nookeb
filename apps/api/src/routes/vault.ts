@@ -27,7 +27,7 @@ import {
   peekVaultSession,
   recordFailedAttempt,
 } from '../services/vault-session.service';
-import { adjustStorageUsed } from '../services/file.service';
+import { incrementPersonalStorage } from '../services/file.service';
 import {
   buildVaultKey,
   getVaultFile,
@@ -299,18 +299,68 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
       });
     }
     const userId = request.authUser!.userId;
+
+    // Quota — RESERVE up front, BEFORE streaming a single byte, exactly like the
+    // LINE upload worker (incrementPersonalStorage with enforce). Vault files
+    // share the user's single personal storage_used pool (NOT a separate quota).
+    // The multipart body's Content-Length is an upper-bound estimate of the file
+    // size (it also covers the envelope), which is the safe direction to reserve;
+    // the actual stored bytes are settled after upload. A missing Content-Length
+    // (e.g. chunked transfer-encoding) is rejected — we can't reserve blind.
+    const contentLength = Number(request.headers['content-length']);
+    if (!Number.isFinite(contentLength) || contentLength <= 0) {
+      mp.file.resume(); // drain so the connection isn't left hanging
+      return reply
+        .code(411)
+        .send({ error: 'Content-Length required', code: 'LENGTH_REQUIRED' });
+    }
+    const reserveBytes = Math.min(contentLength, maxFileBytes);
+
+    let reservedOutstanding = 0;
+    const releaseReservation = async (): Promise<void> => {
+      if (reservedOutstanding > 0) {
+        const toRelease = reservedOutstanding;
+        reservedOutstanding = 0;
+        await incrementPersonalStorage(app.supabase, userId, -toRelease, { enforce: false }).catch(
+          (err) => request.log.error({ err, userId }, 'vault: failed to release storage reservation'),
+        );
+      }
+    };
+
+    let reservation;
+    try {
+      reservation = await incrementPersonalStorage(app.supabase, userId, reserveBytes, {
+        enforce: true,
+      });
+    } catch (err) {
+      mp.file.resume();
+      throw err;
+    }
+    if (reservation.overLimit) {
+      mp.file.resume();
+      return reply.code(403).send({ error: 'Storage quota exceeded', code: 'QUOTA_EXCEEDED' });
+    }
+    reservedOutstanding = reserveBytes;
+
     const fileId = randomUUID();
     const r2Key = buildVaultKey(userId, fileId);
     const originalFilename = (mp.filename || 'file').slice(0, 255);
 
     const [userKey, dek, fileIv] = [await deriveUserKey(userId), generateDek(), generateFileIv()];
-    const { size: cipherSize } = await uploadStream(
-      app.r2,
-      r2Key,
-      encryptStream(mp.file, dek, fileIv),
-      'application/octet-stream', // ciphertext — the real mime lives in the DB row
-      maxFileBytes + GCM_TAG_BYTES, // backstop; multipart's own fileSize limit hits first
-    );
+    let cipherSize: number;
+    try {
+      ({ size: cipherSize } = await uploadStream(
+        app.r2,
+        r2Key,
+        encryptStream(mp.file, dek, fileIv),
+        'application/octet-stream', // ciphertext — the real mime lives in the DB row
+        maxFileBytes + GCM_TAG_BYTES, // backstop; multipart's own fileSize limit hits first
+      ));
+    } catch (err) {
+      // Nothing durable stored → give the reserved quota back.
+      await releaseReservation();
+      throw err;
+    }
 
     // Multipart limit truncates silently instead of erroring — a truncated
     // object must never be stored as if complete.
@@ -318,6 +368,7 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
       await deleteObject(app.r2, r2Key).catch((err) =>
         request.log.error({ err, r2Key }, 'vault: truncated-upload cleanup failed'),
       );
+      await releaseReservation();
       return reply
         .code(413)
         .send({ error: `File exceeds the ${config.VAULT_MAX_FILE_SIZE_MB} MB vault limit` });
@@ -337,35 +388,29 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
         iv: fileIv.toString('base64'),
       });
     } catch (err) {
-      // No DB row → the object is unreachable; remove it rather than leak storage.
-      // Scoped to the insert ALONE: past this point a live row owns the object,
-      // and deleting it would leave a file that lists but 500s on view.
+      // No DB row → the object is unreachable; remove it AND release the
+      // reservation rather than leak storage/quota. Scoped to the insert ALONE:
+      // past this point a live row owns the object, and deleting it would leave a
+      // file that lists but 500s on view.
       await deleteObject(app.r2, r2Key).catch(() => {});
+      await releaseReservation();
       throw err;
     }
 
-    // Vault files share the user's single storage_used pool (they are NOT a
-    // separate quota). Charged AFTER the row exists, so a failed insert can't
-    // bill for bytes the user can't see; the matching refund happens at hard
-    // purge, not soft delete — a soft-deleted file still occupies R2. Atomic
-    // per rule 8. No spaceId: the vault is outside the space model, so the
-    // storage-monitor alert has no space to report against.
-    //
-    // Best-effort: the file is already stored and listable, so a failed charge
-    // must not fail the upload (the user would retry and store it twice). It
-    // undercounts instead — the safe direction, and repairable by re-running
-    // supabase/backfills/backfill_vault_storage.sql.
-    //
-    // Deliberately NOT enforcing the limit: the bytes are already in R2 by this
-    // point, so a rejection here would have to delete-and-refund. A vault upload
-    // can therefore push storage_used past storage_limit; the multipart fileSize
-    // limit is its only hard cap. Accepted for now — LINE uploads reserve quota
-    // up front (incrementPersonalStorage with enforce) and the vault should too,
-    // once its UI can render a quota-exceeded state.
-    try {
-      await adjustStorageUsed(app.supabase, userId, fileSize);
-    } catch (err) {
-      request.log.error({ err, userId, fileId, fileSize }, 'vault: storage charge failed');
+    // Settle the reservation to the ACTUAL stored bytes (the estimate covered the
+    // multipart envelope, so it usually over-reserved a little). Unenforced — the
+    // file is already stored and the row owns it, so "row exists" ⟺ "charged
+    // fileSize". The matching refund happens at hard purge, not soft delete — a
+    // soft-deleted file still occupies R2. Best-effort: a failed settle only
+    // leaves a small over/under-count, repairable via
+    // supabase/backfills/backfill_vault_storage.sql; it must never fail an upload
+    // whose bytes are already in R2.
+    const drift = fileSize - reservedOutstanding;
+    reservedOutstanding = 0;
+    if (drift !== 0) {
+      await incrementPersonalStorage(app.supabase, userId, drift, { enforce: false }).catch((err) =>
+        request.log.error({ err, userId, fileId, drift }, 'vault: storage settle failed'),
+      );
     }
 
     void logEvent(app.supabase, {

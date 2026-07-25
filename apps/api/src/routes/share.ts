@@ -229,7 +229,10 @@ const shareRoutes: FastifyPluginAsync = async (app) => {
   // URL on demand so a viewer who lingered past the short preview TTL can still
   // download (the page-load URL would have expired). Does NOT increment
   // view_count — that was already counted by GET /share/:token on page load.
-  app.get<{ Params: { token: string } }>('/share/:token/download', async (request, reply) => {
+  app.get<{ Params: { token: string } }>(
+    '/share/:token/download',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
     const { token } = request.params;
 
     const { data: shareData, error: shareErr } = await app.supabase

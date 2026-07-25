@@ -35,7 +35,7 @@ import {
   uploadStream,
   SizeLimitExceededError,
 } from '../services/r2.service';
-import { getMessageContent, getProfile, replyMessage, type LineMessage } from '../services/line.service';
+import { getMessageContent, getProfile, replyMessage, pushMessage, type LineMessage } from '../services/line.service';
 import { addPendingNotify, closePendingNotify } from '../services/pending-notify.service';
 import {
   ensureUserAndSpace,
@@ -1888,24 +1888,47 @@ export function createUploadWorker(): Worker<FileJob> {
   worker.on('failed', (job, err) => {
     // When retries are EXHAUSTED this is a lost job — a file the user was already
     // told "รับแล้ว" may never finish (LINE CDN content has a ~1h TTL, so it's
-    // unrecoverable after the window). No external alerting infra exists yet;
-    // escalate to a CRITICAL, structured log so a log-based alert can catch it.
-    // TODO(ops): route exhausted-job failures to a real alert channel
-    // (Sentry/Slack) — needs a tracking issue; log-scraping is the stopgap.
+    // unrecoverable after the window). Escalate to a CRITICAL, structured log AND
+    // (best-effort) a LINE push to the admin so someone is alerted, not just the
+    // logs. This handler NEVER retries — it only records and alerts.
     const attempts = job?.opts.attempts ?? 1;
-    const exhausted = job ? job.attemptsMade >= attempts : false;
-    const jobType = (job?.data as { type?: string } | undefined)?.type ?? 'unknown';
-    if (exhausted) {
-      console.error(
-        `[upload.worker] CRITICAL job permanently failed (retries exhausted): ` +
-          `id=${job?.id} type=${jobType} attempts=${job?.attemptsMade}/${attempts}`,
-        err,
-      );
-    } else {
+    const attemptsMade = job?.attemptsMade ?? 0;
+    const exhausted = job ? attemptsMade >= attempts : false;
+    const jobName = (job?.data as { type?: string } | undefined)?.type ?? 'unknown';
+
+    if (!exhausted) {
       console.error(
         `[upload.worker] job attempt failed (will retry): ` +
-          `id=${job?.id} type=${jobType} attempt=${job?.attemptsMade}/${attempts}: ${err.message}`,
+          `id=${job?.id} type=${jobName} attempt=${attemptsMade}/${attempts}: ${err.message}`,
       );
+      return;
+    }
+
+    console.error('[upload.worker] CRITICAL job permanently failed (retries exhausted)', {
+      jobId: job?.id,
+      jobName,
+      attemptsMade,
+      attempts,
+      error: err.message,
+      stack: err.stack,
+    });
+
+    // Best-effort admin alert. Skipped (logged only) when ADMIN_LINE_USER_ID is
+    // unset; never allowed to throw into the event loop.
+    const adminLineUserId = config.ADMIN_LINE_USER_ID;
+    if (adminLineUserId) {
+      void pushMessage(adminLineUserId, [
+        {
+          type: 'text',
+          text:
+            `🚨 [nookeb] Job Failed Permanently\n` +
+            `Job: ${jobName}\n` +
+            `ID: ${job?.id}\n` +
+            `Error: ${err.message}`,
+        },
+      ]).catch((pushErr) => {
+        console.error('[upload.worker] failed to push admin job-failure alert', pushErr);
+      });
     }
   });
 
