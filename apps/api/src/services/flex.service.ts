@@ -154,105 +154,15 @@ export function buildProgressFlexMessage(params: {
   };
 }
 
-/** Which "ระบบรวมรูป" (merge-to-PDF) card to build. */
-export type MergeCardVariant =
-  | { kind: 'opened' }
-  | { kind: 'page'; count: number };
-
-/**
- * "ระบบรวมรูป" session cards — same kilo-bubble structure as the upload cards
- * above (green header title bar, dot-row status, muted footer). One builder,
- * two variants: 'opened' (session start) and 'page' (per-page confirmation).
- */
-export function buildMergeFlexMessage(variant: MergeCardVariant): FlexMessage {
-  const header = {
-    type: 'box',
-    layout: 'vertical',
-    paddingAll: '16px',
-    contents: [
-      { type: 'text', text: 'ระบบรวมรูป', weight: 'bold', size: 'lg', color: '#FFFFFF' },
-    ],
-  };
-  const styles = { header: { backgroundColor: BRAND_RED }, body: { backgroundColor: '#FFFFFF' } };
-
-  if (variant.kind === 'page') {
-    const headline = `เพิ่มรูป ${variant.count} รายการแล้วน้า`;
-    return {
-      type: 'flex',
-      altText: headline,
-      contents: {
-        type: 'bubble',
-        size: 'kilo',
-        header,
-        body: {
-          type: 'box',
-          layout: 'vertical',
-          spacing: 'md',
-          paddingAll: '16px',
-          contents: [
-            {
-              type: 'box',
-              layout: 'horizontal',
-              spacing: 'md',
-              alignItems: 'center',
-              contents: [
-                statusDot(LINE_GREEN),
-                { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
-              ],
-            },
-            { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
-          ],
-        },
-        footer: {
-          type: 'box',
-          layout: 'vertical',
-          paddingAll: '12px',
-          contents: [cancelButton()],
-        },
-        styles,
-      },
-    };
-  }
-
-  return {
-    type: 'flex',
-    altText: 'เปิดโหมดรวมรูปแล้วน้า',
-    contents: {
-      type: 'bubble',
-      size: 'kilo',
-      header,
-      body: {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'md',
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'เปิดโหมดรวมรูปแล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
-          {
-            type: 'text',
-            text: 'ส่งรูปมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้',
-            size: 'sm',
-            color: '#333333',
-            wrap: true,
-          },
-        ],
-      },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '12px',
-        contents: [cancelButton()],
-      },
-      styles,
-    },
-  };
-}
-
 /**
  * "ระบบแปลงไฟล์" (convert-to-Word) start card — same kilo-bubble structure as
- * {@link buildMergeFlexMessage} ('opened'): brand-red header title bar, bold
+ * {@link buildPdfMergeFlexMessage} ('opened'): brand-red header title bar, bold
  * headline + muted detail body, cancel button footer. Content is the same
  * instruction text the command used to send as plain text.
+ *
+ * NOTE: the old brand-red "ระบบรวมรูป" card (buildMergeFlexMessage) was removed
+ * when รวมรูป was consolidated into รวมไฟล์ — there is now ONE merge card,
+ * {@link buildPdfMergeFlexMessage}.
  */
 export function buildDocxConvertFlexMessage(): FlexMessage {
   const header = {
@@ -308,7 +218,7 @@ export function buildDocxConvertFlexMessage(): FlexMessage {
 
 const SCAN_BLUE = '#1E88E5'; // scan-mode card header — distinct from the merge (red) card
 
-/** Which "ระบบสแกน" (scan-to-PDF) card to build. Mirrors {@link MergeCardVariant}. */
+/** Which "ระบบสแกน" (scan-to-PDF) card to build. Mirrors {@link PdfMergeCardVariant}. */
 export type ScanCardVariant =
   | { kind: 'opened' }
   | { kind: 'page'; count: number };
@@ -324,8 +234,8 @@ function scanCancelButton(): Record<string, unknown> {
 }
 
 /**
- * "ระบบสแกน" session cards. Separate from {@link buildMergeFlexMessage}
- * ("ระบบรวมรูป") so a scan command never shows the merge card. Blue header, same
+ * "ระบบสแกน" session cards. Separate from {@link buildPdfMergeFlexMessage}
+ * ("ระบบรวมไฟล์") so a scan command never shows the merge card. Blue header, same
  * kilo-bubble structure. One builder, two variants: 'opened' (session start) and
  * 'page' (per-page confirmation).
  */
@@ -411,13 +321,13 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
   };
 }
 
-// ระบบรวมไฟล์ PDF (migration 044) — deep navy header, blue CTA. Deliberately
-// distinct from the merge card's brand red (รวมรูป) and the scan card's lighter
-// blue (SCAN_BLUE) so the three document modes are never confused at a glance.
+// ระบบรวมไฟล์ (migration 044; unified images+PDF) — deep navy header, blue CTA.
+// Deliberately distinct from the scan card's lighter blue (SCAN_BLUE) so the two
+// remaining document modes are never confused at a glance.
 const PDF_NAVY = '#1E3A5F';
 const PDF_BLUE = '#2563EB';
 
-/** Which "ระบบรวมไฟล์ PDF" card to build. Mirrors {@link MergeCardVariant}. */
+/** Which "ระบบรวมไฟล์" card to build (the single, unified merge card). */
 export type PdfMergeCardVariant =
   | { kind: 'opened' }
   | { kind: 'page'; count: number };
@@ -436,7 +346,7 @@ export function buildPdfMergeFlexMessage(
     layout: 'vertical',
     paddingAll: '16px',
     contents: [
-      { type: 'text', text: 'ระบบรวมไฟล์ PDF', weight: 'bold', size: 'lg', color: '#FFFFFF' },
+      { type: 'text', text: 'ระบบรวมไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
     ],
   };
   const styles = { header: { backgroundColor: PDF_NAVY }, body: { backgroundColor: '#FFFFFF' } };
@@ -496,7 +406,7 @@ export function buildPdfMergeFlexMessage(
           { type: 'text', text: 'เปิดโหมดรวมไฟล์แล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
           {
             type: 'text',
-            text: 'ส่งไฟล์ PDF ทีละไฟล์ได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ให้',
+            text: 'รองรับทั้งรูปภาพและ PDF ส่งทีละอันได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็นไฟล์เดียวให้',
             size: 'sm',
             color: '#333333',
             wrap: true,
@@ -520,7 +430,7 @@ export function buildPdfMergeFlexMessage(
  * is fresh here, so this always lands for free; the merged PDF then appears in the
  * locker (the button target). One compact kilo bubble, same header colors as the
  * scan (blue) / merge (red) session cards:
- *   • header  — "ระบบสแกน" / "ระบบรวมรูป" / "ระบบรวมไฟล์ PDF"
+ *   • header  — "ระบบสแกน" / "ระบบรวมไฟล์" (legacy 'merge' sessions: "ระบบรวมรูป")
  *   • body    — green-dot status line + a soft "แป๊บนึงน้าพี่" note
  *   • footer  — coral/red "ดูล็อคเกอร์ได้เลย" button → dashboard
  */
@@ -533,7 +443,7 @@ export function buildFinalizingFlexMessage(params: {
   const headerColor = kind === 'scan' ? SCAN_BLUE : kind === 'pdf' ? PDF_NAVY : BRAND_RED;
   const accent = kind === 'pdf' ? PDF_BLUE : BRAND_RED;
   const title =
-    kind === 'scan' ? 'ระบบสแกน' : kind === 'pdf' ? 'ระบบรวมไฟล์ PDF' : 'ระบบรวมรูป';
+    kind === 'scan' ? 'ระบบสแกน' : kind === 'pdf' ? 'ระบบรวมไฟล์' : 'ระบบรวมรูป';
   const statusLine =
     kind === 'scan'
       ? `หนูกำลังสแกน ${count} หน้าเป็น PDF ให้น้า`
@@ -993,10 +903,9 @@ export function buildHelpFlexMessage(): FlexMessage {
       ],
     },
     {
-      header: '🖼️ รวมรูป & รวมไฟล์',
+      header: '🖼️ รวมไฟล์',
       lines: [
-        '• "หนูเก็บรวมรูป" → ส่งรูปทีละใบ พิมพ์ "เสร็จ" เมื่อครบ',
-        '• "หนูเก็บรวมไฟล์" → ส่ง PDF ทีละไฟล์ รวมเป็นไฟล์เดียว',
+        '• "หนูเก็บรวมไฟล์" → ส่งรูปหรือ PDF ทีละอัน พิมพ์ "เสร็จ" หนูรวมเป็นไฟล์เดียวให้',
       ],
     },
     {

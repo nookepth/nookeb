@@ -71,7 +71,8 @@ import {
 import { processScanPage, plainNormalize, buildScanPdf, MSG_PDF_FAILED } from '../services/scan-enhance.service';
 import {
   loadSourcePdf,
-  mergePdfs,
+  looksLikePdf,
+  mergeMixedToPdf,
   PdfSourceError,
   type PdfRejectReason,
 } from '../services/pdf-merge.service';
@@ -804,32 +805,46 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   // config default (migration 019) if either migration isn't applied yet.
   const kind = session.session_kind ?? 'merge';
 
-  // ระบบรวมไฟล์ PDF (migration 044): the collected item is a whole PDF document.
-  // Validate it HERE, while the user is still collecting — a source that can't
-  // be loaded must be reported now, not at "เสร็จ" when it would sink the whole
-  // merge. A bad source is USER error, so it's reported and swallowed (return),
-  // never thrown: throwing would burn all three BullMQ attempts re-downloading
-  // the same broken file and send the message three times.
+  // ระบบรวมไฟล์ (unified, migration 044): the collected item is EITHER a whole
+  // PDF document OR an image — both merge into one PDF. Detect by magic bytes
+  // (never the filename) so the type is decided from the actual content.
   if (kind === 'pdf') {
-    try {
-      await loadSourcePdf(original);
-    } catch (err) {
-      if (err instanceof PdfSourceError) {
-        console.warn(
-          `[upload.worker] add_scan_page session=${session.id} msg=${job.lineMessageId} ` +
-            `rejected PDF source (${err.reason}): ${err.message}`,
-        );
-        if (job.lineUserId) {
-          await notifyUser(job.lineUserId, [{ type: 'text', text: PDF_REJECT_TEXT[err.reason] }]);
+    if (looksLikePdf(original)) {
+      // Whole PDF source. Validate it HERE, while the user is still collecting —
+      // a source that can't be loaded must be reported now, not at "เสร็จ" when
+      // it would sink the whole merge. A bad source is USER error, so it's
+      // reported and swallowed (return), never thrown: throwing would burn all
+      // three BullMQ attempts re-downloading the same broken file and send the
+      // message three times.
+      try {
+        await loadSourcePdf(original);
+      } catch (err) {
+        if (err instanceof PdfSourceError) {
+          console.warn(
+            `[upload.worker] add_scan_page session=${session.id} msg=${job.lineMessageId} ` +
+              `rejected PDF source (${err.reason}): ${err.message}`,
+          );
+          if (job.lineUserId) {
+            await notifyUser(job.lineUserId, [{ type: 'text', text: PDF_REJECT_TEXT[err.reason] }]);
+          }
+          return;
         }
-        return;
+        throw err;
       }
-      throw err;
+      const pdfPageId = randomUUID();
+      const pdfKey = buildScanPageKey(session.space_id, session.id, pdfPageId, 'pdf');
+      await uploadStream(r2, pdfKey, Readable.from(original), 'application/pdf');
+      await insertPage(supabase, session.id, pdfKey, job.lineMessageId);
+      return;
     }
-    const pdfPageId = randomUUID();
-    const pdfKey = buildScanPageKey(session.space_id, session.id, pdfPageId, 'pdf');
-    await uploadStream(r2, pdfKey, Readable.from(original), 'application/pdf');
-    await insertPage(supabase, session.id, pdfKey, job.lineMessageId);
+    // Image source in a mixed merge → normalize to JPEG and store as an image
+    // page (finalize embeds it on an A4 page, in page_seq order). No scan-enhance
+    // pipeline here: รวมไฟล์ keeps sources as-is, so a plain normalize is enough.
+    const jpeg = await plainNormalize(original);
+    const imgPageId = randomUUID();
+    const imgKey = buildScanPageKey(session.space_id, session.id, imgPageId, 'jpg');
+    await uploadStream(r2, imgKey, Readable.from(jpeg), 'image/jpeg');
+    await insertPage(supabase, session.id, imgKey, job.lineMessageId);
     return;
   }
 
@@ -963,10 +978,11 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
       sources.push(await readAll(await getObjectStream(r2, page.r2_key)));
     }
     if (sessionKind === 'pdf') {
-      // ระบบรวมไฟล์ PDF (migration 044): concatenate the collected documents,
-      // preserving each source page's own size/orientation. No OCR layer —
-      // source PDFs carry their own text layer already.
-      pdfBytes = await mergePdfs(sources);
+      // ระบบรวมไฟล์ (unified): merge the collected sources — a mix of whole PDFs
+      // (pages copied, size/orientation preserved) and images (embedded on A4) —
+      // into one PDF, in page_seq order. No OCR layer: source PDFs carry their
+      // own, and image pages are image-only.
+      pdfBytes = await mergeMixedToPdf(sources);
       log('pdf-merged', `bytes=${pdfBytes.length} sources=${sources.length}`);
     } else {
       pdfBytes = await buildScanPdf(sources, {

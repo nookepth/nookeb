@@ -1,7 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { PDFDocument } from 'pdf-lib';
-import { PdfSourceError, loadSourcePdf, looksLikePdf, mergePdfs } from './pdf-merge.service';
+import {
+  PdfSourceError,
+  loadSourcePdf,
+  looksLikePdf,
+  looksLikePng,
+  mergeMixedToPdf,
+  mergePdfs,
+} from './pdf-merge.service';
 
 /** A minimal valid PDF with `pageCount` pages of the given size. */
 async function makePdf(pageCount: number, size: [number, number] = [595, 842]): Promise<Buffer> {
@@ -9,6 +16,12 @@ async function makePdf(pageCount: number, size: [number, number] = [595, 842]): 
   for (let i = 0; i < pageCount; i += 1) doc.addPage(size);
   return Buffer.from(await doc.save());
 }
+
+/** A 1×1 opaque-black PNG — enough for pdf-lib's embedPng to parse. */
+const PNG_1x1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64',
+);
 
 test('looksLikePdf: magic bytes, not the filename', async () => {
   assert.equal(looksLikePdf(await makePdf(1)), true);
@@ -74,5 +87,33 @@ test('mergePdfs: empty input is a programming error, not a PdfSourceError', asyn
   await assert.rejects(
     () => mergePdfs([]),
     (err: unknown) => err instanceof Error && !(err instanceof PdfSourceError),
+  );
+});
+
+test('looksLikePng: magic bytes', () => {
+  assert.equal(looksLikePng(PNG_1x1), true);
+  assert.equal(looksLikePng(Buffer.from('%PDF-1.7')), false);
+});
+
+test('mergeMixedToPdf: interleaves image + PDF sources in order', async () => {
+  // image (1 A4 page) + pdf(2) + image (1 A4 page) → 4 pages, order preserved.
+  const merged = await mergeMixedToPdf([PNG_1x1, await makePdf(2), PNG_1x1]);
+  const out = await PDFDocument.load(merged);
+  assert.equal(out.getPageCount(), 4);
+  // Image pages are laid onto A4; the PDF's own two pages keep their size (595×842).
+  const sizes = out.getPages().map((p) => [Math.round(p.getWidth()), Math.round(p.getHeight())]);
+  assert.deepEqual(sizes[0], [595, 842]);
+  assert.deepEqual(sizes[3], [595, 842]);
+});
+
+test('mergeMixedToPdf: all-image input still produces one page each', async () => {
+  const merged = await mergeMixedToPdf([PNG_1x1, PNG_1x1]);
+  assert.equal((await PDFDocument.load(merged)).getPageCount(), 2);
+});
+
+test('mergeMixedToPdf: surfaces a bad PDF source as PdfSourceError', async () => {
+  await assert.rejects(
+    () => mergeMixedToPdf([PNG_1x1, Buffer.from('%PDF-garbage')]),
+    (err: unknown) => err instanceof PdfSourceError,
   );
 });

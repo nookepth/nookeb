@@ -18,7 +18,6 @@ import {
   buildDiaryPromptCard,
   buildFinalizingFlexMessage,
   buildInviteFlexMessage,
-  buildMergeFlexMessage,
   buildDocxConvertFlexMessage,
   buildFeatureCarouselMessage,
   buildHelpFlexMessage,
@@ -277,8 +276,7 @@ async function findUserId(app: FastifyInstance, lineUserId: string): Promise<str
 const HELP_TEXT = `วิธีใช้หนูเก็บน้า
 
 • ส่งรูปหรือไฟล์เข้ามาในแชทได้เลยน้า เดี๋ยวหนูเก็บให้พี่เอง
-• อยากรวมรูปหลายหน้าเป็น PDF พิมพ์ "หนูเก็บรวมรูป" ได้เลยน้า
-• อยากรวมไฟล์ PDF หลายไฟล์เป็นไฟล์เดียว พิมพ์ "หนูเก็บรวมไฟล์" น้า
+• อยากรวมรูปและไฟล์ PDF เป็นไฟล์เดียว พิมพ์ "หนูเก็บรวมไฟล์" น้า
 • อยากสแกนเป็น PDF พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" น้า
 • อยากได้ไฟล์ Word แก้ต่อได้ พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF มาน้า
 • อยากทำไดอารี่ 365 วัน พิมพ์ "หนูเก็บไดอารี่" แล้วส่งรูป 1 รูปมาน้า
@@ -304,8 +302,7 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 
 ✨ ฟีเจอร์
 หนูเก็บฟีเจอร์ — ดูฟีเจอร์ทั้งหมด
-หนูเก็บรวมรูป — รวมรูปหลายใบเป็น PDF
-หนูเก็บรวมไฟล์ — รวมไฟล์ PDF หลายไฟล์เป็นไฟล์เดียว
+หนูเก็บรวมไฟล์ — รวมรูปและไฟล์ PDF เป็นไฟล์เดียว
 หนูเก็บสแกน — สแกนเอกสารเป็น PDF
 หนูเก็บสแกนสี — สแกนแบบสี
 หนูเก็บสแกนขาวดำ — สแกนแบบขาวดำ
@@ -609,8 +606,7 @@ async function handleTextCommand(
     await replyWithQuickReply(event, 'เลือกฟีเจอร์เอกสารที่ต้องการ', [
       { label: 'แปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
       { label: 'สแกนสี', text: 'หนูเก็บสแกนสี' },
-      { label: 'รวมรูป', text: 'หนูเก็บรวมรูป' },
-      { label: 'รวมไฟล์ PDF', text: 'หนูเก็บรวมไฟล์' },
+      { label: 'รวมไฟล์', text: 'หนูเก็บรวมไฟล์' },
     ]);
     return;
   }
@@ -627,7 +623,6 @@ async function handleTextCommand(
       { label: 'หนูเก็บไดอารี่', text: 'หนูเก็บไดอารี่' },
       { label: 'หนูเก็บแปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
       { label: 'หนูเก็บสแกนสี', text: 'หนูเก็บสแกนสี' },
-      { label: 'หนูเก็บรวมรูป', text: 'หนูเก็บรวมรูป' },
       { label: 'หนูเก็บรวมไฟล์', text: 'หนูเก็บรวมไฟล์' },
       { label: 'หนูเก็บกล่องของขวัญ', uri: 'https://nookeb-web.vercel.app/dashboard/legacy-box' },
       { label: 'หนูเก็บห้องนิรภัย', uri: 'https://nookeb-web.vercel.app/dashboard/vault' },
@@ -896,26 +891,18 @@ async function handleTextCommand(
     return;
   }
 
-  // Start merge-to-PDF mode (also triggered by the rich-menu "รวมรูปเป็น PDF" cell).
-  // NOTE: "สแกน"/"scan"/"/scan" are deliberately NOT triggers here — they belong to
-  // the scan-session feature (Feature B above), which handles them first anyway.
+  // DEPRECATED: "รวมรูป" (image-merge) was consolidated into "รวมไฟล์", which now
+  // accepts BOTH images and PDFs. The trigger is kept only to REDIRECT anyone
+  // (or a stale rich-menu tap) who still types the old command — it no longer
+  // starts a 'merge' session. The worker's 'merge' session_kind stays intact for
+  // any session opened before this consolidation shipped. (สแกน is unaffected —
+  // it is the separate 'scan' session_kind for document scanning + OCR.)
   if (prefixed && isCmd(text, 'รวมรูป')) {
-    // Merge-to-PDF is a personal-chat feature only — group scan sessions would
-    // collide across members sharing one group space.
-    if (source.type === 'group' || source.type === 'room') {
-      await reply(event, 'ระบบรวมรูปทักหนูมาในแชทส่วนตัวได้เลยน้า 🖼️');
-      return;
-    }
-    const profile = await getProfile(lineUserId).catch(() => undefined);
-    const { user, space } = await ensureUserAndSpace(
-      app.supabase,
-      lineUserId,
-      profile?.displayName,
-      profile?.pictureUrl,
+    await replyWithQuickReply(
+      event,
+      'ตอนนี้ "หนูเก็บรวมรูป" รวมเข้ากับ "หนูเก็บรวมไฟล์" แล้วน้า พิมพ์ "หนูเก็บรวมไฟล์" แล้วส่งรูปหรือ PDF มาได้เลย หนูรวมให้เป็นไฟล์เดียว 🖼️📄',
+      [{ label: 'หนูเก็บรวมไฟล์', text: 'หนูเก็บรวมไฟล์' }],
     );
-    // Merge is personal-only (group/room returned above), so always the personal space.
-    await startSession(app.supabase, user.id, space.id, config.SCAN_DEFAULT_MODE, 'merge');
-    await replyFlex(event, buildMergeFlexMessage({ kind: 'opened' }));
     return;
   }
 
@@ -1016,7 +1003,7 @@ async function handleTextCommand(
   // รวมไฟล์ PDF), so every message here names the mode the user is actually in.
   if (isCmd(text, 'เสร็จ')) {
     if (!session) {
-      await reply(event, 'พี่ยังไม่ได้เปิดโหมดไหนเลยน้า พิมพ์ "หนูเก็บรวมรูป" หรือ "หนูเก็บรวมไฟล์" ก่อนแล้วค่อยส่งมาน้า 🧺');
+      await reply(event, 'พี่ยังไม่ได้เปิดโหมดไหนเลยน้า พิมพ์ "หนูเก็บรวมไฟล์" หรือ "หนูเก็บสแกน" ก่อนแล้วค่อยส่งมาน้า 🧺');
       return;
     }
     const kind = session.session_kind ?? 'merge';
@@ -1026,7 +1013,7 @@ async function handleTextCommand(
       await reply(
         event,
         kind === 'pdf'
-          ? 'ยังไม่มีไฟล์เลยน้า ส่งไฟล์ PDF มาก่อนได้เลยน้า หนูปิดโหมดให้ก่อนนะน้า 🌀'
+          ? 'ยังไม่มีไฟล์เลยน้า ส่งรูปหรือไฟล์ PDF มาก่อนได้เลยน้า หนูปิดโหมดให้ก่อนนะน้า 🌀'
           : 'ยังไม่มีรูปให้รวมเลยน้า หนูปิดโหมดรวมรูปให้ก่อนนะน้า 🌀',
       );
       return;
@@ -1386,16 +1373,21 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     const session = userId ? await getActiveSession(app.supabase, userId) : null;
     const sessionKind = session?.session_kind ?? 'merge';
 
-    // A รวมไฟล์ PDF session (migration 044) collects FILES, not images. Reject
-    // anything else here rather than letting it fall through to the normal
-    // upload path: the user is mid-flow and would otherwise get a silent
-    // "archived to locker" with no hint why it didn't join the merge.
+    // A unified รวมไฟล์ session (migration 044) collects BOTH images and .pdf
+    // files — everything merges into one PDF. Reject anything else (e.g. a
+    // .docx) here rather than letting it fall through to the normal upload
+    // path: the user is mid-flow and would otherwise get a silent "archived to
+    // locker" with no hint why it didn't join the merge.
     if (session && sessionKind === 'pdf') {
       const name = message.type === 'file' ? (message.fileName ?? '') : '';
-      if (message.type !== 'file' || !/\.pdf$/i.test(name)) {
-        await reply(event, 'ส่งเฉพาะไฟล์ .pdf น้า หนูรับแค่ PDF ในโหมดนี้เองน้า 📄');
+      const isImage = message.type === 'image';
+      const isPdfFile = message.type === 'file' && /\.pdf$/i.test(name);
+      if (!isImage && !isPdfFile) {
+        await reply(event, 'ส่งได้เฉพาะรูปหรือไฟล์ .pdf น้า หนูรวมให้เป็น PDF ไฟล์เดียวเลยน้า 🖼️📄');
         return;
       }
+      // Size cap applies to .pdf files only — LINE declares fileSize for 'file'
+      // messages, not images (those are already display-sized and re-encoded).
       if (message.fileSize && message.fileSize > config.PDF_MERGE_MAX_SOURCE_BYTES) {
         const mb = Math.round(config.PDF_MERGE_MAX_SOURCE_BYTES / (1024 * 1024));
         await reply(event, `ไฟล์ใหญ่เกิน ${mb}MB น้า ระบบรวมไฟล์รับได้เท่านี้ก่อนน้า ลองแบ่งไฟล์แล้วส่งมาใหม่ได้เลยน้า`);
@@ -1417,8 +1409,9 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
       }
     }
 
-    // Non-image messages only join image sessions (สแกน/รวมรูป) — a file sent
-    // during those falls through to the normal upload path, as before.
+    // A รวมไฟล์ (pdf) session takes BOTH images and .pdf files (both validated
+    // above); สแกน/รวมรูป sessions take images only, so a file sent during those
+    // falls through to the normal upload path, as before.
     if (session && (sessionKind === 'pdf' || message.type === 'image')) {
       const job: AddScanPageJob = {
         type: 'add_scan_page',

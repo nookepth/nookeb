@@ -32,6 +32,16 @@ export function looksLikePdf(buf: Buffer): boolean {
   return buf.length >= 5 && buf.subarray(0, 5).toString('latin1') === '%PDF-';
 }
 
+/** `\x89PNG\r\n\x1a\n` magic bytes — distinguishes PNG from JPEG for embedding. */
+export function looksLikePng(buf: Buffer): boolean {
+  return buf.length >= 8 && buf.subarray(0, 8).toString('latin1') === '\x89PNG\r\n\x1a\n';
+}
+
+// A4 in PDF points (210×297 mm at 72 dpi) — matches buildScanPdf so an image
+// merged into a รวมไฟล์ session looks the same as one from รวมรูป.
+const A4_WIDTH_PT = 595.28;
+const A4_HEIGHT_PT = 841.89;
+
 /**
  * Load one source PDF, converting every failure mode into a typed
  * {@link PdfSourceError} so a damaged/encrypted upload produces a clear message
@@ -76,6 +86,39 @@ export async function mergePdfs(sources: Buffer[]): Promise<Uint8Array> {
     const doc = await loadSourcePdf(src);
     const pages = await out.copyPages(doc, doc.getPageIndices());
     for (const page of pages) out.addPage(page);
+  }
+  return out.save();
+}
+
+/**
+ * Merge a MIXED, order-preserving list of sources into one PDF: each source is
+ * either a whole PDF (its pages copied in, keeping their own size/orientation)
+ * or a raster image (JPEG/PNG — embedded fitted+centered on an A4 page). Powers
+ * the unified "หนูเก็บรวมไฟล์" flow, which accepts both images and PDFs.
+ *
+ * PDF sources go through {@link loadSourcePdf} (typed rejection); image sources
+ * are embedded with pdf-lib's embedJpg/embedPng (still pdf-lib only — no sharp,
+ * so this stays pure/unit-testable). No OCR layer: source PDFs carry their own,
+ * and image pages are image-only (same as รวมรูป with OCR off).
+ */
+export async function mergeMixedToPdf(sources: Buffer[]): Promise<Uint8Array> {
+  if (sources.length === 0) throw new Error('mergeMixedToPdf: no sources');
+
+  const out = await PDFDocument.create();
+  for (const src of sources) {
+    if (looksLikePdf(src)) {
+      const doc = await loadSourcePdf(src);
+      const pages = await out.copyPages(doc, doc.getPageIndices());
+      for (const page of pages) out.addPage(page);
+      continue;
+    }
+    // Raster image → one A4 page, aspect-fitted and centered.
+    const img = looksLikePng(src) ? await out.embedPng(src) : await out.embedJpg(src);
+    const scale = Math.min(A4_WIDTH_PT / img.width, A4_HEIGHT_PT / img.height);
+    const w = img.width * scale;
+    const h = img.height * scale;
+    const page = out.addPage([A4_WIDTH_PT, A4_HEIGHT_PT]);
+    page.drawImage(img, { x: (A4_WIDTH_PT - w) / 2, y: (A4_HEIGHT_PT - h) / 2, width: w, height: h });
   }
   return out.save();
 }

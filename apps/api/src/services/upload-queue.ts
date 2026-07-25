@@ -3,7 +3,6 @@ import type { FastifyInstance } from 'fastify';
 import type { BatchItem, LineSource, SessionKind, UploadBatchJob } from '@nookeb/shared';
 import { config } from '../config';
 import {
-  buildMergeFlexMessage,
   buildPdfMergeFlexMessage,
   buildProgressFlexMessage,
   buildScanFlexMessage,
@@ -231,12 +230,13 @@ async function flushScanReply(app: FastifyInstance, lineUserId: string): Promise
   if (!entry) return;
   scanReplyQueues.delete(lineUserId);
 
+  // 'scan' → scan card; everything else (the unified 'pdf' รวมไฟล์ flow, plus any
+  // legacy 'merge' session still collecting from before รวมรูป was consolidated)
+  // → the single รวมไฟล์ card.
   const card =
     entry.kind === 'scan'
       ? buildScanFlexMessage({ kind: 'page', count: entry.count })
-      : entry.kind === 'pdf'
-        ? buildPdfMergeFlexMessage({ kind: 'page', count: entry.count })
-        : buildMergeFlexMessage({ kind: 'page', count: entry.count });
+      : buildPdfMergeFlexMessage({ kind: 'page', count: entry.count });
   // Reply-only (no paid push fallback). Scan/merge is a personal-chat feature, so
   // the debounced first-event token is present and fresh (~1.5s) here; if it's
   // somehow gone we skip silently and log rather than push.
