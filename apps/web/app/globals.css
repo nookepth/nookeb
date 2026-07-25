@@ -2227,16 +2227,36 @@ button:active,
 }
 
 /* FIX: 3 - on mobile show the full image contained (never crop/zoom); desktop untouched */
+/* FIX: 4 - mobile preview must fit the viewport: go near-fullscreen so the PDF iframe
+   and images have the whole screen to fit into (was a small centered card + a fixed
+   70vh iframe, which cropped tall docs and forced horizontal/vertical scrolling). */
 @media (max-width: 768px) {
+  .preview-modal {
+    width: 100%;
+    max-width: 100%;
+    height: 92dvh;
+    max-height: 92dvh;
+    padding: 12px;
+  }
   .preview-body {
-    min-height: 200px;
+    /* flex:1 grows this to fill the modal; let the media/frame use the full height */
+    min-height: 0;
   }
   .preview-media {
-    width: 100%;
+    max-width: 100%;
+    /* viewport-relative cap: the wrapper is auto-height, so max-height:100% would be
+       circular and leave a tall image uncapped. dvh keeps it inside the modal. */
+    max-height: 82dvh;
+    width: auto;
     height: auto;
     object-fit: contain;
     object-position: center;
-    max-height: 80vh;
+  }
+  /* PDF/text preview: fill the whole preview body (vertical scroll happens inside the
+     native viewer), instead of a fixed 70vh that leaves the page too large to see. */
+  .preview-frame {
+    height: 100%;
+    flex: 1;
   }
 }
 
