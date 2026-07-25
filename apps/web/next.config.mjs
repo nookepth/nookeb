@@ -60,20 +60,14 @@ const csp = Object.entries({
   // manifest (a blocked manifest fetch makes the SDK fall back to raw keys and
   // logs a CSP violation). access.line.me is a top-level login NAVIGATION, not a
   // fetch, so it needs no connect-src entry. Everything else stays same-origin
-  // via /api-proxy.
-  // *.r2.cloudflarestorage.com: the MOBILE file-preview PDF viewer (pdf.js,
-  // FilePreviewModal) fetches the PDF bytes directly from the presigned R2 URL
-  // as an ArrayBuffer. That's a cross-origin fetch from OUR page, so it needs a
-  // connect-src entry — R2's bucket CORS is the R2-side gate, this is the
-  // browser-side gate on our origin. Without it the fetch is CSP-blocked and the
-  // viewer always falls back to "เปิดไฟล์ในแท็บใหม่". Desktop is unaffected (it
-  // streams the same URL through an <iframe>, governed by frame-src, not fetch).
-  'connect-src': [
-    "'self'",
-    'https://api.line.me',
-    'https://liff.line.me',
-    'https://*.r2.cloudflarestorage.com',
-  ],
+  // via /api-proxy — INCLUDING the mobile file-preview PDF viewer (pdf.js,
+  // FilePreviewModal). It fetches the PDF bytes from the same-origin route
+  // /api/file-pdf/:id, which streams them server-side out of R2. Deliberately
+  // NOT a cross-origin fetch to the presigned R2 URL: that would need an R2
+  // connect-src entry here AND R2 bucket CORS (an infra setting not in this
+  // repo) — the exact dependency that made an earlier all-in-browser-fetch
+  // attempt fail silently on-device. Same-origin 'self' covers it with neither.
+  'connect-src': ["'self'", 'https://api.line.me', 'https://liff.line.me'],
   'object-src': ["'self'", 'https:'],
   'frame-src': ["'self'", 'https:'],
   'base-uri': ["'self'"],
@@ -106,6 +100,15 @@ const securityHeaders = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ['@nookeb/shared'],
+  // pdfjs-dist (the MOBILE file-preview PDF renderer) optionally `require`s the
+  // Node 'canvas' package for server-side rendering, which we never do — we
+  // render to a real <canvas> in the browser. Without this alias webpack fails
+  // the build with "Module not found: Can't resolve 'canvas'". Stubbing it to
+  // false is the documented browser-only setup and affects nothing else.
+  webpack: (config) => {
+    config.resolve.alias = { ...config.resolve.alias, canvas: false };
+    return config;
+  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },
