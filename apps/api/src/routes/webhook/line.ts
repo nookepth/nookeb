@@ -892,17 +892,13 @@ async function handleTextCommand(
   }
 
   // DEPRECATED: "รวมรูป" (image-merge) was consolidated into "รวมไฟล์", which now
-  // accepts BOTH images and PDFs. The trigger is kept only to REDIRECT anyone
-  // (or a stale rich-menu tap) who still types the old command — it no longer
-  // starts a 'merge' session. The worker's 'merge' session_kind stays intact for
-  // any session opened before this consolidation shipped. (สแกน is unaffected —
-  // it is the separate 'scan' session_kind for document scanning + OCR.)
+  // accepts BOTH images and PDFs. The trigger no longer starts a 'merge' session;
+  // it is now a SILENT no-op — anyone (or a stale rich-menu tap) who still types
+  // the old command gets no reply and no redirect. The worker's 'merge'
+  // session_kind stays intact for any session opened before this consolidation
+  // shipped. (สแกน is unaffected — it is the separate 'scan' session_kind for
+  // document scanning + OCR.)
   if (prefixed && isCmd(text, 'รวมรูป')) {
-    await replyWithQuickReply(
-      event,
-      'ตอนนี้ "หนูเก็บรวมรูป" รวมเข้ากับ "หนูเก็บรวมไฟล์" แล้วน้า พิมพ์ "หนูเก็บรวมไฟล์" แล้วส่งรูปหรือ PDF มาได้เลย หนูรวมให้เป็นไฟล์เดียว 🖼️📄',
-      [{ label: 'หนูเก็บรวมไฟล์', text: 'หนูเก็บรวมไฟล์' }],
-    );
     return;
   }
 
