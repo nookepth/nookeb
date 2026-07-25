@@ -106,15 +106,6 @@ const securityHeaders = [
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   transpilePackages: ['@nookeb/shared'],
-  // pdfjs-dist (the MOBILE file-preview PDF renderer) optionally `require`s the
-  // Node 'canvas' package for server-side rendering, which we never do — we
-  // render to a real <canvas> in the browser. Without this alias webpack fails
-  // the build with "Module not found: Can't resolve 'canvas'". Stubbing it to
-  // false is the documented browser-only setup and affects nothing else.
-  webpack: (config) => {
-    config.resolve.alias = { ...config.resolve.alias, canvas: false };
-    return config;
-  },
   async headers() {
     return [{ source: '/:path*', headers: securityHeaders }];
   },
