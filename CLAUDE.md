@@ -911,30 +911,15 @@ Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLin
   - LIFF routes all live under `/liff/tasks/` — see the ห้องทีม note in the Task
     Manager section for why nothing may sit outside that subtree.
   - File preview (`components/FilePreviewModal.tsx`): images render inline; PDFs
-    render every page to its OWN `<canvas>` via **pdf.js** (`pdfjs-dist`), NOT a
-    native `<iframe src={pdf}>`. The iframe showed only a single, non-scrollable
-    snapshot of page 1 on iOS Safari and the LINE in-app browser (WKWebView) — the
-    reported bug. pdf.js draws with JS so behaviour is identical across browsers:
-    all pages, fit-to-width, vertical scroll inside the modal. Non-obvious pieces,
-    all load-bearing:
-    - **Worker is served from `public/pdf.worker.min.mjs`** (same-origin static
-      asset, so CSP `script-src 'self'` allows it), NOT emitted by webpack. Letting
-      webpack emit the `.mjs` worker makes Next's Terser pass fail with
-      "'import'/'export' cannot be used outside of module code". The file is COPIED
-      into `public/` by `apps/web/scripts/copy-pdf-worker.mjs`, run from the
-      `predev`/`prebuild` npm hooks so it always matches the installed `pdfjs-dist`
-      version. It is git-ignored (a 1.3 MB generated artifact regenerated on every
-      build) — do NOT commit it or reference a bundler-emitted path.
-    - `next.config.mjs` aliases `canvas: false` in webpack — pdf.js optionally
-      `require`s the Node `canvas` package for server-side rendering (which we never
-      do), and without the stub the build fails "Can't resolve 'canvas'".
-    - pdf.js is `import()`ed dynamically inside the client component (it touches
-      `DOMMatrix` at module init, so it must stay out of the server render).
-    - PDF bytes are fetched whole as an ArrayBuffer from the R2 presigned URL —
-      requires CORS `Access-Control-Allow-Origin` on the R2 bucket, but avoids
-      exposing `Content-Range`/`Accept-Ranges` (no ranged requests).
-    - Pages render sequentially (a render queue) and DPR is capped at 2, both to
-      avoid canvas-memory spikes on high-DPR phones.
+    and text render in a native browser viewer via `<iframe src={presignedUrl}>`
+    (`.preview-frame`). On desktop the iframe gives the browser's built-in PDF UI —
+    page-thumbnail sidebar, zoom, all pages — which is why `.preview-modal` is
+    widened to `min(92vw, 900px)` and the iframe fills the modal (the iframe owns
+    its own scroll; the modal is `overflow: hidden`). No pdf.js, no `pdfjs-dist`,
+    no canvas rendering, and no R2 CORS requirement — the iframe streams the
+    presigned URL directly. (An earlier pdf.js/`<canvas>` renderer was reverted;
+    do NOT reintroduce it — no `copy-pdf-worker` script, no `public/pdf.worker.*`,
+    no webpack `canvas:false` alias.)
     - The modal JS-pins `<body>` (position:fixed + saved offset) to lock background
       scroll iOS-safely — do NOT add a CSS `body:has(.modal-overlay)` rule; it fires
       without the saved offset and collapses the page.
