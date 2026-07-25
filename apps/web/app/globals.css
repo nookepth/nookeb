@@ -2324,6 +2324,12 @@ button:active,
 
 .pdf-viewer-mobile .pdf-page {
   width: 100%;
+  /* flex-shrink:0 is REQUIRED — this is a fixed-height flex column, and the
+     default flex-shrink:1 compresses each page to fit the container, so the
+     canvas (taller than its share) got clipped by overflow:hidden to a stub of
+     the page (the reported "รูปไม่ครบ" bug). Pinning shrink to 0 keeps every
+     page at its natural canvas height and lets the container scroll instead. */
+  flex-shrink: 0;
   background: #fff;
   border-radius: var(--radius-sm);
   box-shadow: var(--shadow-sm); /* subtle divider so page edges are obvious */
