@@ -1766,12 +1766,37 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
 // refunded and unshared at soft-delete time, so the window only bounds R2 cleanup.
 const LEGACY_BOX_RETENTION_DAYS = 7;
 
-/** Register the daily purge as a BullMQ repeatable job (idempotent by repeat key). */
+/** Daily purge interval (see scheduleRepeatableJobs). */
+const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Register the daily purge as a repeatable job.
+ *
+ * Uses the modern Job Scheduler API (upsertJobScheduler), NOT the legacy
+ * `add(..., { repeat })`: the legacy strategy leaves past-due `repeat:<hash>:<ms>`
+ * placeholders orphaned in the `delayed` ZSET where removeOnComplete can't reach
+ * them (same class of leak the task-recur-sweep hit — see scheduleTaskRepeatableJobs).
+ * The scheduler keeps one future job at a time and applies the template opts to
+ * each iteration, and upsert is idempotent/in-place so a boot never forks a
+ * parallel schedule. Growth here is tiny (1 fire/day), but keeping both
+ * repeatables on the same API avoids the trap resurfacing. */
 export async function scheduleRepeatableJobs(): Promise<void> {
-  await fileQueue.add(
-    'purge_deleted',
-    { type: 'purge_deleted' },
-    { repeat: { every: 24 * 60 * 60 * 1000 }, jobId: 'purge-daily' },
+  // One-time migration off the legacy repeatable (name 'purge_deleted', every
+  // 24h, jobId 'purge-daily'): drop the config + its next delayed placeholder so
+  // the legacy chain stops firing alongside the scheduler. No-op once gone.
+  try {
+    await fileQueue.removeRepeatable('purge_deleted', { every: PURGE_INTERVAL_MS }, 'purge-daily');
+  } catch (err) {
+    console.warn('[upload.worker] could not remove legacy purge repeatable:', err);
+  }
+  await fileQueue.upsertJobScheduler(
+    'purge-daily',
+    { every: PURGE_INTERVAL_MS },
+    {
+      name: 'purge_deleted',
+      data: { type: 'purge_deleted' },
+      opts: { removeOnComplete: { count: 20 }, removeOnFail: { count: 50 } },
+    },
   );
 }
 
