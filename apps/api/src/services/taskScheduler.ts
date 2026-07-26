@@ -27,6 +27,9 @@ export { BANGKOK_TZ, computeNextOccurrence } from './task-recurrence';
  * overdue reminder (+60 min) so the round is chased before it resets. */
 export const ROLLOVER_DELAY_MINUTES = 90;
 
+/** How often the recurring-task self-heal sweep runs (see scheduleTaskRepeatableJobs). */
+const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
+
 const REMIND_TYPES: RemindType[] = ['3_days', '1_day', '3_hours', 'overdue'];
 
 /**
@@ -47,10 +50,11 @@ export function getTaskQueue(): Queue<TaskJob> {
         // independent; removeOnFail keeps Redis bounded).
         attempts: 3,
         backoff: { type: 'exponential', delay: 10_000 },
-        // Low retention on purpose: this queue also holds the 30-min
-        // `task-recur-sweep` repeatable, whose fired iterations complete as
-        // `repeat:<hash>:<ms>` jobs. A high count let ~48/day of those pile up
-        // (TTL-less) — 100 keeps only a couple of days of history.
+        // Bounded retention for reminder + rollover jobs. The 30-min
+        // task-recur-sweep now runs via upsertJobScheduler (see
+        // scheduleTaskRepeatableJobs) with its OWN tighter removeOnComplete, so
+        // its fired iterations self-trim rather than piling up as TTL-less
+        // `repeat:<hash>:<ms>` hashes the way the legacy repeat strategy left them.
         removeOnComplete: { count: 100 },
         removeOnFail: { count: 500 },
       },
@@ -69,13 +73,40 @@ export const rolloverJobId = (taskId: string, deadlineIso: string): string =>
   `recur-${taskId}-${dayjs(deadlineIso).unix()}`;
 
 /** Repeatable self-heal sweep for recurring tasks whose rollover chain broke
- * (see TaskRecurSweepJob). Registered once at worker startup — same pattern as
- * the file worker's purge_deleted. */
+ * (see TaskRecurSweepJob). Registered once at worker startup.
+ *
+ * Uses the modern Job Scheduler API (upsertJobScheduler), NOT the legacy
+ * `add(..., { repeat })`: the legacy strategy pre-creates each iteration as a
+ * DELAYED placeholder job (`repeat:<hash>:<ms>`), and removeOnComplete only
+ * trims the COMPLETED set — so past-due placeholders orphaned in the `delayed`
+ * ZSET piled up forever (the backlog cleanup-redis.ts sweeps). The scheduler
+ * keeps exactly ONE future job at a time and applies the template's
+ * removeOnComplete/removeOnFail to each fired iteration, so it self-bounds.
+ * upsertJobScheduler is idempotent and updates in place, so re-running on every
+ * worker boot can never create a parallel schedule. */
 export async function scheduleTaskRepeatableJobs(): Promise<void> {
-  await getTaskQueue().add(
-    'task_recur_sweep',
-    { type: 'task_recur_sweep' },
-    { repeat: { every: 30 * 60 * 1000 }, jobId: 'task-recur-sweep' },
+  const q = getTaskQueue();
+  // One-time migration off the legacy repeatable (name 'task_recur_sweep',
+  // every 30m, jobId 'task-recur-sweep'): recompute the same hash and drop the
+  // config + its next delayed placeholder, so the legacy chain stops firing
+  // alongside the new scheduler. No-op (returns false) once it's gone. The
+  // historical `repeat:<hash>:<ms>` orphan hashes are cleared separately by
+  // `npm run cleanup:redis`.
+  try {
+    await q.removeRepeatable('task_recur_sweep', { every: SWEEP_INTERVAL_MS }, 'task-recur-sweep');
+  } catch (err) {
+    console.warn('[taskScheduler] could not remove legacy sweep repeatable:', err);
+  }
+  await q.upsertJobScheduler(
+    'task-recur-sweep',
+    { every: SWEEP_INTERVAL_MS },
+    {
+      name: 'task_recur_sweep',
+      data: { type: 'task_recur_sweep' },
+      // Tight per-iteration retention: at ~48 fires/day a small window is plenty
+      // of history, and the scheduler applies these to each produced job.
+      opts: { removeOnComplete: { count: 20 }, removeOnFail: { count: 50 } },
+    },
   );
 }
 

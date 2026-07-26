@@ -184,7 +184,14 @@ async function processRecurSweep(): Promise<void> {
     .neq('status', 'cancelled')
     .is('deleted_at', null)
     .lt('global_deadline', cutoffIso);
-  if (error) throw error;
+  if (error) {
+    // Never throw from the repeatable sweep: a transient DB blip must not burn
+    // BullMQ attempts and leave failed iteration hashes behind (part of why the
+    // sweep's repeat keys used to pile up). The next 30-min tick retries the
+    // whole scan, so nothing is lost by standing down this round.
+    console.error('[task-worker] sweep: task query failed — skipping this round:', error);
+    return;
+  }
 
   for (const row of (data ?? []) as { id: string }[]) {
     try {
