@@ -64,6 +64,10 @@ export function getTaskQueue(): Queue<TaskJob> {
 }
 
 export async function closeTaskQueue(): Promise<void> {
+  if (sweepTimer) {
+    clearInterval(sweepTimer);
+    sweepTimer = null;
+  }
   await queue?.close();
   queue = null;
 }
@@ -72,42 +76,69 @@ export const reminderJobId = (reminderId: string): string => `reminder-${reminde
 export const rolloverJobId = (taskId: string, deadlineIso: string): string =>
   `recur-${taskId}-${dayjs(deadlineIso).unix()}`;
 
-/** Repeatable self-heal sweep for recurring tasks whose rollover chain broke
- * (see TaskRecurSweepJob). Registered once at worker startup.
+/** In-process timer handle for the recurring-sweep (cleared on shutdown). */
+let sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Enqueue one task_recur_sweep job with ZERO delay. jobId is bucketed by the
+ * 30-min window: idempotent within a window (crash-loop / boot-time fire) and
+ * unique across windows. A zero-delay job never enters the `delayed` ZSET, so it
+ * does not pin the worker's blocking poll to BullMQ's 10s maximumBlockTimeout
+ * (see the createTaskReminderWorker drainDelay note). The sweep is a read-only
+ * self-heal, so an occasional double-run is harmless. */
+async function enqueueSweep(): Promise<void> {
+  const q = getTaskQueue();
+  const bucket = Math.floor(Date.now() / SWEEP_INTERVAL_MS);
+  try {
+    await q.add(
+      'task_recur_sweep',
+      { type: 'task_recur_sweep' },
+      {
+        jobId: `task-recur-sweep-${bucket}`,
+        removeOnComplete: { count: 20 },
+        removeOnFail: { count: 50 },
+      },
+    );
+  } catch (err) {
+    // Duplicate-jobId rejection is the expected idempotency no-op.
+    console.warn('[taskScheduler] sweep enqueue skipped/failed:', err);
+  }
+}
+
+/** Self-heal sweep for recurring tasks whose rollover chain broke (see
+ * TaskRecurSweepJob). Registered once at worker startup as an IN-PROCESS interval
+ * that enqueues a zero-delay job — NOT a BullMQ repeatable / job scheduler.
  *
- * Uses the modern Job Scheduler API (upsertJobScheduler), NOT the legacy
- * `add(..., { repeat })`: the legacy strategy pre-creates each iteration as a
- * DELAYED placeholder job (`repeat:<hash>:<ms>`), and removeOnComplete only
- * trims the COMPLETED set — so past-due placeholders orphaned in the `delayed`
- * ZSET piled up forever (the backlog cleanup-redis.ts sweeps). The scheduler
- * keeps exactly ONE future job at a time and applies the template's
- * removeOnComplete/removeOnFail to each fired iteration, so it self-bounds.
- * upsertJobScheduler is idempotent and updates in place, so re-running on every
- * worker boot can never create a parallel schedule. */
+ * Why not upsertJobScheduler: a scheduler keeps one future job perpetually in the
+ * `delayed` ZSET, and BullMQ caps an idle worker's blocking BZPOPMIN at 10s while
+ * ANY delayed job is pending (maximumBlockTimeout, worker.js) — so this queue's
+ * worker re-ran moveToActive every ~10s forever even with zero tasks. Enqueuing a
+ * zero-delay job on a timer keeps the delayed set empty between runs, so idle
+ * polling drops to near-zero, while still avoiding the legacy `repeat:<hash>:<ms>`
+ * orphan-key leak the scheduler migration originally fixed (no repeat hashes at
+ * all). Trade-off: the timer resets on process restart, fine for a 30-min
+ * self-heal; single Railway replica today, and the bucketed jobId collapses
+ * concurrent enqueues if it is ever scaled out. Real reminder/rollover DELAYED
+ * jobs still exist when tasks are active — that polling is proportional to actual
+ * scheduled work, not a constant idle drain. */
 export async function scheduleTaskRepeatableJobs(): Promise<void> {
   const q = getTaskQueue();
-  // One-time migration off the legacy repeatable (name 'task_recur_sweep',
-  // every 30m, jobId 'task-recur-sweep'): recompute the same hash and drop the
-  // config + its next delayed placeholder, so the legacy chain stops firing
-  // alongside the new scheduler. No-op (returns false) once it's gone. The
-  // historical `repeat:<hash>:<ms>` orphan hashes are cleared separately by
-  // `npm run cleanup:redis`.
+  // One-time cleanup: drop BOTH the legacy repeatable AND the upsertJobScheduler
+  // entry a prior deploy created — either leaves a standing delayed job that
+  // keeps pinning the blocking poll to 10s. Both no-op once gone. Historical
+  // `repeat:<hash>:<ms>` orphan hashes are cleared separately by `npm run cleanup:redis`.
   try {
     await q.removeRepeatable('task_recur_sweep', { every: SWEEP_INTERVAL_MS }, 'task-recur-sweep');
   } catch (err) {
     console.warn('[taskScheduler] could not remove legacy sweep repeatable:', err);
   }
-  await q.upsertJobScheduler(
-    'task-recur-sweep',
-    { every: SWEEP_INTERVAL_MS },
-    {
-      name: 'task_recur_sweep',
-      data: { type: 'task_recur_sweep' },
-      // Tight per-iteration retention: at ~48 fires/day a small window is plenty
-      // of history, and the scheduler applies these to each produced job.
-      opts: { removeOnComplete: { count: 20 }, removeOnFail: { count: 50 } },
-    },
-  );
+  try {
+    await q.removeJobScheduler('task-recur-sweep');
+  } catch (err) {
+    console.warn('[taskScheduler] could not remove sweep job scheduler:', err);
+  }
+  await enqueueSweep();
+  sweepTimer = setInterval(() => void enqueueSweep(), SWEEP_INTERVAL_MS);
 }
 
 /**

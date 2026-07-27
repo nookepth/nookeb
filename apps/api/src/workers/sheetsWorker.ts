@@ -171,8 +171,16 @@ export function createSheetsWorker(): Worker<SheetsJob> {
     // Low concurrency on purpose: Google's per-project quota is shared across
     // every user, and each sync is several API calls.
     concurrency: 3,
-    // drainDelay 20s (default 5s): fewer idle blocking-poll commands.
+    // drainDelay is in SECONDS (default 5). This queue has NO repeatable/delayed
+    // scheduler job, so blockUntil stays 0 and drainDelay DOES take effect: an
+    // idle sheets worker blocks ~indefinitely on BZPOPMIN and polls near-zero,
+    // waking instantly when enqueueSheetsSync adds a job. This is the queue that
+    // actually benefits from a high drainDelay.
     drainDelay: 20000,
+    // See upload.worker: halve the stalled-check EVALSHA; longer active-processing
+    // lock renewal (no idle effect).
+    stalledInterval: 60_000,
+    lockDuration: 60_000,
   });
   worker.on('failed', (job, err) => {
     console.error(`[sheets] job ${job?.id} failed (attempt ${job?.attemptsMade}):`, err);

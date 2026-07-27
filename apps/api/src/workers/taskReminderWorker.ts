@@ -232,10 +232,20 @@ export function createTaskReminderWorker(): Worker<TaskJob> {
           return processRecurSweep();
       }
     },
-    // drainDelay 20s (default 5s): fewer idle blocking-poll commands. Delayed
-    // reminder jobs still fire on schedule — this only affects the empty-queue
-    // wait, not delayed-job promotion.
-    { connection: createRedis(), concurrency: 5, drainDelay: 20000 },
+    // drainDelay is in SECONDS (default 5): a high value makes an EMPTY queue
+    // block for a long time before timing out, so idle polling is near-zero.
+    // Bypassed whenever a delayed job is pending: this queue's `task-recur-sweep`
+    // scheduler keeps one perpetually pending, so BullMQ caps the block at its
+    // hard 10s `maximumBlockTimeout` and drainDelay has no effect here (see the
+    // root-cause note in taskScheduler.scheduleTaskRepeatableJobs). Kept high for
+    // the empty-delayed-set case. stalledInterval/lockDuration: see upload.worker.
+    {
+      connection: createRedis(),
+      concurrency: 5,
+      drainDelay: 20000,
+      stalledInterval: 60_000,
+      lockDuration: 60_000,
+    },
   );
 
   worker.on('failed', (job, err) => {

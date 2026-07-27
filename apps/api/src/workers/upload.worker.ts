@@ -1769,38 +1769,81 @@ const LEGACY_BOX_RETENTION_DAYS = 7;
 /** Daily purge interval (see scheduleRepeatableJobs). */
 const PURGE_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+/** In-process timer handle for the daily purge (cleared on shutdown). */
+let purgeTimer: ReturnType<typeof setInterval> | null = null;
+
 /**
- * Register the daily purge as a repeatable job.
+ * Enqueue one purge_deleted job with ZERO delay. The jobId is bucketed by day,
+ * which buys two things: (1) idempotency — a same-day re-enqueue (worker
+ * crash-loop, or the boot-time fire landing in a bucket the interval already
+ * ran) collapses to one job while the prior one is still retained by
+ * removeOnComplete; (2) cross-day uniqueness so tomorrow isn't blocked by today's
+ * retained completed job. A zero-delay job never enters the `delayed` ZSET, so it
+ * does NOT pin the worker's blocking poll to BullMQ's 10s maximumBlockTimeout —
+ * this is the whole point (see the createUploadWorker drainDelay note). Purge is
+ * idempotent (purged_at tombstones), so an occasional double-run is harmless.
+ */
+async function enqueuePurge(): Promise<void> {
+  const bucket = Math.floor(Date.now() / PURGE_INTERVAL_MS);
+  try {
+    await fileQueue.add(
+      'purge_deleted',
+      { type: 'purge_deleted' },
+      {
+        jobId: `purge-daily-${bucket}`,
+        removeOnComplete: { count: 20 },
+        removeOnFail: { count: 50 },
+      },
+    );
+  } catch (err) {
+    // A duplicate-jobId rejection is the expected idempotency no-op; anything
+    // else is logged but must never crash the timer or boot.
+    console.warn('[upload.worker] purge enqueue skipped/failed:', err);
+  }
+}
+
+/**
+ * Register the daily purge as an IN-PROCESS interval that enqueues a zero-delay
+ * job — NOT a BullMQ repeatable / job scheduler.
  *
- * Uses the modern Job Scheduler API (upsertJobScheduler), NOT the legacy
- * `add(..., { repeat })`: the legacy strategy leaves past-due `repeat:<hash>:<ms>`
- * placeholders orphaned in the `delayed` ZSET where removeOnComplete can't reach
- * them (same class of leak the task-recur-sweep hit — see scheduleTaskRepeatableJobs).
- * The scheduler keeps one future job at a time and applies the template opts to
- * each iteration, and upsert is idempotent/in-place so a boot never forks a
- * parallel schedule. Growth here is tiny (1 fire/day), but keeping both
- * repeatables on the same API avoids the trap resurfacing. */
+ * Why not upsertJobScheduler: the scheduler keeps one future job perpetually in
+ * the `delayed` ZSET, and BullMQ caps an idle worker's blocking BZPOPMIN at 10s
+ * whenever ANY delayed job is pending (maximumBlockTimeout, worker.js) — so the
+ * worker re-ran the moveToActive Lua every ~10s round the clock, the dominant
+ * idle Redis cost on a pay-per-command host (Upstash). A setInterval that adds a
+ * zero-delay job leaves the delayed set empty between runs, so drainDelay finally
+ * takes effect and idle polling drops to near-zero. It still avoids the legacy
+ * `repeat:<hash>:<ms>` orphan-key leak (there are no repeat hashes at all).
+ *
+ * Trade-off vs the scheduler: the timer lives only while the process is up, so a
+ * restart resets it — fine here (purge is idempotent and day-bucketed). The
+ * worker runs as a single Railway replica; if it is ever scaled out, the
+ * day-bucketed jobId still collapses concurrent enqueues to one job. */
 export async function scheduleRepeatableJobs(): Promise<void> {
-  // One-time migration off the legacy repeatable (name 'purge_deleted', every
-  // 24h, jobId 'purge-daily'): drop the config + its next delayed placeholder so
-  // the legacy chain stops firing alongside the scheduler. No-op once gone.
+  // One-time cleanup: drop BOTH the legacy repeatable AND the upsertJobScheduler
+  // entry a prior deploy created — either leaves a standing delayed job that
+  // would keep pinning the blocking poll to 10s. Both no-op once gone.
   try {
     await fileQueue.removeRepeatable('purge_deleted', { every: PURGE_INTERVAL_MS }, 'purge-daily');
   } catch (err) {
     console.warn('[upload.worker] could not remove legacy purge repeatable:', err);
   }
-  await fileQueue.upsertJobScheduler(
-    'purge-daily',
-    { every: PURGE_INTERVAL_MS },
-    {
-      name: 'purge_deleted',
-      data: { type: 'purge_deleted' },
-      opts: { removeOnComplete: { count: 20 }, removeOnFail: { count: 50 } },
-    },
-  );
+  try {
+    await fileQueue.removeJobScheduler('purge-daily');
+  } catch (err) {
+    console.warn('[upload.worker] could not remove purge job scheduler:', err);
+  }
+  // Fire once shortly after boot (day-bucketed → a same-day restart is a no-op),
+  // then every 24h. Matches the old scheduler's "runs promptly, then daily".
+  await enqueuePurge();
+  purgeTimer = setInterval(() => void enqueuePurge(), PURGE_INTERVAL_MS);
 }
 
 export async function closeWorkerQueue(): Promise<void> {
+  if (purgeTimer) {
+    clearInterval(purgeTimer);
+    purgeTimer = null;
+  }
   await fileQueue.close();
   await progressStore.closeProgressStore();
   await closePendingNotify();
@@ -1899,11 +1942,23 @@ export function createUploadWorker(): Worker<FileJob> {
     {
       connection: createRedis(),
       concurrency: 5,
-      // Longer blocking-poll timeout (default 5s) so an idle worker fires ~3x
-      // fewer BRPOPLPUSH/BZPOPMIN commands — the dominant idle Redis cost on a
-      // pay-per-command host (Upstash). Jobs are still picked up immediately on
-      // arrival; this only lengthens the empty-queue wait.
+      // drainDelay is in SECONDS in BullMQ v5 (default 5). A high value means an
+      // idle blocking BZPOPMIN waits a long time before timing out, so an EMPTY
+      // queue polls near-zero. NOTE: this only takes effect while the queue has
+      // NO delayed job pending. This queue always has one (the `purge-daily` job
+      // scheduler), so BullMQ caps the block at its hard `maximumBlockTimeout`
+      // (10s, worker.js) and drainDelay is bypassed — see the root-cause note in
+      // scheduleRepeatableJobs. Kept high for the empty-delayed-set case anyway.
       drainDelay: 20000,
+      // Halve the periodic stalled-job check EVALSHA (moveStalledJobsToWait),
+      // default 30s → one fewer idle command every minute. 60s is also safer for
+      // legitimately long jobs (OCR/scan under concurrency) — fewer false stalls.
+      stalledInterval: 60_000,
+      // Longer lock (default 30s) → lock renewal runs every lockDuration/2 = 30s
+      // instead of 15s DURING active processing (no effect at idle — nothing to
+      // renew when no job is running). Also widens the stall window in step with
+      // stalledInterval so a slow-but-alive job isn't reaped.
+      lockDuration: 60_000,
     },
   );
 
