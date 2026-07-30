@@ -62,7 +62,7 @@ const VIEW_HTML = `<!DOCTYPE html>
   // early polls can 404 for a few seconds. Tolerate that instead of failing —
   // only give up (link expired / batch genuinely gone) after N consecutive 404s.
   var notFoundCount = 0;
-  var MAX_NOT_FOUND = 10; // ~15s at the 1.5s poll interval
+  var MAX_NOT_FOUND = 10; // ~40s at the 4s poll interval below
 
   function render(p) {
     document.getElementById('counter').textContent = p.current + ' / ' + p.total;

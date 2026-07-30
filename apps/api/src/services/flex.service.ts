@@ -775,7 +775,7 @@ const ONBOARDING_ACTIONS: readonly Record<string, unknown>[] = [
   { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
   { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
   { type: 'postback', data: 'หนูเก็บ' }, // TODO: replace with real action
-  { type: 'uri', uri: 'https://nookeb-web.vercel.app/dashboard' },
+  { type: 'uri', uri: `${config.WEB_URL}/dashboard` },
 ];
 
 /** 8-bubble scrollable onboarding carousel (images /static/onboarding/1..8.jpg). */

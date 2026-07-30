@@ -32,6 +32,7 @@ import {
   buildThumbnailKey,
   deleteObject,
   getObjectStream,
+  sanitizeR2Name,
   uploadStream,
   SizeLimitExceededError,
 } from '../services/r2.service';
@@ -113,23 +114,10 @@ const fileQueue = new Queue<FileJob>(FILE_QUEUE, {
 
 const THUMBNAIL_WIDTH = 480;
 
-/**
- * Sanitize a LINE-supplied filename before it becomes part of the R2 object key
- * (`spaces/{sid}/files/{fid}/{name}`). S3 keys are literal (no `../` traversal
- * resolution) and the prefix is fixed, so this is defense-in-depth: strip path
- * separators and control characters, and cap the length so an oversized or
- * odd name can't produce a malformed/unbounded key. Only the KEY is sanitized —
- * the human-facing `original_name`/`display_name` stored on the row (and used
- * for the download Content-Disposition) keeps the original bytes.
- */
-function sanitizeR2Name(name: string): string {
-  const cleaned = (name ?? '')
-    .replace(/[/\\]/g, '_') // path separators
-    // eslint-disable-next-line no-control-regex
-    .replace(/[\x00-\x1f\x7f]/g, '') // control chars
-    .trim();
-  return (cleaned.length > 0 ? cleaned : 'file').slice(0, 200);
-}
+// sanitizeR2Name now lives in services/r2.service.ts, beside buildFileKey, so
+// every caller that embeds a user-supplied name in a key shares one
+// implementation (routes/task-files.ts was building keys from a raw multipart
+// filename while this private copy guarded only the LINE path).
 
 /**
  * Reply-only user notification (CLAUDE.md "LINE Messaging — Critical Rules"):

@@ -4,7 +4,13 @@ import multipart from '@fastify/multipart';
 import { z } from 'zod';
 import type { TaskFileKind } from '@nookeb/shared';
 import { logEvent } from '../services/events.service';
-import { buildFileKey, deleteObject, presignedGetUrl, uploadStream } from '../services/r2.service';
+import {
+  buildFileKey,
+  deleteObject,
+  presignedGetUrl,
+  sanitizeR2Name,
+  uploadStream,
+} from '../services/r2.service';
 import {
   createFileRecord,
   ensureUserAndSpace,
@@ -177,7 +183,11 @@ const taskFilesRoutes: FastifyPluginAsync = async (app) => {
         if (stored.length + rejected.length >= MAX_FILES_PER_UPLOAD) break;
         const originalName = (part.filename || 'file').slice(0, 255);
         const fileId = randomUUID();
-        const r2Key = buildFileKey(spaceId, fileId, originalName);
+        // The multipart filename is fully client-controlled — sanitize before it
+        // reaches the key (path separators / control chars), exactly as the LINE
+        // upload path does. `originalName` keeps the raw value for display and
+        // the download Content-Disposition.
+        const r2Key = buildFileKey(spaceId, fileId, sanitizeR2Name(originalName));
 
         const { record } = await createFileRecord(app.supabase, {
           id: fileId,

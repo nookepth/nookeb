@@ -249,6 +249,12 @@ const filesRoutes: FastifyPluginAsync = async (app) => {
         .select('mime_type, file_size')
         .eq('space_id', spaceId)
         .is('deleted_at', null)
+        // Explicit total order is REQUIRED for range-based batching: without an
+        // ORDER BY, Postgres may return rows in a different order per batch, so
+        // OFFSET windows silently skip and double-count rows — the stat chips
+        // then disagree with the grid. `id` is the primary key, so it is unique
+        // and stable (created_at is not unique and would still tie-break badly).
+        .order('id', { ascending: true })
         .range(from, from + BATCH - 1);
       if (folderId) query = query.eq('folder_id', folderId);
       if (searchOr) query = query.or(searchOr);

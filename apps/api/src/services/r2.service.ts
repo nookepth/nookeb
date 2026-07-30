@@ -17,6 +17,27 @@ export function createR2Client(): S3Client {
   });
 }
 
+/**
+ * Make a user-supplied filename safe to embed in an R2 object key: strip path
+ * separators and control characters, and cap the length so an oversized or odd
+ * name can't produce a malformed/unbounded key. Only the KEY is sanitized — the
+ * human-facing `original_name`/`display_name` stored on the row (and used for
+ * the download Content-Disposition) keeps the original bytes.
+ *
+ * Lives here, beside buildFileKey, because EVERY caller that puts a
+ * user-controlled name into a key must use it. It previously sat private inside
+ * upload.worker.ts, which is how routes/task-files.ts (multipart filename —
+ * fully attacker-controlled) came to build keys from the raw value.
+ */
+export function sanitizeR2Name(name: string): string {
+  const cleaned = (name ?? '')
+    .replace(/[/\\]/g, '_') // path separators
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x1f\x7f]/g, '') // control chars
+    .trim();
+  return (cleaned.length > 0 ? cleaned : 'file').slice(0, 200);
+}
+
 export function buildFileKey(spaceId: string, fileId: string, name: string): string {
   return `spaces/${spaceId}/files/${fileId}/${name}`;
 }

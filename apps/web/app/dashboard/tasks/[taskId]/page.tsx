@@ -23,6 +23,7 @@ import {
   listGroupTaskMembers,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { formatBytes } from '@/lib/format';
 import { CloseIcon } from '@/components/icons';
 import styles from '../tasks.module.css';
 
@@ -66,12 +67,6 @@ function formatShortDeadline(iso: string): string {
 function formatUploadedAt(iso: string): string {
   const d = new Date(iso);
   return `${d.getDate()} ${THAI_MONTHS[d.getMonth()]}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** ISO → 'YYYY-MM-DDTHH:mm' in local time for <input type="datetime-local">. */

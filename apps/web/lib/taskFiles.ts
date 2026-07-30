@@ -49,11 +49,11 @@ export function describeRejection(r: { name: string; reason: string }): string {
   return `${r.name} — ${REJECT_REASONS[r.reason] ?? 'แนบไม่สำเร็จ'}`;
 }
 
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
+// Re-exported (not redefined) so task attachment sizes read IDENTICALLY to the
+// same bytes shown in the dashboard, trash, vault and share pages. The old local
+// copy rounded KB to whole numbers and had no GB tier, so one file could render
+// as "2 KB" here and "1.5 KB" in the file browser.
+export { formatBytes } from './format';
 
 /**
  * Upload files to a task. Sent ONE PER REQUEST rather than as a single 5-file

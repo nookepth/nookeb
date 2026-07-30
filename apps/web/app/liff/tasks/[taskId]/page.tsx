@@ -21,6 +21,7 @@ import {
 } from '../components';
 import { ProFeatureSection } from '../ProFeatureSection';
 import { trackEvent } from '../../../../lib/track';
+import { formatBytes } from '../../../../lib/format';
 import { deleteTaskFile, listTaskFiles, type TaskFileDto } from '../../../../lib/taskFiles';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
@@ -111,12 +112,6 @@ const ITEM_STATUS_PILL: Record<string, { label: string; bg: string; fg: string }
   submitted: { label: 'รอตรวจ', bg: '#dbeafe', fg: '#1d4ed8' },
   rejected: { label: 'ตีกลับ', bg: '#fee2e2', fg: '#b91c1c' },
 };
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
 
 const THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 

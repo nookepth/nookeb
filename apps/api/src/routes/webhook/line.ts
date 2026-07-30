@@ -627,9 +627,9 @@ async function handleTextCommand(
       { label: 'หนูเก็บแปลงไฟล์', text: 'หนูเก็บแปลงไฟล์' },
       { label: 'หนูเก็บสแกนสี', text: 'หนูเก็บสแกนสี' },
       { label: 'หนูเก็บรวมไฟล์', text: 'หนูเก็บรวมไฟล์' },
-      { label: 'หนูเก็บกล่องของขวัญ', uri: 'https://nookeb-web.vercel.app/dashboard/legacy-box' },
-      { label: 'หนูเก็บห้องนิรภัย', uri: 'https://nookeb-web.vercel.app/dashboard/vault' },
-      { label: 'หนูเก็บงานของฉัน', uri: 'https://nookeb-web.vercel.app/dashboard/tasks' },
+      { label: 'หนูเก็บกล่องของขวัญ', uri: `${config.WEB_URL}/dashboard/legacy-box` },
+      { label: 'หนูเก็บห้องนิรภัย', uri: `${config.WEB_URL}/dashboard/vault` },
+      { label: 'หนูเก็บงานของฉัน', uri: `${config.WEB_URL}/dashboard/tasks` },
     ]);
     return;
   }
@@ -643,7 +643,7 @@ async function handleTextCommand(
       return;
     }
     await replyWithQuickReply(event, 'เปิดกล่องของขวัญให้เลยน้าพี่ 🎁', [
-      { label: 'เปิดกล่องของขวัญ', uri: 'https://nookeb-web.vercel.app/dashboard/legacy-box' },
+      { label: 'เปิดกล่องของขวัญ', uri: `${config.WEB_URL}/dashboard/legacy-box` },
     ]);
     return;
   }
@@ -654,7 +654,7 @@ async function handleTextCommand(
       return;
     }
     await replyWithQuickReply(event, 'เปิดห้องนิรภัยให้เลยน้าพี่ 🔐', [
-      { label: 'เปิดห้องนิรภัย', uri: 'https://nookeb-web.vercel.app/dashboard/vault' },
+      { label: 'เปิดห้องนิรภัย', uri: `${config.WEB_URL}/dashboard/vault` },
     ]);
     return;
   }
@@ -665,7 +665,7 @@ async function handleTextCommand(
       return;
     }
     await replyWithQuickReply(event, 'เปิดหน้างานให้เลยน้าพี่ 📬', [
-      { label: 'ดูงานของฉัน', uri: 'https://nookeb-web.vercel.app/dashboard/tasks' },
+      { label: 'ดูงานของฉัน', uri: `${config.WEB_URL}/dashboard/tasks` },
     ]);
     return;
   }
