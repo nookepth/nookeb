@@ -236,96 +236,8 @@ export function buildCreateTaskCard(
 }
 
 /**
- * ห้องทีม entry card — replied when the bot joins a group, and whenever someone
- * types "หนูเก็บห้องทีม".
- *
- * The link carries `?groupId=` and NOT a space id: a `join` event fires before
- * any file space exists for the group (and carries no user id to create one
- * with), so a space-keyed link would be dead in exactly the chat this card
- * greets. Same unguessable-group-id capability as the สร้างงาน card — the API
- * re-verifies membership on every call.
- *
- * NO emoji (brand rule) — the stat rows use native colored dots.
- */
-export function buildTeamRoomCard(liffId: string | undefined, groupId: string): FlexMessage {
-  const q = `?groupId=${encodeURIComponent(groupId)}`;
-  const roomUrl = liffId
-    ? `https://liff.line.me/${liffId}/team${q}`
-    : `${config.WEB_URL}/liff/tasks/team${q}`;
-  const createUrl = liffId
-    ? `https://liff.line.me/${liffId}/create${q}`
-    : `${config.WEB_URL}/liff/tasks/create${q}`;
-
-  const bullet = (text: string): Record<string, unknown> => ({
-    type: 'box',
-    layout: 'horizontal',
-    spacing: 'md',
-    alignItems: 'center',
-    contents: [
-      dot(BRAND_RED),
-      { type: 'text', text, size: 'sm', color: INK, wrap: true, flex: 1 },
-    ],
-  });
-
-  return {
-    type: 'flex',
-    altText: 'เปิดห้องทีม',
-    contents: {
-      type: 'bubble',
-      size: 'mega',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: BRAND_RED,
-        paddingAll: '16px',
-        spacing: 'xs',
-        contents: [
-          { type: 'text', text: 'หนูเก็บพร้อมช่วยงานทีมแล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
-          { type: 'text', text: 'เปิดห้องทีมเพื่อดูงานของกลุ่มนี้ทั้งหมด', size: 'xs', color: '#FFFFFFCC', wrap: true },
-        ],
-      },
-      body: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#FFFFFF',
-        paddingAll: '16px',
-        spacing: 'md',
-        contents: [
-          bullet('ดูงานทั้งหมดของทีม ใครทำอะไรค้างอยู่'),
-          bullet('สั่งงาน มอบหมาย แนบไฟล์ ได้ในที่เดียว'),
-          bullet('ส่งไฟล์เข้ากลุ่ม หนูเก็บให้อัตโนมัติ'),
-        ],
-      },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: '#FFFFFF',
-        spacing: 'sm',
-        paddingAll: '12px',
-        contents: [
-          {
-            type: 'button',
-            style: 'primary',
-            height: 'sm',
-            color: BRAND_RED,
-            action: { type: 'uri', label: 'เปิดห้องทีม', uri: roomUrl },
-          },
-          {
-            type: 'button',
-            style: 'secondary',
-            height: 'sm',
-            action: { type: 'uri', label: 'สร้างงานใหม่', uri: createUrl },
-          },
-        ],
-      },
-    },
-  };
-}
-
-/**
  * NEW-GROUP welcome card — REPLIED once, only when the bot JOINS a group (see
- * sendOnboarding in webhook/line.ts). Distinct from buildTeamRoomCard (which the
- * "หนูเก็บห้องทีม" intent still uses): a freshly-joined group has no team behind
+ * sendOnboarding in webhook/line.ts): a freshly-joined group has no team behind
  * it yet, so this card walks the admin through the 3 setup steps instead of
  * dropping them straight into an empty room.
  *
@@ -334,7 +246,7 @@ export function buildTeamRoomCard(liffId: string | undefined, groupId: string): 
  *  3. ผูกกลุ่มนี้เข้าทีม → the team page's "ผูกกลุ่ม" picker, then open the room here
  *
  * Buttons: [สร้างทีม →] (primary, the first action) + [เปิดห้องทีม] (secondary →
- * the LIFF team room, the same deep link buildTeamRoomCard uses). NO emoji
+ * the LIFF team room deep link). NO emoji
  * (brand rule) — the step numbers are native colored badges.
  */
 export function buildGroupWelcomeCard(liffId: string | undefined, groupId: string): FlexMessage {
@@ -401,7 +313,7 @@ export function buildGroupWelcomeCard(liffId: string | undefined, groupId: strin
           step(1, 'สร้างทีม', 'ไปที่เมนูทีม แล้วกดสร้างทีมได้เลยน้า'),
           step(2, 'เพิ่มสมาชิก', 'เพิ่มสมาชิกเข้าทีมผ่าน LINE หรืออีเมลได้เลยน้า'),
           step(3, 'ผูกกลุ่มนี้เข้ากับทีม', 'พิมพ์ "หนูเก็บผูกกลุ่ม" ในกลุ่มนี้ แล้วหนูจะพาไปผูกกลุ่มกับทีมให้น้า'),
-          step(4, 'สร้างงาน', 'พิมพ์ "หนูเก็บสร้างงาน" แล้วหนูจะเปิดหน้าสร้างงานให้เลยน้า'),
+          step(4, 'สร้างงาน', 'พิมพ์ "หนูเก็บเตือนงาน" แล้วหนูจะเปิดหน้าสร้างงานให้เลยน้า'),
           step(5, 'เก็บไฟล์', 'ส่งไฟล์หรือรูปมาในกลุ่มนี้ได้เลย หนูเก็บจะเก็บเข้าล็อคเกอร์ทีมให้อัตโนมัติน้า'),
         ],
       },
@@ -438,8 +350,18 @@ export function buildGroupWelcomeCard(liffId: string | undefined, groupId: strin
  * (brand rule) — required/optional bullets use native colored dots, the format
  * + examples sit in light-gray "code" boxes. `reminderIsPro` flags the reminder
  * count as a Pro feature so the copy never over-promises for free users.
+ *
+ * `groupId` (present whenever this is replied into a group/room) adds the two
+ * action buttons inherited from the retired "หนูเก็บสร้างงาน" card — เปิดดูงาน
+ * (web task list) + สร้างงานใหม่ (the LIFF create flow, same ?groupId=
+ * capability link as before). Omitted in a chat with no group id, where the
+ * create deep link would have nothing to point at.
  */
-export function buildTaskCommandHelpCard(reminderIsPro = true): FlexMessage {
+export function buildTaskCommandHelpCard(
+  reminderIsPro = true,
+  liffId?: string,
+  groupId?: string | null,
+): FlexMessage {
   const bullet = (color: string, text: string): Record<string, unknown> => ({
     type: 'box',
     layout: 'horizontal',
@@ -463,6 +385,45 @@ export function buildTaskCommandHelpCard(reminderIsPro = true): FlexMessage {
     weight: 'bold',
     margin: 'lg',
   });
+
+  // Two action buttons carried over from the retired "หนูเก็บสร้างงาน" card.
+  // The create link is byte-for-byte the one that card used (LIFF create flow,
+  // ?groupId= capability, plain-web fallback when LINE_LIFF_ID is unset).
+  const q = groupId ? `?groupId=${encodeURIComponent(groupId)}` : '';
+  const footer = groupId
+    ? {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: BRAND_RED,
+            action: {
+              type: 'uri',
+              label: 'เปิดดูงาน',
+              uri: `${config.WEB_URL}/dashboard/tasks`,
+            },
+          },
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'uri',
+              label: 'สร้างงานใหม่',
+              uri: liffId
+                ? `https://liff.line.me/${liffId}/create${q}`
+                : `${config.WEB_URL}/liff/tasks/create${q}`,
+            },
+          },
+        ],
+      }
+    : undefined;
 
   return {
     type: 'flex',
@@ -525,6 +486,7 @@ export function buildTaskCommandHelpCard(reminderIsPro = true): FlexMessage {
           },
         ],
       },
+      ...(footer ? { footer } : {}),
     },
   };
 }

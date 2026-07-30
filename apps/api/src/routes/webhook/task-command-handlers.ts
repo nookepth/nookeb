@@ -33,6 +33,7 @@ import {
   type StoredAssignee,
 } from '../../services/task-confirm';
 import { logEvent } from '../../services/events.service';
+import { config } from '../../config';
 import { enqueueSheetsSync } from '../../services/sheetsQueue';
 
 /**
@@ -72,9 +73,15 @@ async function replyText(event: TaskCommandEvent, text: string): Promise<void> {
   await reply(event, [{ type: 'text', text }]);
 }
 
-/** Help card on a bare "หนูเก็บเตือนงาน" (and the legacy bare "หนูเก็บสั่งงาน"). */
+/**
+ * Help card on a bare "หนูเก็บเตือนงาน" (and the legacy bare "หนูเก็บสั่งงาน").
+ * The group id (when the card is replied into a group/room) gives the card its
+ * เปิดดูงาน + สร้างงานใหม่ buttons — the pair inherited from the retired
+ * "หนูเก็บสร้างงาน" card.
+ */
 export async function handleTaskCommandHelp(_app: FastifyInstance, event: TaskCommandEvent): Promise<void> {
-  await reply(event, [buildTaskCommandHelpCard()]);
+  const groupId = event.source.groupId ?? event.source.roomId ?? null;
+  await reply(event, [buildTaskCommandHelpCard(true, config.LINE_LIFF_ID, groupId)]);
 }
 
 /** Clear, non-technical Thai copy for each parse failure — never assigns silently. */
@@ -216,7 +223,7 @@ export async function handleTaskCommandCreate(
   if ((source.type !== 'group' && source.type !== 'room') || !groupId) {
     await replyText(
       event,
-      'คำสั่ง "เตือนงาน" ใช้ในกลุ่มน้า ถ้าอยากทำงานส่วนตัว พิมพ์ "หนูเก็บสร้างงาน" ในแชทนี้ได้เลยน้า',
+      'คำสั่ง "เตือนงาน" ใช้ในกลุ่มน้า ถ้าอยากทำงานส่วนตัว พิมพ์ "หนูเก็บเตือนงาน" เฉยๆ ในแชทนี้ได้เลยน้า',
     );
     return;
   }

@@ -79,7 +79,7 @@ import {
   handleTaskCommandHelp,
   handleTaskConfirmPostback,
 } from './task-command-handlers';
-import { buildCreateTaskCard, buildGroupWelcomeCard, buildTeamRoomCard } from '../../services/lineMessage';
+import { buildCreateTaskCard, buildGroupWelcomeCard } from '../../services/lineMessage';
 import { upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
 
@@ -338,7 +338,6 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 หนูเก็บงานของฉัน — ดูงานที่ต้องทำ
 
 👥 ทีม (ใช้ในกลุ่ม)
-หนูเก็บสร้างงาน — มอบหมายงานในกลุ่ม
 หนูเก็บเตือนงาน — สั่งงานในกลุ่มเร็วๆ แค่แท็กเพื่อน (พิมพ์เปล่าๆ เพื่อดูวิธีใช้)
 หนูเก็บคู่มือทีม — วิธีเริ่มใช้งานแบบทีม
 หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
@@ -527,26 +526,6 @@ async function handleTextCommand(
     return;
   }
 
-  // ระบบตามงาน "สร้างงาน" entry point. Deliberately UNPREFIXED and matched BEFORE
-  // the group bot-directed guard so it works when typed straight into a group.
-  // In a GROUP/ROOM this replies the ห้องทีม card (buildTeamRoomCard) — the group
-  // entry point, with เปิดห้องทีม + สร้างงานใหม่ buttons — so the group sees its
-  // room first rather than jumping straight into the create flow. In a 1-on-1
-  // chat it stays งานส่วนตัว (migration 043): the self-contained create card.
-  // The roster is populated automatically by the message-event auto-upsert (no
-  // "/register" typing needed), so the card can offer assignees right away.
-  if (prefixed && isCmd(text, 'สร้างงาน')) {
-    const groupId = source.groupId ?? source.roomId;
-    if (!groupId) {
-      // 1-on-1 chat: งานส่วนตัว. The card carries no id — the LIFF resolves the
-      // owner from the verified session.
-      await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, null, 'personal'));
-      return;
-    }
-    await replyFlex(event, buildTeamRoomCard(config.LINE_LIFF_ID, groupId));
-    return;
-  }
-
   // ระบบตามงาน in-chat commands (task-command-handlers.ts). Prefixed, and matched
   // BEFORE the group bot-directed guard (the prefix passes it anyway). Both read
   // the RAW event.message (text + @mention metadata) inside the handler, so they
@@ -557,7 +536,18 @@ async function handleTextCommand(
   // only a เตือนงาน WITH extra content falls through to create. "สั่งงาน" is kept
   // as a legacy alias (its bare form still routes to help via the create handler's
   // isBareCommand fallback).
+  //
+  // The bare form is also the entry point the retired "หนูเก็บสร้างงาน" command
+  // used to be: in a 1-on-1 chat there is no group to command, so it replies the
+  // งานส่วนตัว create card (migration 043) exactly as before; in a group/room the
+  // help card carries the เปิดดูงาน + สร้างงานใหม่ buttons instead.
   if (prefixed && isCmd(text, 'เตือนงาน')) {
+    if (!source.groupId && !source.roomId) {
+      // 1-on-1 chat: งานส่วนตัว. The card carries no id — the LIFF resolves the
+      // owner from the verified session.
+      await replyFlex(event, buildCreateTaskCard(config.LINE_LIFF_ID, null, 'personal'));
+      return;
+    }
     await handleTaskCommandHelp(app, event);
     return;
   }
@@ -645,7 +635,7 @@ async function handleTextCommand(
     const buttons: QuickReplyButton[] = inGroup
       ? [
           { label: 'หนูเก็บล็อคเกอร์', text: 'หนูเก็บล็อคเกอร์' },
-          { label: 'หนูเก็บสร้างงาน', text: 'หนูเก็บสร้างงาน' },
+          { label: 'หนูเก็บเตือนงาน', text: 'หนูเก็บเตือนงาน' },
           { label: 'หนูเก็บคู่มือทีม', text: 'หนูเก็บคู่มือทีม' },
           { label: 'หนูเก็บวิธีใช้', text: 'หนูเก็บวิธีใช้' },
           { label: 'หนูเก็บคำสั่ง', text: 'หนูเก็บคำสั่ง' },
