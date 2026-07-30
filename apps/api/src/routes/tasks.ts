@@ -587,8 +587,12 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
       // Task-level description writes onto the first item (see patchTaskSchema).
       // Empty string clears it. Items are ordered by sort_order, so items[0] is
-      // the task's primary/implicit item.
-      if (parsed.data.description !== undefined) {
+      // the task's primary/implicit item. ONLY for single/recurring: a multi
+      // task's items[0] is a real sub-item with its own title/description, and
+      // writing the task-level values onto it would silently overwrite them
+      // (multi items are edited via PATCH /tasks/:id/items/:itemId instead).
+      const propagateToFirstItem = task.type !== 'multi';
+      if (propagateToFirstItem && parsed.data.description !== undefined) {
         const firstItem = task.items[0];
         if (firstItem) {
           const desc = parsed.data.description.length > 0 ? parsed.data.description : null;
@@ -601,9 +605,9 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       }
 
       // Renaming the task also renames its first (implicit for single/recurring)
-      // item so the item title tracks the task title — same items[0] mapping as
-      // the description above.
-      if (parsed.data.title !== undefined) {
+      // item so the item title tracks the task title — same items[0] mapping
+      // (and the same multi-task guard) as the description above.
+      if (propagateToFirstItem && parsed.data.title !== undefined) {
         const firstItem = task.items[0];
         if (firstItem) {
           const { error: titleErr } = await app.supabase

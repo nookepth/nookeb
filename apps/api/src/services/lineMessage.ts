@@ -245,16 +245,21 @@ export function buildCreateTaskCard(
  *  2. เพิ่มสมาชิก     → done inside the team page (เชิญสมาชิก via LINE/email)
  *  3. ผูกกลุ่มนี้เข้าทีม → the team page's "ผูกกลุ่ม" picker, then open the room here
  *
- * Buttons: [สร้างทีม →] (primary, the first action) + [เปิดห้องทีม] (secondary →
- * the LIFF team room deep link). NO emoji
+ * Buttons: [สร้างทีม →] (primary, the first action) + [สร้างงานใหม่] (secondary →
+ * the web create-task page, carrying this group's id/name so the form opens
+ * already scoped to the group the card was posted in). NO emoji
  * (brand rule) — the step numbers are native colored badges.
+ *
+ * `groupName` is best-effort (LINE's group summary endpoint, rooms have none):
+ * when it — or the group id itself — is missing, the link degrades to the bare
+ * create-task page rather than carrying a half-filled query string.
  */
-export function buildGroupWelcomeCard(liffId: string | undefined, groupId: string): FlexMessage {
-  const q = `?groupId=${encodeURIComponent(groupId)}`;
-  const roomUrl = liffId
-    ? `https://liff.line.me/${liffId}/team${q}`
-    : `${config.WEB_URL}/liff/tasks/team${q}`;
+export function buildGroupWelcomeCard(groupId: string, groupName?: string): FlexMessage {
   const teamsUrl = `${config.WEB_URL}/dashboard/teams`;
+  const newTaskUrl = groupId
+    ? `${config.WEB_URL}/tasks/new?groupId=${encodeURIComponent(groupId)}` +
+      (groupName ? `&groupName=${encodeURIComponent(groupName)}` : '')
+    : `${config.WEB_URL}/tasks/new`;
 
   const step = (n: number, title: string, desc: string): Record<string, unknown> => ({
     type: 'box',
@@ -335,7 +340,7 @@ export function buildGroupWelcomeCard(liffId: string | undefined, groupId: strin
             type: 'button',
             style: 'secondary',
             height: 'sm',
-            action: { type: 'uri', label: 'เปิดห้องทีม', uri: roomUrl },
+            action: { type: 'uri', label: 'สร้างงานใหม่', uri: newTaskUrl },
           },
         ],
       },

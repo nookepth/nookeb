@@ -390,10 +390,13 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
       const iso = new Date(editDeadline).toISOString();
       if (iso !== task.globalDeadline) patch.globalDeadline = iso;
     }
-    // Task-level description maps to the first item (see API patchTaskSchema).
-    // Send the trimmed value (empty clears it) only when it actually changed.
-    const currentDesc = task.items[0]?.description ?? '';
-    if (editDescription.trim() !== currentDesc) patch.description = editDescription.trim();
+    // Task-level description maps to the first item (see API patchTaskSchema) —
+    // single/recurring only. A multi task's items[0] is a real sub-item, so its
+    // description is edited per-item (openItemEdit), never from this sheet.
+    if (task.type !== 'multi') {
+      const currentDesc = task.items[0]?.description ?? '';
+      if (editDescription.trim() !== currentDesc) patch.description = editDescription.trim();
+    }
     if (Object.keys(patch).length === 0) {
       setEditOpen(false);
       return;
@@ -964,16 +967,20 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                 งานประจำเลื่อนรอบเองตามกำหนด แก้กำหนดส่งไม่ได้น้า
               </p>
             )}
-            <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
-              รายละเอียด (ไม่บังคับ)
-            </label>
-            <textarea
-              className={styles.textarea}
-              placeholder="อธิบายงานเพิ่มเติม..."
-              value={editDescription}
-              onChange={(e) => setEditDescription(e.target.value)}
-              maxLength={1000}
-            />
+            {task.type !== 'multi' && (
+              <>
+                <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+                  รายละเอียด (ไม่บังคับ)
+                </label>
+                <textarea
+                  className={styles.textarea}
+                  placeholder="อธิบายงานเพิ่มเติม..."
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  maxLength={1000}
+                />
+              </>
+            )}
             <button
               type="button"
               className={styles.primaryBtn}

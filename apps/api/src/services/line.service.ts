@@ -223,6 +223,28 @@ export async function getChatMemberProfile(
  * the message-driven roster. Paginated via `start`; capped so a huge group
  * can't stall the request that awaits this.
  */
+/**
+ * Group summary (groupName/pictureUrl) for DISPLAY purposes. LINE only exposes
+ * /summary for groups — rooms have no equivalent, so a room id returns null
+ * without a round trip. Best-effort: any failure/timeout returns null so a
+ * caller on the 1-second webhook budget can just fall back to a generic label.
+ */
+export async function getChatSummary(
+  chatId: string,
+): Promise<{ groupName: string; pictureUrl?: string } | null> {
+  if (chatScope(chatId) !== 'group') return null;
+  try {
+    const res = await fetch(`${LINE_API}/group/${chatId}/summary`, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(LINE_MESSAGING_TIMEOUT_MS),
+    });
+    if (res.ok) return (await res.json()) as { groupName: string; pictureUrl?: string };
+  } catch {
+    // timeout/network — the card falls back to a group-less link
+  }
+  return null;
+}
+
 export async function getChatMemberIds(chatId: string, cap = 500): Promise<string[] | null> {
   const ids: string[] = [];
   let start: string | undefined;

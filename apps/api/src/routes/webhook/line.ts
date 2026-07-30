@@ -10,6 +10,7 @@ import type {
 import { verifyLineSignature } from '../../middleware/line-verify';
 import {
   getChatMemberProfile,
+  getChatSummary,
   getProfile,
   replyMessage,
   type LineMessage,
@@ -77,6 +78,7 @@ import {
   handleNaturalTaskMessage,
   handlePendingDueReply,
   handleTaskCommandCreate,
+  handleRemindFullGuidePostback,
   handleTaskCommandHelp,
   handleTaskConfirmPostback,
 } from './task-command-handlers';
@@ -176,9 +178,13 @@ const REFERRAL_GB = 1024 * 1024 * 1024;
 async function sendOnboarding(event: LineMessageEvent): Promise<void> {
   if (!event.replyToken) return;
   const groupId = event.source.groupId ?? event.source.roomId;
+  // Group name is only decoration on the "สร้างงานใหม่" link — never let a slow
+  // or 403ing summary call eat the reply token (LINE's group-summary endpoint
+  // returns null for rooms and for any failure, see getChatSummary).
+  const groupName = groupId ? (await getChatSummary(groupId))?.groupName : undefined;
   await replyMessage(event.replyToken, [
     buildOnboardingCarouselMessage(),
-    ...(groupId ? [buildGroupWelcomeCard(config.LINE_LIFF_ID, groupId)] : []),
+    ...(groupId ? [buildGroupWelcomeCard(groupId, groupName)] : []),
   ]);
 }
 
@@ -902,12 +908,13 @@ async function handleTextCommand(
 
   // DEPRECATED: "รวมรูป" (image-merge) was consolidated into "รวมไฟล์", which now
   // accepts BOTH images and PDFs. The trigger no longer starts a 'merge' session;
-  // it is now a SILENT no-op — anyone (or a stale rich-menu tap) who still types
-  // the old command gets no reply and no redirect. The worker's 'merge'
-  // session_kind stays intact for any session opened before this consolidation
-  // shipped. (สแกน is unaffected — it is the separate 'scan' session_kind for
-  // document scanning + OCR.)
+  // it just redirects the user to the new command (a silent no-op read as a
+  // broken bot — anyone typing a command deserves SOME answer). The worker's
+  // 'merge' session_kind stays intact for any session opened before this
+  // consolidation shipped. (สแกน is unaffected — it is the separate 'scan'
+  // session_kind for document scanning + OCR.)
   if (prefixed && isCmd(text, 'รวมรูป')) {
+    await reply(event, 'ตอนนี้รวมรูปกับรวมไฟล์ PDF อยู่ในคำสั่งเดียวกันแล้วน้า พิมพ์ "หนูเก็บรวมไฟล์" ได้เลยน้า 📄');
     return;
   }
 
@@ -1287,6 +1294,13 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
       // a "หนูเก็บ…" text command — route them before the text-command path.
       if (event.postback.data.startsWith('action=task_')) {
         await handleTaskPostback(app, event);
+        return;
+      }
+      // Compact เตือนงาน help card → "เตือนงาน" button: reset that group's
+      // seen-counter and reply the FULL instruction card. Matched before the
+      // text-command fallthrough (its data is not a "หนูเก็บ…" command).
+      if (event.postback.data === 'action=remind_full_guide') {
+        await handleRemindFullGuidePostback(app, event);
         return;
       }
       // In-chat task-command confirmation card (task_cmd_confirm / task_cmd_cancel):

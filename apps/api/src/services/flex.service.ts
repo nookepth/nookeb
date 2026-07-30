@@ -130,7 +130,7 @@ export function buildProgressFlexMessage(params: {
         layout: 'vertical',
         paddingAll: '16px',
         contents: [
-          { type: 'text', text: 'รอสักครู่น้า หนูกำลังทำงานอยู่เลย', weight: 'bold', size: 'lg', color: INK, wrap: true },
+          { type: 'text', text: 'รอสักครู่น้า หนูกำลังเก็บอยู่เลย', weight: 'bold', size: 'lg', color: INK, wrap: true },
         ],
       },
       body: {
@@ -140,7 +140,7 @@ export function buildProgressFlexMessage(params: {
         paddingAll: '16px',
         contents: [
           { type: 'text', text: `รับของจากพี่ ${who} แล้วน้า`, size: 'sm', color: '#333333', wrap: true },
-          iconRow(LINE_GREEN, `หนูกำลังเก็บอยู่น้า 0/${total} ชิ้น`),
+          iconRow(LINE_GREEN, 'หนูเก็บให้แล้วน้า'),
         ],
       },
       footer: {

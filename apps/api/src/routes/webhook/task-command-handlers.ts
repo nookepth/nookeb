@@ -6,6 +6,7 @@ import {
   buildTaskConfirmCard,
   buildTaskCreatedFlex,
 } from '../../services/lineMessage';
+import { buildRemindCompactFlex } from '../../flex-messages/remind-compact.flex';
 import {
   createTaskWithItems,
   listGroupMembers,
@@ -74,14 +75,70 @@ async function replyText(event: TaskCommandEvent, text: string): Promise<void> {
 }
 
 /**
+ * Redis key holding how many times a group has asked for the เตือนงาน help card.
+ * No TTL on purpose — it is the group's lifetime "have you seen this before?"
+ * flag, and it is UX state only (never business data), so a Redis flush just
+ * costs that group one extra full card.
+ */
+function remindCountKey(groupId: string): string {
+  return `nookeb:cmd_count:${groupId}:remind`;
+}
+
+/**
  * Help card on a bare "หนูเก็บเตือนงาน" (and the legacy bare "หนูเก็บสั่งงาน").
  * The group id (when the card is replied into a group/room) gives the card its
  * เปิดดูงาน + สร้างงานใหม่ buttons — the pair inherited from the retired
  * "หนูเก็บสร้างงาน" card.
+ *
+ * ADAPTIVE: in a group/room, the FIRST ask gets the full instruction card and
+ * every ask after that gets the compact one (remind-compact.flex.ts) — a group
+ * that already read the long version doesn't need it re-pasted. The compact
+ * card's "เตือนงาน" button resets the counter and brings the full card back.
+ * A 1-on-1 chat has no group id to count against and always gets the full card.
+ * The INCR is best-effort: if Redis is down we fall back to the full card rather
+ * than dropping the reply.
  */
-export async function handleTaskCommandHelp(_app: FastifyInstance, event: TaskCommandEvent): Promise<void> {
+export async function handleTaskCommandHelp(app: FastifyInstance, event: TaskCommandEvent): Promise<void> {
   const groupId = event.source.groupId ?? event.source.roomId ?? null;
+
+  let seenBefore = false;
+  if (groupId) {
+    try {
+      const count = await app.redis.incr(remindCountKey(groupId));
+      seenBefore = count > 1;
+    } catch (err) {
+      app.log.warn({ err, groupId }, 'remind help counter failed — falling back to full card');
+    }
+  }
+
+  await reply(event, [
+    seenBefore
+      ? buildRemindCompactFlex(config.LINE_LIFF_ID, groupId)
+      : buildTaskCommandHelpCard(true, config.LINE_LIFF_ID, groupId),
+  ]);
+}
+
+/**
+ * Postback for the compact card's "เตือนงาน" button (`action=remind_full_guide`):
+ * reset the group's counter and reply the FULL instruction card. Resetting to 0
+ * (DEL) rather than 1 means the next typed "หนูเก็บเตือนงาน" INCRs back to 1 and
+ * shows the full card once more — the tapper gets to re-read it in context.
+ * Returns true when it owned the postback (caller stops routing).
+ */
+export async function handleRemindFullGuidePostback(
+  app: FastifyInstance,
+  event: TaskCommandEvent,
+): Promise<boolean> {
+  if ((event.postback?.data ?? '') !== 'action=remind_full_guide') return false;
+
+  const groupId = event.source.groupId ?? event.source.roomId ?? null;
+  if (groupId) {
+    await app.redis.del(remindCountKey(groupId)).catch((err: unknown) => {
+      app.log.warn({ err, groupId }, 'remind help counter reset failed');
+    });
+  }
   await reply(event, [buildTaskCommandHelpCard(true, config.LINE_LIFF_ID, groupId)]);
+  return true;
 }
 
 /** Clear, non-technical Thai copy for each parse failure — never assigns silently. */

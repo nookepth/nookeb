@@ -412,10 +412,13 @@ export default function TasksPage() {
 
   /** Quick action: mark ALL of the viewer's pending items on this task done. */
   async function handleCompleteTask(task: TaskDto): Promise<void> {
+    // 'submitted' is excluded to match the detail page: an item awaiting the
+    // creator's review must be accepted/rejected there, not self-marked done.
     const myPending = task.items.filter(
       (i) =>
         i.status !== 'done' &&
         i.status !== 'cancelled' &&
+        i.status !== 'submitted' &&
         i.assignees.some((a) => a.lineUid === viewerUid && !a.doneAt),
     );
     if (myPending.length === 0) return;
