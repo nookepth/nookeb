@@ -1,1198 +1,815 @@
 # หนูเก็บ (nookeb) — Claude Code Context
 
-## Project Overview
-LINE-integrated file archiving SaaS. Users send files via LINE OA → stored permanently
-in Cloudflare R2 → accessible via Next.js Web Dashboard. Supports folders/tags/search,
-multi-page scan-to-PDF, LINE group shared spaces, team invites, image OCR, storage
-quota + analytics, ระบบตามงาน (task manager with attachments, a review loop, ห้องทีม,
-.xlsx export and Google Sheets sync), and an admin panel. A public SEO landing page lives at `/` (see
-`apps/web` below). (Google Drive EXPORT was removed — see migration 017. The
-Google integration that exists today is Sheets sync for ระบบตามงาน, migration 046:
-`drive.file` scope only, refresh token encrypted — the "rebuilt securely" of that
-note, not a revival of the old Drive feature.)
+> Rewritten 2026-07-30 from a full read of the codebase (routes, services, workers,
+> web/LIFF pages, shared package, migrations 001–047). Anything the code did not
+> confirm is marked **[UNCLEAR — needs verification]**.
 
-## Tech Stack (FIXED — do not change without asking)
-- API: Node.js + TypeScript + Fastify 4.x
-- Frontend: Next.js 14 App Router + TypeScript
-- Database: PostgreSQL via Supabase (use Supabase client, NOT raw pg)
-- Storage: Cloudflare R2 (S3-compatible, use @aws-sdk/client-s3)
-- Queue: BullMQ + Redis (Upstash) — REDIS_URL must be `rediss://` (TLS) for Upstash
-- Auth: LINE Login → app-signed JWT (HS256, `jsonwebtoken`)
-- Images: `sharp` (thumbnails, page normalization) · PDF: `pdf-lib` · OCR: `tesseract.js` (tha+eng)
-- Documents out: `docx` (→Word) · `exceljs` (→.xlsx task export — the ONLY
-  spreadsheet lib; there is still NO chart library, see the Admin Dashboard note)
-  · `ical-generator` (→.ics) · `googleapis` (Sheets sync only, migration 046)
+---
 
-## LINE Messaging — Critical Rules
+## 1. Project Overview
 
-### NEVER use push messages — use reply only
-- push = costs monthly quota → fails silently when quota runs out
-- reply = always free, always works, no quota consumed
-- This is a hard rule with ONE sanctioned exception: ระบบตามงาน (Task Manager).
-  Task announcements originate from a LIFF web submit and reminders from a
-  BullMQ timer — neither ever has a replyToken, so they push via `pushMessage`
-  in `line.service.ts` (which exists for THAT feature only; every push failure
-  is logged loudly + recorded in `task_reminders.failed_at`). Everything else
-  (uploads, scans, diary, referral, …) stays reply-only.
+A LINE-integrated personal/team **file archive + task chaser** SaaS, Thai-language,
+with a bot persona ("หนู" / addresses the user as "พี่" / ends sentences with "น้า").
 
-### How reply works in async workers
-When a worker finishes a long job (OCR, convert, scan merge etc.),
-it cannot use the original replyToken (expired after ~30s).
-Solution in this codebase:
-- replyToken is saved into the BullMQ job payload when the job is queued
-- Worker retrieves replyToken from the job payload
-- Worker calls replyMessage() with the saved token
-- If token expired/used → send to locker only, notify on next interaction
+What actually works today:
 
-### Queue discipline
-- Save replyToken at webhook time (it's valid for ~30s from receipt)
-- Pass replyToken through job payload
-- Worker uses it once, then discards
-- Never store replyToken longer than the job TTL
+- **Archive** — users send files/images/video/audio to a LINE OA; a debounced batch
+  job stores them permanently in Cloudflare R2 and indexes them in Postgres
+  (Supabase). Browsable at a Next.js dashboard with folders, tags, name+OCR search,
+  thumbnails, previews, share links and a trash bin.
+- **Document flows in chat** — สแกน (scan-to-PDF with enhancement + OCR),
+  รวมไฟล์ (merge images **and** PDFs into one PDF), แปลงไฟล์ (image/PDF → editable
+  .docx via Mistral OCR). All three ride the same `scan_sessions` machinery.
+- **ไดอารี่ 365 วัน** — one photo + caption per Bangkok calendar day, stored
+  outside the files table, with a web 365-grid/scrapbook viewer.
+- **ห้องนิรภัย (Vault)** — PIN-protected, per-user AES-256-GCM encrypted,
+  view-only web store.
+- **กล่องของขวัญ (Legacy Box)** — shareable gift boxes (photos + message + optional
+  voice clip) behind a public slug with an animated reveal.
+- **ระบบตามงาน (Task Manager)** — the largest feature. Group and personal tasks
+  created from a LIFF flow **or** from in-chat commands and natural language,
+  with a confirm-before-create card, assignee roster that fills itself,
+  attachments, a ส่งงานกลับ / รับงาน / ตีกลับ review loop, ห้องทีม (team room),
+  .xlsx export, Google Sheets mirroring, and scheduled reminders that are
+  currently **soft-disabled**.
+- **Teams** — teams, invites, join-request approval, LINE group ↔ team binding.
+- **Referrals** — invite codes raising the free storage tier 1 → 2.5 → 4 GB.
+- **Admin analytics** — one `/admin` page over an append-only `usage_events` log
+  and read-only aggregate RPCs.
+- **Public landing page** at `/` (SEO, FAQ JSON-LD, no emoji, official art only).
 
-### Quota-safe fallback
-If replyToken is expired or missing:
-- Complete the job (save file to locker)
-- Do NOT push notify
-- On next user interaction, bot surfaces "มีไฟล์ใหม่ในล็อคเกอร์น้า"
-  (pending-notify flag in Redis, checked at webhook time and prepended
-  to the next reply — see `services/pending-notify.service.ts`)
-- User is never left with a broken experience
+Not built: billing/plans (the `users.plan` column exists and gates one feature, but
+nothing sells it), Google **Drive** export (removed; migration 017), any ERP or
+configurable approval workflow.
 
-## Key Engineering Rules
-1. LINE Webhook MUST reply within 1 second → reply 200 immediately, process events in
-   `setImmediate`, and enqueue async jobs for file ops.
-2. Always verify LINE webhook signature (X-Line-Signature HMAC-SHA256) over the RAW body —
-   a scoped `application/json` buffer content-type parser preserves the exact bytes.
-3. Never store files locally — always stream directly to/from R2 (no temp files on disk).
-4. Multi-tenant isolation is enforced in the API via `isSpaceMember` / `getMemberRole`
-   checks. The API/worker use the Supabase SERVICE ROLE key, which BYPASSES RLS — so RLS
-   policies are a backstop, not the primary guard. Every space-scoped route must check
-   membership explicitly.
-5. File downloads MUST use presigned URLs (expire 1 hour) — never proxy binary through the API.
-6. Soft-delete only (set `deleted_at`) — never hard DELETE files rows. A daily purge job
-   removes the R2 OBJECTS of files soft-deleted past the retention window (plan-aware since
-   migration 032: free = `PURGE_RETENTION_DAYS`, pro/team plan = `TRASH_RETENTION_DAYS_PRO`),
-   then stamps `files.purged_at` so later runs skip them; the row is kept as a tombstone.
-   Within that window the file sits in the web trash bin (see ถังขยะ section) and can be
-   restored or manually purged (manual purge stamps the same tombstone — still no hard DELETE).
-7. BullMQ custom `jobId` must NOT contain `:` — sanitize with
-   `` `${prefix}-${id.replace(/[^a-zA-Z0-9-_]/g, '-')}` `` (LINE message ids contain `:`).
-8. Storage accounting: adjust `users.storage_used` ONLY via `adjustStorageUsed`, which calls
-   the atomic `increment_storage_used(p_user_id, p_delta)` RPC (migration 003) — never do a
-   read-modify-write (worker concurrency would race it). New users get `DEFAULT_STORAGE_LIMIT`
-   (1 GB free tier — raised through referrals, see migration 010 / `referral.service`).
-9. File-bearing jobs (`add_scan_page`, `finalize_scan`) run with retry (`attempts: 3`,
-   exponential backoff) because LINE CDN content has a ~1h TTL and the user was already told
-   "received". Their handlers MUST stay safe to re-run: `finalize_scan` skips sessions not in
-   `processing` AND, once it has stored+charged the merged PDF, records `result_file_id` on the
-   session (migration 018 / `setSessionResultFile`) so a retry recovers that file instead of
-   re-storing it; `add_scan_page` dedups by `line_message_id`; and any post-store step
-   (thumbnail/OCR enqueue, user notify) is best-effort (wrapped so it can never throw and
-   trigger a duplicating retry). (The legacy single-file `upload_file` handler was removed —
-   normal uploads go through `upload_batch`, which has its own internal-retry idempotency.)
+---
 
-## File Processing Flow (upload)
-0. Normal uploads are BATCHED per user to avoid message spam: the webhook adds each
-   image/file event to an in-memory per-user debounce queue (`services/upload-queue.ts`,
-   sliding 1500ms window). When the window closes it sends ONE "progress" Flex card as a
-   REPLY via the first event's replyToken (reply-only — no push fallback; if the token is
-   gone it skips and logs) and enqueues ONE `upload_batch` job. The worker sends no summary:
-   the progress card's button opens the live progress page, which flips to "เสร็จแล้ว" when
-   the batch finishes. (Flex builders in `services/flex.service.ts` — NO emoji; status icons
-   are native colored boxes because LINE Flex can't render SVG/data-URIs). Scan-mode images
-   bypass the batch (see below).
-1. LINE sends webhook (image/file message); API replies 200 immediately.
-2. Worker resolves user + space. Files sent in a LINE GROUP go to that group's shared team
-   space (`ensureGroupSpace`); otherwise the sender's personal space.
-3. Quota check (skip + queue a "space full" notice via `pending-notify` if over limit).
-4. Worker downloads binary from LINE CDN (messageId + channel access token), streams to R2
-   key `spaces/{space_id}/files/{file_id}/{name}`, sets `files.status = 'ready'`.
-5. For images, enqueues `generate_thumbnail` (→ `spaces/{sid}/thumbnails/{fid}/thumb.webp`)
-   and `ocr_image` (→ `files.ocr_text`) as separate best-effort jobs.
-6. No worker confirmation message (the reply-card's progress page covers it); rejection/
-   quota notices defer via `pending-notify`. Steps 5–6 are wrapped best-effort — once the
-   file is stored + charged the job is "done", so a failure there can't retry and re-store it.
+## 2. Tech Stack (verified from package.json — FIXED, do not change without asking)
 
-## LINE Bot Commands (text or rich-menu message actions)
-- `สแกน` / `scan` — start scan mode (creates a `scan_sessions` row, status `collecting`)
-- images while collecting → `add_scan_page` (stored under `spaces/{sid}/scan-temp/...`)
-- `เสร็จ` / `done` — `finalize_scan`: merge pages into one PDF (pdf-lib) → store as a file
-- `ยกเลิก` / `cancel` — cancel the session
-- `หนูเก็บรวมไฟล์` — ระบบรวมไฟล์ PDF (migration 044): merge several PDF FILES into one.
-  The 4th document feature, and deliberately NOT a system of its own — it is a third
-  `session_kind` ('pdf') on the SAME `scan_sessions`/`scan_pages`/`finalize_scan`
-  plumbing as สแกน/รวมรูป, so `เสร็จ`/`ยกเลิก`, the one-active-session-per-user rule
-  (opening any mode auto-cancels the previous one), `page_seq` ordering, the
-  `expected_pages` wait-gate, the `result_file_id` retry marker and the scan-temp
-  cleanup all apply unchanged. Do NOT split it into a parallel session table — the
-  ambiguity of "เสร็จ" across two session systems is exactly what that would buy.
-  Differences from รวมรูป, all keyed off the kind: personal chat only; only `file`
-  messages whose name ends `.pdf` are accepted (an image/other file mid-session is
-  REJECTED with a reply rather than falling through to the normal upload path — the
-  user is mid-flow and a silent archive would look like a bug); each source is
-  validated at accept time in `add_scan_page` (`loadSourcePdf` — magic bytes, then
-  a real `PDFDocument.load`, so a corrupt/encrypted/mis-named file is reported while
-  the session is still open instead of sinking the whole merge at `เสร็จ`) and stored
-  RAW under `spaces/{sid}/scan-temp/{session}/{id}.pdf` (no sharp, no re-encode);
-  `finalize_scan` concatenates with `mergePdfs` (pdf-lib `copyPages`) preserving each
-  source page's size/orientation, no OCR layer (source PDFs carry their own), and
-  names the result `รวมไฟล์_….pdf`. A bad source is USER error: reported and
-  swallowed, never thrown — throwing would burn all 3 BullMQ attempts and send the
-  same message 3×. Caps: `PDF_MERGE_MAX_SOURCE_BYTES` / `PDF_MERGE_MAX_SOURCES`
-  (sources AND output are buffered in worker memory). Quota is charged ONLY for the
-  merged result — the collected sources live in scan-temp, never in the locker.
-  Card: `buildPdfMergeFlexMessage`, navy `#1E3A5F` header + `#2563EB` CTA (distinct
-  from รวมรูป's brand red and สแกน's `#1E88E5`). Reply-only like everything else:
-  the "ดูล็อคเกอร์" button on the finalize-in-progress card IS the completion
-  notice — there is no push when the merge finishes.
-- `วิธีใช้` / `help` — usage text
-- `แปลงไฟล์` / `word` — convert-to-Word mode (personal chat only; needs `MISTRAL_API_KEY`,
-  else replies "not available"). Arms a one-shot Redis flag (`docx-convert.service`, TTL
-  10 min, cleared by `ยกเลิก`); the NEXT image/PDF is OCR'd via Mistral OCR
-  (`mistral-ocr.service`, markdown out) and rebuilt as an editable .docx
-  (`docx-builder.service`) → stored as a normal personal-space file (quota-charged) →
-  result Flex card delivered as a REPLY with the replyToken saved in the job payload (the
-  webhook does NOT spend it on an ack); if the token is expired/spent, the card is deferred
-  via `pending-notify.service` to the user's next interaction. The flag check runs BEFORE
-  the scan-session image check.
-- `ไดอารี่` / `diary` — 365-day photo-diary mode (personal chat only, migration 028). Same
-  one-shot Redis flag pattern as แปลงไฟล์ (`diary-mode.service`, TTL 10 min, cleared by
-  `ยกเลิก`): the NEXT image becomes today's (Bangkok calendar day) diary entry — stored via
-  `create_diary_entry` under R2 `diary/{user_id}/{year}/...` (OUTSIDE the files table:
-  `diary_entries`, quota-charged, one live entry per user+day enforced by partial unique
-  index + arm-time/worker checks). Unprefixed text typed while armed is captured as the
-  entry's caption (SET XX KEEPTTL — ยกเลิก and "หนูเก็บ…" commands still work). Result Flex
-  card replies with the saved token (pending-notify fallback). Diary flag check runs BEFORE
-  the docx-convert and scan-session image checks. Web: `/dashboard/diary` (365-grid +
-  streak + scrapbook viewer). Reminders are Option-C IN-APP banners only (no push, ever) —
-  `diary_notification_settings` stores the user's time; the web compares client-side.
-- `หนูเก็บปิดแจ้งเตือน` / `หนูเก็บเปิดแจ้งเตือน` — group/room only: toggles the per-upload
-  "บันทึกแล้วน้า ✓" confirmation reply for THAT group (migration 021,
-  `group-settings.service`). Open to any member (Messaging API can't expose
-  group-admin role). Default ON; OFF stores files silently (no reply at all).
-- `ช่วยเหลือ` / `support` / `contact_support` / `ติดต่อหนูเก็บ` — replies with the contact-
-  support text (links to `https://lin.ee/Z0ewNYb`). All four aliases hit the same handler.
-- The webhook handles `message`, `join`/`follow`, and `postback` events. The postback
-  handler exists for the onboarding-carousel taps — it routes each tap's `data` (a
-  "หนูเก็บ…" text command) through the same `handleTextCommand` path as typed text.
-  Rich-menu buttons use `type: 'message'` / `type: 'uri'` actions only — the single
-  menu has no page switch, so it produces no postbacks (see
-  `scripts/setup-rich-menu-single.ts`).
-- `หนูเก็บฟีเจอร์เอกสาร` — rich-menu zone 3. Replies a 4-item quick reply
-  (หนูเก็บแปลงไฟล์ / หนูเก็บสแกนสี / หนูเก็บรวมรูป / หนูเก็บรวมไฟล์). Distinct from `หนูเก็บฟีเจอร์`
-  (the full feature pick, 1-on-1 only) and matched BEFORE it — `isCmd` is exact,
-  so the two never shadow each other. Works in groups too.
-- `หนูเก็บห้องทีม` — group/room only: replies the ห้องทีม card (เปิดห้องทีม /
-  สร้างงานใหม่). In a 1-on-1 DM it explains there is no room and points at
-  งานส่วนตัว. The same card is auto-replied when the bot JOINS a group.
-- `สร้างงาน` — opens the ระบบตามงาน LIFF create flow. In a group/room it carries
-  that chat's id; in a 1-on-1 DM it opens งานส่วนตัว instead (migration 043 — see
-  the Personal Task section). Unprefixed by design, matched BEFORE the group
-  bot-directed guard.
-- `หนูเก็บเตือนงาน [@… งาน ส่ง … [เตือน N ครั้ง]]` — the in-chat
-  GROUP task command (migration 047, `webhook/task-command-handlers.ts` +
-  `services/task-command.ts`). ONE trigger word does both: a BARE `หนูเก็บเตือนงาน`
-  (nothing after it) replies the help/instruction card (`buildTaskCommandHelpCard`);
-  `หนูเก็บเตือนงาน` WITH content parses the message's inbound @mentions
-  + a Thai due-date clause (`ส่ง`/`กำหนด`/`ภายใน` + `พรุ่งนี้`/`25/12`/`อีก 3 วัน`,
-  default time 18:00). It does NOT create the task immediately: it parses the
-  intent, stashes it in Redis, and REPLIES a CONFIRMATION card
-  (`buildTaskConfirmCard`) showing ผู้รับงาน / รายละเอียด / กำหนดส่ง / จำนวนครั้งเตือน
-  with [ยืนยัน] / [ยกเลิก] postback buttons. The `single` task is created (via
-  `createTaskFromConfirm` → `buildTaskCreatedFlex` reply) only on the ยืนยัน tap —
-  reply-only, NO push, NO DM (contrast the LIFF create flow, which pushes).
-  `หนูเก็บสั่งงาน` is kept as a legacy create-alias (accepted by the parser +
-  dispatch; the exact-match help branch runs first so only content falls through to
-  create). Note the leading `เตือนงาน` trigger and the trailing `เตือน N ครั้ง`
-  reminder clause stay distinct — the command word is stripped before the reminder
-  clause (which needs a digit) is read. A mention LINE can't
-  resolve to a userId (never spoke / not consented) is a hard error — the whole
-  command is rejected with a clear message, never assigned silently; `@all` is
-  rejected too. `เตือน N ครั้ง` is a Pro-gated knob (`users.plan`), applied at
-  confirm-card build time so the card shows the EFFECTIVE count: a free user's
-  count is dropped (the card shows a Pro note), a Pro user's is stored in
-  `tasks.reminder_count` and honored by `scheduleReminders` via `selectRemindTypes` —
-  but delivery is still behind the global `TASK_NOTIFICATIONS_ENABLED` soft-switch,
-  so the success card never over-promises reminders while that's off.
-  - **Confirmation state** (`services/task-confirm.ts`) — two 5-min Redis keys
-    scoped to (group, commander), so a member has at most ONE pending item and a
-    new command REPLACES it: `nookeb:confirm:{groupId}:{commanderId}` (a fully
-    parsed intent awaiting ยืนยัน/ยกเลิก) and `nookeb:taskpartial:{groupId}:{commanderId}`
-    (an NL MEDIUM intent awaiting a due-date follow-up). ยืนยัน uses GETDEL to
-    claim exactly once, then an NX `nookeb:taskcmd:{message.id}` claim guards
-    double-create — so a double-tap / redelivery can't create the task twice. A
-    failed create restores the pending intent so the user can retry. ยกเลิก deletes
-    the key. Both postbacks re-VALIDATE the key by reconstructing it from (group,
-    tapper): only the commander who issued the command can confirm/cancel it.
-  - **Natural-language detection** (`services/task-nl.ts`, `detectNaturalTask`, pure
-    + unit-tested) — a LIGHTWEIGHT heuristic layer for UN-prefixed group messages
-    that @mention someone, run in `line.ts` BEFORE the bot-directed guard. HIGH
-    (assignee + title + future due clause) → straight to the confirmation card;
-    MEDIUM (assignee + a task-verb-gated title, no due) → ONE follow-up question
-    ("…ส่งเมื่อไหร่คะ?"), the commander's next date reply completing the intent into
-    the confirmation card; LOW (no resolvable assignee / no task-shaped title) →
-    silent ignore. It reuses the strict parser's primitives (`stripMentions`/
-    `extractReminder`/`extractDue`) and NEVER creates a task directly — every path
-    ends at the confirmation card. The strict `หนูเก็บเตือนงาน` flow is untouched.
-  The parser + NL detector + confirm store (`services/task-command.ts` /
-  `task-nl.ts` / `task-confirm.ts`) are all pure/env-free + unit-tested; assignees
-  still appear in the assignee dashboard (`GET /tasks/mine`) unchanged.
+**Root** — npm workspaces (`apps/*`, `packages/*`) + turbo 2.x, TypeScript 5.5.
 
-## Rich Menu — single menu `RichMenu_Nookeb`
-ONE menu (2500×1686, image `New_1.jpg` at the repo root), registered ONLY by
-`apps/api/scripts/setup-rich-menu-single.ts`. The two-page A/B design was retired
-2026-07-22 — no aliases, no `richmenuswitch`, no page B.
+**apps/api** (`@nookeb/api`)
+- Fastify **4.28** + `@fastify/cookie` 9, `@fastify/cors` 9, `@fastify/rate-limit` 9,
+  `@fastify/multipart` 8.3 (registered per-scope only — see rules)
+- `@supabase/supabase-js` 2.44 (service-role key), `ioredis` 5.10.1, `bullmq` 5.8
+- Storage: `@aws-sdk/client-s3` / `lib-storage` / `s3-request-presigner` 3.x
+- Images `sharp` 0.35 · scan enhance `@techstark/opencv-js` 5 · OCR `tesseract.js` 7
+- PDF `pdf-lib` 1.17 + `@pdf-lib/fontkit` · Word `docx` 9.7 · Excel `exceljs` 4.4
+- Calendar `ical-generator` 11 · Google `googleapis` 173 (Sheets/Drive-file only)
+- `jsonwebtoken` 9 (HS256), `argon2` 0.41 (vault PIN), `zod` 3.23, `dayjs` 1.11
+- Dev: `tsx` 4, `concurrently` 10. Tests are `tsx --test` (node:test), no jest/vitest.
+- **Mistral OCR is a hand-rolled REST client** (`mistral-ocr.service.ts`) — no SDK dep.
 
-Run: `cd apps/api && npx tsx --env-file=../../.env scripts/setup-rich-menu-single.ts`
-(destructive by design — it deletes every existing menu + the legacy
-`richmenu-alias-a`/`-b` aliases before creating the new one).
+**apps/web** (`@nookeb/web`)
+- Next.js **^14.2.4** (resolves 14.2.35 — deliberately pinned, see §14), React 18.3
+- `@line/liff` 2.29 (npm, never CDN), `pdfjs-dist` 4.10 (mobile PDF viewer only)
+- No chart library, no CSS framework, no state library. Charts are hand-rolled SVG/CSS.
 
-7 zones, tiling the canvas with no gaps/overlaps:
+**packages/shared** — types + DTO mappers + constants; API/web import the built `dist`
+(`npm run build` after changing).
+
+---
+
+## 3. Key Engineering Rules
+
+1. **LINE webhook must answer within 1 second** — verify signature, `reply 200`
+   immediately, process events in `setImmediate`, enqueue anything slow.
+2. **Verify the LINE signature over the RAW body** (`X-Line-Signature`, HMAC-SHA256).
+   A scoped `application/json` buffer content-type parser preserves exact bytes.
+3. **Never store files locally** — stream to/from R2, no temp files on disk.
+4. **Multi-tenant isolation is enforced in code.** The API/worker use the Supabase
+   SERVICE ROLE key, which BYPASSES RLS; RLS (migration 038 enables deny-all on the
+   rest) is a backstop only. Every space/group/task route checks membership
+   explicitly (`isSpaceMember` / `getMemberRole` / `ensureGroupMember` /
+   `isGroupMember`).
+5. **File downloads use presigned URLs** (1 h) — binary is never proxied through the
+   API. Two deliberate exceptions: the vault viewer (`GET /vault/files/:id/view`)
+   and the web's same-origin `/api/file-pdf/:id` route (mobile pdf.js).
+6. **Soft-delete only** (`deleted_at`). A daily purge removes R2 OBJECTS past the
+   retention window and stamps `purged_at` (tombstone). Exceptions, each justified
+   in-file: vault files hard-delete at purge, and `google_integrations` rows are
+   hard-deleted on disconnect (a third-party credential, not user content).
+7. **BullMQ custom `jobId` must not contain `:`** — use `sanitizeJobId(prefix, id)`
+   from `@nookeb/shared` (LINE message ids contain `:`).
+8. **Storage accounting only via `adjustStorageUsed` / `increment_storage_used` /
+   `increment_personal_storage`** — never read-modify-write (worker concurrency).
+9. **Retried job handlers must be safe to re-run.** `add_scan_page` dedups by
+   `line_message_id`; `finalize_scan` skips non-`processing` sessions and records
+   `result_file_id`; `convert_to_docx` uses a marker row; `create_diary_entry` relies
+   on live-row unique indexes; `upload_batch` retries INTERNALLY and never throws
+   (BullMQ `attempts: 1`).
+10. **Reply-only LINE messaging** — see §6 preamble. Push is sanctioned only for the
+    Task Manager, and even there only for LIFF-create announcements, review-loop
+    notices and scheduled reminders.
+11. **`@fastify/multipart` is registered per-plugin-scope, never shared** — three
+    scopes today: `vault.ts`, `legacy-box.ts`, `task-files.ts`. Registering it in a
+    shared scope installs a content-type parser across every route in that scope.
+12. **`trustProxy: true`** in `index.ts` — must stay `true` (regressed twice). `1`
+    collapses every Vercel-proxied user onto one IP and the `/auth/line` limiter bans
+    the whole userbase.
+13. **No emoji in Flex Message cards** (brand rule) — status icons are native colored
+    boxes; the web uses inline SVG. Plain-text bot replies DO use emoji.
+14. **Pure, unit-tested service modules stay env-free**: `task-command`, `task-nl`,
+    `task-confirm` (pure parts), `task-recurrence`, `pdf-merge`, `docx-builder`,
+    `export`, `vault-crypto`, `scan-enhance`, `referral`.
+15. **Client analytics events only through `POST /api/events/track`** (whitelist +
+    payload sanitiser + server-derived `plan_tier`). Never pass raw event strings —
+    add to `EVENT_TYPES` in `events.service.ts`.
+
+---
+
+## 4. Project Structure
+
+```
+apps/api/src/
+  index.ts              Fastify bootstrap, CORS allowlist, security headers,
+                        global 100/min limiter (exempts /health, /webhook/line,
+                        /progress/*), root error sanitiser, SIGTERM batch flush
+  config.ts             zod env schema (see §13)
+  middleware/           auth (JWT via HttpOnly cookie or Bearer, session_version
+                        revocation + 60s Redis cache), line-verify (HMAC)
+  plugins/              supabase, r2, redis, bullmq
+  routes/               admin, analytics, auth, diary, events, files, folders,
+                        groups, integrations, legacy-box, pro-interest, progress,
+                        referral, share, spaces, static, tags, task-files, tasks,
+                        team.router (mounted /api/teams), trash, vault
+    webhook/            line.ts (the dispatcher), task-handlers.ts (task Flex
+                        postbacks + /register), task-command-handlers.ts (in-chat
+                        task command, NL detection, confirm postbacks)
+  services/             see below
+  workers/              upload.worker.ts (all file jobs), taskReminderWorker.ts,
+                        sheetsWorker.ts, index.ts (entry + /health + schedulers)
+  scripts/ (src)        cleanup-redis.ts
+apps/api/scripts/       setup-rich-menu-single.ts (the ONLY rich-menu script left),
+                        backfill-quota, backfill-referral-codes, purge-deleted
+                        (dry-run by default), upload-greeting-image,
+                        upload-onboarding-images, download-tessdata.js
+apps/web/app/           landing (/), dashboard/*, liff/tasks/*, admin, auth/callback,
+                        join, share/[token], box/[slug], api/og, api/file-pdf
+apps/web/components/    Navbar, BottomNav, FileGrid/FileCard, FilePreviewModal,
+                        ShareModal, UsageBar, ReferralCard, VaultPinPad,
+                        ProLockModal, DiaryReminderBanner, TeamStorageBar, landing/
+apps/web/lib/           api.ts (101 client fns + DTOs), liff.ts, taskDraft.ts,
+                        taskFiles.ts, track.ts, site.ts, share.ts, auth.ts,
+                        format.ts, filetype.ts, useVaultSummary.ts
+packages/shared/src/    types/* + legacy-box-{themes,occasions,stickers,voice}
+                        + task-notifications.ts (the reminder master switch)
+supabase/migrations/    001–047 (see §5) · supabase/backfills/ (3 idempotent SQL)
+```
+
+**Services** (`apps/api/src/services/`) — `r2`, `line` (reply/push/profile),
+`file`, `space`, `scan`, `scan-enhance`, `purge`, `flex` (bot Flex builders),
+`lineMessage` (task Flex builders), `upload-queue` (per-user debounce), `team`,
+`team-room`, `referral` + `referral.messages`, `progress-store`, `storage-monitor`,
+`virusTotal`, `pending-notify`, `mistral-ocr`, `docx-builder`, `docx-convert`,
+`docx-thai-components`, `pdf-merge`, `export`, `diary` + `diary-mode`,
+`vault` + `vault-crypto` + `vault-session`, `legacy-box`, `events`,
+`task.service`, `taskScheduler`, `task-recurrence`, `task-command`, `task-nl`,
+`task-confirm`, `google-sheets`, `sheetsQueue`, `ocr`,
+`group-settings` (**orphaned — see §15**).
+
+---
+
+## 5. Database — Migration Map
+
+None are auto-applied. Read each file's header for apply-order; the ones that must
+land **before** the API deploy are flagged in-file.
+
+| File | Adds |
+|---|---|
+| `001_initial.sql` | users, spaces, space_members, folders, files, tags, file_tags, scan_sessions, scan_pages (+ indexes, RLS on files) |
+| `002_google_accounts.sql` | per-user Google refresh token for Drive export — **superseded, dropped by 017** |
+| `003_reliability.sql` | atomic `increment_storage_used` RPC, `files.purged_at` + partial index, storage_limit default |
+| `004_security_features.sql` | per-file virus-scan status + per-space storage-alert dedupe |
+| `005_teams.sql` | first-class teams (replaces implicit `spaces(type='team')`), `files.team_id`, `increment_team_storage` |
+| `006_cleanup_stale_team_spaces.sql` | one-time cleanup of legacy team-space rows |
+| `007_spaces_team_id.sql` | direct `spaces → teams` link |
+| `008_team_join_requests.sql` | owner/admin approval flow for invite-link joins |
+| `009_session_version.sql` | `users.session_version` — bumping revokes outstanding JWTs |
+| `010_referrals.sql` | referral codes, `referrals`, `referral_tiers`, `redeem_referral` RPC |
+| `012_reset_quota.sql` | one-time quota clean slate for the referral launch |
+| `013_fix_tiers.sql` | corrected tier thresholds (superseded by 030) |
+| `014_personal_quota_enforcement.sql` | atomic `increment_personal_storage(enforce)` |
+| `015_add_charged_to_column.sql` | `files.charged_to` ledger column (correct refunds) |
+| `016_unique_space_constraints.sql` | one space per LINE group / one personal space per user |
+| `017_drop_google_accounts.sql` | drops 002's table (Drive removed) |
+| `018_scan_page_seq.sql` | `scan_pages.page_seq BIGSERIAL` + `result_file_id` idempotency marker |
+| `019_scan_mode.sql` | `scan_sessions.scan_mode` ('bw' \| 'color') |
+| `020_session_kind.sql` | `scan_sessions.session_kind` ('scan' \| 'merge') |
+| `021_group_notify_settings.sql` | per-group upload-confirmation toggle — **feature retired; table + service now unused** |
+| `022_fix_upload_idempotency.sql` | unique index backstop on upload `line_message_id` |
+| `023_scan_expected_pages.sql` | `scan_sessions.expected_pages` + RPC — finalize wait-gate |
+| `024_fix_referral_quota.sql` | stop referral redemption clobbering admin-raised quotas (GREATEST guard) |
+| `025_perf_indexes.sql` | `files.uploaded_by` etc. partial indexes (CONCURRENTLY) |
+| `026_aggregate_rpcs.sql` | count/aggregate RPCs so admin/analytics don't page 1000-row selects |
+| `027_file_shares.sql` | public share links for dashboard files (token) |
+| `028_diary.sql` | `diary_entries` + `diary_notification_settings`, one live entry per user+Bangkok day |
+| `029_usage_events.sql` | append-only `usage_events` + `admin_*` aggregate RPCs |
+| `030_referral_tiers_fractional.sql` | current ladder 0→1, 3→2.5, 5→4 GB (NUMERIC column + RPC local) |
+| `031_vault.sql` | `users.vault_pin_hash` / `vault_plan` + `vault_files` |
+| `032_trash.sql` | `files.trash_origin_folder_id` (restore target snapshot) |
+| `033_legacy_boxes.sql` | `legacy_boxes` + `legacy_box_photos` + `increment_box_views` RPC |
+| `034_legacy_box_occasion_tagline.sql` | `occasion` + `tagline` (nullable) + anonymous `pro_interest_log` |
+| `035_legacy_box_audio.sql` | `legacy_boxes.audio_key` (CHECK pins the `legacy-box/` prefix) |
+| `036_tasks.sql` | `tasks`, `task_items`, `task_assignees`, `task_reminders`, `group_members` (RLS, no policies) |
+| `037_task_edit.sql` | per-assignee `done_note`, task-level `task_links`, edit/cancel support columns |
+| `038_rls_backstop.sql` | enables RLS (deny-all) on every remaining table |
+| `039_increment_share_views.sql` | atomic `increment_share_views` RPC |
+| `040_pro_interest_authed.sql` | `pro_interest` — authenticated, deduped task Pro fake-door |
+| `041_usage_events_client_dims.sql` | `usage_events.session_id` / `plan_tier` / `entry_channel` (nullable) |
+| `042_admin_analytics_rpcs.sql` | 12 read-only STABLE admin RPCs (Bangkok day buckets) |
+| `043_personal_tasks.sql` | `tasks.is_personal` + `owner_line_uid`, `group_line_id` nullable, `tasks_scope_exclusive` CHECK |
+| `044_pdf_merge_session_kind.sql` | widens `session_kind` CHECK to add `'pdf'` |
+| `045_task_files.sql` | `task_files` junction + item statuses `submitted`/`rejected` + `submitted_at`/`rejected_at`/`rejection_note`/`submission_note`. **Not additive-safe: `getTaskWithDetails()` SELECTs `task_files` and backs every task read — apply BEFORE deploying.** |
+| `046_google_sheets_integration.sql` | `google_integrations` (one row/user, AES-GCM `encrypted_token`, RLS deny-all) |
+| `047_task_command_reminders.sql` | `tasks.reminder_count` INT NULL CHECK 1..4 — the Pro "เตือน N ครั้ง" knob |
+
+Key invariants:
+- Every content table carries `space_id` (or a per-feature owner key: diary/vault =
+  `user_id`, tasks = `group_line_id` **or** `owner_line_uid`, never both).
+- A LINE **user** id must NEVER be written to `tasks.group_line_id` (see §8).
+- No direct pg/DDL access from tooling — schema changes are migration files applied
+  manually in the Supabase SQL editor.
+
+---
+
+## 6. LINE Bot — Command Reference
+
+**Messaging discipline.** Reply-only is the hard rule: `reply` is free and always
+works, `push` burns metered quota and fails silently when exhausted. Workers cannot
+reply with an expired token, so they either (a) carry the original `replyToken` in
+the job payload and reply when the job is quick, or (b) queue the message via
+`pending-notify.service`, which the webhook drains on the user's next **1-on-1**
+text/postback event and prepends to that reply. Group chats never drain
+pending-notify. The only sanctioned pushes are Task Manager announcements, review-
+loop notices and scheduled reminders (`pushMessage` in `line.service.ts`).
+
+**Address prefix.** `stripBotPrefix()` strips a leading `หนูเก็บ` and reports
+`prefixed`. Bare `หนูเก็บ` maps to `เมนู`. `isCmd` is an EXACT match after
+zero-width stripping + NFC + lowercase, so `รวมไฟล์` / `รวมรูป` / `แปลงไฟล์` /
+`ฟีเจอร์` / `ฟีเจอร์เอกสาร` never shadow each other.
+
+**Group/room guard.** In a group or room the bot stays silent unless the message is
+`หนูเก็บ`-prefixed, matches `ผูกทีม <n>`, or is caught earlier by the task command /
+natural-language / pending-due handlers (which run BEFORE the guard on purpose).
+
+**Almost every command now requires the `หนูเก็บ` prefix.** Only `เสร็จ`, `ยกเลิก`
+and `ติดต่อหนูเก็บ` work bare.
+
+| Command | Where | What it does | Handler / card |
+|---|---|---|---|
+| `หนูเก็บ` / `หนูเก็บเมนู` | any | quick-reply menu (different button set in group vs 1-on-1) | `replyWithQuickReply` |
+| `หนูเก็บคำสั่ง` | any | full command-name list | `buildCommandListFlexMessage` |
+| `หนูเก็บวิธีใช้` | any | how-to card | `buildHelpFlexMessage` |
+| `หนูเก็บแนะนำตัว` | any | one-line self-intro text | `INTRO_TEXT` |
+| `ติดต่อหนูเก็บ` (bare, also `หนูเก็บ…`) | any | support text + `lin.ee/Z0ewNYb` | `SUPPORT_TEXT` |
+| `หนูเก็บล็อคเกอร์` | any | quick-reply link to `/dashboard` | — |
+| `หนูเก็บฟีเจอร์` | 1-on-1 only | 7 quick replies (bot features + web links) | — |
+| `หนูเก็บฟีเจอร์เอกสาร` | any | 3 quick replies: แปลงไฟล์ / สแกนสี / รวมไฟล์ | — |
+| `หนูเก็บเพิ่มเติม` | group → 3 admin quick replies; 1-on-1 → feature image carousel | | `buildFeatureCarouselMessage` |
+| `หนูเก็บกล่องของขวัญ` / `หนูเก็บห้องนิรภัย` / `หนูเก็บงานของฉัน` | 1-on-1 only | quick-reply link to the matching dashboard page | — |
+| `หนูเก็บสแกน` | 1-on-1 | open a `scan` session in the default mode (or ack if one is open) | `buildScanFlexMessage` |
+| `หนูเก็บสแกนสี` / `หนูเก็บสแกนขาวดำ` | 1-on-1 | open in — or switch an open session to — that mode | — |
+| `หนูเก็บรวมไฟล์` | 1-on-1 | open a `pdf` session: accepts **images AND .pdf files**, merges to one PDF | `buildPdfMergeFlexMessage` |
+| `หนูเก็บรวมรูป` | 1-on-1 | **silent no-op** — consolidated into รวมไฟล์ | — |
+| `หนูเก็บแปลงไฟล์` | 1-on-1 | arm the one-shot convert-to-Word flag (needs `MISTRAL_API_KEY`) | `buildDocxConvertFlexMessage` |
+| `หนูเก็บไดอารี่` | 1-on-1 | arm the one-shot diary flag (rejects if today already has an entry) | `buildDiaryPromptCard` |
+| `เสร็จ` (bare) | 1-on-1 | finalize the open session → enqueue `finalize_scan` | `buildFinalizingFlexMessage` |
+| `ยกเลิก` (bare) | 1-on-1 | cancel session / disarm diary / disarm convert (kind-aware copy) | — |
+| unprefixed text while diary armed | 1-on-1 | captured as the pending entry's caption (Redis `SET XX KEEPTTL`) | — |
+| `หนูเก็บเชิญ…` | any | referral invite card + code | `buildInviteFlexMessage` |
+| `หนูเก็บกรอกโค้ด <CODE>` | any | redeem a referral code (rate-limited 1/h) | `buildRedeemSuccessFlexMessage` |
+| `หนูเก็บผูกทีม [n]` / `ผูกทีม <n>` | group only | bind the group to the sender's team (auto if exactly one) | — |
+| `หนูเก็บยกเลิกผูกทีม` | group only | unbind (owner/admin only) | — |
+| `หนูเก็บไอดีกลุ่ม` | group only | print the LINE group id | — |
+| `หนูเก็บคู่มือทีม` | any | team onboarding guide | `buildTeamGuideFlexMessage` |
+| `หนูเก็บลงทะเบียน` | group/room | legacy roster opt-in (the roster now fills itself) | `handleRegisterCommand` |
+| `หนูเก็บเตือนงาน` (bare) | group → help card; 1-on-1 → งานส่วนตัว create card | | `buildTaskCommandHelpCard` / `buildCreateTaskCard(…,'personal')` |
+| `หนูเก็บเตือนงาน @… <งาน> ส่ง <วัน> [เตือน N ครั้ง]` | group/room | parse → **confirmation card** (does NOT create yet) | `buildTaskConfirmCard` |
+| `หนูเก็บสั่งงาน …` | group/room | legacy alias of the above | same |
+| un-prefixed group message that @mentions someone | group/room | natural-language detection → confirm card, or one due-date follow-up question | `detectNaturalTask` |
+| any other `หนูเก็บ…` in 1-on-1 | 1-on-1 | "หนูไม่เข้าใจคำสั่งนี้น้า…" nudge | — |
+
+**Retired / removed** (documented so nobody re-adds them by memory):
+`หนูเก็บสร้างงาน`, `สร้างงาน` (unprefixed), `หนูเก็บห้องทีม`,
+`หนูเก็บปิดแจ้งเตือน` / `หนูเก็บเปิดแจ้งเตือน`, `รวมรูป` (now a no-op),
+`สมัคร`/`/register` text aliases, and every bare (unprefixed) form of the
+feature commands.
+
+**Non-text events**
+- `follow` (1-on-1) → 8-bubble onboarding carousel.
+- `join` (group) → onboarding carousel **plus** `buildGroupWelcomeCard` in the SAME
+  reply (a join grants exactly one replyToken and a follow-up push is forbidden).
+- `memberJoined` → enroll each new member into `group_members` immediately.
+- `unsend` (group) → refresh the sender's roster row.
+- every group/room `message` and `postback` → fire-and-forget roster upsert
+  (`autoUpsertGroupMember`, profile via the group-scoped `getChatMemberProfile`).
+
+**Media routing order** for an image/file in 1-on-1: diary one-shot → convert
+one-shot → active session page → (redelivery dedup) → normal debounced upload batch.
+Diary and convert flags are consumed atomically via a `GETDEL` pipeline; if diary
+wins while convert was also armed, convert is re-armed.
+
+---
+
+## 7. LINE Bot — Postback Actions
+
+| `postback.data` | Card that emits it | Handler | Effect |
+|---|---|---|---|
+| `action=task_accept&taskId=…` | `buildTaskCreatedFlex` / `buildReminderFlex` (รับทราบ) | `task-handlers.ts` `handleTaskPostback` | stamps `accepted_at` on the tapper's items; replies |
+| `action=task_done&taskId=…[&itemId=…]` | task created / reminder card (เสร็จแล้ว) | same | stamps `done_at`, rolls up completion, cancels reminders when the task completes |
+| `task_cmd_confirm:{nookeb:confirm:group:commander}` | `buildTaskConfirmCard` (ยืนยัน) | `task-command-handlers.ts` `handleTaskConfirmPostback` | GETDEL-claims the pending intent → creates the task → replies `buildTaskCreatedFlex` |
+| `task_cmd_cancel:{…}` | `buildTaskConfirmCard` (ยกเลิก) | same | deletes the pending intent |
+| `หนูเก็บ` (literal) | onboarding + feature carousel bubbles | routed through `handleTextCommand` | opens the quick-reply menu — **placeholder, still marked TODO in `flex.service.ts`** |
+
+Routing order in `line.ts`: roster upsert → `action=task_*` → `task_cmd_*` →
+pending-notify drain → `handleTextCommand(postback.data)`.
+
+Confirm/cancel keys are validated by **reconstructing** `confirmKey(groupId, tapper)`
+from the live event — only the commander who issued the command, in that group, can
+act on it.
+
+---
+
+## 8. Task System — full lifecycle
+
+**Storage model.** `tasks` (+ `task_items` + `task_assignees` + `task_links` +
+`task_files` + `task_reminders`) and `group_members`. A task is in exactly one mode
+(CHECK `tasks_scope_exclusive`, migration 043):
+- **group**: `group_line_id` set, `owner_line_uid` NULL. Tenant key is the LINE group
+  id, treated as an unguessable capability (same trust model as share links).
+  `tasks.space_id` is informational only.
+- **personal**: `owner_line_uid` set (from the verified session only),
+  `group_line_id` NULL, no roster, no `group_members` write, no space lookup.
+  A LINE user id must NEVER be stored as `group_line_id` — `ensureGroupMember`
+  treats "holds the id" as proof of membership, which is only safe for group ids.
+
+Types: `single` (one implicit item), `multi` (per-item assignees/deadlines; items
+without their own deadline share ONE task-level reminder round), `recurring`
+(`recurrence_rule` JSONB, Bangkok wall clock; never reaches status `done`).
+
+**Roster (`group_members`) fills itself** — nobody types `/register`:
+1. every group message/postback/unsend upserts its sender;
+2. `memberJoined` enrolls new members instantly;
+3. `GET /groups/:id/members` runs a Redis-throttled `syncGroupRoster` (10 min/group,
+   always when empty) against LINE `members/ids` — verified/premium OA only;
+4. task routes auto-enroll the caller (`ensureGroupMember`).
+Display names always come from `getChatMemberProfile` (group-scoped; works for
+members who never friended the OA), never from the client.
+
+### Creation paths
+
+**A. LIFF flow** (`/liff/tasks/create/*`): 4 steps (type → detail → members → submit)
+→ `POST /tasks`. Group tasks get an immediate Flex **push** announcement; personal
+tasks get none (`announced=false`) because the only recipient just pressed submit.
+
+**B. Dashboard** (`/dashboard/tasks` → `CreatePersonalTaskModal`): personal single
+tasks only, same `POST /tasks` with `scope:'personal'`.
+
+**C. In-chat command** (`หนูเก็บเตือนงาน …`, group/room only):
+1. `parseTaskCommand` (pure) reads inbound @mentions and a Thai due clause
+   (`ส่ง`/`กำหนด`/`กำหนดส่ง`/`ภายใน`/`due`/`deadline` + `วันนี้`/`พรุ่งนี้`/`มะรืนนี้`/
+   `อีก N วัน`/`DD/MM[/YYYY]` + optional `HH:MM`; default 18:00; 2-digit or ≥2400
+   years read as Buddhist; day-overflow and past dates rejected).
+   `@all` → hard error. A mention LINE can't resolve to a `userId` → hard error
+   (never assign silently). Typed error codes map to Thai copy in `ERROR_TEXT`.
+2. `เตือน N ครั้ง` is extracted and **Pro-gated** at card-build time so the card
+   shows the EFFECTIVE count (free users see a Pro note; `selectRemindTypes`
+   priority is `1_day → 3_hours → overdue → 3_days`).
+3. The intent is stashed in Redis (`nookeb:confirm:{group}:{commander}`, 5 min) and a
+   **confirmation card** is replied. Nothing is created yet.
+4. `ยืนยัน` → `claimPendingConfirm` (GETDEL, exactly-once) → an NX
+   `nookeb:taskcmd:{message.id}` claim guards double-create → `createTaskWithItems`
+   → `scheduleReminders` → `enqueueSheetsSync` → reply `buildTaskCreatedFlex`.
+   A failed create releases the claim and RESTORES the pending intent for a retry.
+   `ยกเลิก` deletes the key.
+
+**D. Natural language** (`task-nl.ts`, un-prefixed group message that @mentions
+someone, run BEFORE the group guard): a deliberate heuristic, not NLP.
+- HIGH (assignee + title + future due clause) → straight to the confirmation card.
+- MEDIUM (assignee + a task-verb-gated title, no due) → ONE follow-up question
+  ("…ส่งเมื่อไหร่คะ?"); the partial sits in `nookeb:taskpartial:{group}:{commander}`
+  (5 min) and the commander's next date-bearing message completes it into a
+  confirmation card. A non-date reply is ignored — it never asks twice.
+- LOW → silent. It reuses the strict parser's primitives and NEVER creates directly.
+
+### Work / review lifecycle
+
+`pending` → assignee taps **รับทราบ** (`accepted_at`) → either:
+- **เสร็จแล้ว** (postback or `POST …/items/:itemId/done`) → `done_at` per assignee;
+  `rollUpCompletion` flips the item, then the task, when all assignees are done; a
+  completed task cancels outstanding reminders; or
+- **ส่งงานกลับ** (`POST …/items/:itemId/submit`, LIFF `[taskId]/submit`) → item
+  `submitted`, `submitted_at` + `submission_note`. Deliberately does NOT stamp
+  `done_at` (that would be self-approval). Files upload FIRST, then the status flip.
+  Then the creator either **รับงาน** (`…/approve` → `markAllAssigneesDone` →
+  `rollUpCompletion` owns the status) or **ตีกลับ** (`…/reject`, reason MANDATORY →
+  item `rejected`, `rejection_note`).
+All three review transitions fire ONE best-effort inline push (personal tasks skip
+it). `resetRecurringRound` clears review fields so a new round starts clean.
+
+### Reminders (currently OFF)
+
+`TASK_NOTIFICATIONS_ENABLED = false` in `packages/shared/src/task-notifications.ts`.
+While false: `scheduleReminders` creates no `task_reminders` rows and no delayed
+jobs, `processTaskReminder` stands any in-flight job down, and the LIFF hides copy
+promising reminders. Recurring **rollover still schedules** so rounds keep advancing.
+
+When on: offsets `REMIND_OFFSETS_MINUTES` = −3 d / −1 d / −3 h / +1 h relative to the
+effective deadline; one row + one delayed BullMQ job per shot
+(`jobId = reminder-{rowId}` — the row id IS the idempotency key); delivery is ONE
+push carrying a textV2 @mention (skipped for personal tasks — mentioning someone in
+their own DM is meaningless) plus an urgency-coloured Flex card; 3 attempts,
+exponential 10 s; final failure stamps `failed_at`. Rows are stamped
+(`sent_at`/`failed_at`/`cancelled_at`), never deleted. `notifyTarget(task)` is the
+single task→destination mapper — never reach for `group_line_id` directly.
+
+Recurring rollover: `task_recur_next` at deadline + 90 min resets marks, advances
+`global_deadline`, schedules the next round. A 30-minute **in-process interval**
+enqueues a zero-delay `task_recur_sweep` self-heal job (deliberately NOT a BullMQ
+repeatable/scheduler — a standing delayed job pins the idle worker's blocking poll to
+10 s; see the long comment in `taskScheduler.ts`).
+
+### Reporting
+
+- **.xlsx export** — `GET /tasks/export?format=xlsx&from&to&status`, ONE ROW PER
+  ITEM, scoped by `listTasksForUser` (creator or assignee), cap 500 tasks, dates
+  written +07:00-shifted on purpose so Excel shows Bangkok wall clock,
+  "อัปเดตล่าสุด" DERIVED via `resolveUpdatedAt` (there is no `updated_at` column).
+  The web's Export button exports EVERYTHING, never the active tab.
+- **Google Sheets mirror** — ONE ROW PER TASK, keyed by a hidden `รหัสงาน` column in
+  the sheet itself (the user can re-sort rows, so a cached row index would be wrong).
+  Always queued, never inline. See §12/§13.
+- **ห้องทีม** — group-keyed room payload (`team-room.service.getTeamRoom`), reachable
+  two ways: `GET /groups/:groupId/room` (capability) and `GET /spaces/:id/tasks`
+  (dashboard side; 404 `NOT_A_GROUP_SPACE` for a personal space). Returns
+  `space: null` when the group has no space yet. `listTasksForGroup` also filters
+  `is_personal = false` as defence in depth.
+
+---
+
+## 9. API Routes
+
+All authenticated routes use `app.authenticate` (JWT from the HttpOnly `session`
+cookie or a Bearer header; checks `session_version`). Global limit 100/min per IP.
+🔒 = authenticated.
+
+**Auth** — `POST /auth/line` (LINE Login code → cookie; 10/min + ban:5) ·
+`POST /auth/liff` (LIFF id token verified against LINE, `aud` = LINE_LOGIN_CHANNEL_ID
+→ same cookie) · `POST /auth/logout` · `GET /auth/me` 🔒
+
+**Webhook** — `POST /webhook/line` (HMAC only, no auth, exempt from the limiter)
+
+**Files / organise** 🔒 — `GET /files` · `GET /files/stats` · `GET /files/:id` ·
+`POST /files/:id/download-token` · `GET /files/:id/download?dl_token=` ·
+`PATCH /files/:id` · `POST /files/:id/tags` · `DELETE /files/:id/tags/:tagId` ·
+`DELETE /files/:id` · `GET|POST /folders`, `PATCH|DELETE /folders/:id` ·
+`GET|POST /tags`, `PATCH|DELETE /tags/:id` · `GET /spaces` ·
+`GET /spaces/:id/members` · `GET /spaces/:id/tasks?groupId=`
+
+**Share** — `POST|GET /files/:fileId/shares` 🔒 · `DELETE /files/:fileId/shares/:shareId` 🔒 ·
+`GET /share/:token` and `GET /share/:token/download` (public, own limits)
+
+**Trash** 🔒 (uploader-scoped, never space membership) — `GET /trash` ·
+`POST /trash/:id/restore` (re-charges the same ledger, 409 `QUOTA_EXCEEDED`) ·
+`DELETE /trash/:id/permanent` · `POST /trash/empty` (batches of 20)
+
+**Diary** 🔒 (user-scoped) — `GET /diary/entries` · `/diary/streak` ·
+`/diary/today-status` · `GET /diary/entry/:date` · `DELETE /diary/entry/:id` ·
+`PUT /diary/notification`
+
+**Vault** 🔒 — `POST /vault/setup-pin` · `/vault/unlock` · `/vault/lock` ·
+`GET /vault/session-status` · `POST /vault/upload` (multipart) ·
+`GET /vault/stats` · `GET /vault/files` · `GET /vault/files/:id/view` (streams
+decrypted bytes; images watermarked; video Range-capable) · `DELETE /vault/files/:id`
+(re-verifies the PIN). Lock states are **403 + `code`** (`VAULT_LOCKED` /
+`VAULT_PREMIUM_REQUIRED`), never 401.
+
+**Legacy Box** — `POST /legacy-box` 🔒 (multipart: ≤10 photos + optional voice) ·
+`GET /legacy-box` 🔒 · `DELETE /legacy-box/:id` 🔒 ·
+`PATCH /legacy-box/:id/reorder` 🔒 · `GET /legacy-box/open/:slug` (public, 30/min per
+IP, noindex + no-store, 120 s presigned photo URLs, `?preview=1` = non-counting read)
+
+**Tasks** 🔒 — `POST /tasks` (10/min) · `GET /tasks/mine` · `GET /tasks/export`
+(10/min) · `GET /tasks/:id` · `PATCH /tasks/:id` · `DELETE /tasks/:id` (cancel) ·
+`PATCH /tasks/:id/items/:itemId` · `POST …/items/:itemId/done` · `…/accept` ·
+`…/submit` · `…/approve` · `…/reject` · `PATCH …/items/:itemId/note` ·
+`PUT …/items/:itemId/assignees` (403 for personal tasks) · `POST|DELETE /tasks/:id/links[/:linkId]`
+(max 20, http(s) only) · `GET /tasks/:id/ics` (**unauthenticated by design** — the
+Flex button opens an external browser with no cookie; the task UUID is the
+capability, own 30/min per-IP limit, noindex + no-store).
+An `onResponse` hook enqueues a Sheets sync for every 2xx write on `/tasks/:id…`;
+create enqueues explicitly.
+
+**Task files** 🔒 (own multipart scope) — `POST /tasks/:taskId/files` (5 files/req,
+20 MB/file, 30/task; multipart THROUGH the API, no presigned PUT, charged to the
+UPLOADER's personal pool after the stream is counted) · `GET /tasks/:taskId/files`
+(presigned GETs) · `DELETE /tasks/:taskId/files/:attachmentId` (uploader or creator)
+
+**Groups** 🔒 — `GET /groups/:groupId/members` · `POST /groups/:groupId/register` ·
+`GET /groups/:groupId/room`
+
+**Teams** 🔒 (prefix `/api/teams`) — `POST /` · `GET /` · `GET|DELETE /:teamId` ·
+`POST /:teamId/invite` · `POST /invite/:token/accept` · `GET /:teamId/requests` ·
+`POST /:teamId/requests/:id/{approve,reject}` · `DELETE /:teamId/members/:userId` ·
+`POST /:teamId/groups` · `DELETE /:teamId/groups/:groupId`
+
+**Integrations** 🔒 — `GET /integrations/google` (status; never returns the token) ·
+`GET /integrations/google/auth` (consent URL as JSON — a 302 would be swallowed by
+fetch) · `GET /integrations/google/callback` (redirects to
+`/dashboard/settings?google=…`) · `DELETE /integrations/google`
+
+**Analytics / admin** — `GET /me/usage` 🔒 · `POST /api/events/track` 🔒 ·
+`POST /api/pro-interest` (**unauthenticated**, anonymous gift-box demand test,
+10/min per IP) · `POST|GET /pro-interest` 🔒 (task demand test, deduped per user) ·
+`GET /admin/{users,spaces,overview,timeseries,features,power-users,pro-interest,tasks,funnel,adoption,storage,referral}`
+and `PATCH /admin/users/:id` — all gated by `ADMIN_LINE_USER_IDS`
+
+**Misc** — `GET /health` (returns `RAILWAY_GIT_COMMIT_SHA`) ·
+`GET /progress/:batchId[/view]` (limiter-exempt) · `GET /referral/status` 🔒 ·
+`POST /referral/redeem` 🔒 · `GET /static/welcome.jpg`, `/static/onboarding/:n.jpg`
+
+---
+
+## 10. Web Dashboard Pages
+
+All dashboard pages are client components calling the API **same-origin** through the
+Next `/api-proxy/:path*` rewrite (Safari ITP / the LINE in-app browser block the
+cross-site cookie). `apps/web/lib/api.ts` holds ~101 client functions + DTO types.
+
+| Route | Shows | Calls |
+|---|---|---|
+| `/` | public landing page (hero, features, polaroid gallery, 3-step how-to, referral ladder, trust strip, FAQ + FAQPage JSON-LD from one `FAQS` array, CTA) | none |
+| `/dashboard` | file browser: folders, tags, search, grid/list, preview modal, usage bar, recent strip, trash count, profile sheet (vault / legacy-box / referral entries) | files, folders, tags, spaces, usage, stats, trash |
+| `/dashboard/diary` (+ `/[date]`) | 365-grid, streak, scrapbook viewer, in-app reminder banner | `/diary/*` |
+| `/dashboard/vault` | PIN pad, unlock session, encrypted file list + inline viewer | `/vault/*` |
+| `/dashboard/trash` | soft-deleted files, restore, permanent purge, empty-all | `/trash/*` |
+| `/dashboard/legacy-box` (+ `/new`) | box list; 4-step create (โอกาส → รูป → ข้อความ+ประโยคส่งท้าย → ธีม), voice recorder, share actions | `/legacy-box*`, `/api/pro-interest` |
+| `/dashboard/teams` (+ `/[teamId]`) | teams, members, invites, join requests, group binding, team storage | `/api/teams/*` |
+| `/dashboard/tasks` | งานของฉัน: tabs (active/overdue/done/cancelled), filter+sort bar with Export, calendar, progress ring, stats, activity feed, today-focus banner, pins/collapse/view-mode persisted in localStorage, personal-task create modal, plan badge | `/tasks/mine`, `/tasks/:id…` |
+| `/dashboard/tasks/[taskId]` | task detail: items, assignees, links, attachments, done/accept/note, creator's รับงาน/ตีกลับ, edit assignees (hidden for personal) | `/tasks/:id*`, `/groups/:id/members` |
+| `/dashboard/settings` | การเชื่อมต่อ — Google Sheets connect/disconnect (the OAuth callback's redirect target) | `/integrations/google*` |
+| `/admin` | one scrollable analytics page, hand-rolled SVG/CSS charts, shared 7/30/90-day range | `/admin/*` |
+| `/join` | team invite acceptance | `/api/teams/invite/:token/accept` |
+| `/auth/callback` | LINE Login code exchange | `/auth/line` |
+| `/share/[token]` | public shared file view/download | `/share/:token*` |
+| `/box/[slug]` | PUBLIC gift reveal (closed→opening→revealed, seeded stickers, voice player, noindex, generic themed OG image that carries NO box content) | `/legacy-box/open/:slug` |
+| `/api/og` | Satori OG image; takes `?theme=`, **never `?slug=`**; `runtime='edge'` required (Windows path bug in the node build) | — |
+| `/api/file-pdf/[fileId]` | same-origin PDF byte proxy for the mobile pdf.js viewer (nodejs runtime, PDF-only, forwards the session cookie) | `/files/:id` |
+
+Boundaries: root `error.tsx` / `global-error.tsx` / `not-found.tsx` / `loading.tsx`,
+plus `dashboard/error.tsx`, `dashboard/loading.tsx`, `admin/error.tsx`. Error
+boundaries log only `error.digest`. Don't add per-route `loading.tsx` to the
+client-rendered dashboard pages.
+
+**File preview** (`components/FilePreviewModal.tsx`): images inline; text and
+**desktop** PDFs in an `<iframe src={presignedUrl}>`; **mobile PDFs use pdf.js**
+(`pdfjs-dist/legacy` — the modern bundle needs `Promise.withResolvers`, Safari 17.4+),
+every page rendered to its own canvas with a DPR cap and sequential render queue,
+worker served same-origin from `public/pdf.worker.min.mjs` (copied by
+`scripts/copy-pdf-worker.mjs` on `predev`/`prebuild`). The modal JS-pins `<body>`;
+do NOT add a CSS `body:has(.modal-overlay)` rule.
+
+Landing rules: no emoji (inline SVG only), never generate mascot art
+(`public/logo.png` IS the mascot), keep `/` public (the rich menu deep-links to
+`/dashboard`), all outbound links live in `lib/site.ts`, and don't remove any of the
+three `Reveal.tsx` safety-net layers.
+
+---
+
+## 11. LIFF Pages
+
+Every LIFF page lives under `/liff/tasks/` — the LIFF app's endpoint URL is
+`${WEB_URL}/liff/tasks` and `https://liff.line.me/{id}/…` deep links resolve
+RELATIVE to it, so anything outside the subtree is unreachable from LINE without a
+second LIFF app. `/liff/tasks/page.tsx` exists specifically because LINE's redirect
+always lands on the endpoint first with `?liff.state=…`.
+
+| Route | Shows | Calls |
+|---|---|---|
+| `/liff/tasks` | redirect shim resolving `liff.state` | — |
+| `/liff/tasks/create` | type selector (งานเดียว / แยกรายการ / งานประจำ); hides auto-reminder copy while `TASK_NOTIFICATIONS_ENABLED` is false | — |
+| `/liff/tasks/create/[type]` | step 1 of that type | — |
+| `/liff/tasks/create/[type]/detail` | title/description/deadline/recurrence, file attach picker, Pro fake-door section | `POST /pro-interest` |
+| `/liff/tasks/create/[type]/members` | assignee picker (skipped for `scope=personal`) | `GET /groups/:id/members`, `POST /groups/:id/register` |
+| `/liff/tasks/[taskId]` | task view, optimistic done, accept, attachments, creator's รับงาน/ตีกลับ | `GET/POST /tasks/:id…` |
+| `/liff/tasks/[taskId]/submit` | ส่งงานกลับ — uploads files FIRST, then flips status; `?item=` picks the item | `POST /tasks/:id/files`, `…/submit` |
+| `/liff/tasks/team` | ห้องทีม: tabs งานทั้งหมด/ของฉัน × กำลังดำเนินการ/เสร็จแล้ว/ยกเลิก; identity from `?groupId=` (preferred) or `?spaceId=` | `GET /groups/:id/room` or `/spaces/:id/tasks` |
+
+Session = LIFF id token exchanged at `POST /auth/liff` for the same HttpOnly cookie.
+Draft state lives in sessionStorage (`lib/taskDraft.ts`, carries `scope`) because LIFF
+navigations can hard-reload and a multi task can't fit in URL params. UI: brand-red
+tokens + Prompt Thai font (`--font-liff`; LINE Seed isn't redistributable), no emoji
+(SVG icons in `components.tsx`). CSP `connect-src` must keep `https://api.line.me`.
+`LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID` are optional — unset falls back to plain
+WEB_URL links and a LIFF-less dev mode (`?groupId=`).
+
+---
+
+## 12. Workers and Queues
+
+Three BullMQ queues, all running in the SAME worker process (`workers/index.ts`,
+separate Railway service, own `/health` on `WORKER_HEALTH_PORT` reporting Redis
+status + commit SHA, `uncaughtException`/`unhandledRejection` → exit 1 for restart).
+Keep them separate — merging re-couples the failure domains they were split to isolate.
+
+| Queue | Worker | Jobs |
+|---|---|---|
+| `nookeb-file-processing` | `upload.worker.ts` | `upload_batch`, `generate_thumbnail`, `ocr_image`, `add_scan_page`, `finalize_scan`, `convert_to_docx`, `create_diary_entry`, `purge_deleted` (daily repeatable) |
+| `nookeb-task-reminders` | `taskReminderWorker.ts` | `task_reminder`, `task_recur_next`, `task_recur_sweep` |
+| `nookeb-sheets-sync` | `sheetsWorker.ts` (constructed ONLY when Google is configured) | `sheets_sync` (`upsert` \| `delete`) |
+
+Retry policy: `add_scan_page` / `finalize_scan` / `convert_to_docx` /
+`create_diary_entry` get `attempts: 3` + exponential backoff (LINE CDN ~1 h TTL);
+`generate_thumbnail` / `ocr_image` retry but are best-effort; `upload_batch` is
+`attempts: 1` and retries each file internally (3×, 1→2→4 s) and never throws;
+task jobs get 3 attempts × exponential 10 s; sheets jobs 3 attempts × 5-min backoff
+with `jobId = sheets-{taskId}-{action}` collapsing edit bursts.
+
+`purge_deleted` sweeps, in one job: files past the plan-aware retention
+(`purgeDeletedFiles` → `purgeFileRows`), stale `processing` files, diary entry
+objects, vault files (HARD delete + storage refund), legacy boxes older than 7 days
+(photos **and** `audio_key`; no refund — soft delete already refunded), and orphan
+scan-temp objects.
+
+**Upload flow (normal files)**: webhook debounces per user (1500 ms sliding window,
+`upload-queue.ts`) → ONE `upload_batch` job + ONE reply. **1-on-1 gets a progress
+Flex card** whose button opens the live progress page; **group/room uploads are
+stored completely silently** (the "บันทึกแล้วน้า ✓" confirmation and its per-group
+toggle were retired). Worker: resolve user + space (group files → the group's shared
+space via `ensureGroupSpace`) → quota check → stream LINE CDN → R2
+`spaces/{space_id}/files/{file_id}/{name}` → `status='ready'` → best-effort
+thumbnail + OCR enqueue.
+
+---
+
+## 13. Feature Flags and Pro Gates
+
+| Flag / gate | Controls | Checked where |
+|---|---|---|
+| `TASK_NOTIFICATIONS_ENABLED` (constant, **false**) | all scheduled task reminders (rows, jobs, delivery, and the LIFF copy promising them) | `packages/shared/src/task-notifications.ts`; `taskScheduler.scheduleReminders`, `taskReminderWorker`, LIFF create pages, `task-command-handlers` success copy |
+| `users.plan` ∈ {pro, team} | the `เตือน N ครั้ง` custom reminder count (migration 047) | `resolvePlanIsPro` in `task-command-handlers.ts`; effective count baked into the confirm card |
+| `users.plan` | plan-aware trash retention (5 vs 30 days) | `purgeDeletedFiles` |
+| `users.vault_plan` | vault access (`VAULT_PREMIUM_REQUIRED`); setup-pin self-grants `'premium'` until billing exists | `routes/vault.ts` |
+| `MISTRAL_API_KEY` | แปลงไฟล์ — the command replies "not available" without it | `isMistralOcrConfigured()` |
+| `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `VAULT_MASTER_KEY` | Google Sheets sync (routes 503, worker not constructed, jobs no-op) | `isGoogleSheetsConfigured()` |
+| `VAULT_MASTER_KEY` | vault routes + the encrypted Google refresh token | `config.ts`, `vault-crypto` |
+| `SCAN_ENHANCE_ENABLED` / `SCAN_OCR_ENABLED` / `SCAN_DEFAULT_MODE` | scan pipeline behaviour (printed once at worker boot so the deployed state is auditable) | `config.ts`, `upload.worker.ts` |
+| `ENABLE_VIRUS_SCAN` + `VIRUSTOTAL_API_KEY` | optional upload scanning | `virusTotal.service` |
+| `ADMIN_LINE_USER_IDS` | `/admin/*` access (no DB column) | `routes/admin.ts` |
+| `LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID` | LIFF deep links vs plain WEB_URL fallback | `lineMessage.ts`, web `lib/liff.ts` |
+| Pro **fake doors** (no feature behind them) | `task_auto_reminder` / `task_voice_command` (authenticated, deduped, migration 040) and gift-box `audio`/`video` (anonymous, migration 034) | `routes/pro-interest.ts`, `ProFeatureSection.tsx` |
+
+Other notable env (full schema in `apps/api/src/config.ts`):
+`DEFAULT_STORAGE_LIMIT` (1 GB), `REFERRAL_BONUS_BYTES` (0.5 GB),
+`PURGE_RETENTION_DAYS` (5), `TRASH_RETENTION_DAYS_PRO` (30),
+`MAX_FILE_SIZE_BYTES` (1 GB), `RATE_LIMIT_FILES_PER_HOUR` (50) /
+`RATE_LIMIT_BYTES_PER_HOUR` (5 GB), `DOCX_CONVERT_MAX_SOURCE_BYTES` (10 MB),
+`PDF_MERGE_MAX_SOURCE_BYTES` (20 MB) × `PDF_MERGE_MAX_SOURCES` (20) — worst-case
+worker memory is roughly their product, raise together and deliberately —
+`DIARY_MAX_IMAGE_BYTES` (10 MB), `VAULT_MAX_FILE_SIZE_MB` (100),
+`VAULT_PURGE_RETENTION_DAYS` (30), `STORAGE_WARN_THRESHOLD_LOW/HIGH` (80/95),
+`DOWNLOAD_TOKEN_SECRET` (REQUIRED, ≥32 chars, no fallback),
+`JWT_SECRET` (≥32), `CORS_EXTRA_ORIGINS`, `WORKER_HEALTH_PORT` (3002).
+
+**Deployment note.** Env vars are **per Railway service** — the worker does NOT
+inherit from the API. Keys that must be on BOTH or the feature half-works:
+`VAULT_MASTER_KEY`, `GOOGLE_CLIENT_*`, `MISTRAL_API_KEY`, `DOWNLOAD_TOKEN_SECRET`.
+Vercel needs `API_PROXY_TARGET` = the Railway origin (unset → `localhost:3001` →
+every `/api-proxy/*` 404s and login breaks) and `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID`.
+Migrations that add columns/RPCs go BEFORE the API/worker deploy; deploy API before
+web. `DEPLOYMENT.md` has the long form.
+
+---
+
+## 14. Current Feature Status
+
+**Fully built and live**
+- LINE webhook + upload batching + R2 storage + thumbnails + OCR + search
+- Folders, tags, rename/move, previews, share links, trash bin (restore + purge)
+- สแกน (enhance + OCR), รวมไฟล์ (images + PDFs → one PDF), แปลงไฟล์ (→ .docx)
+- ไดอารี่ 365 วัน (chat capture + web grid/scrapbook)
+- ห้องนิรภัย (vault), กล่องของขวัญ (legacy box incl. voice + public reveal)
+- Teams, invites, join requests, LINE group ↔ team binding
+- Referral ladder 1 / 2.5 / 4 GB
+- Admin analytics dashboard (`usage_events` + aggregate RPCs)
+- Public landing page + OG/robots/sitemap
+- ระบบตามงาน: LIFF create, personal tasks, in-chat command with confirm-first,
+  natural-language detection, attachments, review loop, ห้องทีม, .xlsx export,
+  dashboard task views
+
+**Built but dormant / conditional**
+- **Scheduled task reminders** — code complete, switched off at
+  `TASK_NOTIFICATIONS_ENABLED = false`. Personal and command-created tasks therefore
+  ship with no working reminders today.
+- **Google Sheets sync** — needs migration 046 applied + `GOOGLE_CLIENT_*` on both
+  Railway services + the redirect URI registered in Google Cloud.
+- **แปลงไฟล์** — needs `MISTRAL_API_KEY` on both services.
+- **Vault** — needs migration 031 + `VAULT_MASTER_KEY`.
+- **Pro reminder count** — needs migration 047 before a Pro user first sends
+  `เตือน N ครั้ง`; free-tier inserts omit the column, so it is either-order safe.
+- **Pro fake doors** — demand tests only; nothing is behind them.
+
+**Deliberately deferred**
+- Plans / billing / subscriptions (free tier only)
+- Anything ERP-shaped. The review loop is a fixed two-party
+  ส่งงาน → รับงาน/ตีกลับ handshake, **not** a configurable approval chain — don't
+  grow it into one without a deliberate decision.
+- Campaign / `hook_id` attribution in the referral panel (placeholder)
+- Vault PIN change/reset flow (deliberate); vault PDF rasterisation (TODO in-file)
+
+**Accepted risk** — Next.js pinned to the 14.2.x branch (`^14.2.4` → 14.2.35).
+Request-smuggling / cache-poisoning advisories on the 14 branch are unresolved; npm
+audit's only fix is Next 16. Compensating control: the `/api-proxy` rewrite is a
+single fixed-target passthrough with no user-controlled destination. Migration plan
+in `ROADMAP.md`; the pin note also lives in the `"//next"` key of
+`apps/web/package.json`.
+
+---
+
+## 15. Known Issues (observed while reading — fix in a later session, not now)
+
+1. **Orphaned group-notify feature.** `services/group-settings.service.ts` has zero
+   references anywhere in `apps/api/src`, and migration 021's
+   `group_notify_settings` table is now unused — the "บันทึกแล้วน้า ✓" reply and its
+   toggle commands were retired (`line.ts:810`, `upload-queue.ts:270`). Dead code +
+   dead table. `notifyGroupId` is still threaded through `EnqueueParams` and the
+   batch entry but never read.
+2. **Onboarding / feature carousel taps are placeholders.** Six of the eight
+   onboarding bubbles and every feature-carousel bubble post back the literal
+   `'หนูเก็บ'` with `// TODO: replace with real action` (`flex.service.ts:771-777`),
+   so a tap just opens the menu. The doc comment above the array also still says
+   "7-bubble" while `ONBOARDING_ACTIONS` has 8 entries.
+3. **Hardcoded production URLs in the webhook.** `line.ts` lines 630-632, 646, 657,
+   668 hardcode `https://nookeb-web.vercel.app/...` for the กล่องของขวัญ /
+   ห้องนิรภัย / งานของฉัน quick replies instead of `config.WEB_URL` — wrong host in
+   dev and after any custom-domain move. `flex.service.ts:778` does the same for the
+   last onboarding bubble.
+4. **`หนูเก็บรวมรูป` is a silent no-op** (`line.ts:904`). A user (or a stale pinned
+   message) typing it gets no reply and no redirect — deliberate per the comment, but
+   it reads as a broken bot. Worth at least a one-line "ใช้ หนูเก็บรวมไฟล์ แทนน้า".
+5. **Bare command forms no longer work.** `สแกน`, `วิธีใช้`, `ไดอารี่` etc. now all
+   require the `หนูเก็บ` prefix, but `classifyIntent` still has `prefixed`-independent
+   branches (`เสร็จ`/`ยกเลิก`/`ติดต่อหนูเก็บ`) and older docs/marketing may advertise
+   bare forms. Only `เสร็จ`, `ยกเลิก`, `ติดต่อหนูเก็บ` are prefix-free.
+6. **`หนูเก็บห้องทีม` no longer exists.** `buildTeamRoomCard` is gone; the ห้องทีม
+   entry point is now only the group welcome card on `join` and the task-command help
+   card. Nothing surfaces ห้องทีม to a group that already onboarded — a
+   discoverability gap.
+7. **Unused exports** in `task-confirm.ts`: `isConfirmKey` (no non-test reference) and
+   `getPendingConfirm` (tests only).
+8. **`handleTaskConfirmPostback` returns `boolean`** but `line.ts:1254` ignores the
+   return and unconditionally `return`s — harmless today, misleading contract.
+9. **In-chat command creates `single` tasks only.** `createTaskFromConfirm` hardcodes
+   `type: 'single'` with the item deadline NULL (inheriting `globalDeadline`). Verify
+   the help card copy doesn't imply multi/recurring from chat. [UNCLEAR — verify card]
+10. **`GET /tasks/:id/ics` is unauthenticated** — deliberate and documented, but any
+    leaked task UUID exposes title + deadline. Listed so it stays a conscious choice.
+11. **Migration drift risk.** The previous CLAUDE.md said `045`/`046` were "not
+    applied yet." **[UNCLEAR — needs verification]** whether 045/046/047 are now
+    applied in production; the repo cannot tell. 045 is the blocking one — every task
+    read SELECTs `task_files`.
+12. **`scan_sessions.session_kind = 'merge'`** is now legacy-only (nothing opens one),
+    but `finalize_scan` and the reply-card chooser still branch on it. Fine as
+    back-compat; flag it before anyone assumes 'merge' is reachable.
+13. **`apps/web/.next/` build output is present in the working tree** and matched a
+    repo-wide grep. Confirm it is git-ignored; never run `npm run build` for the web
+    while its dev server is running (both write `.next/`, every page then 500s).
+14. **Uncommitted working-tree changes at the time of writing** (`git status`):
+    `apps/api/package.json`, `apps/api/src/routes/webhook/line.ts`,
+    `apps/api/src/services/flex.service.ts`, `apps/web/app/liff/tasks/team/page.tsx`.
+    This document describes the WORKING TREE, not the last commit.
+
+---
+
+## Running Locally
+
+- `npm run dev` (root, turbo) — web + API + worker. The API workspace's `dev` runs
+  `dev:api` and `dev:worker` via `concurrently`; turbo only runs each workspace's
+  `dev`, so the worker MUST stay bundled into it.
+- Production: `npm start` runs the API only; run `npm run start:worker` as a
+  SEPARATE process/container.
+- Tests: `cd apps/api && npm test` (node:test via `tsx --test`; needs
+  `--env-file=../../.env` for the security integration test, whose live-infra cases
+  are skip-guarded).
+- Rich menu: `cd apps/api && npx tsx --env-file=../../.env scripts/setup-rich-menu-single.ts`
+  — destructive by design (deletes every existing menu + legacy aliases first).
+  It is the ONLY rich-menu script left in the repo.
+- Redis must be the Upstash `rediss://` TLS URL; plain `redis://` fails.
+- LINE needs a public HTTPS webhook at `<public>/webhook/line`, "Use webhook" ON,
+  auto-reply/greeting OFF.
+
+## Rich Menu — `RichMenu_Nookeb` (single menu, 2500×1686, `New_1.jpg` at repo root)
 
 | # | Zone | x, y, w, h | Action |
-|---|------|------------|--------|
-| 1 | OPEN LOCKER | 0, 0, 1250, 843 | `uri` → `WEB_URL/dashboard` |
+|---|---|---|---|
+| 1 | ล็อคเกอร์ | 0, 0, 1250, 843 | `uri` → `WEB_URL/dashboard` |
 | 2 | สร้างงาน | 1250, 0, 1250, 843 | `uri` → `WEB_URL/dashboard/tasks` |
 | 3 | ฟีเจอร์เอกสาร | 0, 843, 800, 843 | `message` `หนูเก็บฟีเจอร์เอกสาร` |
 | 4 | บันทึกไดอารี่ | 800, 843, 720, 843 | `message` `หนูเก็บไดอารี่` |
 | 5 | รวมคำสั่ง | 1520, 843, 430, 407 | `message` `หนูเก็บเพิ่มเติม` |
-| 6 | Nookeb Website | 1950, 843, 550, 407 | `uri` → `WEB_URL/` |
-| 7 | ช่วยเหลือ / เสนอไอเดีย | 1520, 1250, 980, 436 | `message` `ติดต่อหนูเก็บ` |
+| 6 | เว็บไซต์หนูเก็บ | 1950, 843, 550, 407 | `uri` → `WEB_URL/` |
+| 7 | ช่วยเหลือ | 1520, 1250, 980, 436 | `message` `ติดต่อหนูเก็บ` |
 
-- Every button's `message` text must map to a real handler in `webhook/line.ts` — keep in sync.
-- Do not add/remove/rearrange button areas without approval.
-- NEVER run `setup-rich-menu-large.ts` / `setup-rich-menu.ts` / `setup-rich-menu-ab.ts` —
-  all three are archives of retired designs and would overwrite the live menu.
-
-## ห้องนิรภัย (Vault) — web-only, migration 031
-PIN-protected, view-only, per-user ENCRYPTED file store at `/dashboard/vault`
-(routes `apps/api/src/routes/vault.ts`). Structurally isolated like the diary:
-own table (`vault_files`), own R2 prefix (`vault/{user_id}/{uuid}.enc`), no
-LINE-webhook/worker write path, unreachable from every share/team/space flow.
-- Crypto (`services/vault-crypto.ts`, unit-tested): AES-256-GCM per-file DEK,
-  wrapped under a per-user scrypt key derived from `VAULT_MASTER_KEY` (env,
-  32-byte hex — LOSING/ROTATING IT MAKES ALL VAULT FILES UNREADABLE). Files are
-  stream-encrypted before R2 (rule 3 holds; ciphertext = plaintext + 16B tag).
-- Access: DELIBERATE deviation from rule 5 — NO presigned URLs, NO download
-  endpoint, ever. All bytes stream through `GET /vault/files/:id/view`, which
-  re-checks ownership + unlock per request. Images are re-encoded with a tiled
-  viewer-name+timestamp watermark (traceability — screenshots can't be blocked);
-  video/GIF stream with Range support (GCM can't seek: decrypt-from-0 + slice,
-  tag unverified on partial reads); PDF streams inline (TODO rasterize).
-- PIN: 6 digits, argon2id in `users.vault_pin_hash`; a second factor ON TOP of
-  the JWT session, safe only because of the per-USER (never per-IP) lockout:
-  5 fails → 15-min lock, doubling per repeat within 24h (`vault-session.service`).
-  Unlock opens a 15-min sliding Redis session bound to the JWT's session_version
-  (bumping it kills open vaults too). DELETE re-verifies the PIN. No PIN
-  change/reset flow yet — deliberate. Lock states are 403 + `code`
-  (`VAULT_LOCKED` / `VAULT_PREMIUM_REQUIRED`), NOT 401 (web treats 401 = logout).
-- Premium: `users.vault_plan` manual flag; setup-pin self-grants 'premium'
-  until billing lands (so the setup state precedes the paywall CTA on the web).
-- Vault files ARE charged to `users.storage_used` — they share the single
-  personal pool, NOT a separate quota. (Reversed an earlier decision to keep
-  them uncharged.) `VAULT_MAX_FILE_SIZE_MB` (default 100) remains the PER-FILE
-  cap. Charged in `POST /vault/upload` via `adjustStorageUsed` AFTER the row
-  insert, best-effort (a failed charge logs + undercounts rather than failing an
-  upload whose bytes are already in R2). NOT enforced: the bytes land before the
-  charge, so a vault upload can exceed `storage_limit` — unlike LINE uploads,
-  which reserve via `incrementPersonalStorage(enforce)`. Refunded at HARD purge,
-  not soft delete (a soft-deleted vault file still occupies R2), so for vault
-  rows "row exists" ⟺ "charged". Repair drift by re-running
-  `supabase/backfills/backfill_vault_storage.sql` (idempotent full recompute;
-  also the one-time backfill for files predating the charge).
-- Delete: soft-delete, then the daily purge HARD-deletes row + R2 object after
-  `VAULT_PURGE_RETENTION_DAYS` (30) — vault-scoped deviation from rule 6
-  (a vault filename is itself sensitive; nothing needs the tombstone). The purge
-  is also where vault bytes are refunded to `users.storage_used`; the refund runs
-  AFTER the row delete commits, so a crash mid-sweep can only undercount the
-  refund, never double-refund (which would hand out free quota on every retry).
-- Dashboard: `GET /vault/stats` (guarded — premium + unlock, so a locked vault
-  leaks no counts) feeds the vault stat chip on `/dashboard` (the vault entry
-  itself lives in the โปรไฟล์ sheet; the old VaultEntryCard component was
-  removed). The web calls it ONLY when `/vault/session-status` reports
-  `isUnlocked` (`lib/useVaultSummary.ts`). Note the aggregate size still leaks via the shared
-  `storage_used` in `GET /me/usage`, which is ungated — inherent to the shared
-  pool, not an oversight.
-- Upload was the app's FIRST web multipart endpoint; there are now three, each
-  registering `@fastify/multipart` in its OWN plugin scope (vault, legacy-box,
-  task-files). That isolation is the rule, not an accident: registering it in a
-  shared scope installs a content-type parser across every route in that scope.
-
-## ถังขยะ (Trash Bin) — web-only, migration 032
-`/dashboard/trash` (API routes `apps/api/src/routes/trash.ts`). A "trashed" file is just a
-soft-deleted row whose R2 object the purge hasn't removed yet (`deleted_at IS NOT NULL AND
-purged_at IS NULL`) — no new table; migration 032 only adds `files.trash_origin_folder_id`
-(snapshot of folder_id taken by DELETE /files/:id; FK ON DELETE SET NULL, so restore falls
-back to the space root when the folder is gone).
-- Scope: all /trash routes are UPLOADER-scoped (`uploaded_by = caller`), never space
-  membership — a teammate must not restore/purge someone else's deletions. They use a
-  dedicated `getDeletedFile()` loader (files.ts's `getAuthorizedFile` filters deleted rows out).
-- Restore (`POST /trash/:id/restore`) RE-CHARGES the same quota ledger the soft delete
-  refunded (`charged_to` / `charged_team_id`, team_id legacy fallback — exact mirror of the
-  DELETE /files/:id refund routing) WITH enforcement: over quota → 409 + `code:
-  'QUOTA_EXCEEDED'` + Thai message. Charge-then-flip with the standard affected-rows guard;
-  a lost race rolls the charge back. Restores into `trash_origin_folder_id` if that folder
-  still exists in the same space, else space root.
-- Manual purge (`DELETE /trash/:id/permanent`, `POST /trash/empty` in batches of 20) runs
-  the SAME tombstone path as the daily job (`purgeFileRows` in purge.service: R2 objects
-  deleted → `purged_at` stamped + name/OCR redacted — rule 6 holds, no row deletion, and NO
-  second quota refund: the soft delete already refunded).
-- Retention is plan-aware (`users.plan`): free 5 days (`PURGE_RETENTION_DAYS`), pro/team 30
-  (`TRASH_RETENTION_DAYS_PRO`); `purgeDeletedFiles` applies the per-uploader cutoff.
-  Vault/diary purges are untouched (own functions + retention).
-- Events: `file_restored`, `file_purged_manual` (web source). Web entry: navbar "ถังขยะ"
-  link with count badge + profile sheet.
-- Does NOT cover vault_files or diary_entries (both have their own delete/purge lifecycles).
-
-## กล่องของขวัญ (Legacy Box) — web-only, migrations 033 + 034 + 035
-Shareable digital gift boxes at `/dashboard/legacy-box` (API `routes/legacy-box.ts`,
-data access `services/legacy-box.service.ts`): 1–10 photos + a ≤500-char message behind
-a public slug URL (`/box/{slug}` — DB-generated token, same trust model as share links),
-opened by the recipient with an animated CSS gift-box reveal.
-- Create flow (`/dashboard/legacy-box/new`) is 4 steps: โอกาส → รูป → ข้อความ +
-  ประโยคส่งท้าย → ธีมสี. The occasion (7 fixed ids in
-  `packages/shared/src/legacy-box-occasions.ts`, in sync with the 034 CHECK) is
-  authoring metadata only — nothing about access/lifecycle keys off it. Picking one
-  SEEDS the theme + tagline; seeding happens only in `pickOccasion`/the localStorage
-  restore, never in a render-time effect (that would stomp a manual theme choice on
-  every back-step). Only the occasion persists across refresh (localStorage).
-- `occasion`/`tagline` are both NULLABLE with no default: every pre-034 box is
-  occasion = NULL / tagline = NULL forever, and nothing backfills them. The API
-  resolves a NULL tagline to `DEFAULT_TAGLINE` ('ส่งมาด้วยความคิดถึง' — the string the
-  reveal page hardcoded until 034), so old boxes render unchanged. Resolution lives in
-  `taglineOf()`, not the component.
-- `POST /api/pro-interest` (`routes/pro-interest.ts`) is a demand test for two locked
-  Pro rows in step 3 — no audio/video upload and no billing exist. UNAUTHENTICATED by
-  spec, so: it records only THAT someone tapped (feature + timestamp, no user_id/IP/
-  session), returns an identical `{success:true}` to everyone, and carries its own
-  10/min per-IP limit — it is the app's only unauthenticated INSERT, and without that
-  limit the 100/min global cap is the only thing between it and row spam. Counts are
-  directional interest, NOT per-user truth — never build anything identity-bearing on
-  `pro_interest_log`. Isolated like diary/vault:
-own tables (`legacy_boxes` + `legacy_box_photos`), own R2 prefix
-(`legacy-box/{user_id}/{box_id}/{uuid}.webp`), no LINE-webhook/worker write path.
-- Photos: web multipart (registered in the route scope, like the vault) — max 10 files
-  × 20 MB source; each is re-encoded through sharp (≤1600px, webp q82) BEFORE storage,
-  which strips EXIF/GPS (never `.withMetadata()`). Max 10 live boxes per user (429).
-- Voice message (035, optional): `เพิ่มเสียงพูด` in step 3 records in-browser via
-  MediaRecorder (`new/VoiceRecorder.tsx`; idle→countdown→recording→preview→saved,
-  60s auto-stop) and the Blob rides the SAME `POST /legacy-box` multipart as the
-  photos — there is deliberately NO presigned-PUT/upload-URL endpoint. Uploading
-  at submit through the API is what makes the 5 MB cap and the quota reservation
-  real (a presigned PUT lands bytes the API never sees, so both would be
-  advisory) and leaves nothing to orphan. Duration is NOT server-enforceable (no
-  decoder) — the recorder's auto-stop is the only duration guard; `MAX_VOICE_BYTES`
-  is the real backstop. Container is decided by `sniffVoiceContainer()` (magic
-  bytes), never the client's Content-Type, and the key is built server-side under
-  the box's own prefix (`legacy-box/{user_id}/{box_id}/voice-{uuid}.{ext}`) — the
-  client never supplies a key. Constants/helpers in
-  `packages/shared/src/legacy-box-voice.ts`. Two React traps this hit, both fixed
-  and easy to reintroduce: side effects inside a `setState` UPDATER get
-  double-invoked by StrictMode (ran the recorder twice → timer at 2x, 60s cap
-  firing at 30s), and `fetch()` on a `blob:` URL is blocked by the page CSP (hold
-  the Blob in a ref instead). Reveal: `box/[slug]/VoicePlayer.tsx`, never
-  autoplays, and has NO sender name — the open payload carries no creator PII.
-- Quota: exact webp bytes + the voice clip's bytes RESERVED up front via
-  `incrementPersonalStorage(enforce)` →
-  409 `QUOTA_EXCEEDED`; any later failure rolls back objects + row + reservation.
-  Refund happens at SOFT delete (unlike vault-at-purge): a deleted box is instantly
-  unreachable and non-restorable, so quota returns immediately; the purge must NOT
-  refund again.
-- Public endpoint `GET /legacy-box/open/:slug`: no auth, own 30/min per-IP rate limit,
-  `X-Robots-Tag: noindex` + `Cache-Control: no-store`, 120s presigned photo URLs
-  (regenerated per load), NEVER returns user_id/creator name/any PII. View count ticks
-  via the atomic `increment_box_views` RPC (fire-and-forget). `?preview=1` is a
-  NON-COUNTING read (same payload, no tick, no `box_viewed`) for the web's
-  generateMetadata, which runs on every request to `/box/:slug` — unfurl bots that never
-  open the box, plus a second time alongside the real client fetch on every genuine
-  open. Counting those would double real views and invent views that never happened.
-  It shares the same rate limit: not counting a view is not a reason to allow probing.
-- OG image (`apps/web/app/api/og/route.tsx`, `next/og` + Satori): takes `?theme=`, NEVER
-  `?slug=`. It renders NO box content — no title, message, photo, or creator — because a
-  gift link pasted in a LINE group unfurls for the whole chat and unfurler bots cache
-  what they fetch; anything in the preview stops being a surprise for whoever taps. The
-  theme colour is the only per-box detail it carries. `/box/` stays disallowed in
-  robots.ts. Keep it slug-free. Notes: `runtime = 'edge'` is REQUIRED on Windows — the
-  vendored `@vercel/og` node build does `fileURLToPath(join(import.meta.url, ...))`,
-  which `path.join` mangles into `file:\D:\...` and throws at module init (Linux/Vercel
-  is unaffected, but local dev 500s). Satori has no `inset` shorthand (a div using it
-  silently renders at zero size) and stringifies `<svg>` children, so sticker art must be
-  a single `<g>` — never a Fragment or a `{cond && ...}`. Fonts: IBM Plex Sans Thai
-  fetched from Google Fonts as TRUETYPE (Satori can't read woff2; requesting css2 with
-  an empty User-Agent is what makes Google serve ttf). The text zone carries a scrim
-  scaled to the accent's relative luminance — butter/mint can't hold white text on their
-  accent (white on `#E6B800` is ~2:1) while rose/lilac/sky/peach don't need it.
-  `public/og-legacy-box.png` is the retired static image; nothing references it now.
-- Reveal page (`app/box/[slug]/` — `BoxReveal.tsx` + CSS module): closed→opening→
-  revealed, transform/opacity-only animations, ≤30 burst particles, seeded sticker/
-  tilt layout from the slug (`@nookeb/shared` `getStickerLayout`/`getPolaroidTilt` —
-  server and client derive the same layout, nothing stored). prefers-reduced-motion
-  cross-fades straight to the reveal; revealed content mounts hidden in the DOM at load
-  + a 2s failsafe timer, so it can never be stuck invisible. 6 fixed themes in
-  `packages/shared/src/legacy-box-themes.ts` (ids must stay in sync with the DB CHECK).
-- Purge: soft-deleted boxes older than 7 days (fixed const, not env) → R2 objects
-  (photos AND the box's `audio_key` object — that key lives on the box row, not in
-  `legacy_box_photos`, so it must be swept explicitly or a recording of someone's
-  voice outlives the box forever) + `legacy_box_photos` rows deleted, box row
-  tombstoned (`purged_at` + title/message redacted, `audio_key` nulled — rule 6
-  holds) via `purgeDeletedBoxes` in the daily `purge_deleted` job.
-- Events: `box_created`, `box_viewed` (user_id = box OWNER, not the viewer),
-  `box_deleted`. Dashboard entry: a link in the โปรไฟล์ sheet on `/dashboard`
-  (the old LegacyBoxEntryCard component was removed with the dashboard redesign).
-
-## ระบบตามงาน (Task Manager) — LIFF + web, migration 036
-Khun-Thong-style group task chasing at `/liff/tasks/*` (API `routes/tasks.ts` +
-`routes/groups.ts`, data access `services/task.service.ts`): tasks are created
-entirely in the LIFF web flow (no LINE typing), announced into the group as a
-Flex PUSH, and chased by scheduled reminder pushes — this feature is the ONE
-sanctioned exception to the reply-only rule (see LINE Messaging section).
-- Tables (all RLS-enabled with NO policies = deny-all backstop; service role
-  bypasses, routes check membership explicitly): `tasks`, `task_items`,
-  `task_assignees`, `task_reminders`, `group_members`. Tenant key is
-  `group_line_id`; `tasks.space_id` is an informational link only. Soft-delete
-  only; reminder rows are stamped (`sent_at`/`failed_at`/`cancelled_at`), never deleted.
-- Roster: assignees come from `group_members`, which fills ITSELF — nobody
-  types /register: (1) every group/room message auto-upserts its sender
-  (webhook/line.ts, fire-and-forget); (2) `GET /groups/:groupId/members` runs
-  a Redis-throttled fetch-time sync (`syncGroupRoster`, 10 min/group, always
-  when the roster is empty) via LINE `members/ids` — verified/premium OA only,
-  silently skipped otherwise — and re-resolves NULL display names; (3) task
-  routes auto-enroll the caller (`ensureGroupMember`). Profiles ALWAYS resolve
-  via `getChatMemberProfile` (the group/room-scoped endpoint — works for
-  members who never friended the OA; the friend-only `/v2/bot/profile` was why
-  roster names came back NULL), fetched server-side, never client-supplied.
-  `/register` (`สมัคร`/`ลงทะเบียน`, unprefixed by design — matched BEFORE the
-  group bot-directed guard) remains as a legacy alias. Trust model: the group
-  id is the capability (unguessable, same model as share links).
-- Types: `single` (1 implicit item), `multi` (per-item assignees/deadlines;
-  items without their own deadline share ONE task-level reminder round),
-  `recurring` (rule in `recurrence_rule` JSONB, Bangkok wall clock via dayjs/tz;
-  first-round deadline computed at create; a self-scheduling `task_recur_next`
-  BullMQ job at deadline+90min resets marks and schedules the next round —
-  recurring tasks never reach status 'done').
-- Reminders (`services/taskScheduler.ts` + `workers/taskReminderWorker.ts`,
-  own queue `nookeb-task-reminders`): 3วัน/1วัน/3ชม before + 1ชม past deadline
-  as BullMQ delayed jobs (jobId `reminder-{reminderRowId}` — row id is the
-  idempotency key; handler re-checks row + task state each attempt, so
-  done/cancelled rounds stand down silently). Delivery = ONE push carrying a
-  textV2 @mention message + urgency-colored Flex card (builders in
-  `services/lineMessage.ts` — NO emoji, per Flex brand rule). attempts:3
-  exponential 10s; final failure stamps `failed_at`. Done/edit cancels or
-  reschedules outstanding rows + jobs.
-- Interactions stay reply-based: Flex buttons post back `action=task_done` /
-  `action=task_accept` (routed in `webhook/task-handlers.ts` BEFORE the
-  carousel postback path), replies confirm; all-assignees-done rolls item →
-  task done and cancels remaining reminders.
-- LIFF: pages under `apps/web/app/liff/tasks/` — `create/` (4-step flow),
-  `[taskId]/` (task view, optimistic done), `[taskId]/submit/` (ส่งงานกลับ,
-  migration 045), `team/` (ห้องทีม). UI: brand-red palette tokens + Prompt Thai font
-  (next/font `--font-liff`, set in `liff/tasks/layout.tsx`; LINE Seed isn't
-  redistributable) — both live in `tasks.module.css` `.page`; NO emoji (SVG
-  icons in `components.tsx`). `@line/liff` via npm (no CDN); CSP `connect-src`
-  must keep `https://api.line.me`. Session = LIFF id token exchanged at
-  `POST /auth/liff` (verified against LINE, aud = LINE_LOGIN_CHANNEL_ID) for
-  the same HttpOnly cookie; the LIFF app must live under the LINE Login
-  channel with endpoint `<WEB_URL>/liff/tasks`. Create-flow draft lives in
-  sessionStorage (LIFF navigations can hard-reload; URL params can't hold a
-  multi task). `LINE_LIFF_ID` (API) / `NEXT_PUBLIC_LIFF_ID` (web) are optional —
-  unset falls back to plain WEB_URL links / LIFF-less dev mode (`?groupId=`).
-- Calendar: `GET /tasks/:id/ics` (ical-generator; VALARM −1440/−180 min; RRULE
-  for recurring) — UNAUTHENTICATED by design (the Flex button opens an external
-  browser with no cookie): task UUID is the capability, own 30/min per-IP
-  limit, noindex + no-store. No Google OAuth, ever — ICS only.
-- Attachments + review loop (migration 045, `routes/task-files.ts` — its own
-  plugin scope because it registers `@fastify/multipart`, which would otherwise
-  install a content-type parser across everything sharing `tasks.ts`'s scope):
-  `POST/GET/DELETE /tasks/:taskId/files`. Upload is multipart THROUGH the API —
-  deliberately NO presigned PUT (same lesson as the legacy-box voice clip: a
-  presigned PUT lands bytes the API never sees, so the 20 MB cap and the quota
-  charge would both be advisory). Rule 3 still holds (streamed straight to R2)
-  and downloads DO use presigned GETs (rule 5). Caps: 5 ไฟล์/ครั้ง, 20 MB/ไฟล์,
-  30 ไฟล์/งาน. The bytes live in a NORMAL `files` row (space, ledger,
-  soft-delete all behave as usual): stored in the task's linked group space when
-  it has one, else the uploader's personal space, and ALWAYS charged to the
-  UPLOADER's personal pool (`charged_to` keeps its default) — enforced AFTER the
-  stream is counted, so an over-quota file is removed again rather than kept.
-  Detach = delete the junction row + SOFT-delete the file + refund the uploader
-  once (affected-rows guard). `task_files.kind` separates 'brief' (คนสั่งแนบ)
-  from 'submission' (ส่งกลับ).
-- Review loop: `POST …/items/:itemId/submit` (assignee, item → 'submitted') →
-  `…/approve` (creator; expressed as done-marks on every assignee so
-  `rollUpCompletion` stays the single owner of item/task status) or `…/reject`
-  (creator, reason MANDATORY → 'rejected'). Submitting deliberately does NOT
-  stamp `done_at` — otherwise "ส่งงานกลับ" would be a self-approval. All three
-  fire ONE best-effort inline push (same class as the create announcement, NOT
-  the queue: the value is immediacy, and `TASK_NOTIFICATIONS_ENABLED` gates
-  scheduled reminders only); personal tasks skip it, since the only recipient
-  would be the person who pressed the button. `resetRecurringRound` clears the
-  review fields so a new round starts clean.
-- LIFF: `FileAttach.tsx` (picker only — never uploads; the parent owns the
-  upload because the task must exist first) + `lib/taskFiles.ts` (one request
-  PER FILE, so a dropped mobile upload costs one file, not the batch —
-  `listTaskFiles` + `deleteTaskFile`) + `[taskId]/submit/page.tsx` (ส่งงานกลับ:
-  files upload FIRST, then the status flip — the creator must never see "รอตรวจ"
-  on evidence still in flight).
-- Client surfaces for the loop live on BOTH task-detail pages — the LIFF
-  `[taskId]/page.tsx` and the web dashboard `[taskId]/page.tsx` — kept in
-  parity: the creator's **รับงาน / ตีกลับ** controls appear on any `submitted`
-  item (ตีกลับ opens a sheet whose reason is mandatory, mirroring the API's
-  non-empty-note check), and an assignee awaiting review sees NO done controls
-  (the ball is in the creator's court). Both also render an **ไฟล์ที่แนบ** list
-  with per-file delete (uploader or creator only — the API re-checks and 403s).
-  That list is fetched SEPARATELY from the task payload (the task DTO carries
-  `files` with `url: null`; download links are presigned per read), so it is
-  local state the page owns and prunes optimistically on delete rather than
-  refetching. The dashboard client's task functions
-  (`approveTaskItem`/`rejectTaskItem`/`listTaskFiles`/`deleteTaskFile`) are in
-  `lib/api.ts`; the LIFF ones in `lib/taskFiles.ts`.
-- Excel export: `GET /tasks/export?format=xlsx&from&to&status` → .xlsx built by
-  `services/export.service.ts` (pure/env-free, unit-tested — same shape as
-  docx-builder/pdf-merge; `exceljs`, the only chart/spreadsheet lib in the repo).
-  Scoped by `listTasksForUser`, so it can only ever contain tasks the caller
-  created or is assigned to; the filters NARROW that set, never widen it. ONE
-  ROW PER ITEM (a multi task's per-item assignee/deadline/status is the whole
-  point of the report). Style: header `#B91C1C` + white bold + frozen row 1 +
-  auto-filter, zebra `#F9FAFB` on alternate DATA rows, Calibri 11.
-  **Dates are written +07:00-shifted on purpose**: Excel renders a serial with
-  no timezone while exceljs serialises a Date from its UTC parts, so the raw
-  instant would show a 09:00 Bangkok deadline as 02:00 — the shift keeps them
-  real (sortable/filterable) date cells reading Bangkok wall clock. There is no
-  `updated_at` column on tasks/task_items; "อัปเดตล่าสุด" is DERIVED from the
-  existing stamps (`resolveUpdatedAt` in routes/tasks.ts) rather than adding a
-  column every write path would have to remember to touch. Web: the Export
-  button lives in `dashboard/tasks/FilterSortBar.tsx` and exports EVERYTHING —
-  never the active tab/chip, so a shared report can't silently omit rows.
-- ห้องทีม (Team Room) — the group-scoped task view. **Tenant key is
-  `group_line_id`, NOT `space_id`**: tasks have always been stored against the
-  LINE group (`tasks.space_id` is informational, migration 036) and a group is
-  often active before any space exists (a space is created on the first stored
-  FILE, and the `join` event that greets a new group carries no user id to
-  create one with). So `services/team-room.service.ts` `getTeamRoom()` is
-  group-keyed and returns `space: null` when there isn't one yet. Two doors,
-  same room: `GET /groups/:groupId/room` (capability — the card's entry point)
-  and `GET /spaces/:id/tasks` (dashboard side; maps space → `line_group_id`,
-  404s `NOT_A_GROUP_SPACE` for a personal space, and accepts an optional
-  `?groupId=` to take the capability path). Access is never widened: without a
-  matching group id it needs an EXISTING roster row or space membership —
-  read-only, no enrolment. `listTasksForGroup` also filters `is_personal=false`
-  as defence in depth so a personal task can never surface in a group view.
-- LIFF page lives at `/liff/tasks/team` — **inside** the `/liff/tasks` subtree
-  on purpose: the LIFF app's endpoint URL is `${WEB_URL}/liff/tasks` and a
-  `https://liff.line.me/{id}/…` deep link resolves RELATIVE to it, so a
-  top-level `/liff/team-room` would be unreachable from LINE without
-  registering a second LIFF app. Identity comes from `?groupId=` (preferred) or
-  `?spaceId=`. Tabs: งานทั้งหมด/ของฉัน × กำลังดำเนินการ/เสร็จแล้ว/ยกเลิก.
-- Entry points: `หนูเก็บห้องทีม` (group/room only — a DM has no room; it points
-  the user at งานส่วนตัว instead), and the same card auto-replied on `join`.
-  The join card ships in the SAME reply as the onboarding carousel — a join
-  event grants exactly one replyToken and a follow-up push is forbidden
-  (the task-manager push exception covers announcements/reminders, not a
-  greeting). Builder: `buildTeamRoomCard` in `services/lineMessage.ts`.
-### Google Sheets sync — migration 046
-Each user connects THEIR OWN Google account and gets a spreadsheet they own,
-"หนูเก็บ — งานของฉัน", that mirrors their tasks. Free (Sheets API costs nothing).
-- **The token rule**: the refresh token is stored AES-256-GCM encrypted via
-  `vault-crypto`'s secret box (`deriveSecretKey`/`encryptSecret`) — a distinct
-  scrypt salt namespace from vault FILE keys, so neither key can open the
-  other's data, but the same `VAULT_MASTER_KEY`. The feature is therefore
-  dormant unless `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `VAULT_MASTER_KEY`
-  are all set (`isGoogleSheetsConfigured`). Do not re-introduce a plaintext
-  column (see migration 002/017).
-- **Scope is `drive.file`, never `drive`** — the app can only touch files it
-  created itself, so connecting can't expose the user's existing Drive.
-  `access_type: 'offline'` + `prompt: 'consent'` are BOTH required or Google
-  silently omits the refresh token on re-authorization.
-- **CSRF**: the OAuth `state` is a single-use Redis nonce bound to the caller's
-  user id and consumed with GETDEL; the callback also runs authenticated and
-  requires the nonce to match THAT user. Without the binding, anyone could
-  graft their Google account onto another user's account via a forged callback.
-- **Sync is ALWAYS queued, never inline** — own queue `nookeb-sheets-sync`
-  (`services/sheetsQueue.ts` + `workers/sheetsWorker.ts`), separate from files
-  and reminders so a Google outage backs up nowhere else. 3 attempts, 5-min
-  exponential backoff. jobId `sheets-{taskId}-{action}` collapses edit bursts
-  into one job (the handler always reads current state). Enqueued from ONE
-  `onResponse` hook in `routes/tasks.ts` covering every 2xx write on
-  `/tasks/:id…` (plus an explicit call on create, where the id doesn't exist
-  yet) — a new task route is covered automatically, because the failure mode of
-  per-route calls is a silently stale row.
-- **Failure policy** (the distinction that matters): no integration / not
-  configured / no task → complete silently (normal states, not errors); an AUTH
-  error → record `last_error` and complete, since retrying can't fix a revoked
-  grant and the dashboard tells the user to reconnect; anything else (5xx, rate
-  limit, network) → throw so BullMQ retries.
-- Sheet: ONE ROW PER TASK (unlike the .xlsx export's row-per-item) — the sheet
-  is a live mirror keyed by task id, and one row keeps "find the row, update it"
-  cheap. The sync key is a hidden last column `รหัสงาน`; it must live in the
-  SHEET, not our DB, because the user can sort/delete rows at will so any cached
-  row index would be wrong. Header `#B91C1C` + white bold + frozen + basic
-  filter; row fill by status (pending white / in_progress `#FEF9C3` / done
-  `#DCFCE7` / submitted `#DBEAFE` / rejected `#FEE2E2`); a cancelled/deleted task
-  is struck through + grey `#9CA3AF`, NEVER removed (audit trail). Font is Arial
-  — the Sheets API cannot install a custom font, so IBM Plex Sans Thai is only
-  reachable through the .xlsx export.
-- The sheet is created LAZILY on first sync (and re-created if the user deletes
-  it), so connecting costs zero API calls. Disconnect DELETES the credential row
-  outright — the one justified hard delete in this codebase: rule 6 protects the
-  user's content, while this row is a third-party credential with nothing to
-  restore. The user's Sheet and tasks are untouched.
-- Routes `routes/integrations.ts`: `GET /integrations/google` (status; never
-  returns the token) · `GET …/auth` (returns the consent URL as JSON — a 302
-  would be swallowed by the client's fetch) · `GET …/callback` (browser
-  redirect → `/dashboard/settings?google=…`) · `DELETE /integrations/google`.
-  Web: `/dashboard/settings`.
-
-- Rich menu: NOT touched (policy). The "สร้างงาน" entry point needs a rich-menu
-  change → requires explicit approval + a `setup-rich-menu-single.ts` update; until
-  then the LIFF URL is shared/pinned manually or opened from task cards.
-
-### งานส่วนตัว (Personal Task) — 1-on-1 DM, migration 043
-Typing `สร้างงาน` in a DM opens the SAME LIFF create flow, but the task is
-owned by and assigned to the sender alone. Same tables as the group flow — a
-personal task is just a `tasks` row in the other mode.
-- **Tenant key is `owner_line_uid`, taken ONLY from the verified session**
-  (`request.authUser.lineUserId`, minted by `POST /auth/liff` after LINE
-  verifies the id token). `group_line_id` stays NULL and the 043 CHECK enforces
-  the two modes are mutually exclusive.
-- **A LINE user id must NEVER become a `group_line_id`.** That was the whole
-  reason for a separate mode: `ensureGroupMember` treats "holds the id" as
-  proof of membership, which is only safe for an unguessable group id. A user
-  id leaks through `task_assignees` and `GET /groups/:id/members`, so under
-  that model anyone who saw your uid could create tasks in "your" space and
-  push into your DM. The personal branch therefore skips `ensureGroupMember`,
-  `listGroupMembers` and the space lookup entirely, and never touches
-  `group_members` — a personal task has no roster.
-- The create payload carries `scope: 'personal'` and NO `groupId`/`assignees`
-  (the schema REJECTS both rather than ignoring them — silently dropping a
-  groupId would let a caller think they wrote into someone else's group). The
-  assignee snapshot comes from the caller's own `users` row.
-- **No push on create or cancel** — the only recipient would be the person who
-  just pressed the button, and pushes are metered. `announced` is false.
-  Reminders DO go to the owner's own chat via `notifyTarget()` (the single
-  task→destination mapper — never reach for `group_line_id` directly), and skip
-  the @mention (`buildMentionTextV2`) since mentioning someone in their own 1:1
-  chat is meaningless. All of that is still gated by `TASK_NOTIFICATIONS_ENABLED`,
-  which is currently false — so personal tasks ship WITHOUT working reminders.
-- `PUT /tasks/:id/items/:itemId/assignees` → 403 for personal tasks; the web
-  hides the "แก้ผู้รับผิดชอบ" button for them. `GET /tasks/mine` needed no
-  change (it keys off creator/assignee line_uid, never the group).
-- LIFF: `?scope=personal` on the card URL (no id in the URL at all) →
-  `resolveScope()` in `lib/taskDraft.ts`; the draft carries `scope`, and the
-  members step is skipped (create → detail directly).
-
-## BullMQ Queues — three, deliberately separate
-| Queue | Worker | Why it's its own queue |
-|---|---|---|
-| `nookeb-file-processing` | `workers/upload.worker.ts` | the heavy one (R2, sharp, OCR, pdf-lib) |
-| `nookeb-task-reminders` | `workers/taskReminderWorker.ts` | a file backlog must never delay a time-sensitive reminder |
-| `nookeb-sheets-sync` | `workers/sheetsWorker.ts` | a Google outage backs up here and nowhere else (migration 046) |
-
-All three run in the SAME worker process (`workers/index.ts`); the sheets worker
-is only constructed when the feature is configured. Keep them separate — merging
-them re-couples exactly the failure domains they were split to isolate.
-
-### `nookeb-file-processing` jobs (all handled in `workers/upload.worker.ts`)
-`upload_batch` (normal uploads — see flow step 0) · `generate_thumbnail` · `ocr_image` ·
-`add_scan_page` · `finalize_scan` (both branch on `scan_sessions.session_kind` — 'scan'
-enhances + embeds images, 'merge' embeds them as-is, 'pdf' stores each source PDF raw and
-concatenates them with `copyPages`; see the `หนูเก็บรวมไฟล์` command) · `convert_to_docx`
-(image/PDF → Mistral OCR → editable
-.docx; attempts: 3, retry-safe via a `docx-<lineMessageId>` line_message_id marker row —
-a failed store soft-deletes its row so the retry can re-insert) · `create_diary_entry`
-(ไดอารี่ photo → validate jpg/png/webp ≤10MB → R2 `diary/…` → `diary_entries` row +
-400px thumb; attempts: 3, retry-safe via the live-rows unique indexes on
-`line_message_id` and user+entry_date — migration 028) · `purge_deleted` (daily
-repeatable, scheduled on worker startup via `scheduleRepeatableJobs`; also sweeps
-soft-deleted diary entries' R2 objects via `purgeDeletedDiaryEntries`,
-hard-purges soft-deleted vault files via `purgeDeletedVaultFiles`, which also refunds
-their bytes to `users.storage_used`, and purges 7-day-old deleted legacy boxes via
-`purgeDeletedBoxes` — NO refund there, the box's soft delete already refunded). (The legacy `upload_file` handler was removed — it had
-no size cap / virus scan / atomic quota check and was strictly worse than `upload_batch`.)
-Retries: `add_scan_page`/`finalize_scan` get `attempts: 3` + exponential backoff (set at
-enqueue in `webhook/line.ts`); `generate_thumbnail`/`ocr_image` retry too but are best-effort.
-`upload_batch` does NOT use BullMQ attempts — it retries each file INTERNALLY (3 attempts,
-backoff 1s→2s→4s) and never throws, so the batch is never re-run / double-stored. See
-engineering rule 9 for the idempotency guarantees each retried handler must uphold.
-
-## Database
-- Always use the Supabase client with the service role key in API/workers.
-- All content tables carry `space_id` for multi-tenant isolation.
-- Migrations in `supabase/migrations/`:
-  - `001_initial.sql` — users, spaces, space_members, folders, files, tags, file_tags,
-    scan_sessions, scan_pages (+ indexes, RLS on files).
-  - `002_google_accounts.sql` — per-user Google refresh token for Drive export.
-    SUPERSEDED: the Drive feature was removed; migration 017 drops this table.
-  - `003_reliability.sql` — atomic `increment_storage_used` RPC (see rule 8), `files.purged_at`
-    tombstone marker + partial index (rule 6), and `users.storage_limit` default → 10 GB.
-    NOT auto-applied; MUST be applied before deploying code that uses the RPC / `purged_at`.
-  - `004_security_features.sql` · `005_teams.sql` · `006_cleanup_stale_team_spaces.sql` ·
-    `007_spaces_team_id.sql` · `008_team_join_requests.sql` — team system (spaces↔teams,
-    invites, join-request approval flow).
-  - `009_session_version.sql` — `users.session_version`; bumping it revokes outstanding JWTs
-    (see `middleware/auth.ts`, revocation check + 60s Redis cache).
-  - `010_referrals.sql` · `012_reset_quota.sql` · `013_fix_tiers.sql` — referral codes +
-    storage tiers (`referral.service`). Tier thresholds superseded by 030.
-  - `030_referral_tiers_fractional.sql` — current referral ladder: 0→1, 3→2.5, 5→4 GB.
-    Widens `referral_tiers.storage_limit_gb` INTEGER → NUMERIC(6,2) (2.5 doesn't fit an
-    int) and recreates `redeem_referral` so its `v_tier_gb` local is NUMERIC too —
-    otherwise SELECT…INTO silently rounds 2.5 → 3. 5 is the TOP tier and there is no
-    referral cap: `referral_count` keeps rising past it, it just stops unlocking storage.
-    Keeps 024's GREATEST() guard, so users on the retired 3/5/7/10 GB tiers never get
-    lowered. NOT auto-applied; apply BEFORE the API/worker deploy (code reading the old
-    int column against fractional rows would round rewards up).
-  - `014_personal_quota_enforcement.sql` · `015_add_charged_to_column.sql` ·
-    `016_unique_space_constraints.sql` — atomic per-file personal quota enforcement, the
-    `charged_to` ledger column (correct quota refunds), and unique constraints closing a
-    space-creation race. Apply BEFORE the API/worker deploy that depends on them.
-  - `017_drop_google_accounts.sql` — drops the table from 002 (Drive feature removed). Apply
-    AFTER the code deploy that stops referencing it.
-  - `018_scan_page_seq.sql` — `scan_pages.page_seq BIGSERIAL` (DB-assigned, atomic) so
-    concurrent `add_scan_page` workers can't collide on page number; `finalize_scan` orders
-    by it. Also backs the `result_file_id` idempotency marker (rule 9).
-  - `019_scan_mode.sql` — `scan_sessions.scan_mode` (color/bw), `020_session_kind.sql` —
-    `scan_sessions.session_kind` ('scan' vs 'merge'), distinguishing the scan-enhance
-    pipeline from the plain merge-to-PDF flow (see `upload.worker.ts` `processAddScanPage`).
-  - `021_group_notify_settings.sql` — `group_notify_settings` table keyed by LINE
-    group/room id: per-group toggle for the upload confirmation reply (default ON).
-    NOT auto-applied; code fails open (notify=TRUE) if the table is missing, so it's
-    safe to deploy the code before applying this one.
-  - `028_diary.sql` — `diary_entries` + `diary_notification_settings` (ไดอารี่ 365 วัน).
-    One LIVE entry per user+Bangkok-day via partial unique index (soft-deleted rows don't
-    block a redo); `line_message_id` live unique index backs worker retry dedup; R2 KEYS
-    stored (never URLs — rule 5). NOT auto-applied; apply BEFORE deploying the diary code
-    (the ไดอารี่ command errors politely without it).
-  - `029_usage_events.sql` — product-analytics event log: one append-only `usage_events`
-    table (fixed-vocab `event_type` + numeric-only `metadata`, NO PII/file names) + `admin_*`
-    aggregate RPCs (DAU/WAU/MAU, feature adoption, funnels, retention, power-users). Powers
-    the revamped `/admin` dashboard. Events are written fire-and-forget via
-    `services/events.service.ts` `logEvent()` (NEVER throws — protects the 1s webhook budget
-    and worker retry-safety): intent events in `webhook/line.ts` (`classifyIntent`), outcome
-    events in `upload.worker.ts` (upload/scan/docx/diary done + `feature_blocked_quota`),
-    `web_login` in `auth.ts`. The event vocabulary is the `EVENT_TYPES` array in
-    `events.service.ts` (also the `EventType` union) — add there, never pass raw strings;
-    where a spec event overlaps an existing one the existing name is KEPT and its metadata
-    enriched (`file_upload`=`upload_done`, `diary_post`=`diary_done`,
-    `vault_pin_fail_count`=`vault_unlock_failed`, `word_convert`=`docx_done`/`docx_failed`).
-    NOT auto-applied; the admin endpoints fail soft to empty when
-    the RPCs are missing, so it's safe to deploy code first — analytics just stays blank
-    until the migration is applied.
-  - `031_vault.sql` — ห้องนิรภัย (Vault): `users.vault_pin_hash` / `users.vault_plan`
-    + `vault_files` (encrypted per-user store — see the Vault section). NOT
-    auto-applied; apply BEFORE deploying the vault code (the /vault routes
-    error without these columns; everything else is unaffected).
-  - `032_trash.sql` — ถังขยะ (Trash Bin): `files.trash_origin_folder_id` (origin-folder
-    snapshot for restore; FK ON DELETE SET NULL). NOT auto-applied; apply BEFORE deploying
-    the trash code (DELETE /files/:id writes the column and errors without it).
-  - `033_legacy_boxes.sql` — กล่องของขวัญ (Legacy Box): `legacy_boxes` +
-    `legacy_box_photos` + atomic `increment_box_views` RPC (see the Legacy Box
-    section). Theme CHECK must stay in sync with `packages/shared/src/legacy-box-themes.ts`.
-    NOT auto-applied; apply BEFORE deploying the legacy-box code (the /legacy-box
-    routes error without these tables; everything else is unaffected).
-  - `034_legacy_box_occasion_tagline.sql` — `legacy_boxes.occasion` (VARCHAR(50), CHECK
-    in sync with `legacy-box-occasions.ts`) + `legacy_boxes.tagline` (VARCHAR(60)), both
-    nullable/no default; plus `pro_interest_log` (anonymous Pro demand test). NOT
-    auto-applied; apply BEFORE the API deploy (POST /legacy-box writes both columns).
-    Additive only — the currently-deployed code keeps working once applied but before
-    the new code ships, so either order is safe.
-  - `035_legacy_box_audio.sql` — `legacy_boxes.audio_key` (TEXT, nullable/no default;
-    CHECK pins it to the `legacy-box/` prefix). NULL forever on every pre-035 box and
-    nothing backfills it — the reveal page just omits the player. NOT auto-applied;
-    apply BEFORE the API deploy (POST /legacy-box writes it). Additive — either order
-    is safe.
-  - `036_tasks.sql` — ระบบตามงาน (Task Manager): `tasks` + `task_items` +
-    `task_assignees` + `task_reminders` + `group_members` (see the Task Manager
-    section). RLS enabled with no policies (deny-all backstop). NOT auto-applied;
-    apply BEFORE deploying the task code (the /tasks, /groups routes and the
-    "/register" webhook command error without these tables; everything else is
-    unaffected).
-  - `040_pro_interest_authed.sql` — `pro_interest` table: the AUTHENTICATED task
-    Pro fake-door demand test (ระบบตามงาน LIFF pages). DELIBERATELY separate from
-    the anonymous gift-box `pro_interest_log` (migration 034): here we record WHO
-    tapped and dedupe one record per `(user_id, feature_id)` (CHECK pins
-    feature_id to `task_auto_reminder` / `task_voice_command`), so unique clicks
-    == unique interested users — that's what powers the admin Pro-Interest
-    dashboard's real per-feature conversion %. Do NOT merge the two tables. NOT
-    auto-applied; apply BEFORE the API deploy (POST/GET `/pro-interest` error
-    without it). Additive.
-  - `041_usage_events_client_dims.sql` — three nullable columns on `usage_events`
-    for client-event tracking: `session_id` (per-tab UUID, partial index),
-    `plan_tier` (`'free'|'pro'` CHECK, indexed with created_at DESC — derived
-    SERVER-side, never trusted from the client), `entry_channel` (open-ended
-    origin hint, no constraint). Additive + nullable → every existing row/insert
-    stays valid. The event vocabulary stays code-enforced (NO event_type CHECK);
-    the client writes events ONLY through `POST /api/events/track` (whitelist +
-    payload sanitiser in `routes/events.ts`, client util `apps/web/lib/track.ts`).
-    NOT auto-applied; the writer fails open, so columns just stay NULL until applied.
-  - `042_admin_analytics_rpcs.sql` — Task-3 admin-dashboard aggregate RPCs (12
-    read-only STABLE functions, Bangkok day buckets, same posture as 029) behind
-    six new `/admin/*` endpoints (see the admin dashboard note under migration
-    029). NOT auto-applied; the endpoints fail soft to empty/zero when the RPCs
-    are missing, so it's safe to deploy code first — the new panels just read
-    blank until it's applied.
-  - `043_personal_tasks.sql` — งานส่วนตัว (Personal Task): `tasks.is_personal` +
-    `tasks.owner_line_uid`, and `tasks.group_line_id` becomes NULLABLE, with a
-    `tasks_scope_exclusive` CHECK pinning a row to exactly one mode (group ⇒
-    group_line_id set + owner NULL; personal ⇒ owner set + group_line_id NULL).
-    A LINE user id must NEVER be written to `group_line_id` — see the Personal
-    Task section. NOT auto-applied; apply BEFORE the API deploy (POST /tasks
-    writes both columns). Safe to apply early: every existing row satisfies the
-    CHECK, the new columns have defaults, and dropping NOT NULL only relaxes a
-    constraint — the currently-deployed code keeps working either way.
-  - `047_task_command_reminders.sql` — `tasks.reminder_count` (INT, nullable,
-    CHECK 1..4): the Pro "เตือน N ครั้ง" knob on the in-chat `หนูเก็บเตือนงาน`
-    command. NULL = the full default reminder schedule; a value narrows it via
-    `selectRemindTypes`. Written ONLY for Pro-created tasks — `createTaskWithItems`
-    OMITS the column from the insert unless a custom count is set, so the
-    currently-deployed code keeps inserting valid rows before this is applied and
-    reads treat a missing column as NULL. NOT auto-applied; additive + either-order
-    safe (apply BEFORE a Pro user first uses `เตือน N ครั้ง`).
-  - `046_google_sheets_integration.sql` — Google Sheets sync: `google_integrations`
-    (one row per user, UNIQUE user_id). `encrypted_token` holds the Google refresh
-    token as base64(iv||tag||ciphertext) — **never plaintext, not even temporarily
-    for debugging**: migration 002's `google_accounts` stored one in the clear and
-    017 dropped the table specifically for that. RLS enabled with no policies
-    (deny-all backstop — it holds a third-party credential). NOT auto-applied;
-    apply BEFORE the API deploy. Additive — either order is safe.
-  - `045_task_files.sql` — ระบบตามงาน แนบไฟล์ + วงจรส่งงานกลับ: `task_files`
-    (junction งาน↔`files`, ไม่ใช่ `files.task_id` — ไฟล์ใบเดียวผูกได้หลายงาน และ
-    `files` เป็นตารางร้อน) + สถานะระดับ "ข้อ" ใหม่ `submitted`/`rejected` (widens
-    the `task_items` status CHECK; `tasks.status` ไม่ถูกแตะ) + `submitted_at` /
-    `rejected_at` / `rejection_note` / `submission_note`. NOT auto-applied, and
-    the blast radius is WIDER than additive: `getTaskWithDetails()` now also
-    SELECTs `task_files` and it backs EVERY task read — deploying the code first
-    makes every task read throw. Apply 045, THEN deploy.
-  - `044_pdf_merge_session_kind.sql` — ระบบรวมไฟล์ PDF: widens the
-    `scan_sessions.session_kind` CHECK from ('scan','merge') to add 'pdf' (see the
-    `หนูเก็บรวมไฟล์` command). No new table, no new column — the whole feature rides
-    the existing scan-session plumbing. NOT auto-applied; apply BEFORE the API
-    deploy (startSession writes 'pdf' and the old CHECK would reject it). Purely a
-    constraint widening, so the currently-deployed code keeps working once applied —
-    either order is safe.
-- No direct DB (pg) connection / DDL access from tooling — schema changes go through
-  migration files applied manually.
-
-## Admin Dashboard (`apps/web/app/admin/page.tsx` — ONE scrollable client page)
-Gated by `ADMIN_LINE_USER_IDS` (checked in `routes/admin.ts`). All reads go through
-`admin_*` Supabase RPCs (explicit column lists, no `SELECT *`); charts are hand-rolled
-inline SVG/CSS — NO chart library (do not add one without asking). A shared `[7,30,90]`-day
-range selector drives every panel. Client fns + DTO types live in `apps/web/lib/api.ts`;
-new Thai labels go in the `EVENT_LABELS` / feature / module maps in `page.tsx` (admin-only,
-neutral tone — no หนู/พี่/น้า voice). Endpoints (migration 029 + 042, both apply-manually):
-- Migration 029: `/admin/overview` · `/admin/timeseries` · `/admin/features` (event adoption +
-  funnels) · `/admin/power-users` (revenue-signal leaderboard).
-- Migration 042 (Task 3, 2026-07-19): `/admin/pro-interest` · `/admin/tasks` · `/admin/funnel` ·
-  `/admin/adoption` · `/admin/storage` · `/admin/referral`.
-Reusable dependency-free chart components in `page.tsx`: `GrowthChart`, `MiniLineChart`,
-`StackedBars`, plus one component per section (`ProInterestSection`, `TasksSection`,
-`FunnelSection`, `AdoptionSection`, `StorageSection`, `ReferralSection`).
-**Analytics facts that shaped these panels — don't relitigate:**
-- Pro fake-door demand has TWO non-comparable sources: the gift-box test
-  (`pro_interest_log`, migration 034) is ANONYMOUS taps only — no views, no dedup, so NO
-  conversion % is derivable; the task test (`pro_interest`, migration 040 + client
-  `pro_interest_view/click` events carrying `metadata.feature_id`) IS deduped-by-user with a
-  real view→click funnel. Rendered as SEPARATE panels, never a shared y-scale.
-- Storage warning thresholds are **80 / 95** (`STORAGE_WARN_THRESHOLD_LOW`/`_HIGH`), NOT 100;
-  true 100%-full / upload-blocked is the SEPARATE `feature_blocked_quota` event.
-- No campaign / `hook_id` / content tagging exists → the referral panel is a funnel
-  (issued→entered→activated) + creator leaderboard (`users.referral_code`/`referral_count` +
-  `referrals`) only; campaign attribution is a deliberate "Coming soon" placeholder.
-- Uploads log no failure event → NO upload error rate (only docx convert + vault unlock have
-  failure events); the Tasks completion % excludes `recurring` (they never reach `done`).
-
-## Project Structure
-- `apps/api` — Fastify API + LINE webhook + BullMQ workers
-  - `src/routes/` — `webhook/line`, `auth`, `files`, `folders`, `tags`, `spaces`,
-    `analytics`, `admin`, `referral`, `team.router` (mounted at `/api/teams`),
-    `progress` (upload-progress view + JSON), `diary` (ไดอารี่ entries/streak/
-    today-status/notification — user-scoped, no space membership), `vault`
-    (ห้องนิรภัย — PIN + encrypted view-only store, see the Vault section), `trash`
-    (ถังขยะ — list/restore/purge soft-deleted files, uploader-scoped), `legacy-box`
-    (กล่องของขวัญ — shareable gift boxes, see the Legacy Box section), `pro-interest`
-    (Pro fake-door demand tests — anonymous gift-box `POST /api/pro-interest` +
-    authenticated task `POST/GET /pro-interest`, see migration 040), `events`
-    (`POST /api/events/track` — the ONE client-event ingest: whitelist + payload
-    sanitiser + server-derived `plan_tier`, feeds `usage_events`), `integrations`
-    (Google OAuth connect/disconnect — see the Google Sheets section), `tasks`, `groups`,
-    `task-files` (ระบบตามงาน — see the Task Manager section; `task-files` owns the
-    only multipart scope outside the vault/legacy-box), `static`
-  - `src/services/` — `r2`, `line`, `file`, `space`, `scan`, `purge`, `flex`
-    (Flex Message builders), `upload-queue` (per-user debounce batching), `team`, `referral`
-    (+ `referral.messages`), `progress-store` (Redis batch progress), `storage-monitor`
-    (quota-warning thresholds), `virusTotal` (optional file scanning), `group-settings`
-    (per-group notify toggle, migration 021 — 5-min in-memory cache, fails open),
-    `pending-notify` (Redis queue of deferred user notifications — the reply-only rule's
-    fallback: workers queue here instead of pushing; the webhook drains it on the user's
-    next 1-on-1 text/postback and prepends the messages to that reply),
-    `mistral-ocr` (Mistral OCR REST client), `docx-builder` (markdown → editable .docx,
-    pure/env-free, unit-tested), `docx-convert` (convert-mode Redis flag),
-    `pdf-merge` (PDF source validation + `copyPages` concatenation for ระบบรวมไฟล์ PDF —
-    pure/env-free, unit-tested; distinct from `scan-enhance`'s `buildScanPdf`, which
-    builds a PDF from IMAGES),
-    `export` (ระบบตามงาน → styled .xlsx via `exceljs` — pure/env-free, unit-tested),
-    `team-room` (ห้องทีม — group-keyed room payload shared by
-    `GET /groups/:id/room` and `GET /spaces/:id/tasks`; holds NO access check,
-    both callers gate first),
-    `diary` (diary_entries data access + Bangkok-day/streak helpers), `diary-mode`
-    (diary one-shot Redis flag; caption piggybacks on the flag value),
-    `vault-crypto` (envelope encryption, pure/unit-tested), `vault-session`
-    (Redis unlock sessions + per-user PIN lockout), `vault` (vault_files data
-    access + view watermarking), `legacy-box` (legacy_boxes/photos data access +
-    R2 key builder + DTO mapper)
-  - `src/workers/` — `upload.worker` (all job handlers), `taskReminderWorker`,
-    `sheetsWorker` (Google Sheets sync — only started when the feature is
-    configured), `index` (entry + repeatable schedule)
-  - `src/middleware/` — `auth` (JWT via HttpOnly cookie or Bearer), `line-verify` (webhook
-    HMAC signature — used ONLY on `/webhook/line`)
-  - `scripts/` — `setup-rich-menu-single` (CURRENT — the ONLY script that may be run;
-    see the Rich Menu section), `setup-rich-menu-ab` / `setup-rich-menu` / `-large`
-    (all RETIRED designs — running any of them overwrites the live menu),
-    `backfill-quota`, `backfill-referral-codes`, `purge-deleted` (dry-run by default),
-    `upload-greeting-image`
-- `apps/web` — Next.js dashboard + public landing page.
-  - Landing page at `/` (`app/page.tsx` + scoped `app/page.module.css`, ~1,300 lines) —
-    public SEO/marketing page that replaced the old redirect-to-dashboard. The rich menu
-    deep-links straight to `/dashboard`, so keep `/` public — do NOT turn it back into a
-    redirect. Sections: hero with LINE-chat mockup, 6 feature cards, polaroid gallery of the
-    brand card images (`public/landing/card-1..7.jpg`), 3-step how-to, 1→4 GB referral
-    ladder, trust strip, FAQ, locker CTA.
-  - Landing content rules: every claim must pass the brand playbook's "เคลมได้/ห้ามเคลม"
-    table (marketing/, ส่วนที่ 2) · NO emoji anywhere on the page (inline SVG icons only) ·
-    NEVER generate new mascot art — official artwork only (`public/logo.png` IS the mascot,
-    transparent PNG). FAQ text and the FAQPage JSON-LD render from the same `FAQS` array in
-    `page.tsx`, so they cannot drift — keep it that way.
-  - Scroll-reveal via `components/landing/Reveal.tsx` has a 3-layer safety net so content can
-    never be stuck invisible: hidden state only inside `@media (scripting: enabled)`, an
-    inline hydration-independent 4s failsafe `<script>` in `page.tsx`, and a `<noscript>`
-    override — do NOT remove any layer (a blank page was observed when JS arrived late).
-  - SEO: `app/robots.ts` (disallows `/dashboard`, `/admin`, `/auth/`, `/join`, `/share/`,
-    `/box/`, `/api-proxy/`) + `app/sitemap.ts` (lists only `/`) + OpenGraph image
-    `public/landing/og.jpg` + `metadataBase` in `app/layout.tsx` (origin defaults to the
-    Vercel domain; override with `NEXT_PUBLIC_SITE_URL` when a custom domain lands).
-  - All outbound links/handles live ONLY in `lib/site.ts` (SITE_URL, LINE_ADD_FRIEND_URL,
-    LINE_ID, INSTAGRAM_URL, TIKTOK_URL) — that file is the current canon; the playbook's
-    ภาคผนวก A still lists an older lin.ee link, so reconcile the playbook when touching links.
-  - Dashboard routes: `/dashboard`, `/dashboard/diary` (+ `/[date]` scrapbook viewer),
-    `/dashboard/vault` (ห้องนิรภัย), `/dashboard/trash` (ถังขยะ),
-    `/dashboard/legacy-box` (+ `/new` create flow), `/dashboard/teams`
-    (+ `/[teamId]`), `/dashboard/tasks` (+ `/[taskId]`), `/dashboard/settings`
-    (การเชื่อมต่อ — the Google OAuth callback's redirect target, which is why it
-    needs a URL of its own), `/admin`, `/join`, `/auth/callback`, `/share/[token]`,
-    `/box/[slug]` (PUBLIC gift reveal — noindex, generic OG image)
-  - LIFF routes all live under `/liff/tasks/` — see the ห้องทีม note in the Task
-    Manager section for why nothing may sit outside that subtree.
-  - File preview (`components/FilePreviewModal.tsx`): images render inline; text
-    and DESKTOP PDFs render in a native browser viewer via
-    `<iframe src={presignedUrl}>` (`.preview-frame`). On desktop the iframe gives
-    the browser's built-in PDF UI — page-thumbnail sidebar, zoom, all pages —
-    which is why `.preview-modal` is widened to `min(92vw, 900px)` and the iframe
-    fills the modal (the iframe owns its own scroll; the modal is
-    `overflow: hidden`).
-    - **PDF on MOBILE is the ONE exception** — pdf.js, not the iframe. iOS Safari
-      and the LINE in-app browser (WKWebView) render a PDF `<iframe>` as a single,
-      static, NON-scrollable snapshot of page 1. So the modal detects mobile at
-      render time (`isMobile = window.innerWidth < 768 || 'ontouchstart' in
-      window`, `typeof window` guarded for SSR) and routes PDFs to the `PdfViewer`
-      component there: a dynamic `import('pdfjs-dist/legacy/build/pdf.mjs')` renders
-      EVERY page to its own `<canvas>` (fit-to-width, sequential render queue +
-      `MAX_RENDER_DPR` cap so a many-page doc doesn't blow up mobile canvas memory,
-      `page.cleanup()` after each), in a `.pdf-viewer-mobile` vertical scroll
-      container with a sticky "หน้า X / Y" indicator (IntersectionObserver,
-      threshold 0.5). The LEGACY build is deliberate — the modern bundle uses
-      `Promise.withResolvers` (Safari 17.4+), which throws on the older iOS / LINE
-      WKWebView versions this viewer exists to support. Desktop PDFs and all text
-      files still use the iframe — do NOT change that branch.
-    - **Byte source is SAME-ORIGIN, on purpose.** `PdfViewer` `fetch()`es
-      `/api/file-pdf/:id` — a Next route handler (`app/api/file-pdf/[fileId]/route.ts`,
-      nodejs runtime) that forwards the session cookie to the API `/files/:id` to
-      authorize + resolve the presigned URL, then streams the R2 object back
-      server-side (PDF-only, not a general proxy). It is NOT a cross-origin
-      browser fetch to the presigned R2 URL: that needs R2 bucket CORS (infra not
-      in this repo) + a `connect-src https://*.r2.cloudflarestorage.com` entry, and
-      TWO earlier attempts that did exactly that were reverted because without the
-      CORS config the fetch failed silently on-device and fell back to "open in new
-      tab". Same-origin needs neither — CSP `connect-src 'self'` covers it, so do
-      NOT re-add the R2 connect-src entry for this.
-    - This is why `pdfjs-dist` is a web dependency again: the worker is served
-      same-origin from `public/pdf.worker.min.mjs` (git-ignored, copied — the
-      matching LEGACY worker — by `scripts/copy-pdf-worker.mjs` on the
-      `predev`/`prebuild` hook, NOT via a webpack `new URL(...worker.mjs)`, which
-      Next's Terser pass fails to minify), referenced as
-      `workerSrc = '/pdf.worker.min.mjs'` so CSP `script-src 'self'` allows it;
-      `next.config.mjs` needs the `canvas: false` webpack alias (pdfjs-dist
-      optionally requires the Node `canvas` pkg we never use). The earlier
-      all-platforms pdf.js renderer was reverted for being needlessly heavy on
-      desktop; this mobile-only split is the deliberate re-introduction — keep it
-      scoped to mobile.
-    - The modal JS-pins `<body>` (position:fixed + saved offset) to lock background
-      scroll iOS-safely — do NOT add a CSS `body:has(.modal-overlay)` rule; it fires
-      without the saved offset and collapses the page.
-  - App Router boundaries: root `app/error.tsx` (client), `app/global-error.tsx`
-    (client, ships its own `<html>`/`<body>` + inline styles since it replaces the
-    root layout and can't rely on globals.css), `app/not-found.tsx` (server), and
-    `app/loading.tsx` (server). Scoped boundaries add `app/dashboard/error.tsx` +
-    `app/dashboard/loading.tsx` (mutation-heavy core) and `app/admin/error.tsx`
-    (data-heavy). All reuse existing globals.css classes — `.center-page`, `.btn`,
-    plus the shared `.spinner`/`@keyframes spin` and `.error-code`/`.error-desc`/
-    `.error-actions` added for these. Error boundaries log ONLY `error.digest` to the
-    console — never the raw message to the user. Thai copy: "เกิดข้อผิดพลาด" /
-    "ไม่พบหน้าที่ต้องการ". Don't add per-route loading.tsx to the client-rendered
-    dashboard pages — they self-handle loading with in-component skeletons, and the
-    root/dashboard fallbacks already cover segment suspense.
-- `packages/shared` — TypeScript types + DTO mappers shared between apps
-  (rebuild with `npm run build` after changing; API/web import the built `dist`)
-
-## Running Locally
-- `npm run dev` (root, turbo) — starts web + API + worker together. The API workspace `dev`
-  script runs `dev:api` and `dev:worker` concurrently (`concurrently`). Turbo only runs each
-  workspace's `dev` script, so the worker MUST stay bundled into `dev` (not a separate task).
-- Production: `npm start` runs the API only — run `npm run start:worker` as a SEPARATE
-  process/container so the worker scales independently.
-- LINE needs a public HTTPS webhook (tunnel or deploy). Set the webhook URL to
-  `<public>/webhook/line`, enable "Use webhook", and turn OFF LINE auto-reply/greeting.
-- Redis: use the Upstash `rediss://` URL (TLS). Plain `redis://` to Upstash fails.
-- Never run `npm run build` for the web while its dev server is running — both write
-  `.next/`, the dev server's runtime chunks get clobbered and every page 500s with
-  "Cannot find module './NNN.js'" until the dev server is restarted.
-
-## Deployment (Production)
-Three platforms. The web (Vercel) never talks to the API cross-origin — it calls the API
-**same-origin** through the Next.js `/api-proxy/:path*` rewrite (`apps/web/next.config.mjs`),
-because Safari ITP / the LINE in-app browser block the cross-site HttpOnly session cookie to
-the Railway domain. So the browser only ever hits `https://<web>/api-proxy/...`; Vercel rewrites
-that server-side to the Railway API.
-
-### Railway — API (`@nookeb/api`) + Worker (`nookeb-worker`, separate service)
-- API origin: `https://nookebapi-production.up.railway.app` — health at `GET /health`
-  (returns the live commit SHA via `RAILWAY_GIT_COMMIT_SHA` — always verify after a push,
-  auto-deploy has silently stalled before).
-- LINE Messaging webhook → `https://nookebapi-production.up.railway.app/webhook/line`.
-- Env vars are **per service** — the worker does NOT inherit from the API; set the full set on
-  BOTH (config throws in production if `APP_URL`/`WEB_URL` are localhost). Required (see
-  `.env.example`): `NODE_ENV=production`, `APP_URL`, `WEB_URL`, `LINE_CHANNEL_*`,
-  `LINE_LOGIN_CHANNEL_ID`, `LINE_LOGIN_CHANNEL_SECRET`, `SUPABASE_*`, `R2_*`, `REDIS_URL`
-  (`rediss://`), `JWT_SECRET`, `DOWNLOAD_TOKEN_SECRET`, plus quota/admin/limit vars.
-  `DOWNLOAD_TOKEN_SECRET` is now REQUIRED (min 32 chars, `config.ts`) — the old
-  `${JWT_SECRET}:download` fallback was removed (predictable derived secret), so the
-  API/worker fail fast at startup if it is unset. Must be on BOTH services (shared
-  `config.ts` validates the whole schema) and SHOULD differ from `JWT_SECRET`.
-  Generate with `openssl rand -hex 32`. See `DEPLOYMENT.md`.
-  Feature keys that MUST be on both or the feature half-works: `VAULT_MASTER_KEY`
-  (vault files AND the encrypted Google refresh token), `GOOGLE_CLIENT_ID` /
-  `GOOGLE_CLIENT_SECRET` (the API runs the OAuth flow, the WORKER runs the sync —
-  setting it on the API alone gives a connect button whose syncs never happen),
-  `MISTRAL_API_KEY`.
-- `trustProxy: true` is set in `index.ts` — REQUIRED: Railway's ingress + the /api-proxy hop
-  make every request arrive from one socket; without it `request.ip` is shared and the per-IP
-  rate limiters (global 100/min, `POST /auth/line` 10/min + ban:5) count all users as one and
-  ban everyone after a re-login burst.
-
-### Vercel — Web (`nookeb-web`)
-- **`API_PROXY_TARGET=https://nookebapi-production.up.railway.app`** (no trailing slash) —
-  server-side var (NOT `NEXT_PUBLIC_*`), the destination of the `/api-proxy` rewrite. **If
-  unset it falls back to `http://localhost:3001`; Vercel then refuses to proxy to a private
-  host and every `/api-proxy/*` call 404s with `DNS_HOSTNAME_RESOLVED_PRIVATE` — which breaks
-  login ("เข้าสู่ระบบไม่สำเร็จ") and all dashboard API calls.** Changing it requires a redeploy.
-- `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID` — the LINE Login channel id baked into the authorize URL.
-- `NEXT_PUBLIC_API_URL` is NOT used anymore (web hardcodes `API_URL = '/api-proxy'`).
-- Verify the proxy end-to-end: `POST https://nookeb-web.vercel.app/api-proxy/auth/line` with a
-  dummy code should return `401 "LINE login failed"` (reaches the API) — a `404` means
-  `API_PROXY_TARGET` is unset/wrong.
-
-### LINE Developer Console
-- Messaging API channel: webhook URL = Railway `/webhook/line`, "Use webhook" ON, auto-reply/
-  greeting OFF. Env: `LINE_CHANNEL_ID` / `LINE_CHANNEL_SECRET` / `LINE_CHANNEL_ACCESS_TOKEN`.
-- LINE Login channel: Callback URLs must include every web origin —
-  `https://nookeb-web.vercel.app/auth/callback` and the `*-nookeb.vercel.app/auth/callback`
-  preview domain. Env (on the API): `LINE_LOGIN_CHANNEL_ID` / `LINE_LOGIN_CHANNEL_SECRET`. The
-  `redirect_uri` the API sends to LINE's token endpoint must exactly match the one the browser
-  used to authorize (both derive from `window.location.origin + '/auth/callback'`).
-
-### Deploy order (critical-fix batches)
-Migrations that RPCs/columns depend on go BEFORE the API/worker deploy; deploy API BEFORE web
-(the web bundle authenticates only via the cookie + `/api-proxy`). See the migration headers
-and `supabase/backfills/` for specifics.
-
-**Outstanding at time of writing — migrations 045 and 046 are NOT applied yet.**
-045 is the blocking one: `getTaskWithDetails()` SELECTs `task_files`, and that
-function backs EVERY task read, so deploying the API before applying 045 breaks
-the whole task feature, not just attachments. Order:
-1. apply `045_task_files.sql`, then `046_google_sheets_integration.sql`;
-2. set `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` on BOTH Railway services
-   (with `VAULT_MASTER_KEY` already present), and register the OAuth redirect URI
-   `${APP_URL}/integrations/google/callback` in Google Cloud Console — Sheets API
-   + Drive API enabled;
-3. deploy API + worker, then web.
-Skipping step 2 is safe: Sheets sync just stays dormant (routes 503, jobs no-op).
-
-Migration 047 (`tasks.reminder_count`) is additive + either-order safe — the
-`หนูเก็บเตือนงาน` core flow (create/assign/reply) works before it's applied because
-free-tier inserts omit the column. Apply it before a Pro user first sends
-`เตือน N ครั้ง` (the insert would then reference a missing column). No new env —
-the Pro gate reads the existing `users.plan`.
-
-## Key Env Vars (see `.env.example`)
-- Core (API): `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`
-- `DOWNLOAD_TOKEN_SECRET` — REQUIRED (min 32 chars). Signs one-time `?dl_token=` file-download
-  tokens; kept separate from `JWT_SECRET` so a download token can't be replayed as a session
-  JWT. No fallback — the API/worker refuse to start if unset. Generate: `openssl rand -hex 32`.
-- Web (Vercel, see `apps/web/.env.example`): `API_PROXY_TARGET` (server-side rewrite target =
-  Railway API origin, no trailing slash — login breaks if unset), `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID`
-- `DEFAULT_STORAGE_LIMIT` — free-tier quota in bytes (default 1 GB; raised via referral tiers)
-- `REFERRAL_BONUS_BYTES` — one-time bonus for redeeming a referral code (default 0.5 GB)
-- `PURGE_RETENTION_DAYS` — purge R2 objects of soft-deleted files after N days (default 5;
-  doubles as the free-tier trash-restore window)
-- `TRASH_RETENTION_DAYS_PRO` — trash retention for pro/team-plan users (default 30)
-- `ADMIN_LINE_USER_IDS` — comma-separated LINE user ids granted admin access (no DB column)
-- `MISTRAL_API_KEY` / `MISTRAL_OCR_MODEL` / `DOCX_CONVERT_MAX_SOURCE_BYTES` — convert-to-Word
-  ("แปลงไฟล์"); feature is OFF (command replies "not available") until the key is set
-- `DIARY_MAX_IMAGE_BYTES` — ไดอารี่ per-photo cap (default 10 MB; jpg/png/webp only)
-- `PDF_MERGE_MAX_SOURCE_BYTES` / `PDF_MERGE_MAX_SOURCES` — ระบบรวมไฟล์ PDF caps
-  (defaults 20 MB per source, 20 sources). Worst-case worker memory is roughly the
-  product of the two — raise both together, and only deliberately.
-- `VAULT_MASTER_KEY` / `VAULT_MAX_FILE_SIZE_MB` / `VAULT_PURGE_RETENTION_DAYS` —
-  ห้องนิรภัย (Vault); routes reply 503 until the key (32-byte hex) is set.
-  NEVER rotate/lose the key — existing vault files become unreadable, AND every
-  stored Google refresh token (migration 046) becomes undecryptable.
-- `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — Google Sheets sync (migration
-  046). Feature is OFF until both are set (routes 503, sync job no-ops); it also
-  needs `VAULT_MASTER_KEY`. Authorized redirect URI must be exactly
-  `${APP_URL}/integrations/google/callback`. Set on BOTH Railway services.
-- `LINE_LIFF_ID` (API) / `NEXT_PUBLIC_LIFF_ID` (web) — ระบบตามงาน LIFF app id
-  (create under the LINE Login channel, endpoint `<WEB_URL>/liff/tasks`).
-  Optional: unset → LINE messages link to plain WEB_URL; LIFF pages run
-  LIFF-less for local dev.
-
-## Status (built)
-- Phase 1 — Core: LINE webhook, R2 upload worker, LINE Login, file list/download, bot reply.
-- Phase 2 — Organize: folders, tags, rename/move, name+OCR search, thumbnails, rich menu.
-- Phase 3 — Scan & Team: scan-to-PDF, LINE group shared spaces, team invites, image OCR.
-  Document flows now number four: สแกน · รวมรูป · แปลงไฟล์ (→Word) · รวมไฟล์ PDF
-  (migration 044) — the first, second and fourth all ride one `scan_sessions` row.
-- Phase 4 — SaaS (minus billing): storage quota + enforcement (1 GB free tier, referral
-  tiers up to 4 GB — migrations 010/030, `referral.service`), analytics/usage, admin panel,
-  daily R2 purge of long-deleted files. (Google Drive export removed — migration 017.)
-- Phase 5 — ระบบตามงาน complete (migrations 036/037/040/043/045/046): group + personal
-  tasks, scheduled reminders (soft-disabled, see `TASK_NOTIFICATIONS_ENABLED`),
-  attachments + the ส่งงานกลับ / รับงาน / ตีกลับ review loop, ห้องทีม, .xlsx export,
-  and Google Sheets sync. The last three are dormant until their prerequisites are
-  set (see the deploy checklist below).
-
-## Deferred / NOT built
-- Plans / Billing / subscriptions (free tier only for now)
-- Anything ERP-related. NOTE: a generic "approval workflow" is still not built —
-  the ระบบตามงาน review loop (migration 045) is a fixed two-party
-  ส่งงาน→รับงาน/ตีกลับ handshake between an assignee and the task's creator,
-  not a configurable multi-step approval chain. Do not grow it into one without
-  a deliberate decision.
-
-## Known accepted risks
-- **Next.js pinned to 14.2.35 (latest 14.x patch)** — request-smuggling /
-  cache-poisoning advisories in rewrites/middleware remain unresolved on the 14
-  branch (npm audit's only offered fix is a jump to Next 16). Full 14→16
-  migration needed to close; tracked as a separate project, not yet scheduled.
-  Accepted 2026-07-19. Compensating control: the `/api-proxy` rewrite is a
-  single fixed-target passthrough with no user-controlled destination (see
-  `apps/web/next.config.mjs`). Migration blockers + plan tracked in `ROADMAP.md`
-  (the pin note also lives in the `"//next"` key of `apps/web/package.json` — a
-  top-level key npm ignores, since JSON forbids inline comments). The actual
-  `package.json` spec is `^14.2.4`, which resolves to 14.2.35.
+Every `message` text must map to a real handler in `webhook/line.ts` — keep in sync.
+Do not add/remove/rearrange zones without approval.

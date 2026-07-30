@@ -833,6 +833,7 @@ export function buildTeamGuideFlexMessage(): FlexMessage {
     '3.  เข้าร่วมทีม',
     '4.  ผูกทีมกับไลน์กลุ่ม  (พิมพ์ หนูเก็บผูกทีม ได้เลย)',
     '5.  เริ่มส่งรูปแล้วเก็บความทรงจำได้เลยยย',
+    '6.  แจ้งเตือนงาน — พิมพ์ หนูเก็บเตือนงาน ได้เลย',
   ];
   return {
     type: 'flex',
@@ -926,9 +927,9 @@ export function buildHelpFlexMessage(): FlexMessage {
     {
       header: '👥 ทีม (ใช้ในกลุ่ม)',
       lines: [
-        '• "หนูเก็บผูกทีม" → เชื่อมกลุ่มกับทีม',
         '• "หนูเก็บเตือนงาน" → มอบหมายงานในกลุ่ม',
-        '• "หนูเก็บปิด/เปิดแจ้งเตือน" → ตั้งค่าการแจ้งเตือน',
+        '• "หนูเก็บคู่มือทีม" → วิธีเริ่มใช้งานแบบทีม',
+        '• "หนูเก็บผูกทีม" → เชื่อมกลุ่มกับทีม',
       ],
     },
     {
@@ -988,6 +989,116 @@ export function buildHelpFlexMessage(): FlexMessage {
         paddingAll: '12px',
         contents: [
           { type: 'text', text: 'ติดต่อทีมงาน → ติดต่อหนูเก็บ', size: 'xs', color: HELP_PINK, wrap: true },
+        ],
+      },
+      styles: { header: { backgroundColor: HELP_PINK }, body: { backgroundColor: HELP_PINK_SOFT } },
+    },
+  };
+}
+
+/**
+ * "หนูเก็บคำสั่ง" — the full command reference as a Flex card in the SAME pink
+ * style as buildHelpFlexMessage (shared HELP_PINK tokens, identical header/body/
+ * footer structure). Deliberately COMMAND NAMES ONLY: วิธีใช้ is the card that
+ * explains what each one does, so repeating descriptions here made the two cards
+ * duplicates of each other. Every entry below is a real, reachable handler in
+ * handleTextCommand (webhook/line.ts) — keep the two in sync.
+ */
+export function buildCommandListFlexMessage(): FlexMessage {
+  const sections: { header: string; commands: string[] }[] = [
+    { header: '📁 ล็อคเกอร์', commands: ['หนูเก็บล็อคเกอร์'] },
+    {
+      header: '📄 เอกสาร',
+      commands: [
+        'หนูเก็บฟีเจอร์เอกสาร',
+        'หนูเก็บสแกน',
+        'หนูเก็บสแกนสี',
+        'หนูเก็บสแกนขาวดำ',
+        'หนูเก็บรวมไฟล์',
+        'หนูเก็บแปลงไฟล์',
+      ],
+    },
+    { header: '📓 ไดอารี่', commands: ['หนูเก็บไดอารี่'] },
+    {
+      header: '🌐 เว็บแอป',
+      commands: ['หนูเก็บกล่องของขวัญ', 'หนูเก็บห้องนิรภัย', 'หนูเก็บงานของฉัน'],
+    },
+    {
+      header: '👥 ทีม (ใช้ในกลุ่ม)',
+      commands: [
+        'หนูเก็บเตือนงาน',
+        'หนูเก็บคู่มือทีม',
+        'หนูเก็บผูกทีม',
+        'หนูเก็บยกเลิกผูกทีม',
+        'หนูเก็บไอดีกลุ่ม',
+        'หนูเก็บลงทะเบียน',
+      ],
+    },
+    { header: '🎁 เพื่อน', commands: ['หนูเก็บเชิญ', 'หนูเก็บกรอกโค้ด [โค้ด]'] },
+    {
+      header: 'ℹ️ ทั่วไป',
+      commands: [
+        'หนูเก็บ',
+        'หนูเก็บเมนู',
+        'หนูเก็บฟีเจอร์',
+        'หนูเก็บวิธีใช้',
+        'หนูเก็บคำสั่ง',
+        'หนูเก็บแนะนำตัว',
+        'หนูเก็บเพิ่มเติม',
+        'ติดต่อหนูเก็บ',
+      ],
+    },
+    { header: '⚙️ ระหว่างใช้ฟีเจอร์', commands: ['เสร็จ', 'ยกเลิก'] },
+  ];
+
+  const bodyContents: Record<string, unknown>[] = [];
+  sections.forEach((section, i) => {
+    bodyContents.push({
+      type: 'text',
+      text: section.header,
+      weight: 'bold',
+      size: 'sm',
+      color: HELP_PINK,
+      wrap: true,
+      margin: i === 0 ? 'none' : 'lg',
+    });
+    for (const command of section.commands) {
+      bodyContents.push({
+        type: 'text',
+        text: command,
+        size: 'sm',
+        color: '#333333',
+        wrap: true,
+        margin: 'sm',
+      });
+    }
+  });
+
+  return {
+    type: 'flex',
+    altText: 'คำสั่งทั้งหมดของหนูเก็บ',
+    contents: {
+      type: 'bubble',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: 'คำสั่งทั้งหมด', color: '#FFFFFF', weight: 'bold', size: 'lg', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '16px',
+        contents: bodyContents,
+      },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '12px',
+        contents: [
+          { type: 'text', text: 'ดูวิธีใช้แต่ละคำสั่ง → หนูเก็บวิธีใช้', size: 'xs', color: HELP_PINK, wrap: true },
         ],
       },
       styles: { header: { backgroundColor: HELP_PINK }, body: { backgroundColor: HELP_PINK_SOFT } },

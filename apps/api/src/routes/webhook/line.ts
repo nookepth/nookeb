@@ -19,6 +19,7 @@ import {
   buildFinalizingFlexMessage,
   buildInviteFlexMessage,
   buildDocxConvertFlexMessage,
+  buildCommandListFlexMessage,
   buildFeatureCarouselMessage,
   buildHelpFlexMessage,
   buildOnboardingCarouselMessage,
@@ -296,15 +297,6 @@ async function findUserId(app: FastifyInstance, lineUserId: string): Promise<str
   return (data?.id as string | undefined) ?? null;
 }
 
-const HELP_TEXT = `วิธีใช้หนูเก็บน้า
-
-• ส่งรูปหรือไฟล์เข้ามาในแชทได้เลยน้า เดี๋ยวหนูเก็บให้พี่เอง
-• อยากรวมรูปและไฟล์ PDF เป็นไฟล์เดียว พิมพ์ "หนูเก็บรวมไฟล์" น้า
-• อยากสแกนเป็น PDF พิมพ์ "หนูเก็บสแกนสี" หรือ "หนูเก็บสแกนขาวดำ" น้า
-• อยากได้ไฟล์ Word แก้ต่อได้ พิมพ์ "หนูเก็บแปลงไฟล์" แล้วส่งรูปหรือ PDF มาน้า
-• อยากทำไดอารี่ 365 วัน พิมพ์ "หนูเก็บไดอารี่" แล้วส่งรูป 1 รูปมาน้า
-• เปิดคลังไฟล์ ค้นหา จัดโฟลเดอร์ได้ที่ ${config.WEB_URL}/dashboard เลยน้า`;
-
 // Rich-menu "แนะนำตัว" cell → the bot's self-introduction (message action, since the
 // webhook has no postback handler — rich-menu buttons send these trigger words as text).
 const INTRO_TEXT = `ทุกอย่างที่พี่อยากเก็บ ฝากหนูได้เลยน้า 📁✨`;
@@ -313,51 +305,6 @@ const INTRO_TEXT = `ทุกอย่างที่พี่อยากเก
 const SUPPORT_TEXT = `มีอะไรให้หนูช่วยไหมน้า 🙏
 พี่ทักหาทีมงานหนูเก็บได้เลยน้า
 🫱 https://lin.ee/Z0ewNYb`;
-
-// "หนูเก็บคำสั่ง" → the full command reference. Every entry below is a real,
-// reachable handler (each works with or without the "หนูเก็บ" prefix); shown in the
-// prefixed form since that's how the menu/rich-menu buttons send them. Keep this in
-// sync with the handlers in handleTextCommand.
-const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้งหมด 📋
-
-📁 ล็อคเกอร์
-หนูเก็บล็อคเกอร์ — เปิดคลังไฟล์ของพี่
-
-✨ ฟีเจอร์
-หนูเก็บฟีเจอร์ — ดูฟีเจอร์ทั้งหมด
-หนูเก็บรวมไฟล์ — รวมรูปและไฟล์ PDF เป็นไฟล์เดียว
-หนูเก็บสแกน — สแกนเอกสารเป็น PDF
-หนูเก็บสแกนสี — สแกนแบบสี
-หนูเก็บสแกนขาวดำ — สแกนแบบขาวดำ
-หนูเก็บแปลงไฟล์ — แปลงรูป/PDF เป็นไฟล์ Word
-หนูเก็บไดอารี่ — เก็บความทรงจำ 365 วัน
-
-🌐 เว็บแอป
-หนูเก็บกล่องของขวัญ — ส่งกล่องของขวัญให้คนพิเศษ
-หนูเก็บห้องนิรภัย — เก็บของสำคัญไว้ให้ปลอดภัย
-หนูเก็บงานของฉัน — ดูงานที่ต้องทำ
-
-👥 ทีม (ใช้ในกลุ่ม)
-หนูเก็บเตือนงาน — สั่งงานในกลุ่มเร็วๆ แค่แท็กเพื่อน (พิมพ์เปล่าๆ เพื่อดูวิธีใช้)
-หนูเก็บคู่มือทีม — วิธีเริ่มใช้งานแบบทีม
-หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
-หนูเก็บยกเลิกผูกทีม — ยกเลิกการผูกทีม
-หนูเก็บไอดีกลุ่ม — ดูไอดีกลุ่มนี้
-
-🎁 เพื่อน
-หนูเก็บเชิญ — รับโค้ดชวนเพื่อน
-หนูเก็บกรอกโค้ด [โค้ด] — กรอกโค้ดรับพื้นที่เพิ่ม
-
-ℹ️ ทั่วไป
-หนูเก็บ — เปิดเมนูหลัก
-หนูเก็บวิธีใช้ — คู่มือการใช้งาน
-หนูเก็บแนะนำตัว — ทำความรู้จักหนูเก็บ
-หนูเก็บเพิ่มเติม — ดูเพิ่มเติม
-ติดต่อหนูเก็บ — ติดต่อทีมงาน
-
-⚙️ ระหว่างใช้ฟีเจอร์
-เสร็จ — บอกหนูว่าครบแล้ว
-ยกเลิก — หยุดสิ่งที่ทำอยู่`;
 
 // /redeem failure copy in the bot's voice, keyed by the service's reasonCode
 // (the API route keeps returning the plain `reason` for the dashboard).
@@ -1137,9 +1084,11 @@ async function handleTextCommand(
     return;
   }
 
-  // Full command reference ("หนูเก็บคำสั่ง")
+  // Full command reference ("หนูเก็บคำสั่ง") — command NAMES only; the วิธีใช้ card
+  // is where each one is explained. Keep buildCommandListFlexMessage in sync with
+  // the handlers above.
   if (prefixed && isCmd(text, 'คำสั่ง')) {
-    await reply(event, COMMAND_LIST_TEXT);
+    await replyFlex(event, buildCommandListFlexMessage());
     return;
   }
 
