@@ -29,6 +29,16 @@ import { getChatMemberIds, getChatMemberProfile } from './line.service';
 
 // ---- group members ----
 
+/**
+ * Write a roster row from a LINE-OBSERVED signal only: every caller is a
+ * webhook-verified message/postback/unsend/memberJoined event, a "/register"
+ * command, an @mention resolution, or a fresh members/ids roster sync — all
+ * proof the caller currently considers this uid present in the group. That is
+ * exactly the signal strong enough to clear a prior removal, so this always
+ * resets removed_at to NULL, undoing any earlier removeGroupMember() tombstone
+ * (see ensureGroupMember below for the capability-only path, which must NOT do
+ * this).
+ */
 export async function upsertGroupMember(
   supabase: SupabaseClient,
   groupLineId: string,
@@ -47,9 +57,43 @@ export async function upsertGroupMember(
       ...(displayName != null ? { display_name: displayName } : {}),
       ...(pictureUrl != null ? { picture_url: pictureUrl } : {}),
       registered_at: new Date().toISOString(),
+      removed_at: null,
     },
     { onConflict: 'group_line_id,line_uid' },
   );
+  if (error) throw error;
+}
+
+/**
+ * Tombstone a roster row — the LINE `memberLeft` path only. A member who left
+ * (or was ejected from) the group must stop being a member for every
+ * group-keyed read: the roster row is what `isGroupMember` checks before
+ * revealing task titles, assignments, and submission/rejection notes.
+ *
+ * SOFT tombstone (removed_at), not a hard DELETE (migration 049): deleting the
+ * row outright is indistinguishable from "never was a member," and
+ * `ensureGroupMember`'s capability-only path would then silently re-create it
+ * on the ex-member's very next authenticated request — making this handler
+ * cosmetic. Keeping the row lets `ensureGroupMember` tell "never joined" (no
+ * row → still safe to auto-enroll on capability) apart from "explicitly
+ * removed" (row present, tombstoned → capability alone must not resurrect it).
+ *
+ * NOTE this revokes the ROSTER, not the group-id capability by itself: only a
+ * fresh LINE-observed signal (upsertGroupMember, e.g. them messaging the group
+ * again or a memberJoined re-add) clears the tombstone — see ensureGroupMember.
+ * Existing task_assignees rows are untouched, so outstanding assignments and
+ * their history survive the departure.
+ */
+export async function removeGroupMember(
+  supabase: SupabaseClient,
+  groupLineId: string,
+  lineUid: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from('group_members')
+    .update({ removed_at: new Date().toISOString() })
+    .eq('group_line_id', groupLineId)
+    .eq('line_uid', lineUid);
   if (error) throw error;
 }
 
@@ -61,6 +105,7 @@ export async function listGroupMembers(
     .from('group_members')
     .select('*')
     .eq('group_line_id', groupLineId)
+    .is('removed_at', null)
     .order('registered_at', { ascending: true });
   if (error) throw error;
   return (data ?? []) as GroupMemberRecord[];
@@ -71,38 +116,55 @@ export async function isGroupMember(
   groupLineId: string,
   lineUid: string,
 ): Promise<boolean> {
+  const row = await getGroupMemberRow(supabase, groupLineId, lineUid);
+  return row !== null && row.removed_at === null;
+}
+
+async function getGroupMemberRow(
+  supabase: SupabaseClient,
+  groupLineId: string,
+  lineUid: string,
+): Promise<{ removed_at: string | null } | null> {
   const { data, error } = await supabase
     .from('group_members')
-    .select('id')
+    .select('removed_at')
     .eq('group_line_id', groupLineId)
     .eq('line_uid', lineUid)
     .maybeSingle();
   if (error) throw error;
-  return data !== null;
+  return data;
 }
 
 /**
- * Membership check that auto-enrolls the caller. Trust model: a LINE group id
- * is an unguessable bearer capability (delivered only inside the group, same
- * model as share links), so possession IS the membership proof — no extra LINE
- * API call is needed, and none is reliable anyway.
+ * Membership check that auto-enrolls a FIRST-TIME caller. Trust model: a LINE
+ * group id is an unguessable bearer capability (delivered only inside the
+ * group, same model as share links), so possession IS the membership proof for
+ * someone with no roster history — no extra LINE API call is needed, and none
+ * is reliable anyway.
  *
  * We deliberately do NOT gate on LINE's group-scoped member endpoint: it 404s
  * for legitimate members who haven't messaged since the bot joined, and for
  * unverified OAs, so gating on it locked real members out of their own group
  * (the mobile "ยังไม่เห็นเราในกลุ่มนี้เลยน้า" bug). The signed LIFF session already
  * proves WHO the caller is; the group id in the request proves WHICH group they
- * hold the capability to. That is sufficient.
+ * hold the capability to. That is sufficient — for a row that doesn't exist yet.
  *
- * Always returns true (enrolls) unless the DB write itself fails (throws). The
- * boolean return is kept for callers' defensive guards + canView.
+ * It is NOT sufficient to undo an explicit removal: a row with removed_at SET
+ * means a LINE `memberLeft` event tombstoned this uid for this group, and mere
+ * possession of the group id (which an ex-member obviously still has) must not
+ * silently re-grant access — that would make removeGroupMember() cosmetic.
+ * Only a fresh LINE-observed signal (upsertGroupMember, called from the
+ * webhook: another message, a re-add via memberJoined, a roster sync that
+ * still sees them in members/ids) is allowed to clear the tombstone.
  */
 export async function ensureGroupMember(
   supabase: SupabaseClient,
   groupLineId: string,
   lineUid: string,
 ): Promise<boolean> {
-  if (await isGroupMember(supabase, groupLineId, lineUid)) return true;
+  const row = await getGroupMemberRow(supabase, groupLineId, lineUid);
+  if (row !== null) return row.removed_at === null;
+  // No row at all — genuinely never seen before. Safe to enroll on capability.
   // Display name/avatar only — best-effort, non-strict (null is fine; the
   // roster sync + webhook auto-upsert re-resolve NULL names later). This fetch
   // is NOT a membership gate; the capability above already granted access.

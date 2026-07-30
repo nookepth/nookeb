@@ -1333,7 +1333,7 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
   }
 
   const fileId = randomUUID();
-  const r2Key = buildFileKey(space.id, fileId, name);
+  const r2Key = buildFileKey(space.id, fileId, sanitizeR2Name(name));
   const { record, deduped } = await createFileRecord(supabase, {
     id: fileId,
     spaceId: space.id,

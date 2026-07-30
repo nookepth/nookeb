@@ -7,6 +7,7 @@ import {
   syncGroupRoster,
 } from '../services/task.service';
 import { getTeamRoom } from '../services/team-room.service';
+import { LINE_CHAT_ID_MESSAGE, LINE_CHAT_ID_RE } from '../services/line-id';
 
 /**
  * ระบบตามงาน group roster (migration 036). The roster fills itself three ways
@@ -25,7 +26,10 @@ import { getTeamRoom } from '../services/team-room.service';
  * revealing anything.
  */
 
-const groupIdSchema = z.string().min(1).max(100);
+// Shape-checked server-side: these routes enrol the caller into group_members
+// for whatever id they present, so accepting a U... user id would let anyone
+// forge a "group" roster keyed on someone's private chat (services/line-id.ts).
+const groupIdSchema = z.string().regex(LINE_CHAT_ID_RE, LINE_CHAT_ID_MESSAGE);
 
 const groupsRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (request, reply) => app.authenticate(request, reply));

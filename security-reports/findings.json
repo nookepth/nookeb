@@ -1,0 +1,287 @@
+[
+  {
+    "verdict": "confirmed",
+    "title": "LINE user ID accepted where a group ID is required, allowing arbitrary Official-Account push messages to a chosen user",
+    "description": "POST /tasks accepts a client-supplied `groupId` with no format validation (z.string().min(1).max(100)). Supplying a LINE user ID (`U` + 32 hex) instead of a group ID (`C`/`R` + 32 hex) passes every guard: ensureGroupMember auto-enrols the caller and unconditionally returns true, the assignee roster then contains only the attacker so assignee validation passes, and the value is written verbatim to tasks.group_line_id. notifyTarget() returns that column for a non-personal task, so pushMessage() delivers the attacker-authored Flex card from the Official Account into the victim's private 1-on-1 chat. The victim's user ID is obtainable from the application itself: GET /groups/:groupId/members returns every co-member's raw lineUid. Reproduction: (1) GET /api-proxy/groups/<own-group-id>/members and copy a co-member's lineUid; (2) POST /api-proxy/tasks with {\"scope\":\"group\",\"groupId\":\"U<victim>\",\"title\":\"<attacker text>\",\"type\":\"single\",\"globalDeadline\":\"<future ISO8601>\",\"items\":[{\"title\":\"<attacker text>\",\"description\":\"<up to 1000 chars>\",\"assignees\":[\"U<attacker-own-uid>\"]}]}. Observed result: HTTP 201 with \"announced\": true, and the victim receives the card in LINE. The correct validation regex already exists in this repository at apps/web/lib/liff.ts:248 (/^[CR][0-9a-f]{32}$/) but is applied only in browser code; the database CHECK the developers relied on (tasks_scope_exclusive, migration 043) tests only for NULL, not for identifier shape.",
+    "root_cause": "createTaskSchema in apps/api/src/routes/tasks.ts does not validate that `groupId` matches the LINE chat-id shape ^[CR][0-9a-f]{32}$, allowing a LINE user id to be stored as tasks.group_line_id and used as a push destination.",
+    "intended_behavior": "A group task's tenant key must be a LINE group or room id, which is an unguessable bearer capability delivered only inside that chat; possession of it is treated as proof of membership. Announcements and reminders for such a task are pushed to the group chat. Migration 043's header states explicitly that a LINE user id must never be written to tasks.group_line_id, because user ids leak to co-members through the roster endpoint and therefore cannot safely act as a capability.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "apps/api/src/routes/tasks.ts",
+        "line": 66,
+        "scope": "createTaskSchema",
+        "description": "groupId is declared as z.string().min(1).max(100).optional() with no format constraint; the superRefine at lines 85-105 only checks presence or absence per scope."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/routes/tasks.ts",
+        "line": 254,
+        "scope": "tasksRoutes",
+        "description": "The sole tenant guard for a group-scoped create calls ensureGroupMember(app.supabase, body.groupId!, lineUid) with the unvalidated value."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/services/task.service.ts",
+        "line": 117,
+        "scope": "ensureGroupMember",
+        "description": "After upserting a group_members row keyed on the supplied id, the function returns true unconditionally; the getChatMemberProfile call above it is documented as display-only and is not a membership gate."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/routes/tasks.ts",
+        "line": 354,
+        "scope": "tasksRoutes",
+        "description": "groupLineId: body.groupId! is passed to createTaskWithItems and written verbatim to tasks.group_line_id; the tasks_scope_exclusive CHECK only asserts non-NULL, so a user id is accepted by the database."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/services/task.service.ts",
+        "line": 252,
+        "scope": "notifyTarget",
+        "description": "Returns task.group_line_id for a non-personal task with no validation of the identifier's kind."
+      },
+      {
+        "kind": "sink",
+        "file": "apps/api/src/routes/tasks.ts",
+        "line": 384,
+        "scope": "tasksRoutes",
+        "description": "pushMessage(announceTo, [buildTaskCreatedFlex(task)]) sends the attacker-authored Flex card from the Official Account to the supplied destination, which is the victim's LINE user id."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "The attacker needs any authenticated nookeb session (obtained freely via POST /auth/line or POST /auth/liff)."
+      },
+      {
+        "kind": "data_state",
+        "description": "The attacker needs the victim's LINE user id. GET /groups/:groupId/members returns the raw lineUid of every member of any group whose id the attacker holds, which includes every group they belong to."
+      },
+      {
+        "kind": "third_party_dependency",
+        "description": "LINE's push API delivers to a user id only if that user has added the Official Account as a friend. This is true of every dashboard and LIFF user, since both flows require interacting with the OA."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "A registered nookeb user with a valid session cookie who belongs to at least one LINE group that the bot is in — for example any employee, contractor, or former member of a company group. No special role or privilege is required.",
+      "payloads": [
+        "GET /api-proxy/groups/Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/members HTTP/1.1\nHost: <web-origin>\nCookie: nookeb_session=<attacker session>",
+        "POST /api-proxy/tasks HTTP/1.1\nHost: <web-origin>\nCookie: nookeb_session=<attacker session>\nContent-Type: application/json\n\n{\"scope\":\"group\",\"groupId\":\"U2222222222222222222222222222222222\",\"title\":\"บัญชีของคุณถูกระงับ กดยืนยันตัวตนที่นี่\",\"type\":\"single\",\"globalDeadline\":\"2026-12-31T18:00:00+07:00\",\"items\":[{\"title\":\"ยืนยันตัวตนภายในวันนี้\",\"description\":\"<up to 1000 chars of attacker-controlled text>\",\"assignees\":[\"U<attacker-own-line-uid>\"]}]}"
+      ],
+      "instructions": [
+        "Register or log in to nookeb through LINE Login or a LIFF task page to obtain a session cookie.",
+        "Call GET /api-proxy/groups/<a group id the attacker legitimately holds>/members and record the lineUid values returned for other members.",
+        "Call POST /api-proxy/tasks with scope 'group', groupId set to a harvested victim lineUid, a future globalDeadline, and the attacker's own lineUid as the single assignee. Put the message to be delivered in title and items[0].title/description.",
+        "Observe the 201 response with announced: true.",
+        "Repeat with a different title for each additional message, or iterate over the harvested roster to reach multiple victims."
+      ],
+      "expected_result": "The API returns 201 {\"task\":{...},\"announced\":true}, and the targeted LINE user receives a Flex card from the หนูเก็บ Official Account containing the attacker's text. A row is persisted with tasks.group_line_id set to a LINE user id, violating the invariant stated in migration 043. Each call consumes one message from the Official Account's metered push quota, which is shared with all legitimate task announcements, review-loop notices and reminders."
+    },
+    "remediation": {
+      "strategy": "Validate the LINE chat-id shape server-side at every point where a client supplies a group id, reusing the regex that already exists in the web bundle, and enforce the same invariant at the database column so no future code path can reintroduce it. Additionally make notifyTarget refuse a destination that is not a chat id, so the push sink is closed independently of the input validation.",
+      "code_changes": [
+        {
+          "file_name": "apps/api/src/routes/tasks.ts",
+          "fixed_code": "// LINE Messaging-API chat ids: groups C + 32 hex, rooms R + 32 hex. A user id\n// (U + 32 hex) must NEVER be accepted here — it would be written to\n// tasks.group_line_id and used as a push destination (migration 043 header).\nconst LINE_CHAT_ID = /^[CR][0-9a-f]{32}$/;\n\nconst createTaskSchema = z\n  .object({\n    scope: z.enum(['group', 'personal']).default('group'),\n    groupId: z.string().regex(LINE_CHAT_ID, 'invalid LINE chat id').optional(),\n    // ...unchanged\n  })"
+        },
+        {
+          "file_name": "apps/api/src/routes/groups.ts",
+          "fixed_code": "const groupIdSchema = z.string().regex(/^[CR][0-9a-f]{32}$/, 'invalid LINE chat id');"
+        },
+        {
+          "file_name": "apps/api/src/services/task.service.ts",
+          "fixed_code": "export function notifyTarget(task: Pick<TaskRecord, 'is_personal' | 'owner_line_uid' | 'group_line_id'>): string | null {\n  if (task.is_personal) return task.owner_line_uid;\n  // Defence in depth: never push to a destination that is not a chat id, even\n  // if a malformed row reached the table.\n  const gid = task.group_line_id;\n  return gid && /^[CR][0-9a-f]{32}$/.test(gid) ? gid : null;\n}"
+        },
+        {
+          "file_name": "supabase/migrations/049_chat_id_shape.sql",
+          "fixed_code": "-- Enforce the invariant migration 043's header describes but could not express:\n-- group_line_id is a LINE GROUP/ROOM id, never a user id.\n-- Apply AFTER removing any offending rows created before the API fix.\nALTER TABLE tasks ADD CONSTRAINT tasks_group_line_id_shape\n  CHECK (group_line_id IS NULL OR group_line_id ~ '^[CR][0-9a-f]{32}$');\n\nALTER TABLE group_members ADD CONSTRAINT group_members_group_line_id_shape\n  CHECK (group_line_id ~ '^[CR][0-9a-f]{32}$');"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "Two ordinary authenticated HTTP requests with no race, no timing dependency and no special role. The targeting data is served by the application's own roster endpoint, and no format check exists anywhere on the server path."
+      },
+      "impact": {
+        "score": "high",
+        "reason": "Attacker-controlled text is delivered to a named individual inside the brand's trusted Official Account, a high-credibility phishing and harassment channel that bypasses the reply-only messaging discipline the product is built around. Repetition exhausts the shared metered push quota, which silently disables every legitimate task announcement, review-loop notice and reminder for all users."
+      },
+      "overall_severity": "high"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "Every step was read in the actual source and each candidate mitigation was checked and eliminated: the Zod schema (tasks.ts:66), the ensureGroupMember return contract (task.service.ts:100-118), the migration 036 column type and the migration 043 CHECK body, and a repo-wide grep confirming the ^[CR][0-9a-f]{32}$ regex exists only in apps/web/lib/liff.ts. The one element not executed against live infrastructure is LINE's acceptance of a push to a user id, which is documented behaviour of the Messaging API push endpoint and is already relied on by this codebase's own personal-task path (notifyTarget returns owner_line_uid, a user id, for personal tasks)."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "LINE-group task access cannot be revoked — a removed group member retains full read and write access indefinitely",
+    "description": "Access to a LINE group's task data is granted by possession of the group id: ensureGroupMember enrols any authenticated caller who presents one and unconditionally returns true. Nothing ever withdraws that access. group_members rows are never deleted (stated in the doc comment at webhook/line.ts:1159), and handleEvent has no memberLeft branch, so the application never observes a departure. A user removed from the LINE group therefore continues to read the group's entire task room through GET /groups/:groupId/room, refresh the live roster through GET /groups/:groupId/members, reach the same room a second way through GET /spaces/:id/tasks?groupId=, and create tasks that push Flex announcements back into the chat they were removed from. Manually deleting the roster row does not help, because the retained group id re-enrols them on the next request.",
+    "root_cause": "ensureGroupMember in apps/api/src/services/task.service.ts does not check current membership against LINE and never expires or withdraws a roster row, allowing a principal removed from the LINE group to retain group task access permanently.",
+    "intended_behavior": "A LINE group id is treated as an unguessable bearer capability that proves the caller belongs to that group, so group members can use task pages without typing a registration command. Access is meant to track group membership: someone who is in the group can see and create the group's tasks, and someone who is not should not. Roster rows are retained after departure so a former member stays displayable as the assignee of outstanding tasks — a narrower need than retaining read and create access.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "apps/api/src/routes/groups.ts",
+        "line": 93,
+        "scope": "groupsRoutes",
+        "description": "GET /groups/:groupId/room authenticates the caller, then gates access solely on ensureGroupMember(app.supabase, parsed.data, lineUid)."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/services/task.service.ts",
+        "line": 105,
+        "scope": "ensureGroupMember",
+        "description": "An existing group_members row short-circuits the check and returns true immediately; no query considers whether the caller is still in the LINE group."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/routes/webhook/line.ts",
+        "line": 1159,
+        "scope": "autoUpsertGroupMember",
+        "description": "The only writer of roster rows documents that the row is never deleted or expired; handleEvent at line 1181 branches on follow, join, message, postback, unsend and memberJoined, and has no memberLeft case, so a departure is never recorded."
+      },
+      {
+        "kind": "sink",
+        "file": "apps/api/src/routes/groups.ts",
+        "line": 100,
+        "scope": "groupsRoutes",
+        "description": "getTeamRoom returns the group's complete task room — titles, descriptions, assignees, deadlines, statuses, submission notes and rejection notes — to the ex-member."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authorization_role",
+        "description": "The attacker must have been a member of the target LINE group at some point, or otherwise obtained its group id."
+      },
+      {
+        "kind": "authentication_level",
+        "description": "The attacker must hold a valid nookeb session; sessions are independent of LINE group membership and are not revoked when someone leaves a group."
+      },
+      {
+        "kind": "data_state",
+        "description": "The attacker must retain the group id, which is shown to members in chat and is printed on demand by the หนูเก็บไอดีกลุ่ม bot command."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "A former member of a company or project LINE group — a departed employee, an ex-contractor, or anyone removed from the group — who kept a note of the group id and still has a nookeb login.",
+      "payloads": [
+        "GET /api-proxy/groups/C<retained-group-id>/room HTTP/1.1\nHost: <web-origin>\nCookie: nookeb_session=<ex-member session>",
+        "GET /api-proxy/groups/C<retained-group-id>/members HTTP/1.1\nHost: <web-origin>\nCookie: nookeb_session=<ex-member session>",
+        "POST /api-proxy/tasks HTTP/1.1\nHost: <web-origin>\nCookie: nookeb_session=<ex-member session>\nContent-Type: application/json\n\n{\"scope\":\"group\",\"groupId\":\"C<retained-group-id>\",\"title\":\"...\",\"type\":\"single\",\"globalDeadline\":\"2026-12-31T18:00:00+07:00\",\"items\":[{\"title\":\"...\",\"assignees\":[\"U<ex-member-uid>\"]}]}"
+      ],
+      "instructions": [
+        "While still a member of the group, note the group id (visible via the หนูเก็บไอดีกลุ่ม command, or in any สร้างงาน card link's ?groupId= parameter) and open any task page so a group_members row is created.",
+        "Be removed from the LINE group.",
+        "From any browser with the still-valid nookeb session, call GET /api-proxy/groups/<group id>/room and read the group's full task list.",
+        "Call GET /api-proxy/groups/<group id>/members to obtain the current roster, including members who joined after the removal.",
+        "Call POST /api-proxy/tasks with that group id to publish a Flex announcement into the group chat."
+      ],
+      "expected_result": "All three requests succeed. The room response contains every live task in the group with descriptions, assignees, deadlines, statuses and free-text submission and rejection notes; the members response reflects the current roster including post-removal joiners; and the create call returns 201 with announced: true, delivering a message into the chat the attacker was removed from. No configuration change by the group owner can prevent any of this."
+    },
+    "remediation": {
+      "strategy": "Separate roster membership used for historical assignee display from current authorization. Record departures from LINE, exclude departed members from authorization checks, and re-verify current membership with LINE on the enrolment path using the strict endpoint that already exists in the codebase — treating a verification failure as 'cannot enrol right now' rather than as admission, so the original false-negative problem does not return.",
+      "code_changes": [
+        {
+          "file_name": "supabase/migrations/050_group_member_left_at.sql",
+          "fixed_code": "-- Departure marker. Rows are still never deleted (a former member must stay\n-- displayable as the assignee of outstanding tasks), but a stamped row no\n-- longer grants access.\nALTER TABLE group_members ADD COLUMN left_at TIMESTAMPTZ;\nCREATE INDEX idx_group_members_active\n  ON group_members(group_line_id, line_uid) WHERE left_at IS NULL;"
+        },
+        {
+          "file_name": "apps/api/src/services/task.service.ts",
+          "fixed_code": "export async function isGroupMember(\n  supabase: SupabaseClient,\n  groupLineId: string,\n  lineUid: string,\n): Promise<boolean> {\n  const { data, error } = await supabase\n    .from('group_members')\n    .select('id')\n    .eq('group_line_id', groupLineId)\n    .eq('line_uid', lineUid)\n    .is('left_at', null)\n    .maybeSingle();\n  if (error) throw error;\n  return data !== null;\n}\n\nexport async function ensureGroupMember(\n  supabase: SupabaseClient,\n  groupLineId: string,\n  lineUid: string,\n): Promise<boolean> {\n  if (await isGroupMember(supabase, groupLineId, lineUid)) return true;\n  // Enrolment (including re-enrolment after a left_at stamp) now requires LINE\n  // to confirm CURRENT membership. A null here means 'not a member OR LINE was\n  // unreachable' — both correctly deny enrolment without locking out anyone who\n  // is already on the roster, since that case returned above.\n  const profile = await getChatMemberProfileStrict(groupLineId, lineUid);\n  if (!profile) return false;\n  await upsertGroupMember(supabase, groupLineId, lineUid, profile.displayName, profile.pictureUrl ?? null);\n  return true;\n}"
+        },
+        {
+          "file_name": "apps/api/src/routes/webhook/line.ts",
+          "fixed_code": "// inside handleEvent, alongside the memberJoined branch\nif (event.type === 'memberLeft') {\n  const groupId = event.source.groupId ?? event.source.roomId;\n  const leaving = event.left?.members ?? [];\n  if (groupId) {\n    for (const m of leaving) {\n      void supabaseUpdateLeftAt(app, groupId, m.userId);\n    }\n  }\n  return;\n}"
+        }
+      ]
+    },
+    "severity": {
+      "likelihood": {
+        "score": "medium",
+        "reason": "Requires having been a group member and retaining the group id, but no technical skill or timing: people leave and are removed from work groups routinely, and the group id is printed on demand by a bot command and embedded in every สร้างงาน card link."
+      },
+      "impact": {
+        "score": "medium",
+        "reason": "Full, permanent, unrevocable read access to one group's task data — including work descriptions, per-person assignments, deadlines and free-text submission and rejection notes — plus the ability to keep publishing messages into that group's chat. Blast radius is confined to groups the attacker previously belonged to, and no other tenant's data is reachable."
+      },
+      "overall_severity": "medium"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "The absence of a memberLeft handler and of any deletion of group_members rows was confirmed by repo-wide grep and by reading handleEvent's branch list; ensureGroupMember's unconditional-true contract is stated in its own doc comment and visible in the code; the three consuming routes were read directly. The only element not executed is the LINE platform's delivery of a memberLeft event, which is standard Messaging API behaviour and is not required for the vulnerability, only for the fix."
+    }
+  },
+  {
+    "verdict": "confirmed",
+    "title": "Group roster endpoint discloses co-members' raw LINE user IDs",
+    "description": "GET /groups/:groupId/members returns toGroupMemberDto for every roster row, and that DTO includes the raw line_uid. Any authenticated caller holding a group id therefore obtains the LINE user identifier of everyone in that group. This has no standalone exploit — a LINE user id is not by itself a credential — but it is the targeting primitive that makes the HIGH-severity push-injection finding practical, and migration 043's header names exactly this exposure as the reason a user id must never be used as a tenant key. Reported as a building block so the dependency is explicit; it becomes inert once the group-id shape validation is added.",
+    "root_cause": "toGroupMemberDto in packages/shared/src/types/task.ts does not substitute an opaque per-group handle for line_uid, so the roster endpoint in apps/api/src/routes/groups.ts exposes raw LINE user identifiers to every holder of a group id.",
+    "intended_behavior": "The LIFF assignee picker needs a stable identifier for each group member so the client can name assignees when submitting a task, and display names and avatars so the picker is usable. The identifier is expected to be usable only as an assignee reference within the group's own task flows.",
+    "trace": [
+      {
+        "kind": "entrypoint",
+        "file": "apps/api/src/routes/groups.ts",
+        "line": 38,
+        "scope": "groupsRoutes",
+        "description": "GET /groups/:groupId/members is reachable by any authenticated caller presenting any group id; ensureGroupMember enrols rather than denies."
+      },
+      {
+        "kind": "propagation",
+        "file": "apps/api/src/routes/groups.ts",
+        "line": 51,
+        "scope": "groupsRoutes",
+        "description": "listGroupMembers loads every group_members row for the group, including the line_uid column."
+      },
+      {
+        "kind": "sink",
+        "file": "packages/shared/src/types/task.ts",
+        "line": 323,
+        "scope": "toGroupMemberDto",
+        "description": "The response DTO emits lineUid verbatim, placing every co-member's raw LINE user identifier in the JSON body returned to the caller."
+      }
+    ],
+    "conditions": [
+      {
+        "kind": "authentication_level",
+        "description": "Any authenticated nookeb session."
+      },
+      {
+        "kind": "data_state",
+        "description": "Possession of a LINE group id, which every member of that group has."
+      }
+    ],
+    "execution": {
+      "attacker_perspective": "Any member of any LINE group the bot is in, using their own legitimate session and their own group's id.",
+      "payloads": [
+        "GET /api-proxy/groups/Cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx/members HTTP/1.1\nHost: <web-origin>\nCookie: nookeb_session=<session>"
+      ],
+      "instructions": [
+        "Log in to nookeb and open any group task page, or read the group id from the หนูเก็บไอดีกลุ่ม bot command.",
+        "Request the roster endpoint for that group id.",
+        "Record the lineUid field of every returned member."
+      ],
+      "expected_result": "A 200 response of the form {\"members\":[{\"lineUid\":\"U…\",\"displayName\":\"…\",\"pictureUrl\":\"…\"}, …]} containing the raw LINE user identifier of every member of the group. No exploitation follows from this alone; the identifiers are the input to the group-id confusion finding."
+    },
+    "remediation": {
+      "strategy": "Once the chat-id shape validation is in place the user ids are no longer a push-targeting primitive and this becomes acceptable. If the roster surface grows, replace the raw identifier with an opaque per-group handle that the create endpoint maps back to a line_uid server-side, so a LINE user id never leaves the API."
+    },
+    "severity": {
+      "likelihood": {
+        "score": "high",
+        "reason": "A single authenticated GET that every group member is expected to make; it is the normal operation of the assignee picker."
+      },
+      "impact": {
+        "score": "informational",
+        "reason": "A LINE user id is not a credential and grants nothing on its own. Its only demonstrated consequence in this codebase is as the targeting input to the group-id confusion finding, which is reported separately."
+      },
+      "overall_severity": "informational"
+    },
+    "confidence": {
+      "score": "high",
+      "reason": "The route, the service call and the DTO field were all read directly in source; there is no ambiguity about what the endpoint returns."
+    }
+  }
+]

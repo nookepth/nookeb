@@ -158,6 +158,8 @@ export interface GroupMemberRecord {
   display_name: string | null;
   picture_url: string | null;
   registered_at: string;
+  /** Set by removeGroupMember() on a LINE `memberLeft` event; see migration 049. */
+  removed_at: string | null;
 }
 
 /** Job: send one reminder round (textV2 mention + Flex card) for a task/item. */

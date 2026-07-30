@@ -2,6 +2,7 @@ import type { FastifyPluginAsync, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import { toTeamDto, type TeamInviteDto, type TeamLineGroupDto } from '@nookeb/shared';
 import { config } from '../config';
+import { LINE_CHAT_ID_MESSAGE, LINE_CHAT_ID_RE } from '../services/line-id';
 import {
   approveJoinRequest,
   bindLineGroup,
@@ -202,8 +203,16 @@ const teamRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /api/teams/:teamId/groups — bind a LINE group to the team
   app.post<{ Params: { teamId: string } }>('/:teamId/groups', async (request, reply) => {
-    const parsed = z.object({ lineGroupId: z.string().trim().min(1) }).safeParse(request.body);
-    if (!parsed.success) return fail(reply, 400, 'INVALID_BODY', 'lineGroupId is required');
+    // Shape-checked: a bound id is later read back as a group tenant key, so a
+    // U... user id must not get in here either (services/line-id.ts). Only the
+    // BIND path validates — the DELETE below must stay able to unbind any row
+    // that predates this check.
+    const parsed = z
+      .object({ lineGroupId: z.string().trim().regex(LINE_CHAT_ID_RE, LINE_CHAT_ID_MESSAGE) })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return fail(reply, 400, 'INVALID_BODY', 'lineGroupId must be a valid LINE group or room ID');
+    }
 
     const binding = await bindLineGroup(
       app.supabase,

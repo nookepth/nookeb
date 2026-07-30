@@ -81,7 +81,7 @@ import {
   handleTaskConfirmPostback,
 } from './task-command-handlers';
 import { buildCreateTaskCard, buildGroupWelcomeCard } from '../../services/lineMessage';
-import { upsertGroupMember } from '../../services/task.service';
+import { removeGroupMember, upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
 
 interface LineEventSource {
@@ -109,6 +109,12 @@ interface LineMessageEvent {
    * instant they join, with zero typing required (ระบบตามงาน).
    */
   joined?: { members: LineEventSource[] };
+  /**
+   * Present on 'memberLeft' events — the members who just left (or were removed
+   * from) the group/room. Their roster row is deleted so they stop counting as
+   * a member on every group-keyed read (ระบบตามงาน).
+   */
+  left?: { members: LineEventSource[] };
   message?: {
     id: string;
     type: string; // 'image' | 'file' | 'video' | 'audio' | 'text' | ...
@@ -1155,9 +1161,9 @@ async function deliverLeftoverPending(
  *
  * Best-effort + fire-and-forget: it must never block the reply nor throw into
  * the 1s webhook path (failures are swallowed + logged). NULL profile fields
- * never overwrite an already-resolved name/avatar (see upsertGroupMember), and
- * the row is NEVER deleted/expired — a member who later leaves stays assignable
- * to their outstanding tasks.
+ * never overwrite an already-resolved name/avatar (see upsertGroupMember). The
+ * only path that removes a row is `memberLeft` (autoRemoveGroupMember below);
+ * their task_assignees rows survive, so past assignments stay readable.
  */
 function autoUpsertGroupMember(app: FastifyInstance, groupId: string, lineUserId: string): void {
   void (async () => {
@@ -1174,6 +1180,26 @@ function autoUpsertGroupMember(app: FastifyInstance, groupId: string, lineUserId
       );
     } catch (err) {
       app.log.warn({ err, groupId, lineUserId }, 'group member auto-upsert failed');
+    }
+  })();
+}
+
+/**
+ * The mirror of autoUpsertGroupMember: drop the roster row of someone who left
+ * or was ejected from the group. Without this, `isGroupMember` keeps returning
+ * true forever and an ex-member can still read every group task, assignment and
+ * submission/rejection note through the group-keyed routes.
+ *
+ * Same discipline as the upsert: best-effort, fire-and-forget, never throws into
+ * the 1s webhook path, and sends NOTHING to the chat (a departure is not an
+ * event anyone needs a card about, and pushes are rationed — rule 10).
+ */
+function autoRemoveGroupMember(app: FastifyInstance, groupId: string, lineUserId: string): void {
+  void (async () => {
+    try {
+      await removeGroupMember(app.supabase, groupId, lineUserId);
+    } catch (err) {
+      app.log.warn({ err, groupId, lineUserId }, 'group member auto-remove failed');
     }
   })();
 }
@@ -1214,9 +1240,24 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
     return;
   }
 
+  // A member LEFT (or was removed from) the group/room → revoke their roster
+  // row immediately. LINE's memberLeft event carries each departed member's
+  // userId; dropping the row is what actually ends their access to the group's
+  // tasks, since every group-keyed route gates on group_members (rule 4 — the
+  // service role bypasses RLS, so this roster IS the tenant boundary).
+  if (event.type === 'memberLeft') {
+    const groupId = event.source.groupId ?? event.source.roomId;
+    if (groupId) {
+      for (const m of event.left?.members ?? []) {
+        if (m.userId) autoRemoveGroupMember(app, groupId, m.userId);
+      }
+    }
+    return;
+  }
+
   // Message unsend (group/room) is still a live signal the sender is present —
-  // keep their roster row fresh. Never used to remove anyone (roster rows are
-  // never deleted/expired).
+  // keep their roster row fresh. Never used to remove anyone — memberLeft above
+  // is the only removal path.
   if (event.type === 'unsend') {
     const groupId = event.source.groupId ?? event.source.roomId;
     if (

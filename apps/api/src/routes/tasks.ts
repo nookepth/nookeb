@@ -38,6 +38,7 @@ import {
   rescheduleReminders,
   scheduleReminders,
 } from '../services/taskScheduler';
+import { LINE_CHAT_ID_MESSAGE, LINE_CHAT_ID_RE } from '../services/line-id';
 
 /**
  * ระบบตามงาน (Task Manager) API — migration 036. Tasks are created from the
@@ -63,7 +64,10 @@ const recurrenceSchema = z.object({
 const createTaskSchema = z
   .object({
     scope: z.enum(['group', 'personal']).default('group'),
-    groupId: z.string().min(1).max(100).optional(),
+    // Shape-checked, not just non-empty: a U... LINE USER id passing as a group
+    // id would be written to tasks.group_line_id and turn the announcement push
+    // into a message in that user's private chat (see services/line-id.ts).
+    groupId: z.string().regex(LINE_CHAT_ID_RE, LINE_CHAT_ID_MESSAGE).optional(),
     title: z.string().trim().min(1).max(200),
     type: z.enum(['single', 'multi', 'recurring']),
     globalDeadline: z.string().datetime({ offset: true }).optional(),
