@@ -11,9 +11,10 @@ import type { FlexMessage } from '../services/flex.service';
  * (`nookeb:cmd_count:{groupId}:remind`) because it is pure UX state, not
  * business data; losing it just means one group re-reads the full card once.
  *
- * The "เตือนงาน" button posts back `action=remind_full_guide`, which resets that
- * counter and replies the full card again — the escape hatch for a new member
- * who never saw it.
+ * The "เตือนงาน" button posts back `action=remind` with
+ * `inputOption: 'openKeyboard'` + a `fillInText` template, so tapping it drops
+ * the command skeleton straight into the composer for the user to fill in. The
+ * postback itself carries no handler — see the note in line.ts.
  *
  * NO emoji (brand rule) and BRAND_RED only, same as every other task card
  * (lineMessage.ts). The format/example lines sit in the shared light-gray "code"
@@ -84,9 +85,9 @@ export function buildRemindCompactFlex(liffId?: string, groupId?: string | null)
         spacing: 'sm',
         contents: [
           label('รูปแบบคำสั่ง'),
-          codeBox('หนูเก็บเตือนงาน @ชื่อ [วันที่หรือพรุ่งนี้] [เวลา] [หมายเหตุ]'),
+          codeBox('หนูเก็บเตือนงาน @ชื่อ [งานที่ต้องทำ] ส่ง [วัน เวลา]'),
           label('ตัวอย่าง', 'lg'),
-          codeBox('หนูเก็บเตือนงาน @สมชาย ส่งรายงาน 25/7 17:00'),
+          codeBox('หนูเก็บเตือนงาน @สมชาย ทำสไลด์นำเสนอ ส่ง 25/7 17:00'),
         ],
       },
       footer: {
@@ -104,8 +105,9 @@ export function buildRemindCompactFlex(liffId?: string, groupId?: string | null)
             action: {
               type: 'postback',
               label: 'เตือนงาน',
-              data: 'action=remind_full_guide',
-              displayText: 'ขอดูวิธีใช้แบบเต็มน้า',
+              data: 'action=remind',
+              inputOption: 'openKeyboard',
+              fillInText: 'หนูเก็บเตือนงาน @ งาน.. ส่ง dd/mm 00:00',
             },
           },
           {
