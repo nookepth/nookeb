@@ -19,6 +19,7 @@ import type {
   TeamLineGroupDto,
   TeamMemberDto,
   TaskDto,
+  TaskFileDto,
   GroupMemberDto,
   UserDto,
 } from '@nookeb/shared';
@@ -1203,6 +1204,39 @@ export function updateTaskItemNote(
 /** Acknowledge (accept) the viewer's own assignment on an item — optional. */
 export function acceptTaskItem(taskId: string, itemId: string): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks/${taskId}/items/${itemId}/accept`, { method: 'POST' });
+}
+
+// ---- review loop (migration 045): creator รับงาน / ตีกลับ a submission ----
+
+/** Creator accepts a submitted item (marks every assignee done). */
+export function approveTaskItem(taskId: string, itemId: string): Promise<{ task: TaskDto; taskDone: boolean }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/approve`, { method: 'POST' });
+}
+
+/** Creator sends a submitted item back with a mandatory reason. */
+export function rejectTaskItem(taskId: string, itemId: string, note: string): Promise<{ task: TaskDto }> {
+  return apiFetch(`/tasks/${taskId}/items/${itemId}/reject`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ note }),
+  });
+}
+
+// ---- task attachments (migration 045) ----
+
+/**
+ * The task's attachments WITH presigned download URLs (1h). Fetched separately
+ * from getTask because those urls are minted per read (the task payload carries
+ * `files` with `url: null`) — mirrors the LIFF `listTaskFiles`.
+ */
+export async function listTaskFiles(taskId: string): Promise<TaskFileDto[]> {
+  const { files } = await apiFetch<{ files: TaskFileDto[] }>(`/tasks/${taskId}/files`);
+  return files;
+}
+
+/** Remove an attachment (detach + soft-delete). Uploader or task creator only. */
+export function deleteTaskFile(taskId: string, attachmentId: string): Promise<{ success: boolean }> {
+  return apiFetch(`/tasks/${taskId}/files/${attachmentId}`, { method: 'DELETE' });
 }
 
 /** Creator edits the task title and/or global deadline (reschedules reminders). */

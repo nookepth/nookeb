@@ -107,3 +107,16 @@ export async function listTaskFiles(taskId: string): Promise<TaskFileDto[]> {
   const body = (await res.json()) as { files: TaskFileDto[] };
   return body.files;
 }
+
+/**
+ * Remove an attachment (detach + soft-delete on the API). Only the uploader or
+ * the task's creator may call it — the API re-checks and 403s otherwise.
+ * Returns true on success so the caller can prune its local list.
+ */
+export async function deleteTaskFile(taskId: string, attachmentId: string): Promise<boolean> {
+  const res = await apiFetch(
+    `/api-proxy/tasks/${encodeURIComponent(taskId)}/files/${encodeURIComponent(attachmentId)}`,
+    { method: 'DELETE' },
+  );
+  return res.ok;
+}

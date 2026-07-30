@@ -529,9 +529,23 @@ sanctioned exception to the reply-only rule (see LINE Messaging section).
   review fields so a new round starts clean.
 - LIFF: `FileAttach.tsx` (picker only — never uploads; the parent owns the
   upload because the task must exist first) + `lib/taskFiles.ts` (one request
-  PER FILE, so a dropped mobile upload costs one file, not the batch) +
-  `[taskId]/submit/page.tsx` (ส่งงานกลับ: files upload FIRST, then the status
-  flip — the creator must never see "รอตรวจ" on evidence still in flight).
+  PER FILE, so a dropped mobile upload costs one file, not the batch —
+  `listTaskFiles` + `deleteTaskFile`) + `[taskId]/submit/page.tsx` (ส่งงานกลับ:
+  files upload FIRST, then the status flip — the creator must never see "รอตรวจ"
+  on evidence still in flight).
+- Client surfaces for the loop live on BOTH task-detail pages — the LIFF
+  `[taskId]/page.tsx` and the web dashboard `[taskId]/page.tsx` — kept in
+  parity: the creator's **รับงาน / ตีกลับ** controls appear on any `submitted`
+  item (ตีกลับ opens a sheet whose reason is mandatory, mirroring the API's
+  non-empty-note check), and an assignee awaiting review sees NO done controls
+  (the ball is in the creator's court). Both also render an **ไฟล์ที่แนบ** list
+  with per-file delete (uploader or creator only — the API re-checks and 403s).
+  That list is fetched SEPARATELY from the task payload (the task DTO carries
+  `files` with `url: null`; download links are presigned per read), so it is
+  local state the page owns and prunes optimistically on delete rather than
+  refetching. The dashboard client's task functions
+  (`approveTaskItem`/`rejectTaskItem`/`listTaskFiles`/`deleteTaskFile`) are in
+  `lib/api.ts`; the LIFF ones in `lib/taskFiles.ts`.
 - Excel export: `GET /tasks/export?format=xlsx&from&to&status` → .xlsx built by
   `services/export.service.ts` (pure/env-free, unit-tested — same shape as
   docx-builder/pdf-merge; `exceljs`, the only chart/spreadsheet lib in the repo).

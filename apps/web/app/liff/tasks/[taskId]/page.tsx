@@ -21,7 +21,7 @@ import {
 } from '../components';
 import { ProFeatureSection } from '../ProFeatureSection';
 import { trackEvent } from '../../../../lib/track';
-import { listTaskFiles, type TaskFileDto } from '../../../../lib/taskFiles';
+import { deleteTaskFile, listTaskFiles, type TaskFileDto } from '../../../../lib/taskFiles';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 
 interface AssigneeDto {
@@ -116,6 +116,14 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+const THAI_MONTHS_SHORT = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+/** Upload date for an attachment row, e.g. "5 ก.ค.". */
+function formatUploadedAt(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getDate()} ${THAI_MONTHS_SHORT[d.getMonth()]}`;
 }
 
 /** ISO → 'YYYY-MM-DDTHH:mm' local, for <input type="datetime-local">. */
@@ -456,6 +464,28 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
     if (ok) setAssigneeItemId(null);
   };
 
+  // Detach an attachment (uploader or creator only — the API re-checks). The
+  // list is state we own here (it comes from GET …/files, not the task payload),
+  // so prune it optimistically on success rather than refetching.
+  const removeAttachment = async (f: TaskFileDto) => {
+    if (busy) return;
+    if (!window.confirm(`ลบไฟล์ "${f.name}" ออกจากงานใช่ไหมน้า?`)) return;
+    setBusy(true);
+    try {
+      const ok = await deleteTaskFile(params.taskId, f.id);
+      if (ok) {
+        setAttachments((list) => list.filter((x) => x.id !== f.id));
+        showToast('ลบไฟล์แล้วน้า');
+      } else {
+        showToast('ลบไฟล์ไม่สำเร็จ ลองใหม่อีกทีน้า');
+      }
+    } catch {
+      showToast('ลบไฟล์ไม่สำเร็จ ลองใหม่อีกทีน้า');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <main className={styles.page} style={{ paddingBottom: 60 }}>
       {/* header card: title + status + deadline */}
@@ -631,42 +661,57 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
         <section className={styles.section}>
           <p className={styles.sectionLabel}>ไฟล์ที่แนบ ({attachments.length})</p>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {attachments.map((f) => (
-              <a
-                key={f.id}
-                className={styles.card}
-                href={f.url ?? undefined}
-                target="_blank"
-                rel="noreferrer"
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: 10,
-                  padding: '10px 12px',
-                  textDecoration: 'none',
-                  opacity: f.url ? 1 : 0.5,
-                }}
-              >
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <p
+            {attachments.map((f) => {
+              const canRemove = f.uploadedByLineUid === viewerUid || isCreator;
+              return (
+                <div
+                  key={f.id}
+                  className={styles.card}
+                  style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px' }}
+                >
+                  <a
+                    href={f.url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
                     style={{
-                      margin: 0,
-                      fontSize: 14,
-                      color: '#1971c2',
-                      overflow: 'hidden',
-                      textOverflow: 'ellipsis',
-                      whiteSpace: 'nowrap',
+                      flex: 1,
+                      minWidth: 0,
+                      textDecoration: 'none',
+                      opacity: f.url ? 1 : 0.5,
+                      pointerEvents: f.url ? undefined : 'none',
                     }}
                   >
-                    {f.name}
-                  </p>
-                  <p style={{ margin: '2px 0 0', fontSize: 12, color: '#8c8c8c' }}>
-                    {formatBytes(f.size)}
-                    {f.kind === 'submission' ? ' · ไฟล์ที่ส่งกลับ' : ''}
-                  </p>
+                    <p
+                      style={{
+                        margin: 0,
+                        fontSize: 14,
+                        color: '#1971c2',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {f.name}
+                    </p>
+                    <p style={{ margin: '2px 0 0', fontSize: 12, color: '#8c8c8c' }}>
+                      {formatBytes(f.size)} · {formatUploadedAt(f.createdAt)}
+                      {f.kind === 'submission' ? ' · ไฟล์ที่ส่งกลับ' : ''}
+                    </p>
+                  </a>
+                  {canRemove && !isClosed && (
+                    <button
+                      type="button"
+                      aria-label={`ลบไฟล์ ${f.name}`}
+                      onClick={() => void removeAttachment(f)}
+                      disabled={busy}
+                      style={{ border: 'none', background: 'none', color: '#b0b0b0', cursor: 'pointer', padding: 4 }}
+                    >
+                      <IconClose size={14} />
+                    </button>
+                  )}
                 </div>
-              </a>
-            ))}
+              );
+            })}
           </div>
         </section>
       )}
