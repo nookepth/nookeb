@@ -72,6 +72,13 @@ import { formatThaiBuddhistDate } from '../../services/docx-thai-components';
 import { isMistralOcrConfigured } from '../../services/mistral-ocr.service';
 import { logEvent, type EventType } from '../../services/events.service';
 import { handleRegisterCommand, handleTaskPostback } from './task-handlers';
+import {
+  handleNaturalTaskMessage,
+  handlePendingDueReply,
+  handleTaskCommandCreate,
+  handleTaskCommandHelp,
+  handleTaskConfirmPostback,
+} from './task-command-handlers';
 import { buildCreateTaskCard, buildGroupWelcomeCard, buildTeamRoomCard } from '../../services/lineMessage';
 import { upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
@@ -108,6 +115,15 @@ interface LineMessageEvent {
     /** declared size in bytes — LINE sends this for 'file' messages only */
     fileSize?: number;
     text?: string;
+    /**
+     * Inbound @mentions on a text message (ระบบตามงาน "หนูเก็บสั่งงาน"). LINE
+     * omits `userId` for a mentionee it can't identify — that absence IS the
+     * "can't resolve this person" case (see task-command.ts). `index`/`length`
+     * are UTF-16 offsets into `text`.
+     */
+    mention?: {
+      mentionees?: { index: number; length: number; userId?: string; type?: 'user' | 'all' | string }[];
+    };
   };
 }
 
@@ -323,6 +339,7 @@ const COMMAND_LIST_TEXT = `หนูเก็บ — คำสั่งทั้
 
 👥 ทีม (ใช้ในกลุ่ม)
 หนูเก็บสร้างงาน — มอบหมายงานในกลุ่ม
+หนูเก็บเตือนงาน — สั่งงานในกลุ่มเร็วๆ แค่แท็กเพื่อน (พิมพ์เปล่าๆ เพื่อดูวิธีใช้)
 หนูเก็บคู่มือทีม — วิธีเริ่มใช้งานแบบทีม
 หนูเก็บผูกทีม — ผูกกลุ่มกับทีม
 หนูเก็บยกเลิกผูกทีม — ยกเลิกการผูกทีม
@@ -528,6 +545,48 @@ async function handleTextCommand(
     }
     await replyFlex(event, buildTeamRoomCard(config.LINE_LIFF_ID, groupId));
     return;
+  }
+
+  // ระบบตามงาน in-chat commands (task-command-handlers.ts). Prefixed, and matched
+  // BEFORE the group bot-directed guard (the prefix passes it anyway). Both read
+  // the RAW event.message (text + @mention metadata) inside the handler, so they
+  // must run before any command-text mutation.
+  //   "หนูเก็บเตือนงาน"     → help / instruction card (exact match)
+  //   "หนูเก็บเตือนงาน …"   → parse @mentions + create + reply the task into the group
+  // The one trigger word does both; the exact-match help branch runs first so
+  // only a เตือนงาน WITH extra content falls through to create. "สั่งงาน" is kept
+  // as a legacy alias (its bare form still routes to help via the create handler's
+  // isBareCommand fallback).
+  if (prefixed && isCmd(text, 'เตือนงาน')) {
+    await handleTaskCommandHelp(app, event);
+    return;
+  }
+  if (
+    prefixed &&
+    (normalizeCmd(text).startsWith('เตือนงาน') || normalizeCmd(text).startsWith('สั่งงาน'))
+  ) {
+    await handleTaskCommandCreate(app, event);
+    return;
+  }
+
+  // ระบบตามงาน — lightweight NATURAL-LANGUAGE task detection for UN-PREFIXED
+  // group/room messages (task-command-handlers.ts). Runs BEFORE the bot-directed
+  // guard below because these messages never say "หนูเก็บ" — they're plain chat
+  // that @mentions someone with a task. Both paths read the RAW event.message
+  // (text + @mention offsets), so this must run before any command-text mutation
+  // and never creates a task directly (always the confirmation card). The strict
+  // "หนูเก็บเตือนงาน …" flow above is untouched (it's prefixed, so it ran already).
+  if ((source.type === 'group' || source.type === 'room') && !prefixed && event.message) {
+    const groupId = source.groupId ?? source.roomId;
+    if (groupId) {
+      // 1) Complete a pending "รอกำหนดส่ง" follow-up (no @mention needed) — a bare
+      //    date reply to the earlier "…ส่งเมื่อไหร่คะ?" question.
+      if (await handlePendingDueReply(app, event, groupId, lineUserId)) return;
+      // 2) Fresh detection — only when the message @mentions at least one person.
+      if ((event.message.mention?.mentionees?.length ?? 0) > 0) {
+        if (await handleNaturalTaskMessage(app, event, groupId, lineUserId)) return;
+      }
+    }
   }
 
   if (source.type === 'group' || source.type === 'room') {
@@ -1248,6 +1307,12 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
       // a "หนูเก็บ…" text command — route them before the text-command path.
       if (event.postback.data.startsWith('action=task_')) {
         await handleTaskPostback(app, event);
+        return;
+      }
+      // In-chat task-command confirmation card (task_cmd_confirm / task_cmd_cancel):
+      // the ยืนยัน / ยกเลิก taps that create or drop a pending task.
+      if (event.postback.data.startsWith('task_cmd_')) {
+        await handleTaskConfirmPostback(app, event);
         return;
       }
       await drainPendingForEvent(app, event, event.source.userId);

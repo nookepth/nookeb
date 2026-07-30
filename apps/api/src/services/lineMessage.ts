@@ -431,6 +431,225 @@ export function buildGroupWelcomeCard(liffId: string | undefined, groupId: strin
   };
 }
 
+/**
+ * Help / instruction card for the in-chat "หนูเก็บสั่งงาน" command, REPLIED when
+ * someone types "หนูเก็บเตือนงาน" (or an empty/malformed "หนูเก็บสั่งงาน"). Explains
+ * the required + optional fields, the exact format, and two examples. NO emoji
+ * (brand rule) — required/optional bullets use native colored dots, the format
+ * + examples sit in light-gray "code" boxes. `reminderIsPro` flags the reminder
+ * count as a Pro feature so the copy never over-promises for free users.
+ */
+export function buildTaskCommandHelpCard(reminderIsPro = true): FlexMessage {
+  const bullet = (color: string, text: string): Record<string, unknown> => ({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    alignItems: 'center',
+    contents: [dot(color), { type: 'text', text, size: 'sm', color: INK, wrap: true, flex: 1 }],
+  });
+  const codeBox = (text: string): Record<string, unknown> => ({
+    type: 'box',
+    layout: 'vertical',
+    backgroundColor: '#F5F5F5',
+    cornerRadius: '6px',
+    paddingAll: '10px',
+    contents: [{ type: 'text', text, size: 'xs', color: INK, wrap: true }],
+  });
+  const heading = (text: string): Record<string, unknown> => ({
+    type: 'text',
+    text,
+    size: 'xs',
+    color: BRAND_RED,
+    weight: 'bold',
+    margin: 'lg',
+  });
+
+  return {
+    type: 'flex',
+    altText: 'วิธีสั่งงานในกลุ่ม',
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: BRAND_RED,
+        paddingAll: '16px',
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: 'สั่งงานในกลุ่ม แค่พิมพ์ครั้งเดียว', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: 'แท็กเพื่อน บอกงาน บอกกำหนดส่ง หนูจัดให้เลยน้า', size: 'xs', color: '#FFFFFFCC', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        paddingAll: '16px',
+        spacing: 'sm',
+        contents: [
+          { type: 'text', text: 'รูปแบบคำสั่ง', size: 'xs', color: BRAND_RED, weight: 'bold' },
+          codeBox('หนูเก็บเตือนงาน @ผู้รับ [งานที่ต้องทำ] ส่ง [วันเวลา] เตือน [จำนวน] ครั้ง'),
+
+          heading('ต้องมี'),
+          bullet(BRAND_RED, 'แท็กผู้รับงาน @ อย่างน้อย 1 คน'),
+          bullet(BRAND_RED, 'รายละเอียดงานที่จะให้ทำ'),
+          bullet(BRAND_RED, 'กำหนดส่ง ขึ้นต้นด้วยคำว่า "ส่ง"'),
+
+          heading('ใส่เพิ่มได้'),
+          bullet(MUTED, 'เวลา ต่อท้ายวันที่ เช่น 17:00 (ไม่ใส่ = 18:00)'),
+          bullet(
+            MUTED,
+            reminderIsPro ? 'จำนวนครั้งเตือน — เป็นฟีเจอร์ Pro น้า' : 'จำนวนครั้งเตือน เช่น เตือน 3 ครั้ง',
+          ),
+
+          heading('ตัวอย่าง'),
+          codeBox('หนูเก็บเตือนงาน @สมชาย ทำสไลด์ ส่งพรุ่งนี้ 17:00'),
+          codeBox('หนูเก็บเตือนงาน @สมชาย @สมศรี สรุปยอดขาย ส่ง 25/12 18:00 เตือน 3 ครั้ง'),
+
+          {
+            type: 'text',
+            text: 'พิมพ์เสร็จ หนูจะให้ตรวจสอบแล้วกด "ยืนยัน" ก่อนสร้างงานทุกครั้งน้า จะได้ไม่พลาด',
+            size: 'xxs',
+            color: BRAND_RED,
+            wrap: true,
+            margin: 'lg',
+          },
+          {
+            type: 'text',
+            text: 'ใช้ในกลุ่มเท่านั้น และแท็กได้เฉพาะคนที่เคยพิมพ์ในกลุ่มนี้ หรือเพิ่มหนูเก็บเป็นเพื่อนแล้วน้า',
+            size: 'xxs',
+            color: MUTED,
+            wrap: true,
+            margin: 'md',
+          },
+        ],
+      },
+    },
+  };
+}
+
+/**
+ * Confirmation card shown BEFORE a task is created from an in-chat command
+ * (strict "หนูเก็บเตือนงาน …" or a natural-language detection). The commander
+ * reviews who/what/when, then taps ยืนยัน to create or ยกเลิก to drop it — no
+ * task exists until ยืนยัน. REPLIED into the group (fresh replyToken), never
+ * pushed, never a DM. NO emoji (brand rule) — labels use native colored dots.
+ *
+ * `pendingKey` is the Redis key of the stashed intent; it rides in the postback
+ * data so the tap can find (and claim) exactly this intent. `reminderCount` is
+ * the EFFECTIVE, already-Pro-gated count — the "จำนวนครั้งเตือน" row renders only
+ * when it is set (a free user never sees a count they won't get); a blocked
+ * request instead shows the small Pro note.
+ */
+export function buildTaskConfirmCard(opts: {
+  pendingKey: string;
+  assigneeNames: string[];
+  title: string;
+  dueIso: string;
+  reminderCount: number | null;
+  reminderBlocked: boolean;
+}): FlexMessage {
+  const { pendingKey, assigneeNames: names, title, dueIso, reminderCount, reminderBlocked } = opts;
+  const shownNames =
+    names.length > 3 ? `${names.slice(0, 3).join(', ')} +${names.length - 3}` : names.join(', ');
+
+  const field = (label: string, value: string): Record<string, unknown> => ({
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    margin: 'md',
+    contents: [
+      dot(BRAND_RED),
+      {
+        type: 'box',
+        layout: 'vertical',
+        flex: 1,
+        contents: [
+          { type: 'text', text: label, size: 'xs', color: MUTED },
+          { type: 'text', text: value, size: 'sm', color: INK, weight: 'bold', wrap: true },
+        ],
+      },
+    ],
+  });
+
+  const bodyContents: Record<string, unknown>[] = [
+    field('ผู้รับงาน', shownNames || 'สมาชิก'),
+    field('รายละเอียด', title),
+    field('กำหนดส่ง', formatThaiDeadline(dueIso)),
+  ];
+  if (reminderCount != null) {
+    bodyContents.push(field('จำนวนครั้งเตือน', `${reminderCount} ครั้ง`));
+  } else if (reminderBlocked) {
+    bodyContents.push({
+      type: 'text',
+      text: 'ตั้งเตือนหลายครั้งเป็นฟีเจอร์ Pro น้า งานนี้จะยังไม่ตั้งเตือนหลายครั้งให้น้า',
+      size: 'xxs',
+      color: MUTED,
+      wrap: true,
+      margin: 'md',
+    });
+  }
+
+  return {
+    type: 'flex',
+    altText: `ยืนยันสั่งงาน: ${title}`,
+    contents: {
+      type: 'bubble',
+      size: 'mega',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: BRAND_RED,
+        paddingAll: '16px',
+        spacing: 'xs',
+        contents: [
+          { type: 'text', text: 'ตรวจสอบก่อนสั่งงานน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+          { type: 'text', text: 'กด "ยืนยัน" แล้วหนูจะสร้างงานให้เลยน้า', size: 'xs', color: '#FFFFFFCC', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: '#FFFFFF',
+        paddingAll: '16px',
+        contents: bodyContents,
+      },
+      footer: {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'sm',
+        paddingAll: '12px',
+        contents: [
+          {
+            type: 'button',
+            style: 'secondary',
+            height: 'sm',
+            action: {
+              type: 'postback',
+              label: 'ยกเลิก',
+              data: `task_cmd_cancel:${pendingKey}`,
+              displayText: 'ยกเลิก',
+            },
+          },
+          {
+            type: 'button',
+            style: 'primary',
+            height: 'sm',
+            color: BRAND_RED,
+            action: {
+              type: 'postback',
+              label: 'ยืนยัน',
+              data: `task_cmd_confirm:${pendingKey}`,
+              displayText: 'ยืนยัน',
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
 /** Flex pushed into the group right after a task is created from LIFF. */
 export function buildTaskCreatedFlex(task: TaskWithDetails): FlexMessage {
   const deadlineText = task.global_deadline

@@ -20,6 +20,7 @@ import {
   type TaskWithDetails,
 } from './task.service';
 import { computeNextOccurrence } from './task-recurrence';
+import { selectRemindTypes } from './task-command';
 
 export { BANGKOK_TZ, computeNextOccurrence } from './task-recurrence';
 
@@ -180,9 +181,15 @@ export async function scheduleReminders(
     const rows: ReminderInsert[] = [];
     const delays = new Map<string, number>(); // key: `${itemId ?? 'task'}|${type}` → delay ms
 
+    // Which shots to fire. NULL (LIFF tasks, free-tier) = the full default set;
+    // a Pro "เตือน N ครั้ง" command narrows it (see selectRemindTypes). Filtered
+    // through REMIND_TYPES so ordering/DB CHECK values stay authoritative.
+    const chosen = new Set(selectRemindTypes(task.reminder_count));
+    const shots = REMIND_TYPES.filter((t) => chosen.has(t));
+
     for (const target of reminderTargets(task)) {
       const deadlineMs = dayjs(target.deadline).valueOf();
-      for (const type of REMIND_TYPES) {
+      for (const type of shots) {
         const remindAtMs = deadlineMs + REMIND_OFFSETS_MINUTES[type] * 60_000;
         if (remindAtMs <= now + 5_000) continue; // already past — skip
         rows.push({

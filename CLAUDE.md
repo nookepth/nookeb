@@ -190,6 +190,54 @@ If replyToken is expired or missing:
   that chat's id; in a 1-on-1 DM it opens งานส่วนตัว instead (migration 043 — see
   the Personal Task section). Unprefixed by design, matched BEFORE the group
   bot-directed guard.
+- `หนูเก็บเตือนงาน [@… งาน ส่ง … [เตือน N ครั้ง]]` — the in-chat
+  GROUP task command (migration 047, `webhook/task-command-handlers.ts` +
+  `services/task-command.ts`). ONE trigger word does both: a BARE `หนูเก็บเตือนงาน`
+  (nothing after it) replies the help/instruction card (`buildTaskCommandHelpCard`);
+  `หนูเก็บเตือนงาน` WITH content parses the message's inbound @mentions
+  + a Thai due-date clause (`ส่ง`/`กำหนด`/`ภายใน` + `พรุ่งนี้`/`25/12`/`อีก 3 วัน`,
+  default time 18:00). It does NOT create the task immediately: it parses the
+  intent, stashes it in Redis, and REPLIES a CONFIRMATION card
+  (`buildTaskConfirmCard`) showing ผู้รับงาน / รายละเอียด / กำหนดส่ง / จำนวนครั้งเตือน
+  with [ยืนยัน] / [ยกเลิก] postback buttons. The `single` task is created (via
+  `createTaskFromConfirm` → `buildTaskCreatedFlex` reply) only on the ยืนยัน tap —
+  reply-only, NO push, NO DM (contrast the LIFF create flow, which pushes).
+  `หนูเก็บสั่งงาน` is kept as a legacy create-alias (accepted by the parser +
+  dispatch; the exact-match help branch runs first so only content falls through to
+  create). Note the leading `เตือนงาน` trigger and the trailing `เตือน N ครั้ง`
+  reminder clause stay distinct — the command word is stripped before the reminder
+  clause (which needs a digit) is read. A mention LINE can't
+  resolve to a userId (never spoke / not consented) is a hard error — the whole
+  command is rejected with a clear message, never assigned silently; `@all` is
+  rejected too. `เตือน N ครั้ง` is a Pro-gated knob (`users.plan`), applied at
+  confirm-card build time so the card shows the EFFECTIVE count: a free user's
+  count is dropped (the card shows a Pro note), a Pro user's is stored in
+  `tasks.reminder_count` and honored by `scheduleReminders` via `selectRemindTypes` —
+  but delivery is still behind the global `TASK_NOTIFICATIONS_ENABLED` soft-switch,
+  so the success card never over-promises reminders while that's off.
+  - **Confirmation state** (`services/task-confirm.ts`) — two 5-min Redis keys
+    scoped to (group, commander), so a member has at most ONE pending item and a
+    new command REPLACES it: `nookeb:confirm:{groupId}:{commanderId}` (a fully
+    parsed intent awaiting ยืนยัน/ยกเลิก) and `nookeb:taskpartial:{groupId}:{commanderId}`
+    (an NL MEDIUM intent awaiting a due-date follow-up). ยืนยัน uses GETDEL to
+    claim exactly once, then an NX `nookeb:taskcmd:{message.id}` claim guards
+    double-create — so a double-tap / redelivery can't create the task twice. A
+    failed create restores the pending intent so the user can retry. ยกเลิก deletes
+    the key. Both postbacks re-VALIDATE the key by reconstructing it from (group,
+    tapper): only the commander who issued the command can confirm/cancel it.
+  - **Natural-language detection** (`services/task-nl.ts`, `detectNaturalTask`, pure
+    + unit-tested) — a LIGHTWEIGHT heuristic layer for UN-prefixed group messages
+    that @mention someone, run in `line.ts` BEFORE the bot-directed guard. HIGH
+    (assignee + title + future due clause) → straight to the confirmation card;
+    MEDIUM (assignee + a task-verb-gated title, no due) → ONE follow-up question
+    ("…ส่งเมื่อไหร่คะ?"), the commander's next date reply completing the intent into
+    the confirmation card; LOW (no resolvable assignee / no task-shaped title) →
+    silent ignore. It reuses the strict parser's primitives (`stripMentions`/
+    `extractReminder`/`extractDue`) and NEVER creates a task directly — every path
+    ends at the confirmation card. The strict `หนูเก็บเตือนงาน` flow is untouched.
+  The parser + NL detector + confirm store (`services/task-command.ts` /
+  `task-nl.ts` / `task-confirm.ts`) are all pure/env-free + unit-tested; assignees
+  still appear in the assignee dashboard (`GET /tasks/mine`) unchanged.
 
 ## Rich Menu — single menu `RichMenu_Nookeb`
 ONE menu (2500×1686, image `New_1.jpg` at the repo root), registered ONLY by
@@ -776,6 +824,14 @@ engineering rule 9 for the idempotency guarantees each retried handler must upho
     writes both columns). Safe to apply early: every existing row satisfies the
     CHECK, the new columns have defaults, and dropping NOT NULL only relaxes a
     constraint — the currently-deployed code keeps working either way.
+  - `047_task_command_reminders.sql` — `tasks.reminder_count` (INT, nullable,
+    CHECK 1..4): the Pro "เตือน N ครั้ง" knob on the in-chat `หนูเก็บเตือนงาน`
+    command. NULL = the full default reminder schedule; a value narrows it via
+    `selectRemindTypes`. Written ONLY for Pro-created tasks — `createTaskWithItems`
+    OMITS the column from the insert unless a custom count is set, so the
+    currently-deployed code keeps inserting valid rows before this is applied and
+    reads treat a missing column as NULL. NOT auto-applied; additive + either-order
+    safe (apply BEFORE a Pro user first uses `เตือน N ครั้ง`).
   - `046_google_sheets_integration.sql` — Google Sheets sync: `google_integrations`
     (one row per user, UNIQUE user_id). `encrypted_token` holds the Google refresh
     token as base64(iv||tag||ciphertext) — **never plaintext, not even temporarily
@@ -1053,6 +1109,12 @@ the whole task feature, not just attachments. Order:
    + Drive API enabled;
 3. deploy API + worker, then web.
 Skipping step 2 is safe: Sheets sync just stays dormant (routes 503, jobs no-op).
+
+Migration 047 (`tasks.reminder_count`) is additive + either-order safe — the
+`หนูเก็บเตือนงาน` core flow (create/assign/reply) works before it's applied because
+free-tier inserts omit the column. Apply it before a Pro user first sends
+`เตือน N ครั้ง` (the insert would then reference a missing column). No new env —
+the Pro gate reads the existing `users.plan`.
 
 ## Key Env Vars (see `.env.example`)
 - Core (API): `LINE_CHANNEL_*`, `LINE_LOGIN_CHANNEL_*`, `SUPABASE_*`, `R2_*`, `REDIS_URL`, `JWT_SECRET`

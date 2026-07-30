@@ -202,6 +202,13 @@ export interface CreateTaskInput {
   recurrenceRule: TaskRecord['recurrence_rule'];
   createdByLineUid: string;
   items: CreateTaskItemInput[];
+  /**
+   * Custom reminder-shot count (migration 047), 1..4 — a Pro feature set by the
+   * "หนูเก็บสั่งงาน … เตือน N ครั้ง" command. NULL/undefined = default schedule.
+   * Only written to the row when a finite number, so a create still succeeds if
+   * migration 047 hasn't been applied yet (the column simply stays absent).
+   */
+  reminderCount?: number | null;
 }
 
 export interface TaskItemWithAssignees extends TaskItemRecord {
@@ -270,6 +277,12 @@ export async function createTaskWithItems(
       global_deadline: input.globalDeadline,
       recurrence_rule: input.recurrenceRule,
       created_by_line_uid: input.createdByLineUid,
+      // Omitted unless a custom count is set: a null would still reference the
+      // column, so leaving the key out entirely keeps inserts valid before
+      // migration 047 is applied (additive-safe, like the other feature columns).
+      ...(typeof input.reminderCount === 'number'
+        ? { reminder_count: input.reminderCount }
+        : {}),
     })
     .select('*')
     .single();

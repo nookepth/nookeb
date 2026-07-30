@@ -69,6 +69,14 @@ export interface TaskRecord {
   created_by_line_uid: string;
   created_at: string;
   deleted_at: string | null;
+  /**
+   * How many reminder shots to schedule (migration 047), 1..4. NULL = the full
+   * default schedule (3 วัน / 1 วัน / 3 ชม ก่อน + 1 ชม หลัง). A custom count is a
+   * Pro feature set via the "หนูเก็บสั่งงาน … เตือน N ครั้ง" command; free tasks
+   * stay NULL. Optional so rows read before migration 047 don't fail the type —
+   * treat missing as NULL/default. See selectRemindTypes in task-command.ts.
+   */
+  reminder_count?: number | null;
 }
 
 export interface TaskItemRecord {
