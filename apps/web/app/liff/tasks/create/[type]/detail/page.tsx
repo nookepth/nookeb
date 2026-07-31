@@ -9,6 +9,7 @@ import {
   loadDraft,
   localToIso,
   saveDraft,
+  URGENCY_OPTIONS,
   type TaskDraft,
 } from '../../../../../../lib/taskDraft';
 import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../components';
@@ -157,8 +158,18 @@ export default function DetailPage({ params }: { params: { type: string } }) {
       // personal sends NO groupId and NO assignees — the API rejects both for
       // this scope and derives owner+assignee from the session (migration 043).
       const base = isPersonal
-        ? { scope: 'personal' as const, title: draft.title.trim(), type: draft.type }
-        : { groupId: draft.groupId!, title: draft.title.trim(), type: draft.type };
+        ? {
+            scope: 'personal' as const,
+            title: draft.title.trim(),
+            type: draft.type,
+            urgency: draft.urgency,
+          }
+        : {
+            groupId: draft.groupId!,
+            title: draft.title.trim(),
+            type: draft.type,
+            urgency: draft.urgency,
+          };
       const assigneesOf = (members: { lineUid: string }[]) =>
         isPersonal ? {} : { assignees: members.map((a) => a.lineUid) };
       const payload =
@@ -359,6 +370,54 @@ export default function DetailPage({ params }: { params: { type: string } }) {
           onChange={(e) => setDraft({ ...draft, title: e.target.value })}
         />
       </div>
+
+      {/* ความเร่งด่วน — all task types; saved with the task (migration 048)
+          and becomes the sheet workspace's initial column-K value. */}
+      <section className={styles.section}>
+        <label className={styles.fieldLabel}>ความเร่งด่วน</label>
+        <div role="radiogroup" aria-label="ความเร่งด่วน" style={{ display: 'flex', gap: 8 }}>
+          {URGENCY_OPTIONS.map((opt) => {
+            const active = draft.urgency === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setDraft({ ...draft, urgency: opt.value })}
+                style={{
+                  flex: '1 1 0',
+                  minWidth: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  padding: '10px 4px',
+                  borderRadius: 10,
+                  border: `1.5px solid ${active ? opt.color : 'var(--line, #E5E7EB)'}`,
+                  background: active ? `${opt.color}14` : '#fff',
+                  color: active ? opt.color : 'var(--text-muted, #6B7280)',
+                  fontFamily: 'inherit',
+                  fontSize: 13,
+                  fontWeight: active ? 700 : 500,
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: opt.color,
+                    flexShrink: 0,
+                  }}
+                />
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       {/* single */}
       {draft.type === 'single' && (

@@ -223,6 +223,7 @@ land **before** the API deploy are flagged in-file.
 | `045_task_files.sql` | `task_files` junction + item statuses `submitted`/`rejected` + `submitted_at`/`rejected_at`/`rejection_note`/`submission_note`. **Not additive-safe: `getTaskWithDetails()` SELECTs `task_files` and backs every task read — apply BEFORE deploying.** |
 | `046_google_sheets_integration.sql` | `google_integrations` (one row/user, AES-GCM `encrypted_token`, RLS deny-all) |
 | `047_task_command_reminders.sql` | `tasks.reminder_count` INT NULL CHECK 1..4 — the Pro "เตือน N ครั้ง" knob |
+| `048_task_urgency.sql` | `tasks.urgency` TEXT NULL CHECK (urgent_max/urgent/normal/relaxed) — creation-time ความเร่งด่วน; apply BEFORE deploying the web/API that sends it (older clients omit the column, so old-code/new-DB is safe) |
 
 Key invariants:
 - Every content table carries `space_id` (or a per-feature owner key: diary/vault =
@@ -437,12 +438,42 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
   written +07:00-shifted on purpose so Excel shows Bangkok wall clock,
   "อัปเดตล่าสุด" DERIVED via `resolveUpdatedAt` (there is no `updated_at` column).
   The web's Export button exports EVERYTHING, never the active tab.
-- **Google Sheets mirror** — ONE ROW PER TASK, keyed by a hidden `รหัสงาน` column in
-  the sheet itself (the user can re-sort rows, so a cached row index would be wrong).
-  Always queued, never inline. See §12/§13.
+- **Google Sheets mirror** — keyed by a hidden `รหัสงาน` column in the sheet itself
+  (the user can re-sort rows, so a cached row index would be wrong). ROW MODEL
+  (2026-08-01): single/recurring = one row keyed by the bare task id; **multi = one
+  row per sub-item**, keyed `{taskId}-{itemId}` (`taskRowKey` in `sheets-row.ts`),
+  each carrying the ITEM's own deadline/assignees/status, title "งาน - รายการย่อย".
+  `syncTaskToSheet` takes the ROWS array, claims a pre-B legacy bare-id row for the
+  first item that lacks one (in-place upgrade), and strikes through orphaned item
+  rows. Always queued, never inline. See §12/§13. Two sync-delivery rules learned
+  the hard way (regression-tested in `task-handlers.test.ts`): (1) webhook postback
+  handlers have NO onResponse hook — every task write in `task-handlers.ts` must
+  call `enqueueSheetsSync` itself; (2) `sheets_sync` jobs MUST keep
+  `removeOnComplete/removeOnFail: true` — a settled job whose stable jobId lingers
+  in BullMQ's completed set silently swallows every later sync for that task.
+  รับทราบ (LINE postback AND `…/accept`) also promotes a pending item+task to
+  `in_progress` (`promoteToInProgress`), so acceptance is visible in every mirror.
+  `tasks.urgency` (migration 048, canonical keys) is chosen at creation in the LIFF
+  detail step and the dashboard modal, and becomes column K's INITIAL value only —
+  K stays the user's column after the first fill.
+  The mirror is EVENT-DRIVEN, so tasks that predate the connect are invisible to it;
+  `sheets-historical.service.ts` backfills them (creator's tasks only, cap 500, oldest
+  first, chunked appends of 100). It runs automatically the first time a spreadsheet is
+  written to and on demand from `POST /integrations/google/sync-historical` — the
+  dashboard button, and the `🔄 sync ประวัติงาน` HYPERLINK on the ภาพรวม tab, which
+  points at `/dashboard/settings?sync=historical` because a Sheets cell can only GET and
+  the session cookie lives on the web origin. Duplicate guard = the sheet's own รหัสงาน
+  column, read fresh each run, so re-running is always safe. "Has it run?" is
+  spreadsheet developer metadata (`nookeb_historical_sync`), NOT a DB column: a user who
+  deletes their sheet must get a fresh backfill, which a DB flag would deny.
   The spreadsheet is a full **workspace**, not a bare table (`sheets-workspace.service.ts`,
-  `LAYOUT_VERSION` = 2): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
-  วิเคราะห์ / สรุปสัปดาห์ / **สั่งงาน** / วิธีสั่งงาน plus hidden `_ข้อมูลคำนวณ` + `_ตัวเลือก`.
+  `LAYOUT_VERSION` = 4): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
+  วิเคราะห์ (month-anchored 1-7/8-14/…/29-end ranges) / สรุปงาน (date-or-month picker,
+  replaced สรุปสัปดาห์) / งานเสร็จ (completed-task report: days-to-complete from the
+  real P/Q stamps, distribution + per-person charts) / วิธีสั่งงาน plus hidden
+  `_ข้อมูลคำนวณ` + `_ตัวเลือก`. The `📋 สั่งงาน` form tab was REMOVED in v4 —
+  `LEGACY_TABS` lists it (and the old สรุปสัปดาห์ title) so a rebuild deletes them
+  from upgraded sheets without recreating them.
   Every view is a FORMULA over `_ข้อมูลคำนวณ` — no Apps Script, no extra OAuth scope,
   nothing for the user to install. Column rules: **A–J belong to the sync** (values AND
   background repainted every write), K–R are the workspace's — K ความเร่งด่วน and
@@ -462,12 +493,15 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
      coordinates and `composeWorkspacePlans` applies the offset via `shiftPlan`;
      a formula pointing at its own tab must go through `self()`. The hidden tabs and
      the master are never shifted — the master's row 1 is the sync's header row.
-  A `📋 สั่งงาน` form tab assembles a copy-paste `หนูเก็บเตือนงาน …` command by
-  formula, so it works with nothing installed. `google-sheets-workspace/nookeb-addon.gs`
-  is an OPTIONAL paste-once script adding a submit button, urgency buttons and a 07:00
-  overdue check; Apps Script CANNOT be auto-installed (needs the `script.projects`
-  scope plus a per-user API toggle), so it is never required. The older 10-file
-  package in that directory is superseded and must not be installed alongside.
+  A third invariant since v4: charts whose SOURCE ranges live on a nav-shifted tab
+  must go through `composeChartRequests`/`shiftChart`, which shifts sources along
+  with the anchor (the pre-v4 analytics charts read one blank row and dropped their
+  newest data row). `google-sheets-workspace/nookeb-addon.gs` is an OPTIONAL
+  paste-once script adding urgency buttons and a 07:00 overdue check; its in-sheet
+  "ส่งงาน" submit button targeted the removed สั่งงาน tab and is defunct. Apps
+  Script CANNOT be auto-installed (needs the `script.projects` scope plus a
+  per-user API toggle), so it is never required. The older 10-file package in that
+  directory is superseded and must not be installed alongside.
 - **ห้องทีม** — group-keyed room payload (`team-room.service.getTeamRoom`), reachable
   two ways: `GET /groups/:groupId/room` (capability) and `GET /spaces/:id/tasks`
   (dashboard side; 404 `NOT_A_GROUP_SPACE` for a personal space). Returns
@@ -545,7 +579,9 @@ UPLOADER's personal pool after the stream is counted) · `GET /tasks/:taskId/fil
 **Integrations** 🔒 — `GET /integrations/google` (status; never returns the token) ·
 `GET /integrations/google/auth` (consent URL as JSON — a 302 would be swallowed by
 fetch) · `GET /integrations/google/callback` (redirects to
-`/dashboard/settings?google=…`) · `DELETE /integrations/google`
+`/dashboard/settings?google=…`) · `DELETE /integrations/google` ·
+`POST /integrations/google/sync-historical` (queue a one-shot backfill of every
+task the user created before connecting; 3/10 min, 409 when not connected)
 
 **Analytics / admin** — `GET /me/usage` 🔒 · `POST /api/events/track` 🔒 ·
 `POST /api/pro-interest` (**unauthenticated**, anonymous gift-box demand test,
@@ -645,7 +681,7 @@ Keep them separate — merging re-couples the failure domains they were split to
 |---|---|---|
 | `nookeb-file-processing` | `upload.worker.ts` | `upload_batch`, `generate_thumbnail`, `ocr_image`, `add_scan_page`, `finalize_scan`, `convert_to_docx`, `create_diary_entry`, `purge_deleted` (daily repeatable) |
 | `nookeb-task-reminders` | `taskReminderWorker.ts` | `task_reminder`, `task_recur_next`, `task_recur_sweep` |
-| `nookeb-sheets-sync` | `sheetsWorker.ts` (constructed ONLY when Google is configured) | `sheets_sync` (`upsert` \| `delete`) |
+| `nookeb-sheets-sync` | `sheetsWorker.ts` (constructed ONLY when Google is configured) | `sheets_sync` (`upsert` \| `delete`), `sheets_historical` (backfill; jobId `sheets-historical-{userId}`, removed on settle so a later press can re-queue) |
 
 Retry policy: `add_scan_page` / `finalize_scan` / `convert_to_docx` /
 `create_diary_entry` get `attempts: 3` + exponential backoff (LINE CDN ~1 h TTL);

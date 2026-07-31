@@ -110,7 +110,21 @@ const ROW_COLOR: Record<TaskItemStatus | 'deleted', sheets_v4.Schema$Color> = {
 };
 
 export interface SheetTaskRow {
+  /**
+   * The row's identity — what is written to (and matched against) the hidden
+   * รหัสงาน column J. A single/recurring task's row is its bare task id; a
+   * multi task gets one row per sub-item keyed `{taskId}-{itemId}` (see
+   * taskRowKey in sheets-row.ts).
+   */
+  key: string;
+  /** The owning task — shared by every row of a multi task. */
   taskId: string;
+  /**
+   * Column-K label for the urgency chosen at creation (migration 048), or ''
+   * when none was chosen. Written ONLY while K is still blank — after that the
+   * column belongs to the user (see extensionUpdates).
+   */
+  urgency: string;
   title: string;
   description: string;
   type: TaskType;
@@ -371,6 +385,7 @@ export function isAuthError(err: unknown): boolean {
 /** Create the user's sheet and apply the whole look in ONE batchUpdate. */
 export async function createSheet(
   auth: OAuth2Client,
+  opts: { syncUrl?: string } = {},
 ): Promise<{ sheetId: string; url: string }> {
   const sheets = google.sheets({ version: 'v4', auth });
   const created = await sheets.spreadsheets.create({
@@ -450,7 +465,7 @@ export async function createSheet(
   // this fails the user still gets a working synced table, and the worker's
   // version check rebuilds the workspace on the next sync.
   try {
-    await ensureWorkspace(auth, sheetId);
+    await ensureWorkspace(auth, sheetId, { syncUrl: opts.syncUrl });
   } catch (err) {
     console.error('[sheets] workspace build failed on create', describeGoogleError(err).message);
   }
@@ -472,25 +487,21 @@ async function tabGid(sheets: sheets_v4.Sheets, spreadsheetId: string): Promise<
 }
 
 /**
- * Find a task's row by its hidden รหัสงาน cell. Reads only that ONE column, so
- * the request stays small no matter how long the sheet gets. Returns a 0-based
- * sheet row index, or null when the task has never been written (or the user
- * deleted its row — in which case it is simply appended again).
+ * The whole hidden รหัสงาน column, as raw strings indexed by 0-based sheet row.
+ * One values.get serves every row of a task's sync (a multi task has several),
+ * so the request count stays flat no matter how many sub-items a task grows.
  */
-async function findRow(
+async function readKeyColumn(
   sheets: sheets_v4.Sheets,
   spreadsheetId: string,
-  taskId: string,
-): Promise<number | null> {
+): Promise<string[]> {
   const column = String.fromCharCode(65 + TASK_ID_COLUMN); // 'J'
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range: `${TAB_TITLE}!${column}:${column}`,
     majorDimension: 'COLUMNS',
   });
-  const values = res.data.values?.[0] ?? [];
-  const index = values.findIndex((v) => v === taskId);
-  return index === -1 ? null : index;
+  return (res.data.values?.[0] ?? []).map((v) => String(v ?? ''));
 }
 
 function rowValues(row: SheetTaskRow, order: number): string[] {
@@ -504,7 +515,7 @@ function rowValues(row: SheetTaskRow, order: number): string[] {
     row.assignees,
     row.deleted ? 'ลบแล้ว' : (STATUS_LABEL[row.status] ?? row.status),
     row.updatedAt,
-    row.taskId,
+    row.key,
   ];
 }
 
@@ -578,9 +589,11 @@ function extensionUpdates(
   const statusLabel = row.deleted ? 'ลบแล้ว' : (STATUS_LABEL[row.status] ?? row.status);
   const updates: sheets_v4.Schema$ValueRange[] = [];
 
-  // K — only ever filled when empty. It is the user's column after that.
+  // K — only ever filled when empty. It is the user's column after that. The
+  // initial value is the urgency chosen at creation (migration 048), falling
+  // back to ปกติ for tasks created without one.
   if (!prior.urgency) {
-    updates.push({ range: `${TAB_TITLE}!K${line}`, values: [[DEFAULT_URGENCY]] });
+    updates.push({ range: `${TAB_TITLE}!K${line}`, values: [[row.urgency || DEFAULT_URGENCY]] });
   }
 
   updates.push({ range: `${TAB_TITLE}!L${line}:M${line}`, values: [[row.progress, row.links]] });
@@ -598,71 +611,252 @@ function extensionUpdates(
   return updates;
 }
 
+/** Strikethrough + grey for a row whose sub-item no longer exists. */
+function strikeRowRequest(gid: number, rowIndex: number): sheets_v4.Schema$Request {
+  return {
+    repeatCell: {
+      range: {
+        sheetId: gid,
+        startRowIndex: rowIndex,
+        endRowIndex: rowIndex + 1,
+        startColumnIndex: 0,
+        endColumnIndex: HEADERS.length,
+      },
+      cell: {
+        userEnteredFormat: {
+          backgroundColor: ROW_COLOR.deleted,
+          textFormat: {
+            fontFamily: FONT,
+            fontSize: 10,
+            strikethrough: true,
+            foregroundColor: rgb('#9CA3AF'),
+          },
+        },
+      },
+      fields: 'userEnteredFormat(backgroundColor,textFormat)',
+    },
+  };
+}
+
 /**
- * Write one task into the sheet: update its existing row, or append a new one.
- * Idempotent — running it twice for the same task leaves one row.
+ * Write one task's rows into the sheet: update the existing row for each key,
+ * append the ones that have never been written. Idempotent — running it twice
+ * leaves the same rows.
+ *
+ * Three extra concerns beyond the one-row version this replaced:
+ *   - LEGACY CLAIM: a multi task synced before per-item rows existed sits in
+ *     the sheet as ONE row keyed by the bare task id. The first item row that
+ *     finds no row of its own claims that legacy row (rewriting its key), so
+ *     the upgrade happens in place with no duplicate and no lost user columns.
+ *   - ORPHANS: a row whose `{taskId}-…` key no longer maps to a live item
+ *     (item deleted, task restructured) is struck through like a deleted task
+ *     — never removed, same audit-trail rule as everywhere else.
+ *   - The append path reuses appendTaskRows, so there is exactly one place
+ *     that knows the no-INSERT_ROWS rule.
  */
 export async function syncTaskToSheet(
   auth: OAuth2Client,
   spreadsheetId: string,
-  row: SheetTaskRow,
+  rows: SheetTaskRow[],
 ): Promise<void> {
+  if (rows.length === 0) return;
   const sheets = google.sheets({ version: 'v4', auth });
-  const [gid, existing] = await Promise.all([
+  const [gid, keyColumn] = await Promise.all([
     tabGid(sheets, spreadsheetId),
-    findRow(sheets, spreadsheetId, row.taskId),
+    readKeyColumn(sheets, spreadsheetId),
   ]);
+  const taskId = rows[0]!.taskId;
 
-  let rowIndex: number;
-  let prior = { previousStatus: '', urgency: '', log: '' };
-  if (existing !== null) {
-    rowIndex = existing;
-    prior = await readRowExtras(sheets, spreadsheetId, rowIndex);
-    await sheets.spreadsheets.values.update({
-      spreadsheetId,
+  // Claimed = sheet rows already assigned to one of this sync's rows, so two
+  // identical keys (user copy-pasted a row) can't both be written.
+  const claimed = new Set<number>();
+  const indexOf = (key: string): number =>
+    keyColumn.findIndex((v, i) => v === key && i >= HEADER_ROWS && !claimed.has(i));
+
+  const toUpdate: { rowIndex: number; row: SheetTaskRow }[] = [];
+  const toAppend: SheetTaskRow[] = [];
+  for (const row of rows) {
+    let idx = indexOf(row.key);
+    if (idx === -1 && row.key !== row.taskId) {
+      // The legacy claim — see the doc comment.
+      idx = indexOf(row.taskId);
+    }
+    if (idx === -1) {
+      toAppend.push(row);
+    } else {
+      claimed.add(idx);
+      toUpdate.push({ rowIndex: idx, row });
+    }
+  }
+
+  // Rows that belong to this task but to no live item.
+  const liveKeys = new Set(rows.map((r) => r.key));
+  const orphanIndices = keyColumn
+    .map((v, i) => ({ v, i }))
+    .filter(
+      ({ v, i }) =>
+        i >= HEADER_ROWS &&
+        !claimed.has(i) &&
+        (v === taskId || v.startsWith(`${taskId}-`)) &&
+        !liveKeys.has(v),
+    )
+    .map(({ i }) => i);
+
+  const formatRequests: sheets_v4.Schema$Request[] = [];
+  const valueData: sheets_v4.Schema$ValueRange[] = [];
+
+  for (const { rowIndex, row } of toUpdate) {
+    const prior = await readRowExtras(sheets, spreadsheetId, rowIndex);
+    // Keep the ลำดับ the row already has — renumbering every row on each sync
+    // would rewrite the whole sheet for one task change.
+    valueData.push({
       range: `${TAB_TITLE}!A${rowIndex + 1}`,
-      valueInputOption: 'RAW',
-      // Keep the ลำดับ the row already has — renumbering every row on each sync
-      // would rewrite the whole sheet for one task change.
-      requestBody: { values: [rowValues(row, rowIndex)] },
+      values: [rowValues(row, rowIndex)],
     });
-  } else {
+    valueData.push(...extensionUpdates(rowIndex, row, prior));
+    formatRequests.push(rowFormatRequest(gid, rowIndex, row));
+  }
+
+  for (const rowIndex of orphanIndices) {
+    valueData.push({
+      range: `${TAB_TITLE}!H${rowIndex + 1}`,
+      values: [['ลบแล้ว']],
+    });
+    formatRequests.push(strikeRowRequest(gid, rowIndex));
+  }
+
+  if (valueData.length > 0) {
+    // A–J and K–R written in one batch; the extension columns can therefore
+    // never lag the task row within a single sync.
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: { valueInputOption: 'RAW', data: valueData },
+    });
+  }
+  if (formatRequests.length > 0) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: { requests: formatRequests },
+    });
+  }
+  if (toAppend.length > 0) {
+    await appendTaskRows(auth, spreadsheetId, toAppend);
+  }
+}
+
+// ---- historical backfill (bulk append) ----
+
+/**
+ * Rows per append round-trip. 100 keeps one chunk's four API calls comfortably
+ * inside Sheets' per-request payload limits while still importing a heavy
+ * user's whole history in a handful of round-trips, and it bounds how much work
+ * a retry repeats.
+ */
+export const HISTORICAL_CHUNK_SIZE = 100;
+
+/**
+ * Every รหัสงาน already present in the sheet.
+ *
+ * This is the duplicate guard for the backfill, and it reads the SHEET rather
+ * than trusting our own record of what we synced: the user may have deleted
+ * rows, and a task synced before we ever tracked a backfill timestamp has no
+ * server-side marker at all. Column J is the only authority on "is this task
+ * already in the sheet", exactly as it is for the single-task sync.
+ */
+export async function readSyncedTaskIds(
+  auth: OAuth2Client,
+  spreadsheetId: string,
+): Promise<Set<string>> {
+  const sheets = google.sheets({ version: 'v4', auth });
+  const column = String.fromCharCode(65 + TASK_ID_COLUMN); // 'J'
+  const res = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: `${TAB_TITLE}!${column}:${column}`,
+    majorDimension: 'COLUMNS',
+  });
+  const values = res.data.values?.[0] ?? [];
+  // Drop the header cell and any blanks; keep whatever else is there (including
+  // the add-on's LOCAL-… ids, which must never collide with a real UUID).
+  return new Set(
+    values
+      .slice(HEADER_ROWS)
+      .map((v) => String(v ?? '').trim())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * Append many task rows in one pass — the bulk counterpart to syncTaskToSheet.
+ *
+ * It APPENDS ONLY: rows already in the sheet must be filtered out by the caller
+ * (readSyncedTaskIds), because updating a live row is the single-task sync's
+ * job and doing it here would clobber whatever the user has since put in their
+ * own columns.
+ *
+ * Same append discipline as the single-row path and for the same reason: no
+ * `insertDataOption: 'INSERT_ROWS'`. Inserting rows makes Sheets rewrite every
+ * formula reference at or below the insertion point, which is precisely the
+ * drift that walked _ข้อมูลคำนวณ off its own data. A backfill inserts hundreds
+ * of rows at once, so it would not drift the workspace — it would demolish it.
+ *
+ * Returns the number of rows written.
+ */
+export async function appendTaskRows(
+  auth: OAuth2Client,
+  spreadsheetId: string,
+  rows: SheetTaskRow[],
+): Promise<number> {
+  if (rows.length === 0) return 0;
+  const sheets = google.sheets({ version: 'v4', auth });
+  const gid = await tabGid(sheets, spreadsheetId);
+
+  let written = 0;
+  for (let offset = 0; offset < rows.length; offset += HISTORICAL_CHUNK_SIZE) {
+    const chunk = rows.slice(offset, offset + HISTORICAL_CHUNK_SIZE);
+
     const appended = await sheets.spreadsheets.values.append({
       spreadsheetId,
       range: `${TAB_TITLE}!A1`,
       valueInputOption: 'RAW',
-      // NOT insertDataOption:'INSERT_ROWS'. Inserting a row makes Sheets rewrite
-      // every formula reference at or below it, which walked the workspace's
-      // _ข้อมูลคำนวณ window down one row per task until it read from below the
-      // data and every view showed zero. The default (OVERWRITE) writes into the
-      // blank row after the table instead, leaving all references untouched.
-      // pinToMaster() in sheets-workspace.service.ts is the second line of
-      // defence, for rows the USER inserts by hand.
-      requestBody: { values: [rowValues(row, 0)] },
+      // OVERWRITE (the default) — see the note above. ลำดับ is stamped in the
+      // follow-up write, once the real row numbers are known.
+      requestBody: { values: chunk.map((row) => rowValues(row, 0)) },
     });
-    // updatedRange looks like "'งานของฉัน'!A7:J7" — take the first row number.
+
+    // updatedRange looks like "'งานของฉัน'!A7:J106" — take the first row number.
     const match = /![A-Z]+(\d+)/.exec(appended.data.updates?.updatedRange ?? '');
-    rowIndex = match ? Number(match[1]) - 1 : HEADER_ROWS;
-    // Now that the row exists, stamp its ลำดับ (= its position under the header).
+    const firstRow = match ? Number(match[1]) - 1 : HEADER_ROWS + offset; // 0-based
+
+    // ลำดับ = the row's position under the header, matching the single-row path.
     await sheets.spreadsheets.values.update({
       spreadsheetId,
-      range: `${TAB_TITLE}!A${rowIndex + 1}`,
+      range: `${TAB_TITLE}!A${firstRow + 1}:A${firstRow + chunk.length}`,
       valueInputOption: 'RAW',
-      requestBody: { values: [[String(rowIndex)]] },
+      requestBody: { values: chunk.map((_row, i) => [String(firstRow + i)]) },
     });
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: chunk.map((row, i) => rowFormatRequest(gid, firstRow + i, row)),
+      },
+    });
+
+    // K–R. A backfilled row has no prior state to preserve, so every row starts
+    // with the default urgency and a single "เริ่มติดตาม" history line — the
+    // same thing the live sync writes the first time it sees a task.
+    const blank = { previousStatus: '', urgency: '', log: '' };
+    await sheets.spreadsheets.values.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        valueInputOption: 'RAW',
+        data: chunk.flatMap((row, i) => extensionUpdates(firstRow + i, row, blank)),
+      },
+    });
+
+    written += chunk.length;
   }
-
-  await sheets.spreadsheets.batchUpdate({
-    spreadsheetId,
-    requestBody: { requests: [rowFormatRequest(gid, rowIndex, row)] },
-  });
-
-  // K–R: the workspace columns. Written after A–J so a failure here can never
-  // lose the task row itself — the views would simply lag one sync behind.
-  await sheets.spreadsheets.values.batchUpdate({
-    spreadsheetId,
-    requestBody: { valueInputOption: 'RAW', data: extensionUpdates(rowIndex, row, prior) },
-  });
+  return written;
 }
 
 /** True when the spreadsheet still exists and we can still write to it. */

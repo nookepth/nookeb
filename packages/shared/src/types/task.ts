@@ -29,6 +29,16 @@ export type TaskStatus = 'pending' | 'in_progress' | 'done' | 'cancelled';
 export type TaskItemStatus = TaskStatus | 'submitted' | 'rejected';
 export type RemindType = '3_days' | '1_day' | '3_hours' | 'overdue';
 
+/**
+ * ความเร่งด่วน picked at creation (migration 048), most→least urgent. Stored
+ * as these canonical keys — the Thai labels (🔴 ด่วนมาก …) are presentation,
+ * owned by the web UI and the Google Sheets workspace mapping.
+ */
+export type TaskUrgency = 'urgent_max' | 'urgent' | 'normal' | 'relaxed';
+export const TASK_URGENCIES: readonly TaskUrgency[] = [
+  'urgent_max', 'urgent', 'normal', 'relaxed',
+] as const;
+
 /** Ordered mapping of reminder type → offset from the deadline (minutes;
  * negative = before). Shared so the scheduler and .ics VALARMs agree. */
 export const REMIND_OFFSETS_MINUTES: Record<RemindType, number> = {
@@ -77,6 +87,12 @@ export interface TaskRecord {
    * treat missing as NULL/default. See selectRemindTypes in task-command.ts.
    */
   reminder_count?: number | null;
+  /**
+   * ความเร่งด่วน picked at creation (migration 048). NULL = ปกติ. Optional so
+   * rows read before the migration don't fail the type; inserts only include
+   * the column when a value was chosen (additive-safe, like reminder_count).
+   */
+  urgency?: TaskUrgency | null;
 }
 
 export interface TaskItemRecord {
@@ -220,7 +236,21 @@ export interface SheetsSyncJob {
   action: 'upsert' | 'delete';
 }
 
-export type SheetsJob = SheetsSyncJob;
+/**
+ * Job: backfill every task the user has ALREADY created into their sheet.
+ *
+ * The opposite payload shape to SheetsSyncJob, and for the mirror-image reason:
+ * this job is about a PERSON, not a task — it is triggered by connecting a
+ * sheet, not by a task changing — so the user id is the only thing that
+ * identifies the work. It carries no task ids because the set is resolved at
+ * run time; a list captured at enqueue time would already be stale.
+ */
+export interface SheetsHistoricalJob {
+  type: 'sheets_historical';
+  userId: string;
+}
+
+export type SheetsJob = SheetsSyncJob | SheetsHistoricalJob;
 
 // ---- DTOs (LIFF web ↔ API) ----
 

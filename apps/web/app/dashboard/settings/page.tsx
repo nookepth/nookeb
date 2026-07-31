@@ -9,6 +9,7 @@ import {
   getMe,
   hasSession,
   startGoogleConnect,
+  syncGoogleHistorical,
   type GoogleIntegrationStatus,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
@@ -83,6 +84,36 @@ export default function SettingsPage() {
     }
   }, []);
 
+  /**
+   * Pull in the tasks that predate the sheet. Also the landing point for the
+   * sheet's own "🔄 sync ประวัติงาน" button: a Sheets HYPERLINK can only GET,
+   * and the session cookie lives on THIS origin, so the sheet links here with
+   * ?sync=historical and the page makes the real POST.
+   */
+  const syncHistorical = useCallback(async () => {
+    setBusy(true);
+    try {
+      await syncGoogleHistorical();
+      setNotice({
+        msg: 'กำลังดึงประวัติงานเก่าให้อยู่น้า — สักครู่แล้วเปิด Sheet ดูได้เลย',
+        ok: true,
+      });
+    } catch (err) {
+      const conflict = err instanceof ApiError && err.status === 409;
+      const throttled = err instanceof ApiError && err.status === 429;
+      setNotice({
+        msg: conflict
+          ? 'ต้องเชื่อมต่อ Google ก่อนน้า'
+          : throttled
+            ? 'เพิ่งดึงไปเมื่อกี้น้า รออีกสักครู่แล้วค่อยกดใหม่'
+            : 'ดึงประวัติงานเก่าไม่สำเร็จน้า ลองใหม่อีกทีนะ',
+        ok: false,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
   useEffect(() => {
     // Read the callback result, then strip it from the URL so a refresh doesn't
     // replay a stale "เชื่อมต่อแล้ว" banner.
@@ -96,9 +127,17 @@ export default function SettingsPage() {
         ok: false,
       });
     }
-    if (result) window.history.replaceState({}, '', '/dashboard/settings');
-    void load();
-  }, [load]);
+    // Arriving from the sheet's button. Strip it the same way, so a refresh
+    // doesn't queue a second backfill.
+    const wantsHistorical = params.get('sync') === 'historical';
+    if (result || wantsHistorical) window.history.replaceState({}, '', '/dashboard/settings');
+    void load().then(() => {
+      // Skipped when the session is gone — the page is showing the login
+      // prompt at that point, and a 401 notice underneath it would just be
+      // noise. Pressing the button after logging in works normally.
+      if (wantsHistorical && hasSession()) void syncHistorical();
+    });
+  }, [load, syncHistorical]);
 
   const connect = async () => {
     setBusy(true);
@@ -197,10 +236,20 @@ export default function SettingsPage() {
                   เปิด Sheet ↗
                 </a>
               )}
+              <button
+                className="btn secondary small"
+                onClick={() => void syncHistorical()}
+                disabled={busy}
+              >
+                🔄 sync ประวัติงาน
+              </button>
               <button className="btn ghost small" onClick={() => void disconnect()} disabled={busy}>
                 ยกเลิกการเชื่อมต่อ
               </button>
             </div>
+            <p className="settings-card-note">
+              ดึงงานที่สร้างไว้ก่อนเชื่อมต่อเข้ามาทีเดียว งานที่อยู่ใน Sheet แล้วหนูจะไม่เพิ่มซ้ำน้า
+            </p>
           </>
         ) : isPro === false ? (
           <>

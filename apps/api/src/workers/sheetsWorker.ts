@@ -1,12 +1,14 @@
 import { Worker, type Job } from 'bullmq';
-import dayjs from 'dayjs';
-import utc from 'dayjs/plugin/utc';
-import timezone from 'dayjs/plugin/timezone';
-import { SHEETS_QUEUE, type SheetsJob, type SheetsSyncJob } from '@nookeb/shared';
+import {
+  SHEETS_QUEUE,
+  type SheetsHistoricalJob,
+  type SheetsJob,
+  type SheetsSyncJob,
+} from '@nookeb/shared';
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../config';
 import { createRedis } from '../plugins/redis';
-import { effectiveDeadline, getTaskWithDetails, type TaskWithDetails } from '../services/task.service';
+import { getTaskWithDetails } from '../services/task.service';
 import {
   authorizedClient,
   createSheet,
@@ -18,12 +20,12 @@ import {
   recordSyncResult,
   sheetIsReachable,
   syncTaskToSheet,
-  type SheetTaskRow,
+  type GoogleIntegrationRow,
 } from '../services/google-sheets.service';
-import { ensureWorkspace, progressBar } from '../services/sheets-workspace.service';
-
-dayjs.extend(utc);
-dayjs.extend(timezone);
+import { toSheetRows } from '../services/sheets-row';
+import { ensureWorkspace } from '../services/sheets-workspace.service';
+import { historicalSync, needsHistoricalSync } from '../services/sheets-historical.service';
+import { enqueueHistoricalSync } from '../services/sheetsQueue';
 
 /**
  * Google Sheets sync worker (migration 046) — mirrors one task into its owner's
@@ -46,107 +48,20 @@ dayjs.extend(timezone);
  *     the queue's long backoff.
  */
 
-const BANGKOK_TZ = 'Asia/Bangkok';
-
 // Service-role client, same as the other workers (they each build their own —
 // there is no Fastify instance to take `app.supabase` from out here).
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-function formatWhen(iso: string | null): string {
-  if (!iso) return '';
-  const d = dayjs(iso);
-  return d.isValid() ? d.tz(BANGKOK_TZ).format('DD/MM/YYYY HH:mm') : '';
-}
-
 /**
- * Newest activity on the task — same derivation as the .xlsx export: there is
- * no updated_at column, so it comes from the stamps that already exist.
+ * Deep link the sheet's "🔄 sync ประวัติงาน" button points at. It goes to the
+ * WEB dashboard, not to the API: a Sheets HYPERLINK can only issue a GET from
+ * the user's browser, and the browser holds the session cookie on the web
+ * origin, not the API host (see routes/integrations.ts). The dashboard page
+ * reads the query and POSTs the request properly.
  */
-function resolveUpdatedAt(task: TaskWithDetails): string | null {
-  const stamps = task.items
-    .flatMap((i) => [
-      i.submitted_at,
-      i.rejected_at,
-      ...i.assignees.flatMap((a) => [a.done_at, a.accepted_at]),
-    ])
-    .filter((s): s is string => s !== null);
-  if (stamps.length === 0) return task.created_at;
-  return stamps.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
-}
-
-/**
- * One task → one sheet row. A multi task is FLATTENED here (unlike the .xlsx
- * export, which gets a row per item): the sheet is a live mirror keyed by task
- * id, and one row per task is what keeps "find the row, update it" a single
- * cheap operation. The per-item detail stays in รายละเอียด.
- */
-/**
- * When the task finished, or null while it is still open. `done` is a task-level
- * status, so the moment it flipped is the newest per-assignee done_at — the same
- * stamps resolveUpdatedAt walks. This is what the workspace's analytics measure
- * "time to complete" against, so it has to be the real completion instant, not
- * the sync time.
- */
-function resolveDoneAt(task: TaskWithDetails): string | null {
-  if (task.status !== 'done') return null;
-  const stamps = task.items
-    .flatMap((i) => i.assignees.map((a) => a.done_at))
-    .filter((s): s is string => s !== null);
-  if (stamps.length === 0) return task.created_at;
-  return stamps.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
-}
-
-/** Items whose every assignee is done, over items total → the progress column. */
-function resolveProgress(task: TaskWithDetails): string {
-  const total = task.items.length;
-  if (total === 0) return '';
-  const done = task.items.filter(
-    (i) => i.assignees.length > 0 && i.assignees.every((a) => a.done_at !== null),
-  ).length;
-  return progressBar(done, total);
-}
-
-/** Attached links and file names, one per line — plain text, never presigned
- * URLs: those expire in an hour and the sheet outlives them. */
-function resolveLinks(task: TaskWithDetails): string {
-  const links = task.links.map((l) => l.url);
-  const files = task.files.map((f) => `📎 ${f.file.display_name || f.file.original_name}`);
-  return [...links, ...files].join('\n');
-}
-
-function toSheetRow(task: TaskWithDetails, createdBy: string, deleted: boolean): SheetTaskRow {
-  const assignees = [
-    ...new Set(
-      task.items.flatMap((i) => i.assignees.map((a) => a.display_name || 'สมาชิก')),
-    ),
-  ];
-  const description =
-    task.type === 'multi'
-      ? task.items.map((i, n) => `${n + 1}. ${i.title}`).join('\n')
-      : (task.items[0]?.description ?? '');
-  const deadline =
-    task.global_deadline ?? (task.items[0] ? effectiveDeadline(task, task.items[0]) : null);
-
-  return {
-    taskId: task.id,
-    title: task.title,
-    description,
-    type: task.type,
-    deadline: formatWhen(deadline),
-    createdBy,
-    assignees: assignees.join(', '),
-    status: task.status,
-    updatedAt: formatWhen(resolveUpdatedAt(task)),
-    deleted,
-    progress: resolveProgress(task),
-    links: resolveLinks(task),
-    createdAt: task.created_at,
-    doneAt: resolveDoneAt(task),
-    deadlineAt: deadline,
-  };
-}
+const HISTORICAL_SYNC_URL = `${config.WEB_URL}/dashboard/settings?sync=historical`;
 
 /**
  * Last time each spreadsheet's layout was verified. In-process on purpose: this
@@ -155,6 +70,14 @@ function toSheetRow(task: TaskWithDetails, createdBy: string, deleted: boolean):
  */
 const layoutCheckedAt = new Map<string, number>();
 const LAYOUT_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Spreadsheets already known to carry a backfill marker. Same rationale as
+ * layoutCheckedAt — a cache, not a lock. Without it every single task sync
+ * would spend one spreadsheets.get re-learning a fact that never changes back;
+ * a restart just costs one extra call per sheet.
+ */
+const historicalDone = new Set<string>();
 
 /**
  * Keep the workspace layout current, without ever failing a sync over it. A
@@ -168,12 +91,44 @@ async function ensureWorkspaceThrottled(
   const last = layoutCheckedAt.get(spreadsheetId) ?? 0;
   if (Date.now() - last < LAYOUT_CHECK_TTL_MS) return;
   try {
-    const rebuilt = await ensureWorkspace(auth, spreadsheetId);
+    const rebuilt = await ensureWorkspace(auth, spreadsheetId, { syncUrl: HISTORICAL_SYNC_URL });
     layoutCheckedAt.set(spreadsheetId, Date.now());
     if (rebuilt) console.log(`[sheets] workspace layout built for ${spreadsheetId}`);
   } catch (err) {
     console.warn(`[sheets] workspace layout skipped: ${describeGoogleError(err).message}`);
   }
+}
+
+/**
+ * Resolve (creating or healing where needed) the spreadsheet a user's rows go
+ * into. Shared by both job kinds so the create-if-missing, re-create-if-deleted
+ * and layout-upgrade rules can only ever exist once.
+ */
+async function resolveSheet(
+  userId: string,
+  integration: GoogleIntegrationRow,
+): Promise<{ auth: Awaited<ReturnType<typeof authorizedClient>>; sheetId: string }> {
+  const auth = await authorizedClient(userId, integration.encrypted_token);
+
+  // Create the sheet on first sync (and re-create if the user deleted it) —
+  // doing it lazily means connecting Google costs zero API calls, and a
+  // deleted sheet heals itself on the next task change instead of failing
+  // every sync from then on.
+  let sheetId = integration.sheet_id;
+  if (!sheetId || !(await sheetIsReachable(auth, sheetId))) {
+    const created = await createSheet(auth, { syncUrl: HISTORICAL_SYNC_URL });
+    sheetId = created.sheetId;
+    await recordSyncResult(supabase, userId, {
+      sheetId: created.sheetId,
+      sheetUrl: created.url,
+    });
+  }
+
+  // Upgrade path for sheets created before the current layout. ensureWorkspace
+  // no-ops once the version matches, and the in-process cache keeps even that
+  // check off the hot path — a sheet is verified at most once every 6 hours.
+  await ensureWorkspaceThrottled(auth, sheetId);
+  return { auth, sheetId };
 }
 
 export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
@@ -197,34 +152,23 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
   if (!integration) return; // not connected — the overwhelmingly common case
 
   try {
-    const auth = await authorizedClient(creatorRow.id, integration.encrypted_token);
-
-    // Create the sheet on first sync (and re-create if the user deleted it) —
-    // doing it lazily means connecting Google costs zero API calls, and a
-    // deleted sheet heals itself on the next task change instead of failing
-    // every sync from then on.
-    let sheetId = integration.sheet_id;
-    if (!sheetId || !(await sheetIsReachable(auth, sheetId))) {
-      const created = await createSheet(auth);
-      sheetId = created.sheetId;
-      await recordSyncResult(supabase, creatorRow.id, {
-        sheetId: created.sheetId,
-        sheetUrl: created.url,
-      });
-    }
-
-    // Upgrade path for sheets created before the current layout. ensureWorkspace
-    // no-ops once the version matches, and the in-process cache keeps even that
-    // check off the hot path — a sheet is verified at most once every 6 hours.
-    await ensureWorkspaceThrottled(auth, sheetId);
+    const { auth, sheetId } = await resolveSheet(creatorRow.id, integration);
 
     const deleted = data.action === 'delete' || task.status === 'cancelled';
     await syncTaskToSheet(
       auth,
       sheetId,
-      toSheetRow(task, creatorRow.display_name ?? 'ไม่ทราบชื่อ', deleted),
+      toSheetRows(task, creatorRow.display_name ?? 'ไม่ทราบชื่อ', deleted),
     );
     await recordSyncResult(supabase, creatorRow.id, { error: null });
+
+    // First time this spreadsheet has ever been written to? Everything the user
+    // created BEFORE they connected is still missing from it, so pull it in.
+    // Queued as its own job rather than run inline: a backfill is minutes of
+    // work and this job's contract is "one task reaches the sheet quickly".
+    if (!historicalDone.has(sheetId) && (await needsHistoricalSync(auth, sheetId))) {
+      enqueueHistoricalSync(creatorRow.id);
+    }
   } catch (err) {
     // Log the REAL Google error (status + reason + message, never a token — see
     // describeGoogleError) so a disabled API vs a revoked grant vs a mismatched
@@ -258,8 +202,57 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
   }
 }
 
+/**
+ * Backfill every task the user created before their sheet existed.
+ *
+ * Same failure policy as processSheetsSync, deliberately: an auth error stands
+ * the job down (retrying a revoked grant is pointless), everything else throws
+ * so BullMQ retries. A retry is safe — the sheet's own รหัสงาน column is the
+ * duplicate guard, so a run that died halfway simply appends the remainder.
+ */
+export async function processSheetsHistorical(job: Job<SheetsJob>): Promise<void> {
+  const { userId } = job.data as SheetsHistoricalJob;
+  if (!isGoogleSheetsConfigured()) return;
+
+  const integration = await getIntegration(supabase, userId);
+  if (!integration) return; // disconnected between the press and the job
+
+  try {
+    const { auth, sheetId } = await resolveSheet(userId, integration);
+    const result = await historicalSync(supabase, auth, sheetId, userId);
+    historicalDone.add(sheetId);
+    console.log(
+      `[sheets] historical sync for user ${userId}: ` +
+        `imported=${result.imported} skipped=${result.skipped} total=${result.total}`,
+    );
+    await recordSyncResult(supabase, userId, { error: null });
+  } catch (err) {
+    const info = describeGoogleError(err);
+    console.warn(
+      `[sheets] historical sync failed for user ${userId}: ` +
+        `status=${info.status ?? '-'} reason=${info.reason ?? '-'} msg=${info.message}`,
+    );
+    if (isAuthError(err)) {
+      await recordSyncResult(supabase, userId, {
+        error: 'การเชื่อมต่อ Google หมดอายุ กดเชื่อมต่อใหม่อีกครั้งน้า',
+      }).catch(() => {});
+      return;
+    }
+    await recordSyncResult(supabase, userId, {
+      error: 'ดึงประวัติงานเก่าไม่สำเร็จ หนูจะลองใหม่ให้เองน้า',
+    }).catch(() => {});
+    throw err;
+  }
+}
+
+/** One queue, two job kinds — dispatch on the payload's discriminant. */
+export async function processSheetsJob(job: Job<SheetsJob>): Promise<void> {
+  if (job.data.type === 'sheets_historical') return processSheetsHistorical(job);
+  return processSheetsSync(job);
+}
+
 export function createSheetsWorker(): Worker<SheetsJob> {
-  const worker = new Worker<SheetsJob>(SHEETS_QUEUE, processSheetsSync, {
+  const worker = new Worker<SheetsJob>(SHEETS_QUEUE, processSheetsJob, {
     connection: createRedis(),
     // Low concurrency on purpose: Google's per-project quota is shared across
     // every user, and each sync is several API calls.

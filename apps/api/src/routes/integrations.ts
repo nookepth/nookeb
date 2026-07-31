@@ -11,6 +11,7 @@ import {
   saveIntegration,
 } from '../services/google-sheets.service';
 import { claimOAuthState, storeOAuthState } from '../services/google-oauth-state';
+import { enqueueHistoricalSync } from '../services/sheetsQueue';
 
 /**
  * Google Sheets integration (migration 046) — OAuth connect/disconnect.
@@ -128,6 +129,37 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
     }
     return reply.redirect(settingsRedirect('connected'));
   });
+
+  // POST /integrations/google/sync-historical — backfill the tasks the user
+  // created BEFORE they connected (the event-driven sync only ever writes tasks
+  // that change after the connect).
+  //
+  // Queued, never inline, for the same three reasons every other sync is (see
+  // sheetsQueue.ts) plus one of its own: a full backfill is hundreds of Sheets
+  // calls and would blow past any sane request timeout. The response therefore
+  // says "accepted", not "imported N" — the count lands in the sheet's own
+  // dashboard line and in `lastSyncedAt` here.
+  //
+  // Rate limit: this is the most expensive button in the product, and the
+  // duplicate guard means a second press seconds later has nothing to do.
+  app.post(
+    '/integrations/google/sync-historical',
+    {
+      preHandler: app.authenticate,
+      config: { rateLimit: { max: 3, timeWindow: '10 minutes' } },
+    },
+    async (request, reply) => {
+      const row = await getIntegration(app.supabase, request.authUser!.userId);
+      if (!row) {
+        return reply.code(409).send({
+          error: 'ยังไม่ได้เชื่อมต่อ Google น้า',
+          code: 'GOOGLE_NOT_CONNECTED',
+        });
+      }
+      enqueueHistoricalSync(request.authUser!.userId);
+      return { queued: true };
+    },
+  );
 
   // DELETE /integrations/google — disconnect. Removes the credential row only:
   // the user's spreadsheet is theirs and stays exactly as it is, and their

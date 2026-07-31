@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ApiError, createPersonalTask } from '@/lib/api';
+import { URGENCY_OPTIONS, type TaskUrgency } from '@/lib/taskDraft';
 import styles from './tasks.module.css';
 
 /** Modal form for creating a งานส่วนตัว directly from the dashboard.
@@ -18,6 +19,7 @@ export default function CreatePersonalTaskModal({
   const [title, setTitle] = useState('');
   const [deadline, setDeadline] = useState('');
   const [description, setDescription] = useState('');
+  const [urgency, setUrgency] = useState<TaskUrgency>('normal');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -42,6 +44,7 @@ export default function CreatePersonalTaskModal({
       await createPersonalTask({
         title: title.trim(),
         globalDeadline: new Date(deadline).toISOString(),
+        urgency,
         ...(description.trim() ? { description: description.trim() } : {}),
       });
       onCreated();
@@ -79,6 +82,53 @@ export default function CreatePersonalTaskModal({
             value={deadline}
             onChange={(e) => setDeadline(e.target.value)}
           />
+        </div>
+
+        <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
+          ความเร่งด่วน
+        </label>
+        <div role="radiogroup" aria-label="ความเร่งด่วน" style={{ display: 'flex', gap: 8 }}>
+          {URGENCY_OPTIONS.map((opt) => {
+            const active = urgency === opt.value;
+            return (
+              <button
+                key={opt.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setUrgency(opt.value)}
+                style={{
+                  flex: '1 1 0',
+                  minWidth: 0,
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                  padding: '9px 4px',
+                  borderRadius: 10,
+                  cursor: 'pointer',
+                  border: `1.5px solid ${active ? opt.color : '#E5E7EB'}`,
+                  background: active ? `${opt.color}14` : '#fff',
+                  color: active ? opt.color : '#6B7280',
+                  fontFamily: 'inherit',
+                  fontSize: 13,
+                  fontWeight: active ? 700 : 500,
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: '50%',
+                    background: opt.color,
+                    flexShrink: 0,
+                  }}
+                />
+                {opt.label}
+              </button>
+            );
+          })}
         </div>
 
         <label className={styles.fieldLabel} style={{ marginTop: 12 }}>

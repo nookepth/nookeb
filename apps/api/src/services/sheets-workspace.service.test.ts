@@ -3,10 +3,16 @@ import assert from 'node:assert/strict';
 import {
   appendStatusLog,
   calcFormulas,
+  composeChartRequests,
   composeWorkspacePlans,
+  formatHistoricalStamp,
+  parseHistoricalStamp,
   progressBar,
+  serializeHistoricalStamp,
   sizeOf,
   toSheetSerial,
+  DASH_TAB,
+  HISTORICAL_STAMP_A1,
   type TabPlan,
 } from './sheets-workspace.service';
 
@@ -137,7 +143,7 @@ describe('composeWorkspacePlans — the nav offset', () => {
   // Deterministic fake gids: the tab's position in the list.
   const TITLES = [
     '_ตัวเลือก', '_ข้อมูลคำนวณ', '📊 ภาพรวม', '⚡ ความสำคัญ', '🔄 ติดตามสถานะ',
-    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปสัปดาห์', '📋 สั่งงาน', '➕ วิธีสั่งงาน',
+    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปงาน', '✅ งานเสร็จ', '➕ วิธีสั่งงาน',
   ];
   const gid = (t: string) => {
     const i = TITLES.indexOf(t);
@@ -148,7 +154,7 @@ describe('composeWorkspacePlans — the nav offset', () => {
   const byTitle = new Map<string, TabPlan>(plans);
   const NAV_TABS = [
     '📊 ภาพรวม', '⚡ ความสำคัญ', '🔄 ติดตามสถานะ', '👥 รายงานทีม',
-    '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปสัปดาห์', '📋 สั่งงาน', '➕ วิธีสั่งงาน',
+    '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปงาน', '✅ งานเสร็จ', '➕ วิธีสั่งงาน',
   ];
 
   const firstRow = (a1: string) => Number(/([A-Z]+)(\d+)/.exec(a1)![2]);
@@ -234,7 +240,7 @@ describe('composeWorkspacePlans — the nav offset', () => {
 describe('composeWorkspacePlans — conditional formats move with their range', () => {
   const TITLES = [
     '_ตัวเลือก', '_ข้อมูลคำนวณ', '📊 ภาพรวม', '⚡ ความสำคัญ', '🔄 ติดตามสถานะ',
-    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปสัปดาห์', '📋 สั่งงาน', '➕ วิธีสั่งงาน',
+    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปงาน', '✅ งานเสร็จ', '➕ วิธีสั่งงาน',
   ];
   const byTitle = new Map<string, TabPlan>(
     composeWorkspacePlans((t) => 100 + TITLES.indexOf(t), 0),
@@ -281,7 +287,7 @@ describe('composeWorkspacePlans — conditional formats move with their range', 
 describe('composeWorkspacePlans — every write lands inside the grid', () => {
   const TITLES = [
     '_ตัวเลือก', '_ข้อมูลคำนวณ', '📊 ภาพรวม', '⚡ ความสำคัญ', '🔄 ติดตามสถานะ',
-    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปสัปดาห์', '📋 สั่งงาน', '➕ วิธีสั่งงาน',
+    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปงาน', '✅ งานเสร็จ', '➕ วิธีสั่งงาน',
   ];
   const plans = composeWorkspacePlans((t) => 100 + TITLES.indexOf(t), 0);
 
@@ -315,5 +321,149 @@ describe('composeWorkspacePlans — every write lands inside the grid', () => {
         );
       });
     });
+  });
+});
+
+describe('layout v4 — สั่งงาน removed, สรุปงาน picker, งานเสร็จ report', () => {
+  const TITLES = [
+    '_ตัวเลือก', '_ข้อมูลคำนวณ', '📊 ภาพรวม', '⚡ ความสำคัญ', '🔄 ติดตามสถานะ',
+    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปงาน', '✅ งานเสร็จ', '➕ วิธีสั่งงาน',
+  ];
+  const gid = (t: string) => {
+    const i = TITLES.indexOf(t);
+    if (i === -1) throw new Error(`unknown tab ${t}`);
+    return 100 + i;
+  };
+  const plans = composeWorkspacePlans(gid, 0);
+  const byTitle = new Map<string, TabPlan>(plans);
+  const allText = (plan: TabPlan) =>
+    plan.values.flatMap((v) => v.rows.flat()).map(String).join('\n');
+
+  test('the สั่งงาน tab is gone from the generated set (Part E)', () => {
+    assert.equal(byTitle.has('📋 สั่งงาน'), false);
+  });
+
+  test('no surviving formula references the removed สั่งงาน tab (Part E)', () => {
+    // The nav labels say "วิธีสั่งงาน" as prose; what must not survive is a
+    // FORMULA reference ('📋 สั่งงาน'!…), which would #REF! after the delete.
+    plans.forEach(([title, plan]) => {
+      assert.ok(
+        !allText(plan).includes(`'📋 สั่งงาน'!`),
+        `${title} still references the removed tab`,
+      );
+    });
+  });
+
+  test('สรุปงาน has the date/month picker and reads it, not a fixed week (Part D)', () => {
+    const text = allText(byTitle.get('📅 สรุปงาน')!);
+    assert.ok(text.includes('รายเดือน'), 'mode dropdown default missing');
+    assert.ok(text.includes('IF($B$3="รายวัน"'), 'formulas do not read the (shifted) mode cell');
+    assert.ok(!text.includes('WEEKDAY(TODAY(),3)'), 'still pinned to the current week');
+  });
+
+  test('analytics ranges are calendar-month chunks, clamped at month end (Part C)', () => {
+    const text = allText(byTitle.get('📈 วิเคราะห์')!);
+    assert.ok(text.includes('DATE(YEAR(TODAY()), MONTH(TODAY())+0, 1)'), 'no month anchor');
+    // The 29-end chunk must clamp to the true month end, not assume 7 days…
+    assert.ok(text.includes('MIN(DATE(YEAR(TODAY()), MONTH(TODAY())+0, 1)+28+7'), 'no month-end clamp');
+    // …and a chunk that starts past the month end (Feb 29-31) must blank itself.
+    assert.match(text, /IF\(DATE\(YEAR\(TODAY\(\)\), MONTH\(TODAY\(\)\)\+0, 1\)\+28>=DATE/);
+    assert.ok(!text.includes('WEEKDAY(TODAY(),3)'), 'rolling 7-day blocks still present');
+  });
+
+  test('งานเสร็จ computes days-to-complete from real stamps only (Part H)', () => {
+    const text = allText(byTitle.get('✅ งานเสร็จ')!);
+    // U (done−created) gated on I (real completion instant) — no invented field.
+    assert.ok(text.includes(`FILTER('_ข้อมูลคำนวณ'!$U$2:$U, '_ข้อมูลคำนวณ'!$I$2:$I<>"")`));
+    assert.ok(text.includes('"เสร็จแล้ว"'));
+    assert.ok(text.includes('เกิน 14 วัน'), 'distribution buckets missing');
+  });
+
+  test('chart SOURCES on nav-shifted tabs are shifted with their data', () => {
+    const charts = composeChartRequests(gid);
+    const ranges = (req: (typeof charts)[number]) => {
+      const found: { sheetId: number; startRowIndex?: number }[] = [];
+      const walk = (n: unknown): void => {
+        if (Array.isArray(n)) return n.forEach(walk);
+        if (n && typeof n === 'object') {
+          const o = n as Record<string, unknown>;
+          if (typeof o.sheetId === 'number' && 'startRowIndex' in o) {
+            found.push(o as { sheetId: number; startRowIndex?: number });
+          }
+          Object.values(o).forEach(walk);
+        }
+      };
+      walk(req.addChart?.chart?.spec);
+      return found;
+    };
+    // The analytics trend chart's table header sits at nav-free row 3; after
+    // the shift its sources must start at 4 — the pre-v4 bug left them at 3,
+    // reading a blank row and dropping the newest data row.
+    const anaSources = charts.flatMap(ranges).filter((r) => r.sheetId === gid('📈 วิเคราะห์'));
+    assert.ok(anaSources.length > 0);
+    anaSources.forEach((r) => assert.ok((r.startRowIndex ?? 0) >= 4, JSON.stringify(r)));
+    // _ตัวเลือก has no nav strip — its sources must NOT move off row 0.
+    const confSources = charts.flatMap(ranges).filter((r) => r.sheetId === gid('_ตัวเลือก'));
+    assert.ok(confSources.some((r) => (r.startRowIndex ?? 0) === 0));
+  });
+});
+
+describe('historical-sync stamp', () => {
+  test('round-trips through its serialized form', () => {
+    const stamp = { at: '2026-08-05T02:00:00.000Z', count: 42 };
+    assert.deepEqual(parseHistoricalStamp(serializeHistoricalStamp(stamp)), stamp);
+  });
+
+  test('unparseable or absent metadata reads as "never run"', () => {
+    // The caller treats null as "backfill has not happened", which triggers an
+    // import. Anything ambiguous must therefore fail CLOSED to null only when
+    // it really is unusable — a garbage count still counts as a run.
+    assert.equal(parseHistoricalStamp(null), null);
+    assert.equal(parseHistoricalStamp(''), null);
+    assert.equal(parseHistoricalStamp('ไม่ใช่วันที่|3'), null);
+    assert.deepEqual(parseHistoricalStamp('2026-08-05T02:00:00.000Z|nope'), {
+      at: '2026-08-05T02:00:00.000Z',
+      count: 0,
+    });
+  });
+
+  test('formats the Bangkok clock reading, not UTC', () => {
+    assert.equal(
+      formatHistoricalStamp({ at: '2026-08-05T02:00:00.000Z', count: 7 }),
+      'ดึงล่าสุด 05/08/2026 09:00 · 7 งาน',
+    );
+  });
+});
+
+describe('historical-sync block on the dashboard', () => {
+  const TITLES = [
+    '_ตัวเลือก', '_ข้อมูลคำนวณ', '📊 ภาพรวม', '⚡ ความสำคัญ', '🔄 ติดตามสถานะ',
+    '👥 รายงานทีม', '🗓️ ปฏิทิน', '📈 วิเคราะห์', '📅 สรุปงาน', '✅ งานเสร็จ', '➕ วิธีสั่งงาน',
+  ];
+  const build = (syncUrl?: string) =>
+    new Map(composeWorkspacePlans((t) => 100 + TITLES.indexOf(t), 0, { syncUrl }));
+
+  /**
+   * HISTORICAL_STAMP_A1 is where writeHistoricalStamp reports the result, and
+   * it is derived from the block's nav-FREE row while the plan is shifted by the
+   * nav. Get that offset wrong and the count silently lands on some other cell —
+   * the one failure mode nobody would notice from the code alone.
+   */
+  test('the exported stamp cell is the cell the builder writes the placeholder into', () => {
+    const dash = build().get(DASH_TAB)!;
+    const placeholder = dash.values.find((v) => v.range === HISTORICAL_STAMP_A1);
+    assert.ok(placeholder, `nothing is written at ${HISTORICAL_STAMP_A1}`);
+    assert.match(String(placeholder!.rows[0]![0]), /ยังไม่เคย/);
+  });
+
+  test('the button is a hyperlink when a URL is supplied and inert text when not', () => {
+    const withUrl = build('https://example.test/dashboard/settings?sync=historical').get(DASH_TAB)!;
+    const linked = withUrl.values.find((v) => String(v.rows[0]?.[0]).includes('sync ประวัติงาน'));
+    assert.match(String(linked!.rows[0]![0]), /^=HYPERLINK\("https:\/\/example\.test/);
+
+    // No WEB_URL configured must not emit `=HYPERLINK("undefined"…)`.
+    const plain = build().get(DASH_TAB)!;
+    const label = plain.values.find((v) => String(v.rows[0]?.[0]).includes('sync ประวัติงาน'));
+    assert.equal(String(label!.rows[0]![0]).startsWith('='), false);
   });
 });

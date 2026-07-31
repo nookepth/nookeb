@@ -271,6 +271,11 @@ export interface CreateTaskInput {
    * migration 047 hasn't been applied yet (the column simply stays absent).
    */
   reminderCount?: number | null;
+  /**
+   * ความเร่งด่วน (migration 048). Only written to the row when set, so a create
+   * still succeeds if the migration hasn't been applied and no value was sent.
+   */
+  urgency?: TaskRecord['urgency'];
 }
 
 export interface TaskItemWithAssignees extends TaskItemRecord {
@@ -345,6 +350,8 @@ export async function createTaskWithItems(
       ...(typeof input.reminderCount === 'number'
         ? { reminder_count: input.reminderCount }
         : {}),
+      // Same additive-safety rule as reminder_count (migration 048).
+      ...(input.urgency ? { urgency: input.urgency } : {}),
     })
     .select('*')
     .single();
@@ -615,6 +622,35 @@ export async function markAssigneeAccepted(
     .select('id');
   if (error) throw error;
   return (data ?? []).length > 0;
+}
+
+/**
+ * รับทราบ moves work into motion: a pending item (and its pending task) becomes
+ * 'in_progress'. Without this, acceptance only stamps accepted_at and every
+ * status mirror — the dashboard tabs, the sheet's สถานะ column and its pipeline
+ * view — keeps showing รอดำเนินการ, which reads as "nobody has picked this up".
+ * Guarded to 'pending' only so it can never regress a submitted/rejected/done
+ * item, and idempotent by construction.
+ */
+export async function promoteToInProgress(
+  supabase: SupabaseClient,
+  taskId: string,
+  itemIds: string[],
+): Promise<void> {
+  if (itemIds.length > 0) {
+    const { error } = await supabase
+      .from('task_items')
+      .update({ status: 'in_progress' })
+      .in('id', itemIds)
+      .eq('status', 'pending');
+    if (error) throw error;
+  }
+  const { error: taskErr } = await supabase
+    .from('tasks')
+    .update({ status: 'in_progress' })
+    .eq('id', taskId)
+    .eq('status', 'pending');
+  if (taskErr) throw taskErr;
 }
 
 /** Set/clear an assignee's done note (edit after the fact). Returns false when

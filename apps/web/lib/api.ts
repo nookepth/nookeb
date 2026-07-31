@@ -1287,6 +1287,17 @@ export function disconnectGoogle(): Promise<{ success: boolean }> {
   return apiFetch('/integrations/google', { method: 'DELETE' });
 }
 
+/**
+ * Backfill the tasks that existed before the sheet did.
+ *
+ * Returns as soon as the job is QUEUED, not when the import finishes — a full
+ * backfill is hundreds of Sheets calls. The result shows up in the sheet's own
+ * ภาพรวม tab ("ดึงล่าสุด … · N งาน") and in `lastSyncedAt` here.
+ */
+export function syncGoogleHistorical(): Promise<{ queued: boolean }> {
+  return apiFetch('/integrations/google/sync-historical', { method: 'POST' });
+}
+
 export interface TaskExportOptions {
   /** 'YYYY-MM-DD', Bangkok calendar days; both bounds inclusive */
   from?: string;
@@ -1392,6 +1403,8 @@ export function createPersonalTask(input: {
   /** ISO datetime, must be in the future (API-enforced) */
   globalDeadline: string;
   description?: string;
+  /** ความเร่งด่วน (migration 048); omitted = ปกติ */
+  urgency?: 'urgent_max' | 'urgent' | 'normal' | 'relaxed';
 }): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks`, {
     method: 'POST',
@@ -1401,6 +1414,7 @@ export function createPersonalTask(input: {
       type: 'single',
       title: input.title,
       globalDeadline: input.globalDeadline,
+      ...(input.urgency ? { urgency: input.urgency } : {}),
       items: [
         {
           title: input.title,

@@ -45,9 +45,26 @@ type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
  * v2 — every _ข้อมูลคำนวณ reference to the master is now INDIRECT (see
  * pinToMaster). v1 sheets have references that drifted one row per task and
  * read from below their own data, so they MUST rebuild to recover.
+ * v3 — the ภาพรวม tab gained the "sync ประวัติงาน" block.
+ * v4 — สั่งงาน tab removed; สรุปสัปดาห์ became สรุปงาน (date/month picker);
+ *      new ✅ งานเสร็จ report; month-anchored analytics ranges; dashboard
+ *      polish; same-tab chart sources now shift with the nav.
  */
-export const LAYOUT_VERSION = 2;
+export const LAYOUT_VERSION = 4;
 const METADATA_KEY = 'nookeb_layout_version';
+
+/**
+ * Marks that the historical backfill has run for this spreadsheet, and what it
+ * imported: `"<ISO instant>|<count>"`.
+ *
+ * Spreadsheet developer metadata rather than a column in `google_integrations`,
+ * for the same reason รหัสงาน lives in the sheet: the fact belongs to the
+ * SPREADSHEET. A user who deletes their sheet gets a fresh one that has never
+ * been backfilled, and a DB flag would then wrongly claim it had. It also needs
+ * no migration, and — unlike a cell — it survives a layout rebuild, since
+ * ensureWorkspace only ever deletes its OWN key.
+ */
+export const HISTORICAL_METADATA_KEY = 'nookeb_historical_sync';
 
 const BANGKOK_TZ = 'Asia/Bangkok';
 
@@ -63,17 +80,28 @@ const TAB = {
   TEAM: '👥 รายงานทีม',
   CAL: '🗓️ ปฏิทิน',
   ANA: '📈 วิเคราะห์',
-  WEEK: '📅 สรุปสัปดาห์',
-  FORM: '📋 สั่งงาน',
+  WEEK: '📅 สรุปงาน',
+  DONE: '✅ งานเสร็จ',
   HELP: '➕ วิธีสั่งงาน',
   CALC: '_ข้อมูลคำนวณ',
   CONF: '_ตัวเลือก',
 } as const;
 
+/**
+ * Tabs earlier layouts generated under names the current layout no longer
+ * uses. A rebuild must DELETE these or an upgraded sheet keeps a dead tab
+ * around forever — but they are never recreated:
+ *   - 📋 สั่งงาน: retired outright (Part E, 2026-08-01). The in-sheet form
+ *     could never create a real task (the sync is one-way), and its real
+ *     replacement is the urgency-aware create flows in LIFF and the web.
+ *   - 📅 สรุปสัปดาห์: renamed to 📅 สรุปงาน with a date/month picker.
+ */
+const LEGACY_TABS: string[] = ['📋 สั่งงาน', '📅 สรุปสัปดาห์'];
+
 /** Order shown in the tab strip: dashboard, the raw table, then the views. */
 const TAB_ORDER = [
   TAB.DASH, MASTER, TAB.PRIO, TAB.TRACK, TAB.TEAM,
-  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.FORM, TAB.HELP, TAB.CALC, TAB.CONF,
+  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.DONE, TAB.HELP, TAB.CALC, TAB.CONF,
 ];
 
 /**
@@ -92,7 +120,7 @@ const NAV: { tab: string; label: string }[] = [
   { tab: TAB.TEAM, label: '👥 ทีม' },
   { tab: TAB.CAL, label: '🗓️ ปฏิทิน' },
   { tab: TAB.ANA, label: '📈 วิเคราะห์' },
-  { tab: TAB.FORM, label: '📋 สั่งงาน' },
+  { tab: TAB.DONE, label: '✅ งานเสร็จ' },
   { tab: MASTER, label: '📝 งานของฉัน' },
 ];
 
@@ -102,7 +130,7 @@ const NAV_ROWS = 1;
 /** Tabs that get the nav strip — the visible generated views, plus the master. */
 const NAV_TABS: string[] = [
   TAB.DASH, TAB.PRIO, TAB.TRACK, TAB.TEAM,
-  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.FORM, TAB.HELP,
+  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.DONE, TAB.HELP,
 ];
 
 const HIDDEN_TABS: string[] = [TAB.CALC, TAB.CONF];
@@ -639,23 +667,55 @@ function shiftRequest(req: sheets_v4.Schema$Request, by: number): sheets_v4.Sche
 }
 
 /**
- * Move an addChart's anchor cell down without touching the ranges it reads.
- * A chart's data lives on _ตัวเลือก, which has no nav strip and must not shift;
- * only the overlay position — which is on the chart's own tab — moves.
+ * Move an addChart down by the nav offset: the anchor cell always (it sits on
+ * the chart's own nav-shifted tab), and each SOURCE range only when it reads a
+ * tab that was itself shifted. A chart fed from _ตัวเลือก keeps its sources
+ * untouched (that tab has no nav strip); a chart fed from its own visible tab
+ * must have them moved, or it reads one blank row and silently drops the last
+ * data row — the exact off-by-one the analytics charts shipped with before v4.
  */
-function shiftChartAnchor(req: sheets_v4.Schema$Request, by: number): sheets_v4.Schema$Request {
-  const anchor = req.addChart?.chart?.position?.overlayPosition?.anchorCell;
-  if (!anchor || typeof anchor.rowIndex !== 'number') return req;
+function shiftChart(
+  req: sheets_v4.Schema$Request,
+  by: number,
+  shiftedGids: Set<number>,
+): sheets_v4.Schema$Request {
+  const chart = req.addChart?.chart;
+  const anchor = chart?.position?.overlayPosition?.anchorCell;
+  if (!chart || !anchor || typeof anchor.rowIndex !== 'number') return req;
+
+  const shiftSources = (node: unknown): unknown => {
+    if (Array.isArray(node)) return node.map(shiftSources);
+    if (node && typeof node === 'object') {
+      const obj = node as Record<string, unknown>;
+      if (
+        typeof obj.sheetId === 'number' &&
+        shiftedGids.has(obj.sheetId) &&
+        ('startRowIndex' in obj || 'endRowIndex' in obj)
+      ) {
+        const r = obj as sheets_v4.Schema$GridRange;
+        return {
+          ...r,
+          ...(r.startRowIndex != null ? { startRowIndex: r.startRowIndex + by } : {}),
+          ...(r.endRowIndex != null ? { endRowIndex: r.endRowIndex + by } : {}),
+        };
+      }
+      return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, shiftSources(v)]));
+    }
+    return node;
+  };
+
+  const spec = shiftSources(chart.spec) as sheets_v4.Schema$ChartSpec;
   return {
     ...req,
     addChart: {
       ...req.addChart,
       chart: {
-        ...req.addChart!.chart,
+        ...chart,
+        spec,
         position: {
-          ...req.addChart!.chart!.position,
+          ...chart.position,
           overlayPosition: {
-            ...req.addChart!.chart!.position!.overlayPosition,
+            ...chart.position!.overlayPosition,
             anchorCell: { ...anchor, rowIndex: anchor.rowIndex + by },
           },
         },
@@ -713,7 +773,17 @@ function navBar(sheetId: number, cols: number, gidOf: (title: string) => number 
   };
 }
 
-function buildDashboard(gid: number): TabPlan {
+/**
+ * Nav-free coordinates of the historical-sync block on the dashboard. Exported
+ * (shifted by the nav) so the backfill can stamp its result into the cell
+ * without re-deriving the layout — if the block moves, it moves in ONE place.
+ */
+const HISTORICAL_ROW = 18; // 0-based, nav-free — the row the block starts on
+export const HISTORICAL_STAMP_A1 = `I${HISTORICAL_ROW + 2 + NAV_ROWS + 1}`;
+export const DASH_TAB: string = TAB.DASH;
+const HISTORICAL_EMPTY_TEXT = 'ยังไม่เคยดึงประวัติงานเก่า';
+
+function buildDashboard(gid: number, syncUrl?: string): TabPlan {
   const values: TabPlan['values'] = [];
   const requests: sheets_v4.Schema$Request[] = [];
 
@@ -744,6 +814,10 @@ function buildDashboard(gid: number): TabPlan {
     { label: '✅ เสร็จแล้ว', formula: `=COUNTIF(${CALC}!F2:F, "เสร็จแล้ว")`, color: C.SUCCESS, bg: '#E8F5E9' },
     { label: '⏰ เกินกำหนด', formula: `=COUNTIF(${CALC}!M2:M, TRUE)`, color: C.DANGER, bg: C.URGENT_BG },
   ];
+  // Card anatomy (v4 polish): white card, one THICK accent rule on top carrying
+  // the card's semantic colour, hairline DIVIDER around the rest. The pastel
+  // fill lives only behind the number now — six fully-tinted boxes in a row
+  // read as six competing highlights; one accent line each reads as a system.
   kpis.forEach((k, i) => {
     const col = i * 2;
     values.push({ range: `${colLetter(col)}3`, rows: [[k.label]] });
@@ -754,35 +828,51 @@ function buildDashboard(gid: number): TabPlan {
       { mergeCells: { range: grid(gid, 3, col, 4, col + 2), mergeType: 'MERGE_ALL' } },
       { mergeCells: { range: grid(gid, 4, col, 5, col + 2), mergeType: 'MERGE_ALL' } },
       fmt(grid(gid, 2, col, 3, col + 2), {
-        backgroundColor: rgb(k.bg), horizontalAlignment: 'CENTER',
-        textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
-      }, 'backgroundColor,horizontalAlignment,textFormat'),
+        backgroundColor: rgb(C.WHITE), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+        textFormat: { fontFamily: FONT, fontSize: 9, bold: true, foregroundColor: rgb(C.MUTED) },
+      }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
       fmt(grid(gid, 3, col, 4, col + 2), {
         backgroundColor: rgb(k.bg), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
-        textFormat: { fontFamily: FONT, fontSize: 24, bold: true, foregroundColor: rgb(k.color) },
+        textFormat: { fontFamily: FONT, fontSize: 26, bold: true, foregroundColor: rgb(k.color) },
       }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
       fmt(grid(gid, 4, col, 5, col + 2), {
-        backgroundColor: rgb(k.bg), horizontalAlignment: 'CENTER',
+        backgroundColor: rgb(C.WHITE), horizontalAlignment: 'CENTER',
         textFormat: { fontFamily: FONT, fontSize: 8, foregroundColor: rgb(C.MUTED) },
       }, 'backgroundColor,horizontalAlignment,textFormat'),
       {
         updateBorders: {
           range: grid(gid, 2, col, 5, col + 2),
-          top: { style: 'SOLID_MEDIUM', color: rgb(k.color) },
-          bottom: { style: 'SOLID_MEDIUM', color: rgb(k.color) },
-          left: { style: 'SOLID_MEDIUM', color: rgb(k.color) },
-          right: { style: 'SOLID_MEDIUM', color: rgb(k.color) },
+          top: { style: 'SOLID_THICK', color: rgb(k.color) },
+          bottom: { style: 'SOLID', color: rgb(C.BORDER) },
+          left: { style: 'SOLID', color: rgb(C.BORDER) },
+          right: { style: 'SOLID', color: rgb(C.BORDER) },
         },
       },
     );
   });
-  requests.push({
-    updateDimensionProperties: {
-      range: { sheetId: gid, dimension: 'ROWS', startIndex: 3, endIndex: 4 },
-      properties: { pixelSize: 46 },
-      fields: 'pixelSize',
+  requests.push(
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex: 2, endIndex: 3 },
+        properties: { pixelSize: 26 },
+        fields: 'pixelSize',
+      },
     },
-  });
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex: 3, endIndex: 4 },
+        properties: { pixelSize: 52 },
+        fields: 'pixelSize',
+      },
+    },
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex: 4, endIndex: 5 },
+        properties: { pixelSize: 18 },
+        fields: 'pixelSize',
+      },
+    },
+  );
 
   // ---- urgent / overdue ----
   values.push({ range: 'A7', rows: [['🚨 ด่วนมาก & เกินกำหนด']] });
@@ -834,8 +924,67 @@ function buildDashboard(gid: number): TabPlan {
   requests.push(...sectionHeader(gid, 18, 0, 6, '🕐 ความเคลื่อนไหวล่าสุด'));
   requests.push(...headerFormat(grid(gid, 19, 0, 20, 4)));
 
+  // ---- historical backfill: button + last-run stamp ----
+  //
+  // A Sheets cell cannot call an HTTP endpoint on its own — only Apps Script
+  // can, and the whole workspace is built on "nothing to install". So the
+  // button is a HYPERLINK into the dashboard, which already holds the user's
+  // session and fires the request for them (?sync=historical). One click from
+  // the sheet either way, and it keeps working for users who never install the
+  // optional add-on.
+  const hRow = HISTORICAL_ROW;
+  values.push({ range: `I${hRow + 1}`, rows: [['🗂️ ประวัติงานเก่า']] });
+  values.push({
+    range: `I${hRow + 2}`,
+    rows: [[
+      syncUrl
+        ? `=HYPERLINK("${syncUrl}", "🔄 sync ประวัติงาน")`
+        : '🔄 sync ประวัติงาน',
+    ]],
+  });
+  values.push({ range: `I${hRow + 3}`, rows: [[HISTORICAL_EMPTY_TEXT]] });
+  values.push({
+    range: `I${hRow + 4}`,
+    rows: [['ดึงงานที่สร้างไว้ก่อนต่อ Sheet เข้ามาทีเดียว — งานที่มีอยู่แล้วหนูจะไม่เพิ่มซ้ำน้า']],
+  });
+  // Pushed AFTER baseFormat below, not here: baseFormat repaints the whole grid
+  // white, and a request later in the same batchUpdate wins. The button has to
+  // outlive that repaint or it renders as plain text on white.
+  const historicalRequests: sheets_v4.Schema$Request[] = [
+    ...sectionHeader(gid, hRow, 8, 4, '🗂️ ประวัติงานเก่า'),
+    { mergeCells: { range: grid(gid, hRow + 1, 8, hRow + 2, 12), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, hRow + 1, 8, hRow + 2, 12), {
+      backgroundColor: rgb(C.NAVY), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+      textFormat: { bold: true, fontFamily: FONT, fontSize: 12, foregroundColor: rgb(C.WHITE) },
+    }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex: hRow + 1, endIndex: hRow + 2 },
+        properties: { pixelSize: 38 },
+        fields: 'pixelSize',
+      },
+    },
+    { mergeCells: { range: grid(gid, hRow + 2, 8, hRow + 3, 12), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, hRow + 2, 8, hRow + 3, 12), {
+      backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+      textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
+    }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+    { mergeCells: { range: grid(gid, hRow + 3, 8, hRow + 4, 12), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, hRow + 3, 8, hRow + 4, 12), {
+      wrapStrategy: 'WRAP', verticalAlignment: 'TOP',
+      textFormat: { fontFamily: FONT, fontSize: 9, foregroundColor: rgb(C.MUTED) },
+    }, 'wrapStrategy,verticalAlignment,textFormat'),
+  ];
+
+  // ---- charts section ----
+  values.push({ range: 'A30', rows: [['📊 กราฟสรุป']] });
+
   requests.push(...widths(gid, [95, 150, 130, 120, 110, 120, 20, 190, 130, 130, 120, 100]));
   requests.push(...baseFormat(gid, 40, 14));
+  requests.push(...historicalRequests);
+  // sectionHeader AFTER baseFormat for the same last-write-wins reason as the
+  // historical block above.
+  requests.push(...sectionHeader(gid, 29, 0, 12, '📊 กราฟสรุป'));
   requests.push({
     updateSheetProperties: {
       properties: { sheetId: gid, gridProperties: { frozenRowCount: 1 } },
@@ -1273,22 +1422,36 @@ function buildAnalytics(gid: number): TabPlan {
     textFormat: { fontSize: 9, fontFamily: FONT, foregroundColor: rgb(C.MUTED) },
   }, 'textFormat'));
 
-  // ---- 12-week trend ----
-  values.push({ range: 'A4', rows: [['สัปดาห์', 'งานเข้า', 'งานเสร็จ', 'อัตราเสร็จ']] });
+  // ---- month-anchored ranges: previous month + this month ----
+  //
+  // Each month splits into the CALENDAR chunks 1-7, 8-14, 15-21, 22-28 and
+  // 29-end — not rolling 7-day blocks, so a label always names real dates of
+  // one month. The 29-end chunk clamps to the month's true last day (29-31,
+  // 29-30, or 29-28 never exists: in a non-leap February day 29 is already the
+  // next month, and the row blanks itself via the label gate). All of it is
+  // TODAY()-derived formulas, so the table stays current without a rebuild.
+  values.push({ range: 'A4', rows: [['ช่วงวันที่', 'งานเข้า', 'งานเสร็จ', 'อัตราเสร็จ']] });
   requests.push(...headerFormat(grid(gid, 3, 0, 4, 4)));
-  const monday = 'TODAY()-WEEKDAY(TODAY(),3)';
-  const weekRows: string[][] = [];
-  for (let i = 11; i >= 0; i--) {
-    const start = `${monday}-${i * 7}`;
-    weekRows.push([
-      `=TEXT(${start}, "d mmm")`,
-      `=COUNTIFS(${CALC}!$H$2:$H, ">="&${start}, ${CALC}!$H$2:$H, "<"&${start}+7)`,
-      `=COUNTIFS(${CALC}!$I$2:$I, ">="&${start}, ${CALC}!$I$2:$I, "<"&${start}+7)`,
-      `=IF($B${5 + (11 - i)}=0, 0, $C${5 + (11 - i)}/$B${5 + (11 - i)})`,
-    ]);
-  }
-  values.push({ range: 'A5', rows: weekRows });
-  requests.push(fmt(grid(gid, 4, 3, 16, 4), { numberFormat: { type: 'PERCENT', pattern: '0%' } }, 'numberFormat'));
+  const rangeRows: string[][] = [];
+  const CHUNKS_PER_MONTH = 5;
+  [-1, 0].forEach((off, block) => {
+    const mStart = `DATE(YEAR(TODAY()), MONTH(TODAY())+${off}, 1)`;
+    const mNext = `DATE(YEAR(TODAY()), MONTH(TODAY())+${off + 1}, 1)`;
+    for (let k = 0; k < CHUNKS_PER_MONTH; k++) {
+      const rowNo = 5 + block * CHUNKS_PER_MONTH + k; // nav-free sheet row of this entry
+      const start = `${mStart}+${k * 7}`;
+      const end = `MIN(${start}+7, ${mNext})`;
+      const label = self(`$A$${rowNo}`);
+      rangeRows.push([
+        `=IF(${start}>=${mNext}, "", TEXT(${start}, "d") & "-" & TEXT(${end}-1, "d") & " " & TEXT(${start}, "mmm"))`,
+        `=IF(${label}="", "", COUNTIFS(${CALC}!$H$2:$H, ">="&${start}, ${CALC}!$H$2:$H, "<"&${end}))`,
+        `=IF(${label}="", "", COUNTIFS(${CALC}!$I$2:$I, ">="&${start}, ${CALC}!$I$2:$I, "<"&${end}))`,
+        `=IF(${label}="", "", IF(${self(`$B$${rowNo}`)}=0, 0, ${self(`$C$${rowNo}`)}/${self(`$B$${rowNo}`)}))`,
+      ]);
+    }
+  });
+  values.push({ range: 'A5', rows: rangeRows });
+  requests.push(fmt(grid(gid, 4, 3, 14, 4), { numberFormat: { type: 'PERCENT', pattern: '0%' } }, 'numberFormat'));
 
   // ---- per type ----
   values.push({ range: 'F4', rows: [['ประเภท', 'เฉลี่ย (วัน)', 'เสร็จแล้ว', 'ทั้งหมด']] });
@@ -1372,7 +1535,7 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
       addChart: {
         chart: {
           spec: {
-            title: 'งานเข้า vs งานเสร็จ (12 สัปดาห์)',
+            title: 'งานเข้า vs งานเสร็จ (รายช่วงวันที่)',
             fontName: FONT,
             backgroundColor: rgb(C.WHITE),
             titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
@@ -1380,10 +1543,10 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
               chartType: 'LINE',
               legendPosition: 'BOTTOM_LEGEND',
               headerCount: 1,
-              domains: [{ domain: src(3, 16, 0) }],
+              domains: [{ domain: src(3, 14, 0) }],
               series: [
-                { series: src(3, 16, 1), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) },
-                { series: src(3, 16, 2), targetAxis: 'LEFT_AXIS', color: rgb(C.GREEN) },
+                { series: src(3, 14, 1), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) },
+                { series: src(3, 14, 2), targetAxis: 'LEFT_AXIS', color: rgb(C.GREEN) },
               ],
             },
           },
@@ -1395,7 +1558,7 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
       addChart: {
         chart: {
           spec: {
-            title: 'อัตรางานเสร็จรายสัปดาห์',
+            title: 'อัตรางานเสร็จรายช่วงวันที่',
             fontName: FONT,
             backgroundColor: rgb(C.WHITE),
             titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
@@ -1403,8 +1566,8 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
               chartType: 'COLUMN',
               legendPosition: 'NO_LEGEND',
               headerCount: 1,
-              domains: [{ domain: src(3, 16, 0) }],
-              series: [{ series: src(3, 16, 3), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) }],
+              domains: [{ domain: src(3, 14, 0) }],
+              series: [{ series: src(3, 14, 3), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) }],
             },
           },
           position: anchor(20, 5, 450, 280),
@@ -1434,107 +1597,357 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
   ];
 }
 
-function buildWeekly(gid: number): TabPlan {
+/**
+ * 📅 สรุปงาน (was สรุปสัปดาห์) — one summary view over a USER-PICKED window:
+ * either a whole month (เดือน + ปี dropdowns) or a single day (วันที่ cell).
+ * Every metric and table below recomputes from the picked window; nothing here
+ * is pinned to "this week" any more. Formula-only, like the rest of the
+ * workspace — the picker is plain data-validated cells, no script.
+ */
+function buildSummary(gid: number): TabPlan {
   const values: TabPlan['values'] = [];
   const requests: sheets_v4.Schema$Request[] = [];
-  const monday = 'TODAY()-WEEKDAY(TODAY(),3)';
+  const nowBkk = dayjs().tz(BANGKOK_TZ);
 
+  // The picker cells (this tab's own → self()).
+  const mode = self('B2');
+  const month = self('D2');
+  const year = self('E2');
+  const day = self('G2');
+  const monthNum = `MATCH(${month}, ${arr(THAI_MONTHS)}, 0)`;
+  // DATE() normalises month 13 → January next year, so the month window needs
+  // no special year-end handling.
+  const start = `IF(${mode}="รายวัน", ${day}, DATE(${year}, ${monthNum}, 1))`;
+  const end = `IF(${mode}="รายวัน", ${day}+1, DATE(${year}, ${monthNum}+1, 1))`;
+  const windowLabel =
+    `IF(${mode}="รายวัน", TEXT(${day}, "d mmmm yyyy"), ${month} & " " & ${year})`;
+
+  values.push({ range: 'A1', rows: [[`="📅 สรุปงาน — " & ${windowLabel}`]] });
+  requests.push(...titleFormat(grid(gid, 0, 0, 1, 9)));
+
+  // ---- the picker row ----
   values.push({
-    range: 'A1',
-    rows: [[`="📅 สรุปสัปดาห์  " & TEXT(${monday}, "d mmm") & " – " & TEXT(${monday}+6, "d mmm yyyy")`]],
+    range: 'A2',
+    rows: [['ดูแบบ:', 'รายเดือน', 'เดือน:', THAI_MONTHS[nowBkk.month()] ?? THAI_MONTHS[0]!,
+      String(nowBkk.year()), 'วันที่:', nowBkk.format('DD/MM/YYYY'),
+      '← เลือก รายเดือน/รายวัน แล้วสรุปคำนวณใหม่เอง']],
   });
-  requests.push(...titleFormat(grid(gid, 0, 0, 1, 8)));
+  [0, 2, 5].forEach((col) => {
+    requests.push(fmt(grid(gid, 1, col, 2, col + 1), {
+      horizontalAlignment: 'RIGHT', textFormat: { bold: true, fontSize: 9, fontFamily: FONT },
+    }, 'horizontalAlignment,textFormat'));
+  });
+  [1, 3, 4, 6].forEach((col) => {
+    requests.push(fmt(grid(gid, 1, col, 2, col + 1), {
+      backgroundColor: rgb('#E3F2FD'), horizontalAlignment: 'CENTER',
+      textFormat: { bold: true, fontFamily: FONT, foregroundColor: rgb(C.PRIMARY) },
+    }, 'backgroundColor,horizontalAlignment,textFormat'));
+  });
+  requests.push(
+    validationFromList(grid(gid, 1, 1, 2, 2), ['รายเดือน', 'รายวัน']),
+    validationFromList(grid(gid, 1, 3, 2, 4), THAI_MONTHS),
+    validationFromList(
+      grid(gid, 1, 4, 2, 5),
+      [nowBkk.year() - 2, nowBkk.year() - 1, nowBkk.year(), nowBkk.year() + 1].map(String),
+    ),
+    fmt(grid(gid, 1, 6, 2, 7), { numberFormat: { type: 'DATE', pattern: 'dd/mm/yyyy' } }, 'numberFormat'),
+    fmt(grid(gid, 1, 7, 2, 9), {
+      textFormat: { fontSize: 9, fontFamily: FONT, foregroundColor: rgb(C.MUTED) },
+    }, 'textFormat'),
+  );
 
+  // ---- KPI cards for the picked window ----
   const cards: [string, string, string][] = [
-    ['งานเข้าใหม่สัปดาห์นี้', `=COUNTIFS(${CALC}!$H$2:$H, ">="&${monday}, ${CALC}!$H$2:$H, "<"&${monday}+7)`, C.ACCENT],
-    ['เสร็จในสัปดาห์นี้', `=COUNTIFS(${CALC}!$I$2:$I, ">="&${monday}, ${CALC}!$I$2:$I, "<"&${monday}+7)`, C.SUCCESS],
-    ['ยังค้างอยู่ทั้งหมด', `=COUNTIF(${CALC}!$N$2:$N, TRUE)`, C.WARNING],
+    ['งานเข้าในช่วงนี้', `=COUNTIFS(${CALC}!$H$2:$H, ">="&${start}, ${CALC}!$H$2:$H, "<"&${end})`, C.ACCENT],
+    ['เสร็จในช่วงนี้', `=COUNTIFS(${CALC}!$I$2:$I, ">="&${start}, ${CALC}!$I$2:$I, "<"&${end})`, C.SUCCESS],
+    ['ครบกำหนดในช่วงนี้', `=COUNTIFS(${CALC}!$G$2:$G, ">="&${start}, ${CALC}!$G$2:$G, "<"&${end})`, C.WARNING],
     ['เกินกำหนดตอนนี้', `=COUNTIF(${CALC}!$M$2:$M, TRUE)`, C.DANGER],
   ];
   cards.forEach((card, i) => {
     const col = i * 2;
-    values.push({ range: `${colLetter(col)}3`, rows: [[card[0]]] });
-    values.push({ range: `${colLetter(col)}4`, rows: [[card[1]]] });
+    values.push({ range: `${colLetter(col)}4`, rows: [[card[0]]] });
+    values.push({ range: `${colLetter(col)}5`, rows: [[card[1]]] });
     requests.push(
-      { mergeCells: { range: grid(gid, 2, col, 3, col + 2), mergeType: 'MERGE_ALL' } },
       { mergeCells: { range: grid(gid, 3, col, 4, col + 2), mergeType: 'MERGE_ALL' } },
-      fmt(grid(gid, 2, col, 3, col + 2), {
+      { mergeCells: { range: grid(gid, 4, col, 5, col + 2), mergeType: 'MERGE_ALL' } },
+      fmt(grid(gid, 3, col, 4, col + 2), {
         backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER',
         textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
       }, 'backgroundColor,horizontalAlignment,textFormat'),
-      fmt(grid(gid, 3, col, 4, col + 2), {
+      fmt(grid(gid, 4, col, 5, col + 2), {
         backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
         textFormat: { fontFamily: FONT, fontSize: 22, bold: true, foregroundColor: rgb(card[2]) },
       }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+      {
+        updateBorders: {
+          range: grid(gid, 3, col, 5, col + 2),
+          top: { style: 'SOLID_MEDIUM', color: rgb(card[2]) },
+        },
+      },
     );
   });
   requests.push({
     updateDimensionProperties: {
-      range: { sheetId: gid, dimension: 'ROWS', startIndex: 3, endIndex: 4 },
+      range: { sheetId: gid, dimension: 'ROWS', startIndex: 4, endIndex: 5 },
       properties: { pixelSize: 44 },
       fields: 'pixelSize',
     },
   });
 
-  values.push({ range: 'A6', rows: [['✅ งานที่เสร็จในสัปดาห์นี้']] });
-  values.push({ range: 'A7', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'ใช้เวลา (วัน)', 'เสร็จเมื่อ']] });
+  // ---- tables over the picked window ----
+  values.push({ range: 'A7', rows: [['✅ เสร็จในช่วงที่เลือก']] });
+  values.push({ range: 'A8', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'ใช้เวลา (วัน)', 'เสร็จเมื่อ']] });
   values.push({
-    range: 'A8',
+    range: 'A9',
     rows: [[viewFormula({
       columns: [`${CALC}!B2:B`, `${CALC}!E2:E`, `ROUND(${CALC}!U2:U, 1)`, `${CALC}!I2:I`],
-      where: `(${CALC}!I2:I>=${monday}) * (${CALC}!I2:I<${monday}+7)`,
+      where: `(${CALC}!I2:I<>"") * (${CALC}!I2:I>=${start}) * (${CALC}!I2:I<${end})`,
       sortKey: `${CALC}!I2:I`,
       ascending: false,
-      limit: 15,
-      empty: 'ยังไม่มีงานเสร็จในสัปดาห์นี้',
+      limit: 20,
+      empty: 'ไม่มีงานเสร็จในช่วงที่เลือก',
     })]],
   });
-  requests.push(...sectionHeader(gid, 5, 0, 4, '✅ งานที่เสร็จในสัปดาห์นี้'));
-  requests.push(...headerFormat(grid(gid, 6, 0, 7, 4)));
-  requests.push(fmt(grid(gid, 7, 3, 23, 4), { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } }, 'numberFormat'));
+  requests.push(...sectionHeader(gid, 6, 0, 4, '✅ เสร็จในช่วงที่เลือก'));
+  requests.push(...headerFormat(grid(gid, 7, 0, 8, 4)));
+  requests.push(fmt(grid(gid, 8, 3, 29, 4), { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } }, 'numberFormat'));
 
-  values.push({ range: 'F6', rows: [['🚧 คอขวด — ค้างนานเกิน 7 วัน']] });
-  values.push({ range: 'F7', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'สถานะ', 'ค้างมา']] });
+  values.push({ range: 'F7', rows: [['⏳ ครบกำหนดในช่วงที่เลือก']] });
+  values.push({ range: 'F8', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'กำหนดส่ง', 'สถานะ']] });
   values.push({
-    range: 'F8',
+    range: 'F9',
+    rows: [[viewFormula({
+      columns: [`${CALC}!B2:B`, `${CALC}!E2:E`, `${CALC}!G2:G`, `${CALC}!F2:F`],
+      where: `(${CALC}!G2:G<>"") * (${CALC}!G2:G>=${start}) * (${CALC}!G2:G<${end})`,
+      sortKey: `${CALC}!G2:G`,
+      limit: 20,
+      empty: 'ไม่มีงานครบกำหนดในช่วงที่เลือก',
+    })]],
+  });
+  requests.push(...sectionHeader(gid, 6, 5, 4, '⏳ ครบกำหนดในช่วงที่เลือก'));
+  requests.push(...headerFormat(grid(gid, 7, 5, 8, 9)));
+  requests.push(fmt(grid(gid, 8, 7, 29, 8), { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } }, 'numberFormat'));
+
+  values.push({ range: 'A31', rows: [['🚧 ค้างนานเกิน 7 วัน (สถานะปัจจุบัน ไม่ขึ้นกับช่วงที่เลือก)']] });
+  values.push({ range: 'A32', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'สถานะ', 'ค้างมา']] });
+  values.push({
+    range: 'A33',
     rows: [[viewFormula({
       columns: [`${CALC}!B2:B`, `${CALC}!E2:E`, `${CALC}!F2:F`, `${CALC}!V2:V`],
       where: `(${CALC}!V2:V<>"")`,
       sortKey: `${CALC}!U2:U`,
       ascending: false,
-      limit: 15,
+      limit: 12,
       empty: '✨ ไม่มีงานค้างนาน',
     })]],
   });
-  requests.push(...sectionHeader(gid, 5, 5, 4, '🚧 คอขวด — ค้างนานเกิน 7 วัน'));
-  requests.push(...headerFormat(grid(gid, 6, 5, 7, 9)));
+  requests.push(...sectionHeader(gid, 30, 0, 5, '🚧 ค้างนานเกิน 7 วัน'));
+  requests.push(...headerFormat(grid(gid, 31, 0, 32, 4)));
 
-  values.push({ range: 'A25', rows: [['⏳ ครบกำหนดสัปดาห์หน้า']] });
-  values.push({ range: 'A26', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'กำหนดส่ง', 'ระดับ', 'สถานะ']] });
-  values.push({
-    range: 'A27',
-    rows: [[viewFormula({
-      columns: [`${CALC}!B2:B`, `${CALC}!E2:E`, `${CALC}!G2:G`, `${CALC}!J2:J`, `${CALC}!F2:F`],
-      where: `(${CALC}!N2:N=TRUE) * (${CALC}!G2:G>=${monday}+7) * (${CALC}!G2:G<${monday}+14)`,
-      sortKey: `${CALC}!G2:G`,
-      limit: 15,
-      empty: 'ไม่มีงานครบกำหนดสัปดาห์หน้า',
-    })]],
-  });
-  requests.push(...sectionHeader(gid, 24, 0, 5, '⏳ ครบกำหนดสัปดาห์หน้า'));
-  requests.push(...headerFormat(grid(gid, 25, 0, 26, 5)));
-  requests.push(fmt(grid(gid, 26, 2, 42, 3), { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } }, 'numberFormat'));
-
-  requests.push(...widths(gid, [200, 130, 105, 130, 20, 190, 130, 100, 110]));
-  requests.push(...baseFormat(gid, 45, 9));
+  requests.push(...widths(gid, [200, 130, 105, 130, 20, 190, 130, 130, 110]));
+  requests.push(...baseFormat(gid, 46, 9));
   requests.push({
     updateSheetProperties: {
-      properties: { sheetId: gid, gridProperties: { frozenRowCount: 1 } },
+      properties: { sheetId: gid, gridProperties: { frozenRowCount: 2 } },
       fields: 'gridProperties.frozenRowCount',
     },
   });
 
-  return { values, requests, rows: 45, cols: 9 };
+  // Freeze title + picker with the nav.
+  return { values, requests, rows: 46, cols: 9, frozen: 2 };
+}
+
+/**
+ * ✅ งานเสร็จ — every task whose status is เสร็จแล้ว, with the time it took.
+ *
+ * "ใช้เวลา" is _ข้อมูลคำนวณ column U, which for a finished row is the real
+ * completion instant (hidden master column Q, stamped from the assignees'
+ * done_at) minus the real creation instant (column P) — no new date field is
+ * invented here, per the codebase's one-source-of-truth rule for stamps. Rows
+ * are gated on I<>"" everywhere because U also holds the AGE of still-open
+ * tasks.
+ */
+function buildDone(gid: number): TabPlan {
+  const values: TabPlan['values'] = [];
+  const requests: sheets_v4.Schema$Request[] = [];
+
+  values.push({ range: 'A1', rows: [['✅ งานเสร็จ — งานที่ปิดจบแล้ว และเวลาที่ใช้จริง']] });
+  requests.push(...titleFormat(grid(gid, 0, 0, 1, 13)));
+  values.push({
+    range: 'A2',
+    rows: [['เวลาที่ใช้ = เสร็จจริง − สร้างงาน (หน่วยวัน) · งานหลายรายการนับแยกตามรายการย่อย']],
+  });
+  requests.push(fmt(grid(gid, 1, 0, 2, 13), {
+    textFormat: { fontSize: 9, fontFamily: FONT, foregroundColor: rgb(C.MUTED) },
+  }, 'textFormat'));
+
+  // ---- KPI strip ----
+  const doneFilter = `FILTER(${CALC}!$U$2:$U, ${CALC}!$I$2:$I<>"")`;
+  const cards: [string, string, string][] = [
+    ['เสร็จทั้งหมด', `=COUNTIF(${CALC}!$F$2:$F, "เสร็จแล้ว")`, C.SUCCESS],
+    ['เฉลี่ย (วัน)', `=IFERROR(ROUND(AVERAGE(${doneFilter}), 1), 0)`, C.ACCENT],
+    ['เร็วสุด (วัน)', `=IFERROR(ROUND(MIN(${doneFilter}), 1), 0)`, C.PRIMARY],
+    ['ช้าสุด (วัน)', `=IFERROR(ROUND(MAX(${doneFilter}), 1), 0)`, C.WARNING],
+  ];
+  cards.forEach((card, i) => {
+    const col = i * 2;
+    values.push({ range: `${colLetter(col)}4`, rows: [[card[0]]] });
+    values.push({ range: `${colLetter(col)}5`, rows: [[card[1]]] });
+    requests.push(
+      { mergeCells: { range: grid(gid, 3, col, 4, col + 2), mergeType: 'MERGE_ALL' } },
+      { mergeCells: { range: grid(gid, 4, col, 5, col + 2), mergeType: 'MERGE_ALL' } },
+      fmt(grid(gid, 3, col, 4, col + 2), {
+        backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER',
+        textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
+      }, 'backgroundColor,horizontalAlignment,textFormat'),
+      fmt(grid(gid, 4, col, 5, col + 2), {
+        backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+        textFormat: { fontFamily: FONT, fontSize: 22, bold: true, foregroundColor: rgb(card[2]) },
+      }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+      {
+        updateBorders: {
+          range: grid(gid, 3, col, 5, col + 2),
+          top: { style: 'SOLID_MEDIUM', color: rgb(card[2]) },
+        },
+      },
+    );
+  });
+  requests.push({
+    updateDimensionProperties: {
+      range: { sheetId: gid, dimension: 'ROWS', startIndex: 4, endIndex: 5 },
+      properties: { pixelSize: 44 },
+      fields: 'pixelSize',
+    },
+  });
+
+  // ---- the list ----
+  values.push({ range: 'A7', rows: [['📋 รายการงานที่เสร็จ (ล่าสุดขึ้นก่อน)']] });
+  values.push({ range: 'A8', rows: [['ชื่องาน', 'ผู้รับผิดชอบ', 'ผู้สั่ง', 'เสร็จเมื่อ', 'ใช้เวลา (วัน)']] });
+  values.push({
+    range: 'A9',
+    rows: [[viewFormula({
+      columns: [`${CALC}!B2:B`, `${CALC}!E2:E`, `${CALC}!D2:D`, `${CALC}!I2:I`, `ROUND(${CALC}!U2:U, 1)`],
+      where: `(${CALC}!F2:F="เสร็จแล้ว") * (${CALC}!I2:I<>"")`,
+      sortKey: `${CALC}!I2:I`,
+      ascending: false,
+      limit: 200,
+      empty: 'ยังไม่มีงานที่เสร็จ',
+    })]],
+  });
+  requests.push(...sectionHeader(gid, 6, 0, 5, '📋 รายการงานที่เสร็จ'));
+  requests.push(...headerFormat(grid(gid, 7, 0, 8, 5)));
+  requests.push(fmt(grid(gid, 8, 3, 209, 4), { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } }, 'numberFormat'));
+  requests.push(banding(gid, 8, 0, 209, 5));
+
+  // ---- distribution of completion time ----
+  values.push({ range: 'G7', rows: [['⏱️ การกระจายเวลาที่ใช้']] });
+  values.push({ range: 'G8', rows: [['ช่วงเวลา', 'จำนวนงาน']] });
+  const doneGate = (extra: string) =>
+    `=COUNTIFS(${CALC}!$I$2:$I, ">0"${extra})`;
+  values.push({
+    range: 'G9',
+    rows: [
+      ['ภายใน 1 วัน', doneGate(`, ${CALC}!$U$2:$U, "<=1"`)],
+      ['1–3 วัน', doneGate(`, ${CALC}!$U$2:$U, ">1", ${CALC}!$U$2:$U, "<=3"`)],
+      ['3–7 วัน', doneGate(`, ${CALC}!$U$2:$U, ">3", ${CALC}!$U$2:$U, "<=7"`)],
+      ['7–14 วัน', doneGate(`, ${CALC}!$U$2:$U, ">7", ${CALC}!$U$2:$U, "<=14"`)],
+      ['เกิน 14 วัน', doneGate(`, ${CALC}!$U$2:$U, ">14"`)],
+    ],
+  });
+  requests.push(...sectionHeader(gid, 6, 6, 3, '⏱️ การกระจายเวลาที่ใช้'));
+  requests.push(...headerFormat(grid(gid, 7, 6, 8, 8)));
+  requests.push(fmt(grid(gid, 8, 7, 13, 8), { horizontalAlignment: 'CENTER' }, 'horizontalAlignment'));
+
+  // ---- per person ----
+  values.push({ range: 'J7', rows: [['🏆 เสร็จต่อคน']] });
+  values.push({ range: 'J8', rows: [['สมาชิก', 'เสร็จ', 'เฉลี่ย (วัน)']] });
+  const person = `${CONF}!$A$2:$A$40`;
+  values.push({ range: 'J9', rows: [[`=IFERROR(FILTER(${person}, ${person}<>""), "")`]] });
+  values.push({
+    range: 'K9',
+    rows: [[
+      `=MAP(${person}, LAMBDA(p, IF(p="",, SUMPRODUCT(ISNUMBER(SEARCH(p, ${CALC}!$E$2:$E$2000)) * (${CALC}!$I$2:$I$2000<>"")))))`,
+    ]],
+  });
+  values.push({
+    range: 'L9',
+    rows: [[
+      `=MAP(${person}, LAMBDA(p, IF(p="",, IFERROR(ROUND(` +
+      `SUMPRODUCT(ISNUMBER(SEARCH(p, ${CALC}!$E$2:$E$2000)) * (${CALC}!$I$2:$I$2000<>"") * ${CALC}!$U$2:$U$2000) / ` +
+      `SUMPRODUCT(ISNUMBER(SEARCH(p, ${CALC}!$E$2:$E$2000)) * (${CALC}!$I$2:$I$2000<>"")), 1), 0))))`,
+    ]],
+  });
+  requests.push(...sectionHeader(gid, 6, 9, 4, '🏆 เสร็จต่อคน'));
+  requests.push(...headerFormat(grid(gid, 7, 9, 8, 12)));
+  requests.push(fmt(grid(gid, 8, 10, 48, 12), { horizontalAlignment: 'CENTER' }, 'horizontalAlignment'));
+
+  requests.push(...widths(gid, [230, 140, 120, 130, 100, 20, 110, 90, 20, 140, 70, 90, 20]));
+  requests.push(...baseFormat(gid, 212, 13));
+  requests.push({
+    updateSheetProperties: {
+      properties: { sheetId: gid, gridProperties: { frozenRowCount: 2 } },
+      fields: 'gridProperties.frozenRowCount',
+    },
+  });
+
+  return { values, requests, rows: 212, cols: 13, frozen: 2 };
+}
+
+/** Charts for ✅ งานเสร็จ — sources on its own (nav-shifted) tab. */
+function doneCharts(gid: number): sheets_v4.Schema$Request[] {
+  const anchor = (row: number, col: number, w: number, h: number): sheets_v4.Schema$EmbeddedObjectPosition => ({
+    overlayPosition: {
+      anchorCell: { sheetId: gid, rowIndex: row, columnIndex: col },
+      offsetXPixels: 0, offsetYPixels: 0, widthPixels: w, heightPixels: h,
+    },
+  });
+  const src = (startRow: number, endRow: number, col: number): sheets_v4.Schema$ChartData => ({
+    sourceRange: { sources: [grid(gid, startRow, col, endRow, col + 1)] },
+  });
+
+  return [
+    {
+      addChart: {
+        chart: {
+          spec: {
+            title: 'การกระจายเวลาทำงาน (วัน)',
+            fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
+            basicChart: {
+              chartType: 'COLUMN',
+              legendPosition: 'NO_LEGEND',
+              headerCount: 1,
+              // Header row 7 + the five buckets (nav-free; shiftChart moves it).
+              domains: [{ domain: src(7, 13, 6) }],
+              series: [{ series: src(7, 13, 7), targetAxis: 'LEFT_AXIS', color: rgb(C.GREEN) }],
+            },
+          },
+          position: anchor(15, 6, 430, 280),
+        },
+      },
+    },
+    {
+      addChart: {
+        chart: {
+          spec: {
+            title: 'งานเสร็จต่อคน',
+            fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
+            basicChart: {
+              chartType: 'BAR',
+              legendPosition: 'NO_LEGEND',
+              headerCount: 1,
+              domains: [{ domain: src(7, 39, 9) }],
+              series: [{ series: src(7, 39, 10), targetAxis: 'BOTTOM_AXIS', color: rgb(C.BLUE) }],
+            },
+          },
+          position: anchor(30, 6, 430, 300),
+        },
+      },
+    },
+  ];
 }
 
 /**
@@ -1569,12 +1982,9 @@ function buildHelp(gid: number): TabPlan {
     ['', ''],
     ['🗑️ ลบแถวในชีต', 'ลบได้ ไม่พัง — งานนั้นจะกลับมาใหม่เมื่อมีการอัปเดตครั้งถัดไป'],
     ['', ''],
-    ['📋 แท็บ "สั่งงาน"', 'กรอกฟอร์มแล้วคัดลอกคำสั่งที่ขึ้นให้ ไปวางในแชท LINE ได้เลย — ใช้ได้ทันทีไม่ต้องติดตั้งอะไร'],
-    ['', ''],
-    ['⚙️ สคริปต์เสริม (ไม่บังคับ)', 'เพิ่มปุ่ม "ส่งงาน" กดครั้งเดียว + ปุ่มเลือกความเร่งด่วน + ตรวจงานเกินกำหนดทุกเช้า 07:00'],
+    ['⚙️ สคริปต์เสริม (ไม่บังคับ)', 'เพิ่มปุ่มเลือกความเร่งด่วน + ตรวจงานเกินกำหนดทุกเช้า 07:00'],
     ['', 'ติดตั้ง: ส่วนขยาย → Apps Script → วางไฟล์ nookeb-addon.gs → บันทึก → รัน installTriggers()'],
     ['', 'ไฟล์อยู่ในโปรเจกต์ที่ google-sheets-workspace/nookeb-addon.gs'],
-    ['', 'หมายเหตุ: งานที่สร้างจากปุ่มนี้อยู่ในชีตเท่านั้น (รหัส LOCAL-…) หนูจะไม่เตือนใน LINE ให้'],
   ];
   // Column A is a narrow gutter — labels go in B, prose in C.
   values.push({ range: 'B2', rows });
@@ -1593,186 +2003,6 @@ function buildHelp(gid: number): TabPlan {
   );
 
   return { values, requests, rows: 30, cols: 4 };
-}
-
-/**
- * 📋 สั่งงาน — a two-column intake form.
- *
- * Deliberately useful with NO Apps Script installed: the fields feed a formula
- * that assembles the exact `หนูเก็บเตือนงาน …` command, which the user copies
- * into the LINE chat. That path needs nothing installed and goes through the
- * normal confirm-card flow, so the task is created by the same code as every
- * other task. The submit button below it is the shortcut, and only lights up
- * once the optional script from ➕ วิธีสั่งงาน is pasted in.
- *
- * Written in nav-free coordinates; shiftPlan moves it down, and self() keeps
- * the formulas pointing at the right cells after the move.
- */
-function buildForm(gid: number): TabPlan {
-  const values: TabPlan['values'] = [];
-  const requests: sheets_v4.Schema$Request[] = [];
-
-  values.push({ range: 'A1', rows: [['📋 สั่งงานใหม่']] });
-  requests.push(...titleFormat(grid(gid, 0, 0, 1, 8)));
-  values.push({ range: 'B2', rows: [['กรอกให้ครบแล้วคัดลอกคำสั่งด้านล่างไปวางในแชท LINE ได้เลยน้า']] });
-  requests.push(fmt(grid(gid, 1, 1, 2, 8), {
-    textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
-  }, 'textFormat'));
-
-  // label row → [label, input top-left cell, merge width, placeholder/hint]
-  const fields: { row: number; label: string; span: number; hint?: string }[] = [
-    { row: 3, label: 'ชื่องาน *', span: 4 },
-    { row: 4, label: 'รายละเอียด', span: 4 },
-    { row: 5, label: 'ประเภทงาน', span: 2 },
-    { row: 6, label: 'ผู้รับผิดชอบ *', span: 2 },
-    { row: 7, label: 'วันกำหนดส่ง', span: 2, hint: 'วว/ดด/ปปปป' },
-    { row: 8, label: 'ลิงก์ / ไฟล์แนบ', span: 4 },
-    { row: 9, label: 'หมายเหตุ', span: 4 },
-  ];
-  fields.forEach(({ row, label, span, hint }) => {
-    values.push({ range: `B${row + 1}`, rows: [[label]] });
-    requests.push(
-      fmt(grid(gid, row, 1, row + 1, 2), {
-        horizontalAlignment: 'RIGHT', verticalAlignment: 'MIDDLE', padding: { right: 8 },
-        textFormat: { bold: true, fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.PRIMARY) },
-      }, 'horizontalAlignment,verticalAlignment,padding,textFormat'),
-      { mergeCells: { range: grid(gid, row, 2, row + 1, 2 + span), mergeType: 'MERGE_ALL' } },
-      fmt(grid(gid, row, 2, row + 1, 2 + span), {
-        backgroundColor: rgb(C.OK_BG), verticalAlignment: 'MIDDLE', wrapStrategy: 'WRAP',
-        padding: { left: 8 },
-        textFormat: { fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.TEXT) },
-      }, 'backgroundColor,verticalAlignment,wrapStrategy,padding,textFormat'),
-      tableBorders(grid(gid, row, 2, row + 1, 2 + span)),
-    );
-    if (hint) {
-      values.push({ range: `${colLetter(2 + span)}${row + 1}`, rows: [[hint]] });
-      requests.push(fmt(grid(gid, row, 2 + span, row + 1, 2 + span + 2), {
-        textFormat: { fontFamily: FONT, fontSize: 9, foregroundColor: rgb(C.MUTED) },
-      }, 'textFormat'));
-    }
-  });
-
-  // Roomier rows for the two free-text areas.
-  [4, 9].forEach((row) => requests.push({
-    updateDimensionProperties: {
-      range: { sheetId: gid, dimension: 'ROWS', startIndex: row, endIndex: row + 1 },
-      properties: { pixelSize: 52 },
-      fields: 'pixelSize',
-    },
-  }));
-
-  requests.push(
-    validationFromList(grid(gid, 5, 2, 6, 3), TYPES),
-    validationFromRange(grid(gid, 6, 2, 7, 3), `=${CONF}!$A$2:$A$40`),
-    fmt(grid(gid, 7, 2, 8, 3), {
-      numberFormat: { type: 'DATE', pattern: 'dd/mm/yyyy' },
-    }, 'numberFormat'),
-  );
-
-  // ---- urgency: four coloured buttons + the cell that holds the choice ----
-  values.push({ range: 'B11', rows: [['ความเร่งด่วน']] });
-  requests.push(fmt(grid(gid, 10, 1, 11, 2), {
-    horizontalAlignment: 'RIGHT', verticalAlignment: 'MIDDLE', padding: { right: 8 },
-    textFormat: { bold: true, fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.PRIMARY) },
-  }, 'horizontalAlignment,verticalAlignment,padding,textFormat'));
-  values.push({ range: 'C11', rows: [URGENCIES] });
-  const URGENCY_COLOR = [C.RED, C.ORANGE, C.WARNING, C.GREEN];
-  URGENCIES.forEach((_u, i) => {
-    requests.push(
-      fmt(grid(gid, 10, 2 + i, 11, 3 + i), {
-        backgroundColor: rgb(C.WHITE), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
-        textFormat: {
-          bold: true, fontFamily: FONT, fontSize: 10,
-          foregroundColor: rgb(URGENCY_COLOR[i] ?? C.TEXT),
-        },
-      }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
-      {
-        updateBorders: {
-          range: grid(gid, 10, 2 + i, 11, 3 + i),
-          top: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
-          bottom: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
-          left: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
-          right: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
-        },
-      },
-    );
-  });
-
-  values.push({ range: 'B12', rows: [['ระดับที่เลือก']] });
-  values.push({ range: 'C12', rows: [[DEFAULT_URGENCY]] });
-  requests.push(
-    fmt(grid(gid, 11, 1, 12, 2), {
-      horizontalAlignment: 'RIGHT', verticalAlignment: 'MIDDLE', padding: { right: 8 },
-      textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
-    }, 'horizontalAlignment,verticalAlignment,padding,textFormat'),
-    { mergeCells: { range: grid(gid, 11, 2, 12, 4), mergeType: 'MERGE_ALL' } },
-    fmt(grid(gid, 11, 2, 12, 4), {
-      backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
-      textFormat: { bold: true, fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.PRIMARY) },
-    }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
-    validationFromList(grid(gid, 11, 2, 12, 4), URGENCIES),
-    tableBorders(grid(gid, 11, 2, 12, 4)),
-  );
-
-  // ---- the copy-paste command (works with nothing installed) ----
-  requests.push(...sectionHeader(gid, 14, 0, 8, 'คำสั่งสำหรับวางในแชท LINE'));
-  values.push({ range: 'A15', rows: [['📄 คัดลอกคำสั่งนี้ไปวางในแชท LINE']] });
-
-  const [title, assignee, due] = [self('C4'), self('C7'), self('C8')];
-  values.push({
-    range: 'A16',
-    rows: [[
-      `=IF(OR(${title}="", ${assignee}=""), "⬆️ กรอก ชื่องาน และ ผู้รับผิดชอบ ก่อนน้า", ` +
-      `"หนูเก็บเตือนงาน @" & ${assignee} & " " & ${title} & ` +
-      `IF(${due}="", "", " ส่ง " & TEXT(${due}, "dd/mm/yyyy")))`,
-    ]],
-  });
-  requests.push(
-    { mergeCells: { range: grid(gid, 15, 0, 16, 8), mergeType: 'MERGE_ALL' } },
-    fmt(grid(gid, 15, 0, 16, 8), {
-      backgroundColor: rgb(C.LIGHT_BG), verticalAlignment: 'MIDDLE', wrapStrategy: 'WRAP',
-      padding: { left: 10 },
-      textFormat: { fontFamily: FONT, fontSize: 11, bold: true, foregroundColor: rgb(C.ACCENT) },
-    }, 'backgroundColor,verticalAlignment,wrapStrategy,padding,textFormat'),
-    tableBorders(grid(gid, 15, 0, 16, 8)),
-    {
-      updateDimensionProperties: {
-        range: { sheetId: gid, dimension: 'ROWS', startIndex: 15, endIndex: 16 },
-        properties: { pixelSize: 44 },
-        fields: 'pixelSize',
-      },
-    },
-  );
-
-  // ---- optional one-click submit (needs the Apps Script) ----
-  values.push({ range: 'C18', rows: [['📤 ส่งงาน']] });
-  requests.push(
-    { mergeCells: { range: grid(gid, 17, 2, 18, 6), mergeType: 'MERGE_ALL' } },
-    fmt(grid(gid, 17, 2, 18, 6), {
-      backgroundColor: rgb(C.NAVY), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
-      textFormat: { bold: true, fontFamily: FONT, fontSize: 13, foregroundColor: rgb(C.WHITE) },
-    }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
-    {
-      updateDimensionProperties: {
-        range: { sheetId: gid, dimension: 'ROWS', startIndex: 17, endIndex: 18 },
-        properties: { pixelSize: 40 },
-        fields: 'pixelSize',
-      },
-    },
-  );
-  values.push({
-    range: 'B20',
-    rows: [['ปุ่ม "ส่งงาน" ใช้ได้เมื่อติดตั้งสคริปต์เสริมแล้ว — ดูวิธีที่แท็บ ➕ วิธีสั่งงาน (ไม่ติดตั้งก็ใช้วิธีคัดลอกคำสั่งด้านบนได้เลย)']],
-  });
-  requests.push(fmt(grid(gid, 19, 1, 20, 8), {
-    wrapStrategy: 'WRAP',
-    textFormat: { fontFamily: FONT, fontSize: 9, foregroundColor: rgb(C.MUTED) },
-  }, 'wrapStrategy,textFormat'));
-
-  requests.push(...widths(gid, [40, 150, 150, 150, 150, 150, 90, 90]));
-  requests.push(...baseFormat(gid, 24, 8));
-
-  return { values, requests, rows: 24, cols: 8, frozen: 0 };
 }
 
 function buildConfig(gid: number): TabPlan {
@@ -2035,8 +2265,8 @@ const BASE_SIZE: Record<string, { rows: number; cols: number }> = {
   [TAB.TEAM]: { rows: 45, cols: 10 },
   [TAB.CAL]: { rows: 10, cols: 7 },
   [TAB.ANA]: { rows: 60, cols: 13 },
-  [TAB.WEEK]: { rows: 45, cols: 9 },
-  [TAB.FORM]: { rows: 24, cols: 8 },
+  [TAB.WEEK]: { rows: 46, cols: 9 },
+  [TAB.DONE]: { rows: 212, cols: 13 },
   [TAB.HELP]: { rows: 30, cols: 4 },
   [TAB.CALC]: { rows: 2100, cols: CALC_HEADERS.length },
   [TAB.CONF]: { rows: 60, cols: 13 },
@@ -2064,18 +2294,19 @@ export function sizeOf(title: string): { rows: number; cols: number } {
 export function composeWorkspacePlans(
   gid: (title: string) => number,
   masterGid: number,
+  opts: { syncUrl?: string } = {},
 ): [string, TabPlan][] {
   const built: [string, TabPlan][] = [
     [TAB.CONF, buildConfig(gid(TAB.CONF))],
     [TAB.CALC, buildCalc(gid(TAB.CALC))],
-    [TAB.DASH, buildDashboard(gid(TAB.DASH))],
+    [TAB.DASH, buildDashboard(gid(TAB.DASH), opts.syncUrl)],
     [TAB.PRIO, buildPriority(gid(TAB.PRIO))],
     [TAB.TRACK, buildTracker(gid(TAB.TRACK))],
     [TAB.TEAM, buildTeam(gid(TAB.TEAM))],
     [TAB.CAL, buildCalendar(gid(TAB.CAL))],
     [TAB.ANA, buildAnalytics(gid(TAB.ANA))],
-    [TAB.WEEK, buildWeekly(gid(TAB.WEEK))],
-    [TAB.FORM, buildForm(gid(TAB.FORM))],
+    [TAB.WEEK, buildSummary(gid(TAB.WEEK))],
+    [TAB.DONE, buildDone(gid(TAB.DONE))],
     [TAB.HELP, buildHelp(gid(TAB.HELP))],
   ];
 
@@ -2109,6 +2340,27 @@ export function composeWorkspacePlans(
   });
 }
 
+/**
+ * Every embedded chart, nav-shifted and ready to batch. Charts are authored in
+ * the same nav-free coordinates as their tab. The anchor always shifts; a
+ * SOURCE range shifts only when it reads a tab that itself carries the nav
+ * strip (see shiftChart) — _ตัวเลือก does not, the วิเคราะห์ and งานเสร็จ tabs
+ * do. Exported so the shift is assertable without a network call: getting it
+ * wrong makes a chart read one blank row and drop its last data row, which is
+ * exactly what the pre-v4 analytics charts did.
+ */
+export function composeChartRequests(
+  gid: (title: string) => number,
+): sheets_v4.Schema$Request[] {
+  const shiftedGids = new Set(NAV_TABS.map((title) => gid(title)));
+  return [
+    ...dashboardCharts(gid(TAB.DASH), gid(TAB.CONF))
+      .map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
+    ...analyticsCharts(gid(TAB.ANA)).map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
+    ...doneCharts(gid(TAB.DONE)).map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
+  ];
+}
+
 function readVersion(metadata: sheets_v4.Schema$DeveloperMetadata[] | undefined): number | null {
   const row = metadata?.find((m) => m.metadataKey === METADATA_KEY);
   if (!row?.metadataValue) return null;
@@ -2126,7 +2378,7 @@ function readVersion(metadata: sheets_v4.Schema$DeveloperMetadata[] | undefined)
 export async function ensureWorkspace(
   auth: OAuth2Client,
   spreadsheetId: string,
-  opts: { force?: boolean } = {},
+  opts: { force?: boolean; syncUrl?: string } = {},
 ): Promise<boolean> {
   const sheets = google.sheets({ version: 'v4', auth });
   const meta = await sheets.spreadsheets.get({
@@ -2147,8 +2399,11 @@ export async function ensureWorkspace(
   const masterColumns = masterProps.gridProperties?.columnCount ?? 10;
 
   // --- pass 1: drop the generated tabs, recreate them empty ---------------
+  // LEGACY_TABS are dropped too (a rebuild must clean up tabs an older layout
+  // generated under names the current one no longer uses) but never recreated.
+  const droppable: string[] = [...GENERATED_TABS, ...LEGACY_TABS];
   const drops: sheets_v4.Schema$Request[] = existing
-    .filter((s) => GENERATED_TABS.includes((s.properties?.title ?? '') as (typeof GENERATED_TABS)[number]))
+    .filter((s) => droppable.includes(s.properties?.title ?? ''))
     .map((s) => ({ deleteSheet: { sheetId: s.properties!.sheetId! } }));
 
   const adds: sheets_v4.Schema$Request[] = GENERATED_TABS.map((title) => {
@@ -2190,7 +2445,7 @@ export async function ensureWorkspace(
   };
 
   // --- pass 2: values (formulas + labels) --------------------------------
-  const plans = composeWorkspacePlans(gid, masterGid);
+  const plans = composeWorkspacePlans(gid, masterGid, { syncUrl: opts.syncUrl });
 
   const data: sheets_v4.Schema$ValueRange[] = [
     { range: `'${MASTER}'!${colLetter(MASTER_EXT.URGENCY)}1`, values: [EXT_HEADERS] },
@@ -2198,6 +2453,21 @@ export async function ensureWorkspace(
   plans.forEach(([title, plan]) => {
     plan.values.forEach((v) => data.push({ range: `'${title}'!${v.range}`, values: v.rows }));
   });
+
+  // A rebuild deletes and recreates ภาพรวม, so the last-backfill line the
+  // dashboard shows would revert to "ยังไม่เคย…" even though the backfill did
+  // run. The metadata is the record of truth (it survives the rebuild); this
+  // just paints it back on.
+  const priorHistorical = parseHistoricalStamp(
+    (meta.data.developerMetadata ?? []).find((m) => m.metadataKey === HISTORICAL_METADATA_KEY)
+      ?.metadataValue,
+  );
+  if (priorHistorical) {
+    data.push({
+      range: `'${TAB.DASH}'!${HISTORICAL_STAMP_A1}`,
+      values: [[formatHistoricalStamp(priorHistorical)]],
+    });
+  }
   await sheets.spreadsheets.values.batchUpdate({
     spreadsheetId,
     requestBody: { valueInputOption: 'USER_ENTERED', data },
@@ -2207,14 +2477,7 @@ export async function ensureWorkspace(
   const requests: sheets_v4.Schema$Request[] = [];
   plans.forEach(([, plan]) => requests.push(...plan.requests));
   requests.push(...masterExtensionRequests(masterGid));
-  // Charts are authored in the same nav-free coordinates as their tab, so their
-  // anchor cells (and the _ตัวเลือก ranges they read) get the identical shift.
-  // _ตัวเลือก is not a nav tab, so only the anchor actually moves.
-  requests.push(
-    ...dashboardCharts(gid(TAB.DASH), gid(TAB.CONF))
-      .map((r) => shiftChartAnchor(r, NAV_ROWS)),
-    ...analyticsCharts(gid(TAB.ANA)).map((r) => shiftChartAnchor(r, NAV_ROWS)),
-  );
+  requests.push(...composeChartRequests(gid));
 
   HIDDEN_TABS.forEach((title) => {
     requests.push({
@@ -2247,4 +2510,99 @@ export async function ensureWorkspace(
 
   await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
   return true;
+}
+
+// =====================================================================
+// Historical-backfill marker
+// =====================================================================
+
+export interface HistoricalStamp {
+  /** ISO instant of the last completed backfill. */
+  at: string;
+  /** How many rows that run imported. */
+  count: number;
+}
+
+/** `"<ISO>|<count>"` → a stamp, or null for anything unparseable. */
+export function parseHistoricalStamp(value: string | null | undefined): HistoricalStamp | null {
+  if (!value) return null;
+  const [at, rawCount] = String(value).split('|');
+  if (!at || !dayjs(at).isValid()) return null;
+  const count = Number(rawCount);
+  return { at, count: Number.isFinite(count) ? count : 0 };
+}
+
+export function serializeHistoricalStamp(stamp: HistoricalStamp): string {
+  return `${stamp.at}|${stamp.count}`;
+}
+
+/** The one line the dashboard shows under the button. */
+export function formatHistoricalStamp(stamp: HistoricalStamp | null): string {
+  if (!stamp) return HISTORICAL_EMPTY_TEXT;
+  const when = dayjs(stamp.at).tz(BANGKOK_TZ).format('DD/MM/YYYY HH:mm');
+  return `ดึงล่าสุด ${when} · ${stamp.count} งาน`;
+}
+
+/** When (and how much) the last backfill imported, or null if never. */
+export async function readHistoricalStamp(
+  auth: OAuth2Client,
+  spreadsheetId: string,
+): Promise<HistoricalStamp | null> {
+  const meta = await google
+    .sheets({ version: 'v4', auth })
+    .spreadsheets.get({ spreadsheetId, fields: 'developerMetadata' });
+  const row = (meta.data.developerMetadata ?? []).find(
+    (m) => m.metadataKey === HISTORICAL_METADATA_KEY,
+  );
+  return parseHistoricalStamp(row?.metadataValue);
+}
+
+/**
+ * Record a completed backfill: the metadata (authoritative, survives a layout
+ * rebuild) and the dashboard line (what the user actually sees).
+ *
+ * The cell write is best-effort — the marker matters, the cosmetics don't, and
+ * ภาพรวม may legitimately not exist yet if the workspace build failed earlier.
+ */
+export async function writeHistoricalStamp(
+  auth: OAuth2Client,
+  spreadsheetId: string,
+  stamp: HistoricalStamp,
+): Promise<void> {
+  const sheets = google.sheets({ version: 'v4', auth });
+  const existing = await readHistoricalStamp(auth, spreadsheetId);
+
+  const requests: sheets_v4.Schema$Request[] = [];
+  // Deleting a key that isn't there is an error, not a no-op — same guard the
+  // layout version uses.
+  if (existing) {
+    requests.push({
+      deleteDeveloperMetadata: {
+        dataFilter: { developerMetadataLookup: { metadataKey: HISTORICAL_METADATA_KEY } },
+      },
+    });
+  }
+  requests.push({
+    createDeveloperMetadata: {
+      developerMetadata: {
+        metadataKey: HISTORICAL_METADATA_KEY,
+        metadataValue: serializeHistoricalStamp(stamp),
+        location: { spreadsheet: true },
+        visibility: 'DOCUMENT',
+      },
+    },
+  });
+  await sheets.spreadsheets.batchUpdate({ spreadsheetId, requestBody: { requests } });
+
+  try {
+    await sheets.spreadsheets.values.update({
+      spreadsheetId,
+      range: `'${TAB.DASH}'!${HISTORICAL_STAMP_A1}`,
+      valueInputOption: 'RAW',
+      requestBody: { values: [[formatHistoricalStamp(stamp)]] },
+    });
+  } catch {
+    // The dashboard tab isn't there (or isn't writable) — the marker is stored,
+    // which is the part correctness depends on.
+  }
 }

@@ -18,6 +18,7 @@ import {
   listTasksForUser,
   markAllAssigneesDone,
   markAssigneeAccepted,
+  promoteToInProgress,
   markAssigneeDone,
   notifyTarget,
   rejectTaskItem,
@@ -70,6 +71,10 @@ const createTaskSchema = z
     groupId: z.string().regex(LINE_CHAT_ID_RE, LINE_CHAT_ID_MESSAGE).optional(),
     title: z.string().trim().min(1).max(200),
     type: z.enum(['single', 'multi', 'recurring']),
+    // ความเร่งด่วน (migration 048) — canonical keys, mapped to Thai labels at
+    // the presentation edges (web UI, sheet column K). Optional: older clients
+    // and the in-chat command don't send it.
+    urgency: z.enum(['urgent_max', 'urgent', 'normal', 'relaxed']).optional(),
     globalDeadline: z.string().datetime({ offset: true }).optional(),
     recurrenceRule: recurrenceSchema.optional(),
     items: z
@@ -360,6 +365,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       ownerLineUid: isPersonal ? lineUid : null,
       title: body.title,
       type: body.type,
+      urgency: body.urgency ?? null,
       globalDeadline,
       recurrenceRule: (body.recurrenceRule as RecurrenceRule | undefined) ?? null,
       createdByLineUid: lineUid,
@@ -1044,6 +1050,9 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(403).send({ error: 'ข้อนี้ไม่ได้มอบหมายให้เราน้า' });
       }
       await markAssigneeAccepted(app.supabase, item.id, lineUid); // idempotent
+      // Same promotion the LINE รับทราบ postback applies — acceptance must move
+      // the item/task to กำลังทำ in every mirror, not just stamp accepted_at.
+      await promoteToInProgress(app.supabase, task.id, [item.id]);
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       return { task: toTaskDto(updated) };

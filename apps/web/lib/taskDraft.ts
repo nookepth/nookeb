@@ -29,6 +29,19 @@ export interface RecurrenceDraft {
 
 export type TaskScope = 'group' | 'personal';
 
+/** ความเร่งด่วน (canonical keys, migration 048) — labels live in the UI. */
+export type TaskUrgency = 'urgent_max' | 'urgent' | 'normal' | 'relaxed';
+
+/** Selector options, least→most urgent (reads left-to-right as escalation).
+ * Plain-text labels — the LIFF UI is a no-emoji surface; the coloured dot is
+ * drawn in CSS by the selector itself. */
+export const URGENCY_OPTIONS: { value: TaskUrgency; label: string; color: string }[] = [
+  { value: 'relaxed', label: 'ไม่รีบ', color: '#2E7D32' },
+  { value: 'normal', label: 'ปกติ', color: '#B45309' },
+  { value: 'urgent', label: 'ด่วน', color: '#F57C00' },
+  { value: 'urgent_max', label: 'ด่วนมาก', color: '#C62828' },
+];
+
 export interface TaskDraft {
   /**
    * 'personal' = งานส่วนตัว created from a 1-on-1 DM (migration 043): groupId
@@ -38,6 +51,8 @@ export interface TaskDraft {
   scope: TaskScope;
   groupId: string | null;
   type: 'single' | 'multi' | 'recurring';
+  /** ความเร่งด่วน — always present in new drafts; old drafts default ปกติ. */
+  urgency: TaskUrgency;
   title: string;
   /** datetime-local value */
   globalDeadline: string | null;
@@ -59,6 +74,7 @@ export function emptyDraft(type: TaskDraft['type'], scope: TaskScope = 'group'):
     scope,
     groupId: null,
     type,
+    urgency: 'normal',
     title: '',
     globalDeadline: null,
     description: '',
@@ -75,8 +91,8 @@ export function loadDraft(): TaskDraft | null {
     const raw = sessionStorage.getItem(KEY);
     if (!raw) return null;
     const draft = JSON.parse(raw) as TaskDraft;
-    // A draft written before scope existed is a group draft.
-    return { ...draft, scope: draft.scope ?? 'group' };
+    // A draft written before scope/urgency existed: group draft, ปกติ urgency.
+    return { ...draft, scope: draft.scope ?? 'group', urgency: draft.urgency ?? 'normal' };
   } catch {
     return null;
   }
