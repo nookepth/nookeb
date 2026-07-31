@@ -1,4 +1,7 @@
 import { google, type sheets_v4 } from 'googleapis';
+// Type-only: google-sheets.service.ts imports FROM this module, so a runtime
+// import back into it would close a cycle. `import type` is erased entirely.
+import type { TaskItemStatus } from '@nookeb/shared';
 import dayjs from 'dayjs';
 import utc from 'dayjs/plugin/utc';
 import timezone from 'dayjs/plugin/timezone';
@@ -49,8 +52,21 @@ type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
  * v4 — สั่งงาน tab removed; สรุปสัปดาห์ became สรุปงาน (date/month picker);
  *      new ✅ งานเสร็จ report; month-anchored analytics ranges; dashboard
  *      polish; same-tab chart sources now shift with the nav.
+ * v5 — ความคืบหน้า is now the pipeline stage (STAGE_PROGRESS), not a done flag;
+ *      ปฏิทิน drops ยกเลิก/ลบแล้ว rows; the ภาพรวม activity feed no longer
+ *      collides with the charts title (it was #REF! for anyone with 10+ rows);
+ *      the optional Apps Script add-on is no longer advertised on วิธีสั่งงาน.
+ *      v4 sheets MUST rebuild: the first three are formula changes, so an
+ *      un-rebuilt sheet keeps showing the broken feed and the stale progress.
+ * v6 — the performance layer. Master column S (⏱ เวลาตอบรับ) joins the sync's
+ *      extension write; _ข้อมูลคำนวณ gains X–AD (on-time, lateness, intake
+ *      month, acknowledgement); รายงานทีม splits % สำเร็จ into % เสร็จทั้งหมด
+ *      and % เสร็จตรงกำหนด; a new 📊 รายงานผลการทำงานรายบุคคล tab joins the
+ *      nav (now nine links). v5 sheets MUST rebuild — the master needs the
+ *      extra column before the sync can write P:S, and the nav strip on every
+ *      existing tab is one link short.
  */
-export const LAYOUT_VERSION = 4;
+export const LAYOUT_VERSION = 6;
 const METADATA_KEY = 'nookeb_layout_version';
 
 /**
@@ -82,6 +98,7 @@ const TAB = {
   ANA: '📈 วิเคราะห์',
   WEEK: '📅 สรุปงาน',
   DONE: '✅ งานเสร็จ',
+  PERF: '📊 รายงานผลการทำงานรายบุคคล',
   HELP: '➕ วิธีสั่งงาน',
   CALC: '_ข้อมูลคำนวณ',
   CONF: '_ตัวเลือก',
@@ -101,7 +118,7 @@ const LEGACY_TABS: string[] = ['📋 สั่งงาน', '📅 สรุป�
 /** Order shown in the tab strip: dashboard, the raw table, then the views. */
 const TAB_ORDER = [
   TAB.DASH, MASTER, TAB.PRIO, TAB.TRACK, TAB.TEAM,
-  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.DONE, TAB.HELP, TAB.CALC, TAB.CONF,
+  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.DONE, TAB.PERF, TAB.HELP, TAB.CALC, TAB.CONF,
 ];
 
 /**
@@ -109,8 +126,8 @@ const TAB_ORDER = [
  * as one product rather than eleven loose sheets. Each entry is a HYPERLINK to
  * a tab's gid, which is only known at build time — hence the gid lookup.
  *
- * Eight links, one per column A–H. Every visible tab is therefore at least 8
- * columns wide (see TabPlan.cols); the calendar's 8th column is spare space
+ * Nine links, one per column A–I. Every visible tab is therefore at least 9
+ * columns wide (see TabPlan.cols and sizeOf); the calendar's spare columns sit
  * beside its seven day columns.
  */
 const NAV: { tab: string; label: string }[] = [
@@ -121,6 +138,7 @@ const NAV: { tab: string; label: string }[] = [
   { tab: TAB.CAL, label: '🗓️ ปฏิทิน' },
   { tab: TAB.ANA, label: '📈 วิเคราะห์' },
   { tab: TAB.DONE, label: '✅ งานเสร็จ' },
+  { tab: TAB.PERF, label: '📊 รายบุคคล' },
   { tab: MASTER, label: '📝 งานของฉัน' },
 ];
 
@@ -130,7 +148,7 @@ const NAV_ROWS = 1;
 /** Tabs that get the nav strip — the visible generated views, plus the master. */
 const NAV_TABS: string[] = [
   TAB.DASH, TAB.PRIO, TAB.TRACK, TAB.TEAM,
-  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.DONE, TAB.HELP,
+  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.DONE, TAB.PERF, TAB.HELP,
 ];
 
 const HIDDEN_TABS: string[] = [TAB.CALC, TAB.CONF];
@@ -140,18 +158,34 @@ const GENERATED_TABS = Object.values(TAB);
 
 // ---- master extension columns (0-based, continuing after รหัสงาน = J = 9) ----
 
+/**
+ * Who owns what past column J. A–J are the sync's outright (values AND
+ * background repainted on every write); everything here is the workspace's
+ * except the two marked USER, which the sync fills only while they are blank
+ * and never touches again. extensionUpdates in google-sheets.service.ts is the
+ * single writer for the worker-owned ones — see the owned-range note there.
+ */
 export const MASTER_EXT = {
-  URGENCY: 10, // K — user-editable dropdown, the worker only fills it when blank
+  URGENCY: 10, // K — USER's, seeded once when blank
   PROGRESS: 11, // L — worker
   LINKS: 12, // M — worker
-  NOTE: 13, // N — user's own column, never written after the first blank fill
+  NOTE: 13, // N — USER's, never written
   LOG: 14, // O — worker appends one line per status change
   CREATED: 15, // P — hidden, real date serial
   DONE: 16, // Q — hidden, real date serial
   DEADLINE_DATE: 17, // R — hidden, real date serial (E is the display string)
+  /**
+   * S — hours from assignment (P) to the first รับทราบ, blank until someone
+   * acknowledges. Visible, unlike P–R: it is a number a human reads, not
+   * plumbing for formulas. Added in layout v6.
+   */
+  ACCEPT_HOURS: 18,
 } as const;
 
-export const MASTER_LAST_COLUMN = MASTER_EXT.DEADLINE_DATE + 1; // exclusive → 18
+/** Exclusive end of the hidden real-date block P–R. S must stay visible. */
+const MASTER_HIDDEN_DATES_END = MASTER_EXT.DEADLINE_DATE + 1; // → 18
+
+export const MASTER_LAST_COLUMN = MASTER_EXT.ACCEPT_HOURS + 1; // exclusive → 19
 
 const EXT_HEADERS = [
   '🚦 ความเร่งด่วน',
@@ -162,6 +196,7 @@ const EXT_HEADERS = [
   'สร้างเมื่อ',
   'เสร็จเมื่อ',
   'กำหนดส่ง (วันที่)',
+  '⏱ เวลาตอบรับ (ชม.)',
 ];
 
 // ---- design system ----
@@ -244,6 +279,54 @@ const TYPES = ['งานเดียว', 'หลายรายการ', '�
 
 export const URGENCIES = ['🔴 ด่วนมาก', '🟠 ด่วน', '🟡 ปกติ', '🟢 ไม่รีบ'];
 export const DEFAULT_URGENCY = '🟡 ปกติ';
+
+/**
+ * Pipeline stage → ความคืบหน้า %. The ONE place progress is defined.
+ *
+ * Progress used to be "assignees with done_at ÷ assignees total", which for the
+ * overwhelmingly common one-assignee row is a boolean wearing a percent sign:
+ * 0% for everything up to and including รอตรวจ, then 100%. A task that had been
+ * accepted, worked on and submitted for review reported the same 0% as one
+ * nobody had opened, which is worse than useless on a report a manager reads.
+ *
+ * So progress now means "how far down the สายพานสถานะ is this row", and the
+ * percentages are pinned to the pipeline dots in calc column Q so the two can
+ * never tell different stories:
+ *
+ *   ยกเลิก        ○┄○┄○┄○    0%   — off the belt entirely
+ *   รอดำเนินการ   ●┄○┄○┄○   25%   — assigned, stage 1 of 4 reached
+ *   กำลังทำ       ●━●┄○┄○   50%   — stage 2
+ *   ตีกลับ        ●━●━✖┄○   50%   — reached review and bounced; back to stage 2
+ *   รอตรวจ        ●━●━◐┄○   75%   — stage 3 active, waiting on the reviewer
+ *   เสร็จแล้ว     ●━●━●━●  100%   — stage 4
+ *
+ * ตีกลับ deliberately reads 50%, not 75%: the work is back in the assignee's
+ * hands and has to be redone, so crediting it the review stage would overstate
+ * where it actually is.
+ *
+ * `label` is the Thai string the sync writes into master column H, and it MUST
+ * equal google-sheets.service.ts's STATUS_LABEL for the same key — the calc
+ * sheet matches on that string. A test asserts the two tables agree rather than
+ * trusting this comment, because the sheet fails silently when they drift.
+ */
+export const STAGE_PROGRESS: { status: TaskItemStatus; label: string; percent: number }[] = [
+  { status: 'cancelled', label: 'ยกเลิก', percent: 0 },
+  { status: 'pending', label: 'รอดำเนินการ', percent: 25 },
+  { status: 'in_progress', label: 'กำลังทำ', percent: 50 },
+  { status: 'rejected', label: 'ตีกลับ', percent: 50 },
+  { status: 'submitted', label: 'รอตรวจ', percent: 75 },
+  { status: 'done', label: 'เสร็จแล้ว', percent: 100 },
+];
+
+/**
+ * The bar the master's ความคืบหน้า column carries for a given status. Returns
+ * '' for anything off the table (notably 'ลบแล้ว', the deleted-row label),
+ * which is what the calc sheet's fallback renders too.
+ */
+export function progressForStatus(status: TaskItemStatus): string {
+  const stage = STAGE_PROGRESS.find((s) => s.status === status);
+  return stage ? progressBar(stage.percent, 100) : '';
+}
 
 const THAI_MONTHS = [
   'มกราคม', 'กุมภาพันธ์', 'มีนาคม', 'เมษายน', 'พฤษภาคม', 'มิถุนายน',
@@ -505,7 +588,67 @@ export function calcFormulas(): string[][] {
       `IF(NOT(ISNUMBER(MATCH(${M}!H2:H, ${OPEN_ARR}, 0))), "", ` +
       `IF(${M}!P2:P="", "", IF(NOW()-${M}!P2:P>7, "⚠️ ค้างมา " & ROUNDDOWN(NOW()-${M}!P2:P, 0) & " วัน", "")))`,
     ), // V  คอขวด
-    pass(`${M}!L2:L`),              // W  ความคืบหน้า
+    // W ความคืบหน้า — derived from the STATUS column, not copied from master
+    // column L. Deriving it here means every row already in every existing
+    // sheet reports the right stage the moment this layout lands, including
+    // rows the sync will never touch again because their status stopped
+    // changing. sheets-row.ts writes the identical string into L off the same
+    // table, so the master tab and the views agree.
+    pass(
+      `IFS(${STAGE_PROGRESS.map(
+        (s) => `${M}!H2:H="${s.label}", "${progressBar(s.percent, 100)}"`,
+      ).join(', ')}, TRUE, "")`,
+    ), // W  ความคืบหน้า
+
+    // ---- X–AD: the performance layer (layout v6) --------------------------
+    //
+    // Seven per-ROW primitives that let any tab aggregate performance per
+    // person WITHOUT re-deriving the rules. They are deliberately all plain
+    // numbers (1/0, days, hours) rather than booleans or blanks, because the
+    // only per-person grouping this workspace can do is
+    // SUMPRODUCT(ISNUMBER(SEARCH(name, ผู้รับผิดชอบ)) * …) — the assignee
+    // column holds comma-joined names, so COUNTIFS/AVERAGEIFS cannot reach it.
+    // SUMPRODUCT reads a non-numeric entry as 0, which is what makes the
+    // trailing blank rows of a spilled ARRAYFORMULA harmless here.
+    //
+    // The pairs matter: each measure ships with its own DENOMINATOR column, so
+    // a consumer never has to guess which rows were eligible.
+    //   X/Y  on time  ÷  measurable at all
+    //   Z/AA lateness ÷  rows that were actually late
+    //   AC/AD hours   ÷  rows that were actually acknowledged
+    // Averaging Z over Y instead of AA would answer a different question ("how
+    // late on average including work that was on time"), which is the one thing
+    // a lateness figure must not silently become.
+    //
+    // N() throughout rather than bare arithmetic: Q/R/S are blank on any row
+    // that has not reached that stage, and `blank - number` inside an
+    // ARRAYFORMULA is a #VALUE! that would take the whole column with it.
+
+    // X — completed on or before the deadline. NOT a "finished" flag: a row
+    // finished late counts 0 here but still counts 1 in Y, which is exactly the
+    // distinction รายงานทีม's existing % สำเร็จ does not make.
+    pass(`(${M}!Q2:Q<>"")*(${M}!R2:R<>"")*(${M}!Q2:Q<=${M}!R2:R)`), // X  ตรงเวลา
+    // Y — the denominator for X: finished AND had a deadline to be judged
+    // against. A task with no deadline can be neither on time nor late, so it
+    // must not quietly count as a failure.
+    pass(`(${M}!Q2:Q<>"")*(${M}!R2:R<>"")`), // Y  วัดตรงเวลาได้
+    // Z — how many days past the deadline, and 0 for everything else. Only ever
+    // averaged over AA, never over a row count.
+    pass(
+      `IF((${M}!Q2:Q<>"")*(${M}!R2:R<>"")*(${M}!Q2:Q>${M}!R2:R), ` +
+      `N(${M}!Q2:Q)-N(${M}!R2:R), 0)`,
+    ), // Z  วันล่าช้า
+    pass(`(${M}!Q2:Q<>"")*(${M}!R2:R<>"")*(${M}!Q2:Q>${M}!R2:R)`), // AA นับล่าช้า
+    // AB — the first of the month the work was HANDED OVER (column P), as a
+    // real serial so a view can compare it to DATE(YEAR(TODAY()), …, 1). Intake
+    // month, not deadline month: workload is about what landed on someone's
+    // desk, and a task can be assigned in one month and due in another.
+    pass(`IF(${M}!P2:P="",, DATE(YEAR(N(${M}!P2:P)), MONTH(N(${M}!P2:P)), 1))`), // AB เดือนมอบหมาย
+    // AC/AD — column S, split into sum and count. ISNUMBER, not ">0": a genuine
+    // 20-second acknowledgement rounds to 0.01 and a sub-18-second one to 0.00,
+    // and a ">0" gate would throw away the fastest replies in the data set.
+    pass(`N(${M}!S2:S)`), // AC ชม.ตอบรับ
+    pass(`N(ISNUMBER(${M}!S2:S))`), // AD นับตอบรับ
   ]];
 }
 
@@ -513,7 +656,23 @@ const CALC_HEADERS = [
   'รหัสงาน', 'ชื่องาน', 'ประเภท', 'ผู้สั่ง', 'ผู้รับผิดชอบ', 'สถานะ', 'กำหนดส่ง', 'สร้างเมื่อ',
   'เสร็จเมื่อ', 'ความเร่งด่วน', 'อันดับด่วน', 'วันคงเหลือ', 'เกินกำหนด', 'ยังไม่จบ', 'นับถอยหลัง',
   'มิเตอร์', 'สายพาน', 'ลิงก์', 'หมายเหตุ', 'อัปเดตล่าสุด', 'อายุงาน', 'คอขวด', 'ความคืบหน้า',
+  'ตรงเวลา', 'วัดตรงเวลาได้', 'วันล่าช้า', 'นับล่าช้า', 'เดือนมอบหมาย', 'ชม.ตอบรับ', 'นับตอบรับ',
 ];
+
+/**
+ * The _ข้อมูลคำนวณ columns the performance layer lives in, by letter. Named so
+ * a view never hard-codes an offset that a new calc column would silently
+ * shift — the calc sheet has grown three times already.
+ */
+export const CALC_PERF = {
+  ON_TIME: 'X',
+  MEASURABLE: 'Y',
+  LATE_DAYS: 'Z',
+  LATE_COUNT: 'AA',
+  INTAKE_MONTH: 'AB',
+  ACK_HOURS: 'AC',
+  ACK_COUNT: 'AD',
+} as const;
 
 /**
  * A view row: SORT(FILTER(...)) over _ข้อมูลคำนวณ with the sort key carried as a
@@ -977,14 +1136,24 @@ function buildDashboard(gid: number, syncUrl?: string): TabPlan {
   ];
 
   // ---- charts section ----
-  values.push({ range: 'A30', rows: [['📊 กราฟสรุป']] });
+  //
+  // Row 32, NOT row 30. The activity feed above anchors at A21 and is capped at
+  // 10 rows, so its output range is A21:D30 — and a spilling array formula that
+  // cannot expand because one cell of its range is occupied does not degrade,
+  // it reports #REF! for the whole block. The IFERROR inside viewFormula does
+  // not catch that: a blocked spill is a range error raised before the wrapped
+  // expression is ever evaluated. So this title sat exactly on the feed's last
+  // row and killed it — but only once the user owned 10+ rows, which per-item
+  // rows (a multi task now emits one row per sub-item) made the common case.
+  // The gap is deliberate; see the spill-footprint test in the suite.
+  values.push({ range: 'A32', rows: [['📊 กราฟสรุป']] });
 
   requests.push(...widths(gid, [95, 150, 130, 120, 110, 120, 20, 190, 130, 130, 120, 100]));
   requests.push(...baseFormat(gid, 40, 14));
   requests.push(...historicalRequests);
   // sectionHeader AFTER baseFormat for the same last-write-wins reason as the
   // historical block above.
-  requests.push(...sectionHeader(gid, 29, 0, 12, '📊 กราฟสรุป'));
+  requests.push(...sectionHeader(gid, 31, 0, 12, '📊 กราฟสรุป'));
   requests.push({
     updateSheetProperties: {
       properties: { sheetId: gid, gridProperties: { frozenRowCount: 1 } },
@@ -1025,7 +1194,7 @@ function dashboardCharts(dashGid: number, confGid: number): sheets_v4.Schema$Req
               series: src(0, 1 + STATUS_ALL.length, 3),
             },
           },
-          position: anchor(31, 0, 430, 260),
+          position: anchor(33, 0, 430, 260),
         },
       },
     },
@@ -1045,7 +1214,7 @@ function dashboardCharts(dashGid: number, confGid: number): sheets_v4.Schema$Req
               series: [{ series: src(0, 1 + TYPES.length, 6), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) }],
             },
           },
-          position: anchor(31, 4, 430, 260),
+          position: anchor(33, 4, 430, 260),
         },
       },
     },
@@ -1065,7 +1234,7 @@ function dashboardCharts(dashGid: number, confGid: number): sheets_v4.Schema$Req
               series: [{ series: src(0, 31, 9), targetAxis: 'BOTTOM_AXIS', color: rgb(C.BLUE) }],
             },
           },
-          position: anchor(31, 8, 430, 300),
+          position: anchor(33, 8, 430, 300),
         },
       },
     },
@@ -1229,20 +1398,33 @@ function buildTeam(gid: number): TabPlan {
   const requests: sheets_v4.Schema$Request[] = [];
 
   values.push({ range: 'A1', rows: [['👥 รายงานทีม — ใครถืองานเท่าไหร่ ใครล้นมือ ใครว่าง']] });
-  requests.push(...titleFormat(grid(gid, 0, 0, 1, 10)));
+  requests.push(...titleFormat(grid(gid, 0, 0, 1, 11)));
   values.push({
     range: 'A2',
-    rows: [['รอตรวจ = ส่งงานกลับมาแล้วรอเจ้าของงานตรวจ · ตีกลับ = ถูกส่งกลับไปแก้ · ภาระงานค้าง = งานที่ยังไม่จบทั้งหมด']],
+    rows: [[
+      'รอตรวจ = ส่งงานกลับมาแล้วรอเจ้าของงานตรวจ · ตีกลับ = ถูกส่งกลับไปแก้ · ภาระงานค้าง = งานที่ยังไม่จบทั้งหมด',
+    ]],
   });
-  requests.push(fmt(grid(gid, 1, 0, 2, 10), {
+  values.push({
+    range: 'A3',
+    rows: [[
+      // The two percent columns are the whole point of this pair, and they are
+      // easy to read as the same number: one says the work eventually got done,
+      // the other says it got done by the date it was promised.
+      '% เสร็จทั้งหมด = เสร็จแล้วกี่ % ของงานที่ได้รับ (ไม่สนกำหนดส่ง) · ' +
+      '% เสร็จตรงกำหนด = ในงานที่เสร็จแล้วและมีกำหนดส่ง เสร็จทันกี่ % · ' +
+      'ว่างไว้ = ยังไม่มีงานที่วัดได้',
+    ]],
+  });
+  requests.push(fmt(grid(gid, 1, 0, 3, 11), {
     textFormat: { fontSize: 9, fontFamily: FONT, foregroundColor: rgb(C.MUTED) },
   }, 'textFormat'));
 
   values.push({
     range: 'A4',
-    rows: [['สมาชิก', 'ได้รับทั้งหมด', 'รอดำเนินการ', 'กำลังทำ', 'รอตรวจ', 'ตีกลับ', 'เสร็จแล้ว', 'เกินกำหนด', '% สำเร็จ', 'ภาระงานค้าง']],
+    rows: [['สมาชิก', 'ได้รับทั้งหมด', 'รอดำเนินการ', 'กำลังทำ', 'รอตรวจ', 'ตีกลับ', 'เสร็จแล้ว', 'เกินกำหนด', '% เสร็จทั้งหมด', '% เสร็จตรงกำหนด', 'ภาระงานค้าง']],
   });
-  requests.push(...headerFormat(grid(gid, 3, 0, 4, 10)));
+  requests.push(...headerFormat(grid(gid, 3, 0, 4, 11)));
 
   // One MAP per column keeps every cell a single spilled array — no per-row fill.
   const person = `${CONF}!$A$2:$A$40`;
@@ -1256,15 +1438,41 @@ function buildTeam(gid: number): TabPlan {
   values.push({ range: 'F5', rows: [[countWhere(` * (${CALC}!$F$2:$F$2000="ตีกลับ")`)]] });
   values.push({ range: 'G5', rows: [[countWhere(` * (${CALC}!$F$2:$F$2000="เสร็จแล้ว")`)]] });
   values.push({ range: 'H5', rows: [[countWhere(` * (${CALC}!$M$2:$M$2000=TRUE)`)]] });
-  values.push({ range: 'I5', rows: [[`=ARRAYFORMULA(IF($A5:$A="",, IF($B5:$B=0, 0, $G5:$G/$B5:$B)))`]] });
-  values.push({ range: 'J5', rows: [[`=ARRAYFORMULA(IF($A5:$A="",, $C5:$C+$D5:$D+$E5:$E+$F5:$F))`]] });
+  // I and J are ARRAYFORMULAs over this tab's OWN columns, so their references
+  // must move with the nav strip — hence self(). Without it they read from one
+  // row above their own output: the first cell lands on the header row and the
+  // whole column sits one person off. (They shipped that way; the alignment
+  // test in sheets-workspace.service.test.ts now pins it.)
+  values.push({
+    range: 'I5',
+    rows: [[
+      `=ARRAYFORMULA(IF(${self('$A5')}:$A="",, IF(${self('$B5')}:$B=0, 0, ${self('$G5')}:$G/${self('$B5')}:$B)))`,
+    ]],
+  });
+  // J — % เสร็จตรงกำหนด. Deliberately NOT derived from I: it has its own
+  // denominator (finished AND had a deadline), so a person whose work has no
+  // deadlines shows blank here rather than being scored 0%.
+  const perPerson = (num: string, den: string) =>
+    `=MAP(${person}, LAMBDA(p, IF(p="",, IFERROR(` +
+    `SUMPRODUCT(ISNUMBER(SEARCH(p, ${CALC}!$E$2:$E$2000)) * ${CALC}!$${num}$2:$${num}$2000) / ` +
+    `SUMPRODUCT(ISNUMBER(SEARCH(p, ${CALC}!$E$2:$E$2000)) * ${CALC}!$${den}$2:$${den}$2000), ""))))`;
+  values.push({
+    range: 'J5',
+    rows: [[perPerson(CALC_PERF.ON_TIME, CALC_PERF.MEASURABLE)]],
+  });
+  values.push({
+    range: 'K5',
+    rows: [[
+      `=ARRAYFORMULA(IF(${self('$A5')}:$A="",, ${self('$C5')}:$C+${self('$D5')}:$D+${self('$E5')}:$E+${self('$F5')}:$F))`,
+    ]],
+  });
 
-  requests.push(...widths(gid, [150, 105, 105, 90, 85, 85, 95, 100, 90, 110]));
-  requests.push(...baseFormat(gid, 45, 10));
+  requests.push(...widths(gid, [150, 105, 105, 90, 85, 85, 95, 100, 105, 120, 110]));
+  requests.push(...baseFormat(gid, 45, 11));
   requests.push(
-    fmt(grid(gid, 4, 1, 45, 10), { horizontalAlignment: 'CENTER' }, 'horizontalAlignment'),
+    fmt(grid(gid, 4, 1, 45, 11), { horizontalAlignment: 'CENTER' }, 'horizontalAlignment'),
     fmt(grid(gid, 4, 0, 45, 1), { textFormat: { bold: true, fontFamily: FONT } }, 'textFormat'),
-    fmt(grid(gid, 4, 8, 45, 9), { numberFormat: { type: 'PERCENT', pattern: '0%' } }, 'numberFormat'),
+    fmt(grid(gid, 4, 8, 45, 10), { numberFormat: { type: 'PERCENT', pattern: '0%' } }, 'numberFormat'),
     {
       updateSheetProperties: {
         properties: { sheetId: gid, gridProperties: { frozenRowCount: 4 } },
@@ -1275,7 +1483,7 @@ function buildTeam(gid: number): TabPlan {
     {
       addConditionalFormatRule: {
         rule: {
-          ranges: [grid(gid, 4, 9, 45, 10)],
+          ranges: [grid(gid, 4, 10, 45, 11)],
           gradientRule: {
             minpoint: { color: rgb(C.WHITE), type: 'NUMBER', value: '0' },
             midpoint: { color: rgb('#FFE0B2'), type: 'NUMBER', value: '3' },
@@ -1285,10 +1493,12 @@ function buildTeam(gid: number): TabPlan {
         index: 0,
       },
     },
+    // Both percent columns share one scale, so the eye can compare them across
+    // a row without decoding two different colour languages.
     {
       addConditionalFormatRule: {
         rule: {
-          ranges: [grid(gid, 4, 8, 45, 9)],
+          ranges: [grid(gid, 4, 8, 45, 10)],
           gradientRule: {
             minpoint: { color: rgb('#FFCDD2'), type: 'NUMBER', value: '0' },
             midpoint: { color: rgb('#FFF9C4'), type: 'NUMBER', value: '0.5' },
@@ -1301,7 +1511,7 @@ function buildTeam(gid: number): TabPlan {
     cfFormula(gid, [grid(gid, 4, 7, 45, 8)], '=$H5>0', { textFormat: { foregroundColor: rgb(C.DANGER), bold: true } }),
   );
 
-  return { values, requests, rows: 45, cols: 10 };
+  return { values, requests, rows: 45, cols: 11 };
 }
 
 function buildCalendar(gid: number): TabPlan {
@@ -1336,7 +1546,7 @@ function buildCalendar(gid: number): TabPlan {
 
   values.push({
     range: 'A2',
-    rows: [['🔴 ด่วนมาก · 🟠 ด่วน · 🟡 ปกติ · 🟢 ไม่รีบ · ✓ = เสร็จแล้ว · แต่ละช่องแสดงงานที่ครบกำหนดวันนั้น (สูงสุด 3 งาน)']],
+    rows: [['🔴 ด่วนมาก · 🟠 ด่วน · 🟡 ปกติ · 🟢 ไม่รีบ · ✓ = เสร็จแล้ว · แต่ละช่องแสดงงานที่ครบกำหนดวันนั้น (สูงสุด 3 งาน) · ไม่แสดงงานที่ยกเลิก']],
   });
   requests.push(fmt(grid(gid, 1, 0, 2, 7), {
     textFormat: { fontSize: 9, fontFamily: FONT, foregroundColor: rgb(C.MUTED) },
@@ -1363,7 +1573,15 @@ function buildCalendar(gid: number): TabPlan {
         // error, and one error anywhere in the array would blank the calendar.
         `DAY(d) & IFERROR(CHAR(10) & TEXTJOIN(CHAR(10), TRUE, ARRAY_CONSTRAIN(SORT(FILTER(` +
         `IF(${CALC}!$F$2:$F="เสร็จแล้ว", "✓ ", LEFT(${CALC}!$J$2:$J, 2) & " ") & ${CALC}!$B$2:$B, ` +
-        `${CALC}!$G$2:$G>=d, ${CALC}!$G$2:$G<d+1), 1, TRUE), 3, 1)), "")))`,
+        `${CALC}!$G$2:$G>=d, ${CALC}!$G$2:$G<d+1, ` +
+        // Closed-but-not-completed rows must not sit on the calendar looking
+        // live. Every other view drops them via calc column N (ยังไม่จบ, i.e.
+        // status ∈ STATUS_OPEN); the calendar cannot use N because it also
+        // shows เสร็จแล้ว with a ✓, so it spells out the same exclusion. Both
+        // labels matter: ยกเลิก is a cancelled task, ลบแล้ว a deleted one, and
+        // before this the urgency dot made either indistinguishable from work
+        // that was still owed.
+        `${CALC}!$F$2:$F<>"ยกเลิก", ${CALC}!$F$2:$F<>"ลบแล้ว"), 1, TRUE), 3, 1)), "")))`,
       );
     }
     gridRows.push(row);
@@ -1951,6 +2169,229 @@ function doneCharts(gid: number): sheets_v4.Schema$Request[] {
 }
 
 /**
+ * 📊 รายงานผลการทำงานรายบุคคล — one row per person, for a 1:1 conversation.
+ *
+ * WHAT IT IS ALLOWED TO SAY. Every number here is aggregated from the per-row
+ * primitives in _ข้อมูลคำนวณ X–AD, which are in turn derived only from stamps
+ * the database actually keeps: created_at, accepted_at, done_at and the
+ * deadline. Nothing on this tab is modelled, weighted or scored.
+ *
+ * WHAT IT DELIBERATELY DOES NOT SAY, and why the caveat in row 2 is not
+ * optional:
+ *   - REJECTION HISTORY IS NOT CUMULATIVE. `task_items` carries one
+ *     `rejected_at`/`rejection_note`, overwritten on the next submit, so a task
+ *     bounced three times and finally approved is indistinguishable from one
+ *     approved first try. Any "ตีกลับ" count anywhere in this workspace is
+ *     therefore a snapshot of what is bounced RIGHT NOW, never a tally. This
+ *     tab shows no rejection metric at all rather than show a number a manager
+ *     would reasonably read as a tally.
+ *   - NO URGENCY METRIC. `tasks.urgency` is only chosen in the LIFF and
+ *     dashboard create flows; a task created from a LINE chat command has none,
+ *     and column K then shows the ปกติ default. Splitting performance by
+ *     urgency would compare people by which door they were assigned through.
+ * Both gaps need a schema decision that has not been taken; neither is papered
+ * over here.
+ *
+ * A BLANK CELL MEANS "not measurable", never "zero". A person with no finished
+ * work that had a deadline gets a blank on-time rate, not 0% — the difference
+ * between "no evidence" and "bad" is the whole difference between a coaching
+ * tool and a blame list.
+ */
+function buildPerformance(gid: number): TabPlan {
+  const values: TabPlan['values'] = [];
+  const requests: sheets_v4.Schema$Request[] = [];
+
+  // 13 wide: A–H the report, J–K the chart's ranking, and L–M spare so the
+  // chart has a real anchor cell to hang off (an overlay anchored past the last
+  // column is a 400 from the API, not a chart that floats).
+  const COLS = 13;
+  /** Rows the person table may spill over — one per _ตัวเลือก roster slot. */
+  const PEOPLE = 39;
+  const FIRST = 5; // nav-free sheet row of the first data row
+  const LAST = FIRST + PEOPLE - 1; // 43
+
+  values.push({ range: 'A1', rows: [['📊 รายงานผลการทำงานรายบุคคล — ภาพรวมของแต่ละคน สำหรับคุยกันแบบตัวต่อตัว']] });
+  requests.push(...titleFormat(grid(gid, 0, 0, 1, COLS)));
+
+  // Row 2 — the required caveat. It sits above the table, in the tab itself,
+  // because a caveat that only exists in a chat message or a doc is a caveat
+  // nobody reading the numbers will ever see.
+  values.push({
+    range: 'A2',
+    rows: [['⚠️ ข้อมูลอ้างอิงจากสถานะปัจจุบันของงาน ไม่รวมประวัติงานที่เคยถูกตีกลับก่อนหน้า']],
+  });
+  requests.push(
+    { mergeCells: { range: grid(gid, 1, 0, 2, COLS), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, 1, 0, 2, COLS), {
+      backgroundColor: rgb(C.OK_BG), verticalAlignment: 'MIDDLE', padding: { left: 8 },
+      textFormat: { fontSize: 10, fontFamily: FONT, bold: true, foregroundColor: rgb(C.AMBER) },
+    }, 'backgroundColor,verticalAlignment,padding,textFormat'),
+  );
+
+  values.push({
+    range: 'A3',
+    rows: [[
+      'ช่องว่าง = ยังไม่มีข้อมูลมากพอจะวัด ไม่ได้แปลว่า 0 · ' +
+      'เสร็จทันกำหนด % นับเฉพาะงานที่เสร็จแล้วและมีกำหนดส่ง · ' +
+      'ค่าเฉลี่ยล่าช้า นับเฉพาะงานที่ล่าช้าจริง (งานที่ส่งทันไม่ถูกนำมาเฉลี่ยด้วย) · ' +
+      'ภาระงาน = จำนวนงานที่ได้รับในเดือนนั้น',
+    ]],
+  });
+  requests.push(fmt(grid(gid, 2, 0, 3, COLS), {
+    textFormat: { fontSize: 9, fontFamily: FONT, foregroundColor: rgb(C.MUTED) },
+  }, 'textFormat'));
+
+  values.push({
+    range: 'A4',
+    rows: [[
+      'ชื่อ', 'งานทั้งหมด', 'เสร็จแล้ว', 'เสร็จทันกำหนด %',
+      'ค่าเฉลี่ยล่าช้า (วัน, เมื่อล่าช้า)', 'เวลาตอบรับเฉลี่ย (ชม.)',
+      'ภาระงานเดือนนี้', 'ภาระงานเดือนก่อน',
+    ]],
+  });
+  requests.push(...headerFormat(grid(gid, 3, 0, 4, 8)));
+
+  // ---- the table -------------------------------------------------------
+  //
+  // ONE spilling formula rather than eight MAP columns, because the whole block
+  // has to be SORTED by งานทั้งหมด descending and Sheets can only sort an array
+  // it is handed whole. The roster and every measure are MAPped over the same
+  // fixed 39-row _ตัวเลือก range so the pieces stack, then FILTERed to the real
+  // people and sorted. ARRAY_CONSTRAIN caps the footprint at exactly PEOPLE × 8
+  // — the spill-overlap test reads those two numbers out of the formula text.
+  const person = `${CONF}!$A$2:$A$40`;
+  const match = `ISNUMBER(SEARCH(p, ${CALC}!$E$2:$E$2000))`;
+  const over = (col: string) => `${CALC}!$${col}$2:$${col}$2000`;
+  /** SUMPRODUCT of one calc column, restricted to this person's rows. */
+  const sum = (col: string) => `SUMPRODUCT(${match} * ${over(col)})`;
+  /** Same, but counting rows matching a condition on a calc column. */
+  const count = (cond: string) => `SUMPRODUCT(${match} * (${cond}))`;
+  /** IFERROR → "" so a zero denominator reads as "no data", never as zero. */
+  const ratio = (num: string, den: string, round?: number) => {
+    const raw = `${sum(num)} / ${sum(den)}`;
+    return `IFERROR(${round == null ? raw : `ROUND(${raw}, ${round})`}, "")`;
+  };
+  const monthStart = (offset: number) =>
+    `DATE(YEAR(TODAY()), MONTH(TODAY())${offset >= 0 ? '+' : ''}${offset}, 1)`;
+
+  const column = (body: string) => `MAP(${person}, LAMBDA(p, IF(p="",, ${body})))`;
+
+  values.push({
+    range: `A${FIRST}`,
+    rows: [[
+      '=IFERROR(ARRAY_CONSTRAIN(SORT(FILTER({' +
+        [
+          person,
+          column(count(`${over('A')}<>""`)),
+          column(count(`${over('F')}="เสร็จแล้ว"`)),
+          column(ratio(CALC_PERF.ON_TIME, CALC_PERF.MEASURABLE)),
+          column(ratio(CALC_PERF.LATE_DAYS, CALC_PERF.LATE_COUNT, 1)),
+          column(ratio(CALC_PERF.ACK_HOURS, CALC_PERF.ACK_COUNT, 1)),
+          column(count(`${over(CALC_PERF.INTAKE_MONTH)}=${monthStart(0)}`)),
+          column(count(`${over(CALC_PERF.INTAKE_MONTH)}=${monthStart(-1)}`)),
+        ].join(', ') +
+        `}, ${person}<>""), 2, FALSE), ${PEOPLE}, 8), "ยังไม่มีข้อมูล")`,
+    ]],
+  });
+
+  requests.push(
+    fmt(grid(gid, FIRST - 1, 1, LAST, 8), { horizontalAlignment: 'CENTER' }, 'horizontalAlignment'),
+    fmt(grid(gid, FIRST - 1, 0, LAST, 1), { textFormat: { bold: true, fontFamily: FONT } }, 'textFormat'),
+    fmt(grid(gid, FIRST - 1, 3, LAST, 4), { numberFormat: { type: 'PERCENT', pattern: '0%' } }, 'numberFormat'),
+    fmt(grid(gid, FIRST - 1, 4, LAST, 6), { numberFormat: { type: 'NUMBER', pattern: '0.0' } }, 'numberFormat'),
+    banding(gid, FIRST - 1, 0, LAST, 8),
+  );
+
+  // Coaching highlight, not an alarm: pale amber from the existing row-tint
+  // scale, the same one ด่วน uses. The `<>""` guard is what keeps a person with
+  // nothing measurable out of it — otherwise a blank would test as 0 and every
+  // new member would be flagged on their first day.
+  requests.push(cfFormula(
+    gid,
+    [grid(gid, FIRST - 1, 3, LAST, 4)],
+    `=AND($D${FIRST}<>"", $D${FIRST}<0.7)`,
+    { backgroundColor: rgb(C.SOON_BG) },
+  ));
+
+  // ---- the chart's own ranking -----------------------------------------
+  //
+  // The table above is sorted by workload, so it cannot also feed a chart
+  // ranked by on-time rate. This re-sorts the table's OWN output rather than
+  // recomputing it — two columns, one SORT, no second pass over the master.
+  values.push({ range: 'J4', rows: [['สมาชิก', 'เสร็จทันกำหนด %']] });
+  requests.push(...headerFormat(grid(gid, 3, 9, 4, 11)));
+  values.push({
+    range: `J${FIRST}`,
+    rows: [[
+      `=IFERROR(ARRAY_CONSTRAIN(SORT(FILTER({${self(`$A$${FIRST}`)}:${self(`$A$${LAST}`)}, ` +
+      `${self(`$D$${FIRST}`)}:${self(`$D$${LAST}`)}}, ` +
+      `${self(`$A$${FIRST}`)}:${self(`$A$${LAST}`)}<>"", ` +
+      `ISNUMBER(${self(`$D$${FIRST}`)}:${self(`$D$${LAST}`)})), 2, FALSE), ${PEOPLE}, 2), "—")`,
+    ]],
+  });
+  requests.push(
+    fmt(grid(gid, FIRST - 1, 10, LAST, 11), {
+      numberFormat: { type: 'PERCENT', pattern: '0%' }, horizontalAlignment: 'CENTER',
+    }, 'numberFormat,horizontalAlignment'),
+  );
+
+  requests.push(...widths(gid, [160, 95, 90, 125, 175, 145, 120, 125, 20, 150, 115, 20, 20]));
+  requests.push(...baseFormat(gid, 46, COLS));
+  requests.push({
+    updateSheetProperties: {
+      properties: { sheetId: gid, gridProperties: { frozenRowCount: 4 } },
+      fields: 'gridProperties.frozenRowCount',
+    },
+  });
+
+  return { values, requests, rows: 46, cols: COLS, frozen: 4 };
+}
+
+/**
+ * The one chart on รายงานผลการทำงานรายบุคคล: on-time rate across the team,
+ * highest first. Sourced from the J/K ranking block on the tab itself, so it
+ * goes through shiftChart — a source range on a nav-shifted tab that is not
+ * shifted reads one row high and silently drops the last person.
+ */
+function performanceChart(gid: number): sheets_v4.Schema$Request[] {
+  const FIRST = 5;
+  const PEOPLE = 39;
+  const src = (col: number): sheets_v4.Schema$ChartData => ({
+    // From the header row so headerCount:1 names the series.
+    sourceRange: { sources: [grid(gid, FIRST - 2, col, FIRST - 1 + PEOPLE, col + 1)] },
+  });
+
+  return [
+    {
+      addChart: {
+        chart: {
+          spec: {
+            title: 'เสร็จทันกำหนด % — เรียงจากมากไปน้อย',
+            subtitle: 'ว่าง = ยังไม่มีงานที่วัดได้',
+            fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
+            basicChart: {
+              chartType: 'BAR',
+              legendPosition: 'NO_LEGEND',
+              headerCount: 1,
+              domains: [{ domain: src(9) }],
+              series: [{ series: src(10), targetAxis: 'BOTTOM_AXIS', color: rgb(C.BLUE) }],
+            },
+          },
+          position: {
+            overlayPosition: {
+              anchorCell: { sheetId: gid, rowIndex: 3, columnIndex: 12 },
+              offsetXPixels: 0, offsetYPixels: 0, widthPixels: 560, heightPixels: 420,
+            },
+          },
+        },
+      },
+    },
+  ];
+}
+
+/**
  * The "add a task" tab. It deliberately teaches the LINE commands instead of
  * offering an in-sheet form: the sync is one-way (nookeb → sheet), so a row
  * typed here would never become a real task, never notify anyone, and never
@@ -1981,11 +2422,16 @@ function buildHelp(gid: number): TabPlan {
     ['', 'คอลัมน์อื่นหนูเขียนทับทุกครั้งที่ sync — แก้ที่ LINE หรือหน้าเว็บแทนน้า'],
     ['', ''],
     ['🗑️ ลบแถวในชีต', 'ลบได้ ไม่พัง — งานนั้นจะกลับมาใหม่เมื่อมีการอัปเดตครั้งถัดไป'],
-    ['', ''],
-    ['⚙️ สคริปต์เสริม (ไม่บังคับ)', 'เพิ่มปุ่มเลือกความเร่งด่วน + ตรวจงานเกินกำหนดทุกเช้า 07:00'],
-    ['', 'ติดตั้ง: ส่วนขยาย → Apps Script → วางไฟล์ nookeb-addon.gs → บันทึก → รัน installTriggers()'],
-    ['', 'ไฟล์อยู่ในโปรเจกต์ที่ google-sheets-workspace/nookeb-addon.gs'],
   ];
+  // The optional Apps Script add-on used to be advertised here. It is gone: two
+  // of the three things it offered (the ส่งงาน form button and the urgency
+  // buttons) both keyed off the 📋 สั่งงาน tab, which layout v4 removed and
+  // LEGACY_TABS now actively deletes — so onEdit() returns immediately and
+  // submitForm() throws "ไม่พบแท็บ". The third (a 07:00 overdue scan into
+  // column S) only duplicates what calc column M already derives and every view
+  // already shows. Pointing users at an install that mostly no-ops was the
+  // worst of both worlds, so the workspace is now what it claims to be:
+  // formula-only, nothing to install.
   // Column A is a narrow gutter — labels go in B, prose in C.
   values.push({ range: 'B2', rows });
 
@@ -2057,6 +2503,11 @@ function buildCalc(gid: number): TabPlan {
     fmt(grid(gid, 1, 6, 2100, 9), { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } }, 'numberFormat'),
     fmt(grid(gid, 1, 11, 2100, 12), { numberFormat: { type: 'NUMBER', pattern: '0.0' } }, 'numberFormat'),
     fmt(grid(gid, 1, 20, 2100, 21), { numberFormat: { type: 'NUMBER', pattern: '0.0' } }, 'numberFormat'),
+    // Z วันล่าช้า / AC ชม.ตอบรับ read as numbers; AB เดือนมอบหมาย is a real
+    // date serial and would otherwise show up as a five-digit integer.
+    fmt(grid(gid, 1, 25, 2100, 26), { numberFormat: { type: 'NUMBER', pattern: '0.0' } }, 'numberFormat'),
+    fmt(grid(gid, 1, 27, 2100, 28), { numberFormat: { type: 'DATE', pattern: 'mm/yyyy' } }, 'numberFormat'),
+    fmt(grid(gid, 1, 28, 2100, 29), { numberFormat: { type: 'NUMBER', pattern: '0.00' } }, 'numberFormat'),
   );
 
   return { values, requests, rows: 2100, cols: CALC_HEADERS.length };
@@ -2201,7 +2652,7 @@ function masterExtensionRequests(gid: number): sheets_v4.Schema$Request[] {
   const first = MASTER_EXT.URGENCY;
   requests.push(
     ...headerFormat(grid(gid, 0, first, 1, MASTER_LAST_COLUMN)),
-    ...widths(gid, [115, 110, 170, 180, 260, 130, 130, 130], first),
+    ...widths(gid, [115, 110, 170, 180, 260, 130, 130, 130, 140], first),
     fmt(grid(gid, 1, first, 1000, MASTER_LAST_COLUMN), {
       textFormat: { fontFamily: FONT, fontSize: 10 }, verticalAlignment: 'MIDDLE',
     }, 'textFormat,verticalAlignment'),
@@ -2211,18 +2662,25 @@ function masterExtensionRequests(gid: number): sheets_v4.Schema$Request[] {
     fmt(grid(gid, 1, MASTER_EXT.LOG, 1000, MASTER_EXT.LOG + 1), {
       wrapStrategy: 'WRAP', textFormat: { fontFamily: FONT, fontSize: 8, foregroundColor: rgb(C.MUTED) },
     }, 'wrapStrategy,textFormat'),
-    fmt(grid(gid, 1, MASTER_EXT.CREATED, 1000, MASTER_LAST_COLUMN), {
+    fmt(grid(gid, 1, MASTER_EXT.CREATED, 1000, MASTER_HIDDEN_DATES_END), {
       numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' },
     }, 'numberFormat'),
+    // S is a duration in hours, not an instant — formatting it as a date would
+    // render "0.05 h" as a day in December 1899.
+    fmt(grid(gid, 1, MASTER_EXT.ACCEPT_HOURS, 1000, MASTER_LAST_COLUMN), {
+      numberFormat: { type: 'NUMBER', pattern: '0.00' },
+      horizontalAlignment: 'CENTER',
+    }, 'numberFormat,horizontalAlignment'),
     validationFromRange(
       grid(gid, 1, MASTER_EXT.URGENCY, 1000, MASTER_EXT.URGENCY + 1),
       `=${CONF}!$L$2:$L$5`,
     ),
     // The three date columns are machine plumbing — useful to formulas, noise to
-    // a reader, same reasoning as the hidden รหัสงาน column.
+    // a reader, same reasoning as the hidden รหัสงาน column. S stops short of
+    // this range on purpose: it is meant to be read.
     {
       updateDimensionProperties: {
-        range: { sheetId: gid, dimension: 'COLUMNS', startIndex: MASTER_EXT.CREATED, endIndex: MASTER_LAST_COLUMN },
+        range: { sheetId: gid, dimension: 'COLUMNS', startIndex: MASTER_EXT.CREATED, endIndex: MASTER_HIDDEN_DATES_END },
         properties: { hiddenByUser: true },
         fields: 'hiddenByUser',
       },
@@ -2262,11 +2720,12 @@ const BASE_SIZE: Record<string, { rows: number; cols: number }> = {
   [TAB.DASH]: { rows: 40, cols: 14 },
   [TAB.PRIO]: { rows: 320, cols: 9 },
   [TAB.TRACK]: { rows: 320, cols: 9 },
-  [TAB.TEAM]: { rows: 45, cols: 10 },
+  [TAB.TEAM]: { rows: 45, cols: 11 },
   [TAB.CAL]: { rows: 10, cols: 7 },
   [TAB.ANA]: { rows: 60, cols: 13 },
   [TAB.WEEK]: { rows: 46, cols: 9 },
   [TAB.DONE]: { rows: 212, cols: 13 },
+  [TAB.PERF]: { rows: 46, cols: 13 },
   [TAB.HELP]: { rows: 30, cols: 4 },
   [TAB.CALC]: { rows: 2100, cols: CALC_HEADERS.length },
   [TAB.CONF]: { rows: 60, cols: 13 },
@@ -2307,6 +2766,7 @@ export function composeWorkspacePlans(
     [TAB.ANA, buildAnalytics(gid(TAB.ANA))],
     [TAB.WEEK, buildSummary(gid(TAB.WEEK))],
     [TAB.DONE, buildDone(gid(TAB.DONE))],
+    [TAB.PERF, buildPerformance(gid(TAB.PERF))],
     [TAB.HELP, buildHelp(gid(TAB.HELP))],
   ];
 
@@ -2358,6 +2818,7 @@ export function composeChartRequests(
       .map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
     ...analyticsCharts(gid(TAB.ANA)).map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
     ...doneCharts(gid(TAB.DONE)).map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
+    ...performanceChart(gid(TAB.PERF)).map((r) => shiftChart(r, NAV_ROWS, shiftedGids)),
   ];
 }
 

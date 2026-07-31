@@ -8,7 +8,7 @@ import {
 } from './task.service';
 import type { TaskUrgency } from '@nookeb/shared';
 import type { SheetTaskRow } from './google-sheets.service';
-import { progressBar, URGENCIES } from './sheets-workspace.service';
+import { progressForStatus, URGENCIES } from './sheets-workspace.service';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -66,6 +66,13 @@ function newest(stamps: (string | null)[]): string | null {
   return real.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
 }
 
+/** Oldest of a set of nullable ISO stamps, or null when none exist. */
+function earliest(stamps: (string | null)[]): string | null {
+  const real = stamps.filter((s): s is string => s !== null);
+  if (real.length === 0) return null;
+  return real.reduce((a, b) => (new Date(a).getTime() <= new Date(b).getTime() ? a : b));
+}
+
 function itemStamps(item: TaskItemWithAssignees): (string | null)[] {
   return [
     item.submitted_at,
@@ -107,22 +114,77 @@ export function resolveItemDoneAt(task: TaskWithDetails, item: TaskItemWithAssig
   return newest(item.assignees.map((a) => a.done_at)) ?? task.created_at;
 }
 
-/** Items whose every assignee is done, over items total → the progress column. */
-export function resolveProgress(task: TaskWithDetails): string {
-  const total = task.items.length;
-  if (total === 0) return '';
-  const done = task.items.filter(
-    (i) => i.assignees.length > 0 && i.assignees.every((a) => a.done_at !== null),
-  ).length;
-  return progressBar(done, total);
+/**
+ * When the row was ACKNOWLEDGED — the EARLIEST `accepted_at` among its
+ * assignees, or null while nobody has tapped รับทราบ.
+ *
+ * Earliest rather than latest, deliberately: acceptance is what moves the row
+ * off รอดำเนินการ (promoteToInProgress fires on the first tap), so the first
+ * stamp is the instant the sheet's own สถานะ column changed. Using the latest
+ * would report a number the row's visible history contradicts. The two only
+ * differ when an item has several assignees and more than one has accepted —
+ * rare, but it has to be defined rather than incidental.
+ */
+export function resolveAcceptedAt(task: TaskWithDetails): string | null {
+  return earliest(task.items.flatMap((i) => i.assignees.map((a) => a.accepted_at)));
 }
 
-/** An item row's progress: assignees finished over assignees total. */
+/** Per-item counterpart of resolveAcceptedAt, for a multi task's rows. */
+export function resolveItemAcceptedAt(item: TaskItemWithAssignees): string | null {
+  return earliest(item.assignees.map((a) => a.accepted_at));
+}
+
+/**
+ * Column S — hours from assignment to the first รับทราบ.
+ *
+ * BASELINE is the task's `created_at`, which is also what column P (สร้างเมื่อ)
+ * carries: there is no per-assignee "assigned at" stamp anywhere in the schema
+ * (task_assignees has accepted_at/done_at and nothing else), and items are
+ * inserted with their task, so creation IS the moment the work was handed over.
+ * A later `PUT …/items/:itemId/assignees` swap is therefore measured from the
+ * original creation — flagged rather than hidden, because inventing a stamp we
+ * do not store would be worse than a documented approximation.
+ *
+ * RETURNS '' — not 0 — when nobody has acknowledged yet. 0 would read as
+ * "acknowledged instantly", which is the opposite of the truth, and it would
+ * drag every average on the performance tab toward zero. '' writes an empty
+ * cell that AVERAGE and ISNUMBER both skip.
+ *
+ * Two decimals, because real acknowledgements land in seconds as often as in
+ * hours (production rows range from 20 s to 3.4 h) and rounding to 1 dp would
+ * turn a genuine sub-2-minute reply into a bare 0.
+ */
+export function acceptHours(
+  assignedAt: string | null | undefined,
+  acceptedAt: string | null | undefined,
+): number | '' {
+  if (!assignedAt || !acceptedAt) return '';
+  const from = dayjs(assignedAt);
+  const to = dayjs(acceptedAt);
+  if (!from.isValid() || !to.isValid()) return '';
+  const hours = (to.valueOf() - from.valueOf()) / 3_600_000;
+  // Clamped at 0: a negative gap can only be clock skew, and a negative
+  // "time to acknowledge" is not a fact about anyone's responsiveness.
+  return Math.max(0, Math.round(hours * 100) / 100);
+}
+
+/**
+ * The row's progress bar — its position on the สายพานสถานะ, from STAGE_PROGRESS.
+ *
+ * This used to count finished assignees over total assignees. Almost every row
+ * has exactly one assignee, so that only ever produced 0% or 100%: a task that
+ * had been accepted, worked and submitted for review still read 0%, identical
+ * to one nobody had touched. Progress is now a function of status alone, which
+ * is also what calc column W derives independently — same table, same string,
+ * so the master tab and every view agree.
+ */
+export function resolveProgress(task: TaskWithDetails): string {
+  return progressForStatus(task.status);
+}
+
+/** An item row's progress — the ITEM's own stage, not the parent task's. */
 export function resolveItemProgress(item: TaskItemWithAssignees): string {
-  const total = item.assignees.length;
-  if (total === 0) return '';
-  const done = item.assignees.filter((a) => a.done_at !== null).length;
-  return progressBar(done, total);
+  return progressForStatus(item.status);
 }
 
 /** Attached links and file names, one per line — plain text, never presigned
@@ -161,6 +223,7 @@ function taskLevelRow(task: TaskWithDetails, createdBy: string, deleted: boolean
     createdAt: task.created_at,
     doneAt: resolveDoneAt(task),
     deadlineAt: deadline,
+    acceptHours: acceptHours(task.created_at, resolveAcceptedAt(task)),
   };
 }
 
@@ -192,6 +255,7 @@ function itemLevelRow(
     createdAt: task.created_at,
     doneAt: resolveItemDoneAt(task, item),
     deadlineAt: deadline,
+    acceptHours: acceptHours(task.created_at, resolveItemAcceptedAt(item)),
   };
 }
 

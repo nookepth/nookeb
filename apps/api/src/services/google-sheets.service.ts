@@ -77,7 +77,12 @@ const TYPE_LABEL: Record<TaskType, string> = {
   recurring: 'งานประจำ',
 };
 
-const STATUS_LABEL: Record<TaskItemStatus, string> = {
+/**
+ * Exported so the workspace's STAGE_PROGRESS table can be asserted against it.
+ * The calc sheet matches these exact strings; if the two drift, progress and
+ * the pipeline dots silently fall back to blank instead of failing loudly.
+ */
+export const STATUS_LABEL: Record<TaskItemStatus, string> = {
   pending: 'รอดำเนินการ',
   in_progress: 'กำลังทำ',
   done: 'เสร็จแล้ว',
@@ -137,7 +142,7 @@ export interface SheetTaskRow {
   /** soft-deleted/cancelled tasks are struck through, never removed (audit trail) */
   deleted: boolean;
 
-  // ---- workspace extension columns (K–R), see sheets-workspace.service.ts ----
+  // ---- workspace extension columns (K–S), see sheets-workspace.service.ts ----
   /** "▓▓▓░░ 60%" — items finished out of items total. */
   progress: string;
   /** Attached links and file names, newline-separated. */
@@ -147,6 +152,13 @@ export interface SheetTaskRow {
   createdAt: string | null;
   doneAt: string | null;
   deadlineAt: string | null;
+  /**
+   * Column S — hours from assignment to the first รับทราบ, or '' when the row
+   * has not been acknowledged yet (see acceptHours in sheets-row.ts: '' rather
+   * than 0, because 0 would claim an instant acknowledgement that never
+   * happened and would pull every per-person average down with it).
+   */
+  acceptHours: number | '';
 }
 
 export interface GoogleIntegrationRow {
@@ -550,11 +562,14 @@ function rowFormatRequest(gid: number, rowIndex: number, row: SheetTaskRow): she
 }
 
 /**
- * The K–R half of an existing row, read BEFORE the sync overwrites A–J.
+ * The K–O half of an existing row, read BEFORE the sync overwrites A–J.
  *
  * Two of these columns belong to the user (ความเร่งด่วน, หมายเหตุ) and must
  * survive every sync; the previous สถานะ is what tells us whether to append a
  * line to the history column. Reading them costs one values.get.
+ *
+ * Nothing past O needs reading: P–S are derived outright from the task on every
+ * write, so there is no prior state of theirs to preserve.
  */
 async function readRowExtras(
   sheets: sheets_v4.Sheets,
@@ -579,8 +594,24 @@ async function readRowExtras(
   }
 }
 
-/** The extension-column writes for one row: progress, links, history, dates. */
-function extensionUpdates(
+/**
+ * The extension-column writes for one row: progress, links, history, dates and
+ * time-to-acknowledge.
+ *
+ * OWNED RANGES — the contract the whole workspace rests on, so read this before
+ * adding a column anywhere past J:
+ *   A–J  the sync's, values AND background repainted on every write
+ *   K    ความเร่งด่วน — the USER's, seeded here only while it is still blank
+ *   L,M  ความคืบหน้า / ลิงก์ — this function's, rewritten every sync
+ *   N    หมายเหตุ — the USER's, never written by anything
+ *   O    ประวัติสถานะ — this function's, append-only
+ *   P,Q,R  hidden real date serials — this function's
+ *   S    ⏱ เวลาตอบรับ (ชม.) — this function's, blank until the first รับทราบ
+ * Anything a future change adds must start at T, and must be declared in
+ * MASTER_EXT (sheets-workspace.service.ts) so the header, width, number format
+ * and grid width all move together.
+ */
+export function extensionUpdates(
   rowIndex: number,
   row: SheetTaskRow,
   prior: { previousStatus: string; urgency: string; log: string },
@@ -603,9 +634,16 @@ function extensionUpdates(
     updates.push({ range: `${TAB_TITLE}!O${line}`, values: [[log]] });
   }
 
+  // P–S in one range so a row can never carry a deadline serial from this sync
+  // next to an acknowledgement time from the last one.
   updates.push({
-    range: `${TAB_TITLE}!P${line}:R${line}`,
-    values: [[toSheetSerial(row.createdAt), toSheetSerial(row.doneAt), toSheetSerial(row.deadlineAt)]],
+    range: `${TAB_TITLE}!P${line}:S${line}`,
+    values: [[
+      toSheetSerial(row.createdAt),
+      toSheetSerial(row.doneAt),
+      toSheetSerial(row.deadlineAt),
+      row.acceptHours,
+    ]],
   });
 
   return updates;

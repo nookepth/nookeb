@@ -467,19 +467,62 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
   spreadsheet developer metadata (`nookeb_historical_sync`), NOT a DB column: a user who
   deletes their sheet must get a fresh backfill, which a DB flag would deny.
   The spreadsheet is a full **workspace**, not a bare table (`sheets-workspace.service.ts`,
-  `LAYOUT_VERSION` = 4): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
+  `LAYOUT_VERSION` = 6): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
   วิเคราะห์ (month-anchored 1-7/8-14/…/29-end ranges) / สรุปงาน (date-or-month picker,
   replaced สรุปสัปดาห์) / งานเสร็จ (completed-task report: days-to-complete from the
-  real P/Q stamps, distribution + per-person charts) / วิธีสั่งงาน plus hidden
-  `_ข้อมูลคำนวณ` + `_ตัวเลือก`. The `📋 สั่งงาน` form tab was REMOVED in v4 —
+  real P/Q stamps, distribution + per-person charts) / **รายงานผลการทำงานรายบุคคล**
+  (v6, see below) / วิธีสั่งงาน plus hidden `_ข้อมูลคำนวณ` + `_ตัวเลือก`.
+  The `📋 สั่งงาน` form tab was REMOVED in v4 —
   `LEGACY_TABS` lists it (and the old สรุปสัปดาห์ title) so a rebuild deletes them
-  from upgraded sheets without recreating them.
+  from upgraded sheets without recreating them. The nav strip is NINE links since v6,
+  so every visible tab is at least 9 columns wide (`sizeOf` widens automatically).
   Every view is a FORMULA over `_ข้อมูลคำนวณ` — no Apps Script, no extra OAuth scope,
   nothing for the user to install. Column rules: **A–J belong to the sync** (values AND
-  background repainted every write), K–R are the workspace's — K ความเร่งด่วน and
-  N หมายเหตุ are the USER's (filled only when blank, never overwritten), L/M/O and the
-  hidden real-date columns P/Q/R are worker-written. CF over A–J may set font colour
-  only. The layout version is spreadsheet developer metadata; the worker checks it at
+  background repainted every write), K–S are the workspace's — K ความเร่งด่วน and
+  N หมายเหตุ are the USER's (filled only when blank, never overwritten), L/M/O, the
+  hidden real-date columns P/Q/R and the visible S ⏱ เวลาตอบรับ (ชม.) are
+  worker-written by the single `extensionUpdates` writer (which carries the owned-range
+  table — anything new starts at T and must be declared in `MASTER_EXT`).
+  CF over A–J may set font colour
+  only. **ความคืบหน้า is the PIPELINE STAGE, not a done flag** (`STAGE_PROGRESS`,
+  since v5): ยกเลิก 0 / รอดำเนินการ 25 / กำลังทำ 50 / ตีกลับ 50 / รอตรวจ 75 /
+  เสร็จแล้ว 100 %, pinned to the สายพานสถานะ dots in calc column Q and tested
+  against them. It is computed TWICE from that one table — `progressForStatus`
+  writes master column L, and calc column W derives the same string from column H
+  so existing rows are right without a re-sync. ปฏิทิน is the one view that shows
+  เสร็จแล้ว (with a ✓), so it cannot use calc column N and spells out its own
+  `<>"ยกเลิก"` / `<>"ลบแล้ว"` exclusion instead.
+  **Performance layer (v6).** Master column S carries hours from assignment to the
+  first รับทราบ (`acceptHours` in `sheets-row.ts`, earliest `accepted_at` across the
+  row's assignees, baseline = `tasks.created_at` because no per-assignee "assigned at"
+  stamp exists). It is BLANK, never 0, when nobody has acknowledged — 0 would claim an
+  instant reply and drag every average down. The historical backfill needs no extra
+  code: it shares `toSheetRows` + `extensionUpdates`.
+  `_ข้อมูลคำนวณ` gained X–AD (`CALC_PERF`), all plain numbers because the only
+  per-person grouping available is `SUMPRODUCT(ISNUMBER(SEARCH(name, ผู้รับผิดชอบ)) * …)`
+  — the assignee cell is comma-joined names, so COUNTIFS/AVERAGEIFS cannot reach it, and
+  SUMPRODUCT reads non-numeric entries as 0 so an ARRAYFORMULA's trailing blanks are
+  harmless. Each measure ships with its OWN denominator: X÷Y on time (a late row is in
+  Y but not X; a task with no deadline is in neither), Z÷AA lateness in days
+  (**averaged over late rows only** — dividing by the completed count answers a
+  different question), AC÷AD acknowledgement hours (gated on `ISNUMBER`, not `>0`,
+  because a genuine 20-second reply rounds to 0.01). AB buckets by INTAKE month
+  (column P), not deadline. Every ratio degrades to blank, so "no evidence" never
+  renders as 0. รายงานทีม now shows **% เสร็จทั้งหมด** and **% เสร็จตรงกำหนด** side by
+  side — the old ambiguous "% สำเร็จ" only ever meant the former.
+  The 📊 รายงานผลการทำงานรายบุคคล tab is one row per person (roster reused from
+  `_ตัวเลือก`), sorted by งานทั้งหมด desc via one `ARRAY_CONSTRAIN(SORT(FILTER({…})))`
+  spill, with a J/K block that re-sorts the table's own output by on-time % to feed the
+  single BAR chart. Sub-70 % gets a pale amber coaching tint guarded by `<>""`.
+  Two caveats are printed IN THE TAB, not just in a report: rejection counts anywhere
+  in the workspace are current-state only (`task_items` keeps one `rejected_at`,
+  overwritten on the next submit — a task bounced three times is indistinguishable from
+  one approved first try), and a blank cell means "not measurable", not zero. The tab
+  deliberately carries **no urgency metric** — `tasks.urgency` is only set by the
+  LIFF/dashboard create flows, so chat-created tasks have none and any urgency split
+  would rank people by which door their work arrived through. Both gaps need a schema
+  decision that has NOT been taken; do not "fix" either as a side effect.
+  The layout version is spreadsheet developer metadata; the worker checks it at
   most once per 6 h per sheet and rebuilds the generated tabs when it differs, which is
   how existing users get a new layout without doing anything.
   **Two invariants the whole workspace rests on** (both regression-tested in
@@ -496,12 +539,21 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
   A third invariant since v4: charts whose SOURCE ranges live on a nav-shifted tab
   must go through `composeChartRequests`/`shiftChart`, which shifts sources along
   with the anchor (the pre-v4 analytics charts read one blank row and dropped their
-  newest data row). `google-sheets-workspace/nookeb-addon.gs` is an OPTIONAL
-  paste-once script adding urgency buttons and a 07:00 overdue check; its in-sheet
-  "ส่งงาน" submit button targeted the removed สั่งงาน tab and is defunct. Apps
-  Script CANNOT be auto-installed (needs the `script.projects` scope plus a
-  per-user API toggle), so it is never required. The older 10-file package in that
-  directory is superseded and must not be installed alongside.
+  newest data row). A fourth since v5: a `viewFormula` cell SPILLS over its
+  `ARRAY_CONSTRAIN(…, rows, cols)` footprint, and Sheets answers a blocked spill
+  with `#REF!` for the whole block — which the formula's own `IFERROR` does NOT
+  catch. The dashboard activity feed (10 rows from A21) sat exactly on the
+  '📊 กราฟสรุป' title at A30 and died for every user with 10+ rows; the charts
+  block moved to row 32 and a test now asserts no spill footprint overlaps any
+  other write on any tab.
+  **The Apps Script add-on is retired as of v5** — `google-sheets-workspace/` is
+  dead code kept only for reference and is no longer advertised anywhere in the
+  product. Two of its three features (the ส่งงาน submit button and the urgency
+  buttons) keyed off the 📋 สั่งงาน tab that v4 removed and `LEGACY_TABS` now
+  deletes, so `onEdit()` returns immediately and `submitForm()` throws; the third
+  (a 07:00 overdue scan into column S) only duplicates calc column M. Apps Script
+  CANNOT be auto-installed anyway (needs the `script.projects` scope plus a
+  per-user API toggle). Do not re-add an install prompt to วิธีสั่งงาน.
 - **ห้องทีม** — group-keyed room payload (`team-room.service.getTeamRoom`), reachable
   two ways: `GET /groups/:groupId/room` (capability) and `GET /spaces/:id/tasks`
   (dashboard side; 404 `NOT_A_GROUP_SPACE` for a personal space). Returns
