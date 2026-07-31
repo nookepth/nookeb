@@ -10,26 +10,28 @@ import {
   isGoogleSheetsConfigured,
   saveIntegration,
 } from '../services/google-sheets.service';
+import { claimOAuthState, storeOAuthState } from '../services/google-oauth-state';
 
 /**
  * Google Sheets integration (migration 046) — OAuth connect/disconnect.
  *
- * CSRF: the OAuth `state` is a single-use nonce held in Redis and bound to the
- * caller's user id. The callback trusts NOTHING from the query except that
- * nonce, because Google will happily deliver a `code` to this endpoint no
- * matter who started the flow — without the binding, an attacker could get a
- * victim's browser to complete a flow they started and graft THEIR Google
- * account onto the victim's nookeb account (or, worse in the other direction,
- * their own account onto a victim's tasks).
+ * CSRF + identity: the OAuth `state` is a single-use nonce held in Redis and
+ * bound to the caller's user id (see services/google-oauth-state.ts). The
+ * callback trusts NOTHING from the query except that nonce, because Google will
+ * happily deliver a `code` to this endpoint no matter who started the flow —
+ * without the binding, an attacker could get a victim's browser to complete a
+ * flow they started and graft THEIR Google account onto the victim's nookeb
+ * account (or, worse in the other direction, their own account onto a victim's
+ * tasks).
  *
- * The callback is also the ONE route here that can't require a session header:
- * it is a top-level browser redirect from Google. It still runs authenticated —
- * the session cookie rides along same-site — and the nonce must match THAT
- * user, so both checks have to pass.
+ * The callback is the ONE route here that MUST NOT require a session: Google
+ * redirects the BROWSER straight to `${APP_URL}/integrations/google/callback`
+ * (the API host), but the HttpOnly session cookie is host-only on the WEB
+ * origin — the dashboard obtains it through the same-origin `/api-proxy` rewrite,
+ * so the browser never has that cookie on the API host and sends nothing on this
+ * top-level redirect. Requiring auth here 401s every callback. The state nonce
+ * IS the auth: it was minted while authenticated and carries the user id.
  */
-
-const STATE_TTL_SECONDS = 600; // 10 min — a consent screen doesn't take longer
-const stateKey = (nonce: string): string => `google:oauth:state:${nonce}`;
 
 const callbackQuerySchema = z.object({
   code: z.string().min(1).optional(),
@@ -45,8 +47,6 @@ function settingsRedirect(status: 'connected' | 'error', reason?: string): strin
 }
 
 const integrationsRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook('preHandler', async (request, reply) => app.authenticate(request, reply));
-
   // Feature gate: no OAuth client (or no VAULT_MASTER_KEY to encrypt the token
   // with) → the whole surface is unavailable, rather than half-working.
   app.addHook('onRequest', async (_request, reply) => {
@@ -58,9 +58,15 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
     }
   });
 
+  // Auth is applied PER-ROUTE below, never as a plugin-wide hook: the callback
+  // is a cookie-less top-level redirect from Google and must be reachable
+  // without a session (see the file header). The other three routes are called
+  // by the dashboard through the /api-proxy rewrite, where the session cookie is
+  // present, so they require it.
+
   // GET /integrations/google — connection status for the dashboard card.
   // NEVER returns encrypted_token (or anything derived from it).
-  app.get('/integrations/google', async (request) => {
+  app.get('/integrations/google', { preHandler: app.authenticate }, async (request) => {
     const row = await getIntegration(app.supabase, request.authUser!.userId);
     if (!row) return { connected: false };
     return {
@@ -78,9 +84,9 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   // fetch() through the /api-proxy rewrite, where a redirect would be followed
   // by fetch and land Google's HTML in a JSON parse. The client does the
   // top-level navigation itself.
-  app.get('/integrations/google/auth', async (request) => {
+  app.get('/integrations/google/auth', { preHandler: app.authenticate }, async (request) => {
     const nonce = randomUUID();
-    await app.redis.set(stateKey(nonce), request.authUser!.userId, 'EX', STATE_TTL_SECONDS);
+    await storeOAuthState(app.redis, nonce, request.authUser!.userId);
     return { url: getAuthUrl(nonce) };
   });
 
@@ -98,13 +104,13 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
       return reply.redirect(settingsRedirect('error', error === 'access_denied' ? 'denied' : 'no_code'));
     }
 
-    // Single-use nonce: GETDEL so a replayed callback can't re-bind.
-    const boundUserId = await app.redis.getdel(stateKey(state));
-    if (!boundUserId || boundUserId !== request.authUser!.userId) {
-      app.log.warn(
-        { userId: request.authUser!.userId },
-        'google oauth callback with unknown/mismatched state — possible CSRF',
-      );
+    // The nonce is the ONLY trusted identity here (no session cookie survives the
+    // cross-origin redirect — see the file header). GETDEL claims it single-use,
+    // so a replayed callback finds nothing. An unknown/expired/already-used nonce
+    // → reject; nobody can complete a flow they didn't start.
+    const boundUserId = await claimOAuthState(app.redis, state);
+    if (!boundUserId) {
+      app.log.warn('google oauth callback with unknown/expired/used state — rejected');
       return reply.redirect(settingsRedirect('error', 'state_mismatch'));
     }
 
@@ -126,7 +132,7 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   // DELETE /integrations/google — disconnect. Removes the credential row only:
   // the user's spreadsheet is theirs and stays exactly as it is, and their
   // tasks are untouched.
-  app.delete('/integrations/google', async (request) => {
+  app.delete('/integrations/google', { preHandler: app.authenticate }, async (request) => {
     await deleteIntegration(app.supabase, request.authUser!.userId);
     return { success: true };
   });
