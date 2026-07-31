@@ -10,9 +10,11 @@ import { effectiveDeadline, getTaskWithDetails, type TaskWithDetails } from '../
 import {
   authorizedClient,
   createSheet,
+  describeGoogleError,
   getIntegration,
   isAuthError,
   isGoogleSheetsConfigured,
+  isServiceConfigError,
   recordSyncResult,
   sheetIsReachable,
   syncTaskToSheet,
@@ -151,12 +153,30 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
     );
     await recordSyncResult(supabase, creatorRow.id, { error: null });
   } catch (err) {
+    // Log the REAL Google error (status + reason + message, never a token — see
+    // describeGoogleError) so a disabled API vs a revoked grant vs a mismatched
+    // OAuth client are distinguishable in the logs instead of all reading as a
+    // generic failure. This is what makes "why is Sheets broken?" answerable.
+    const info = describeGoogleError(err);
+    console.warn(
+      `[sheets] sync failed for user ${creatorRow.id}: ` +
+        `status=${info.status ?? '-'} reason=${info.reason ?? '-'} msg=${info.message}`,
+    );
+
+    if (isServiceConfigError(err)) {
+      // The Sheets/Drive API is disabled for the project (or unreachable). The
+      // USER can't fix this by reconnecting — an operator must enable the API —
+      // so say so honestly and let BullMQ retry, so it self-heals once enabled.
+      await recordSyncResult(supabase, creatorRow.id, {
+        error: 'ระบบ Google Sheets ยังไม่พร้อมชั่วคราว หนูจะลองใหม่ให้เองน้า',
+      }).catch(() => {});
+      throw err; // retryable — recovers automatically once the API is enabled
+    }
     if (isAuthError(err)) {
-      console.warn(`[sheets] auth failed for user ${creatorRow.id} — user must reconnect`);
       await recordSyncResult(supabase, creatorRow.id, {
         error: 'การเชื่อมต่อ Google หมดอายุ กดเชื่อมต่อใหม่อีกครั้งน้า',
       }).catch(() => {});
-      return; // NOT retryable
+      return; // NOT retryable — a revoked/expired grant needs a fresh consent
     }
     await recordSyncResult(supabase, creatorRow.id, {
       error: 'sync ล่าสุดไม่สำเร็จ หนูจะลองใหม่ให้เองน้า',

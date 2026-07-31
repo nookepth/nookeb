@@ -284,12 +284,68 @@ export async function authorizedClient(
   return client;
 }
 
+/**
+ * Safe, log-ready summary of a Google/googleapis error: HTTP status, the API/token
+ * `reason`, and a human message — and NOTHING else. It reads only the error
+ * *response* (status + `response.data.error`), never the request, so it can never
+ * surface an access/refresh token. Both shapes are covered:
+ *   - API errors:   { error: { code, status, message, errors: [{ reason }] } }
+ *   - token errors: { error: 'invalid_grant', error_description }
+ * Neither carries a secret, so message/error_description are safe to log.
+ *
+ * This exists because the worker used to swallow the real error behind a generic
+ * string, which made a disabled-API 403 and a genuinely-revoked token look
+ * identical in the logs — the exact ambiguity that leaves "why is it broken?"
+ * unanswerable.
+ */
+export function describeGoogleError(err: unknown): {
+  status?: number;
+  reason?: string;
+  message: string;
+} {
+  const e = err as {
+    response?: { status?: number; data?: unknown };
+    message?: string;
+    code?: string | number;
+  };
+  const status = e?.response?.status ?? (typeof e?.code === 'number' ? e.code : undefined);
+  let reason: string | undefined;
+  let message = String(e?.message ?? 'unknown error');
+
+  const data = e?.response?.data as
+    | { error?: unknown; error_description?: string }
+    | undefined;
+  const apiErr = data?.error;
+  if (apiErr && typeof apiErr === 'object') {
+    const o = apiErr as { status?: string; message?: string; errors?: Array<{ reason?: string }> };
+    reason = o.status ?? o.errors?.[0]?.reason;
+    if (o.message) message = o.message;
+  } else if (typeof apiErr === 'string') {
+    reason = apiErr; // token endpoint: e.g. 'invalid_grant'
+    if (data?.error_description) message = data.error_description;
+  }
+  return { status, reason, message };
+}
+
+/**
+ * Config-level 403 — the Sheets/Drive API is disabled for the Cloud project, or
+ * the project can't be reached. Reconnecting the user's Google account CANNOT fix
+ * this (only an admin enabling the API can), so it must NOT be treated as an auth
+ * error: doing so dead-ends the user in a reconnect loop and mislabels the cause.
+ */
+export function isServiceConfigError(err: unknown): boolean {
+  const { reason } = describeGoogleError(err);
+  return reason === 'accessNotConfigured' || reason === 'SERVICE_DISABLED';
+}
+
 /** True for the errors that mean "the user must reconnect", not "retry later". */
 export function isAuthError(err: unknown): boolean {
-  const e = err as { response?: { status?: number }; message?: string; code?: string | number };
-  const status = e?.response?.status ?? (typeof e?.code === 'number' ? e.code : undefined);
+  // A disabled-API / project-config 403 is retryable operator work, not a user
+  // reconnect — keep it out of the auth bucket (see isServiceConfigError).
+  if (isServiceConfigError(err)) return false;
+  const { status, reason, message } = describeGoogleError(err);
   if (status === 401 || status === 403) return true;
-  return /invalid_grant|invalid_client|unauthorized/i.test(String(e?.message ?? ''));
+  return /invalid_grant|invalid_client|unauthorized/i.test(`${reason ?? ''} ${message}`);
 }
 
 // ---- sheet creation + formatting ----
