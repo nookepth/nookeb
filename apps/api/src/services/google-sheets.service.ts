@@ -3,6 +3,12 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import type { TaskItemStatus, TaskType } from '@nookeb/shared';
 import { config } from '../config';
 import { decryptSecret, deriveSecretKey, encryptSecret, isVaultConfigured } from './vault-crypto';
+import {
+  DEFAULT_URGENCY,
+  appendStatusLog,
+  ensureWorkspace,
+  toSheetSerial,
+} from './sheets-workspace.service';
 
 /**
  * Google Sheets sync (migration 046) — each user connects THEIR OWN Google
@@ -115,6 +121,17 @@ export interface SheetTaskRow {
   updatedAt: string;
   /** soft-deleted/cancelled tasks are struck through, never removed (audit trail) */
   deleted: boolean;
+
+  // ---- workspace extension columns (K–R), see sheets-workspace.service.ts ----
+  /** "▓▓▓░░ 60%" — items finished out of items total. */
+  progress: string;
+  /** Attached links and file names, newline-separated. */
+  links: string;
+  /** ISO instants. These become REAL dates in hidden columns P/Q/R, which is
+   * what lets every view do date maths instead of parsing the display text. */
+  createdAt: string | null;
+  doneAt: string | null;
+  deadlineAt: string | null;
 }
 
 export interface GoogleIntegrationRow {
@@ -428,6 +445,15 @@ export async function createSheet(
     },
   });
 
+  // Build the dashboard/views around the raw tab. Deliberately NOT fatal: if
+  // this fails the user still gets a working synced table, and the worker's
+  // version check rebuilds the workspace on the next sync.
+  try {
+    await ensureWorkspace(auth, sheetId);
+  } catch (err) {
+    console.error('[sheets] workspace build failed on create', describeGoogleError(err).message);
+  }
+
   return {
     sheetId,
     url: created.data.spreadsheetUrl ?? `https://docs.google.com/spreadsheets/d/${sheetId}`,
@@ -512,6 +538,66 @@ function rowFormatRequest(gid: number, rowIndex: number, row: SheetTaskRow): she
 }
 
 /**
+ * The K–R half of an existing row, read BEFORE the sync overwrites A–J.
+ *
+ * Two of these columns belong to the user (ความเร่งด่วน, หมายเหตุ) and must
+ * survive every sync; the previous สถานะ is what tells us whether to append a
+ * line to the history column. Reading them costs one values.get.
+ */
+async function readRowExtras(
+  sheets: sheets_v4.Sheets,
+  spreadsheetId: string,
+  rowIndex: number,
+): Promise<{ previousStatus: string; urgency: string; log: string }> {
+  try {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: `${TAB_TITLE}!H${rowIndex + 1}:O${rowIndex + 1}`,
+    });
+    const cells = res.data.values?.[0] ?? [];
+    return {
+      previousStatus: String(cells[0] ?? ''), // H
+      urgency: String(cells[3] ?? ''), // K
+      log: String(cells[7] ?? ''), // O
+    };
+  } catch {
+    // A read failure must not block the sync — worst case the history line for
+    // this one transition is missed.
+    return { previousStatus: '', urgency: '', log: '' };
+  }
+}
+
+/** The extension-column writes for one row: progress, links, history, dates. */
+function extensionUpdates(
+  rowIndex: number,
+  row: SheetTaskRow,
+  prior: { previousStatus: string; urgency: string; log: string },
+): sheets_v4.Schema$ValueRange[] {
+  const line = rowIndex + 1;
+  const statusLabel = row.deleted ? 'ลบแล้ว' : (STATUS_LABEL[row.status] ?? row.status);
+  const updates: sheets_v4.Schema$ValueRange[] = [];
+
+  // K — only ever filled when empty. It is the user's column after that.
+  if (!prior.urgency) {
+    updates.push({ range: `${TAB_TITLE}!K${line}`, values: [[DEFAULT_URGENCY]] });
+  }
+
+  updates.push({ range: `${TAB_TITLE}!L${line}:M${line}`, values: [[row.progress, row.links]] });
+
+  const log = appendStatusLog(prior.log, prior.previousStatus || null, statusLabel, new Date());
+  if (log !== prior.log) {
+    updates.push({ range: `${TAB_TITLE}!O${line}`, values: [[log]] });
+  }
+
+  updates.push({
+    range: `${TAB_TITLE}!P${line}:R${line}`,
+    values: [[toSheetSerial(row.createdAt), toSheetSerial(row.doneAt), toSheetSerial(row.deadlineAt)]],
+  });
+
+  return updates;
+}
+
+/**
  * Write one task into the sheet: update its existing row, or append a new one.
  * Idempotent — running it twice for the same task leaves one row.
  */
@@ -527,8 +613,10 @@ export async function syncTaskToSheet(
   ]);
 
   let rowIndex: number;
+  let prior = { previousStatus: '', urgency: '', log: '' };
   if (existing !== null) {
     rowIndex = existing;
+    prior = await readRowExtras(sheets, spreadsheetId, rowIndex);
     await sheets.spreadsheets.values.update({
       spreadsheetId,
       range: `${TAB_TITLE}!A${rowIndex + 1}`,
@@ -560,6 +648,13 @@ export async function syncTaskToSheet(
   await sheets.spreadsheets.batchUpdate({
     spreadsheetId,
     requestBody: { requests: [rowFormatRequest(gid, rowIndex, row)] },
+  });
+
+  // K–R: the workspace columns. Written after A–J so a failure here can never
+  // lose the task row itself — the views would simply lag one sync behind.
+  await sheets.spreadsheets.values.batchUpdate({
+    spreadsheetId,
+    requestBody: { valueInputOption: 'RAW', data: extensionUpdates(rowIndex, row, prior) },
   });
 }
 

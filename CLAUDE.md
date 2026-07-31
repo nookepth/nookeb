@@ -165,7 +165,7 @@ supabase/migrations/    001–047 (see §5) · supabase/backfills/ (3 idempotent
 `docx-thai-components`, `pdf-merge`, `export`, `diary` + `diary-mode`,
 `vault` + `vault-crypto` + `vault-session`, `legacy-box`, `events`,
 `task.service`, `taskScheduler`, `task-recurrence`, `task-command`, `task-nl`,
-`task-confirm`, `google-sheets`, `sheetsQueue`, `ocr`,
+`task-confirm`, `google-sheets`, `sheets-workspace`, `sheetsQueue`, `ocr`,
 `group-settings` (**orphaned — see §15**).
 
 ---
@@ -440,6 +440,17 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
 - **Google Sheets mirror** — ONE ROW PER TASK, keyed by a hidden `รหัสงาน` column in
   the sheet itself (the user can re-sort rows, so a cached row index would be wrong).
   Always queued, never inline. See §12/§13.
+  The spreadsheet is a full **workspace**, not a bare table (`sheets-workspace.service.ts`,
+  `LAYOUT_VERSION`): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
+  วิเคราะห์ / สรุปสัปดาห์ / วิธีสั่งงาน plus hidden `_ข้อมูลคำนวณ` + `_ตัวเลือก`.
+  Every view is a FORMULA over `_ข้อมูลคำนวณ` — no Apps Script, no extra OAuth scope,
+  nothing for the user to install. Column rules: **A–J belong to the sync** (values AND
+  background repainted every write), K–R are the workspace's — K ความเร่งด่วน and
+  N หมายเหตุ are the USER's (filled only when blank, never overwritten), L/M/O and the
+  hidden real-date columns P/Q/R are worker-written. CF over A–J may set font colour
+  only. The layout version is spreadsheet developer metadata; the worker checks it at
+  most once per 6 h per sheet and rebuilds the generated tabs when it differs, which is
+  how existing users get a new layout without doing anything.
 - **ห้องทีม** — group-keyed room payload (`team-room.service.getTeamRoom`), reachable
   two ways: `GET /groups/:groupId/room` (capability) and `GET /spaces/:id/tasks`
   (dashboard side; 404 `NOT_A_GROUP_SPACE` for a personal space). Returns

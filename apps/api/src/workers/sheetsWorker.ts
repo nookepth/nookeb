@@ -20,6 +20,7 @@ import {
   syncTaskToSheet,
   type SheetTaskRow,
 } from '../services/google-sheets.service';
+import { ensureWorkspace, progressBar } from '../services/sheets-workspace.service';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -81,6 +82,40 @@ function resolveUpdatedAt(task: TaskWithDetails): string | null {
  * id, and one row per task is what keeps "find the row, update it" a single
  * cheap operation. The per-item detail stays in รายละเอียด.
  */
+/**
+ * When the task finished, or null while it is still open. `done` is a task-level
+ * status, so the moment it flipped is the newest per-assignee done_at — the same
+ * stamps resolveUpdatedAt walks. This is what the workspace's analytics measure
+ * "time to complete" against, so it has to be the real completion instant, not
+ * the sync time.
+ */
+function resolveDoneAt(task: TaskWithDetails): string | null {
+  if (task.status !== 'done') return null;
+  const stamps = task.items
+    .flatMap((i) => i.assignees.map((a) => a.done_at))
+    .filter((s): s is string => s !== null);
+  if (stamps.length === 0) return task.created_at;
+  return stamps.reduce((a, b) => (new Date(a).getTime() >= new Date(b).getTime() ? a : b));
+}
+
+/** Items whose every assignee is done, over items total → the progress column. */
+function resolveProgress(task: TaskWithDetails): string {
+  const total = task.items.length;
+  if (total === 0) return '';
+  const done = task.items.filter(
+    (i) => i.assignees.length > 0 && i.assignees.every((a) => a.done_at !== null),
+  ).length;
+  return progressBar(done, total);
+}
+
+/** Attached links and file names, one per line — plain text, never presigned
+ * URLs: those expire in an hour and the sheet outlives them. */
+function resolveLinks(task: TaskWithDetails): string {
+  const links = task.links.map((l) => l.url);
+  const files = task.files.map((f) => `📎 ${f.file.display_name || f.file.original_name}`);
+  return [...links, ...files].join('\n');
+}
+
 function toSheetRow(task: TaskWithDetails, createdBy: string, deleted: boolean): SheetTaskRow {
   const assignees = [
     ...new Set(
@@ -105,7 +140,40 @@ function toSheetRow(task: TaskWithDetails, createdBy: string, deleted: boolean):
     status: task.status,
     updatedAt: formatWhen(resolveUpdatedAt(task)),
     deleted,
+    progress: resolveProgress(task),
+    links: resolveLinks(task),
+    createdAt: task.created_at,
+    doneAt: resolveDoneAt(task),
+    deadlineAt: deadline,
   };
+}
+
+/**
+ * Last time each spreadsheet's layout was verified. In-process on purpose: this
+ * is a cache, not a lock — the worst case after a restart is one extra
+ * spreadsheets.get per sheet, and ensureWorkspace is itself idempotent.
+ */
+const layoutCheckedAt = new Map<string, number>();
+const LAYOUT_CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Keep the workspace layout current, without ever failing a sync over it. A
+ * task row reaching the sheet matters more than the dashboard around it being
+ * one version behind, so every error here is swallowed and retried later.
+ */
+async function ensureWorkspaceThrottled(
+  auth: Parameters<typeof ensureWorkspace>[0],
+  spreadsheetId: string,
+): Promise<void> {
+  const last = layoutCheckedAt.get(spreadsheetId) ?? 0;
+  if (Date.now() - last < LAYOUT_CHECK_TTL_MS) return;
+  try {
+    const rebuilt = await ensureWorkspace(auth, spreadsheetId);
+    layoutCheckedAt.set(spreadsheetId, Date.now());
+    if (rebuilt) console.log(`[sheets] workspace layout built for ${spreadsheetId}`);
+  } catch (err) {
+    console.warn(`[sheets] workspace layout skipped: ${describeGoogleError(err).message}`);
+  }
 }
 
 export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
@@ -144,6 +212,11 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
         sheetUrl: created.url,
       });
     }
+
+    // Upgrade path for sheets created before the current layout. ensureWorkspace
+    // no-ops once the version matches, and the in-process cache keeps even that
+    // check off the hot path — a sheet is verified at most once every 6 hours.
+    await ensureWorkspaceThrottled(auth, sheetId);
 
     const deleted = data.action === 'delete' || task.status === 'cancelled';
     await syncTaskToSheet(
