@@ -5,6 +5,7 @@ import { config } from '../config';
 import { decryptSecret, deriveSecretKey, encryptSecret, isVaultConfigured } from './vault-crypto';
 import {
   DEFAULT_URGENCY,
+  FONT,
   appendStatusLog,
   ensureWorkspace,
   toSheetSerial,
@@ -414,7 +415,7 @@ export async function createSheet(
                 textFormat: {
                   foregroundColor: WHITE,
                   bold: true,
-                  fontFamily: 'Arial',
+                  fontFamily: FONT,
                   fontSize: 11,
                 },
               },
@@ -522,7 +523,7 @@ function rowFormatRequest(gid: number, rowIndex: number, row: SheetTaskRow): she
         userEnteredFormat: {
           backgroundColor: deleted ? ROW_COLOR.deleted : ROW_COLOR[row.status],
           textFormat: {
-            fontFamily: 'Arial',
+            fontFamily: FONT,
             fontSize: 10,
             // Deleted rows are struck through and greyed, NEVER removed — the
             // sheet doubles as the user's audit trail (and mirrors rule 6's
@@ -630,7 +631,13 @@ export async function syncTaskToSheet(
       spreadsheetId,
       range: `${TAB_TITLE}!A1`,
       valueInputOption: 'RAW',
-      insertDataOption: 'INSERT_ROWS',
+      // NOT insertDataOption:'INSERT_ROWS'. Inserting a row makes Sheets rewrite
+      // every formula reference at or below it, which walked the workspace's
+      // _ข้อมูลคำนวณ window down one row per task until it read from below the
+      // data and every view showed zero. The default (OVERWRITE) writes into the
+      // blank row after the table instead, leaving all references untouched.
+      // pinToMaster() in sheets-workspace.service.ts is the second line of
+      // defence, for rows the USER inserts by hand.
       requestBody: { values: [rowValues(row, 0)] },
     });
     // updatedRange looks like "'งานของฉัน'!A7:J7" — take the first row number.

@@ -441,8 +441,8 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
   the sheet itself (the user can re-sort rows, so a cached row index would be wrong).
   Always queued, never inline. See §12/§13.
   The spreadsheet is a full **workspace**, not a bare table (`sheets-workspace.service.ts`,
-  `LAYOUT_VERSION`): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
-  วิเคราะห์ / สรุปสัปดาห์ / วิธีสั่งงาน plus hidden `_ข้อมูลคำนวณ` + `_ตัวเลือก`.
+  `LAYOUT_VERSION` = 2): tabs ภาพรวม / ความสำคัญ / ติดตามสถานะ / รายงานทีม / ปฏิทิน /
+  วิเคราะห์ / สรุปสัปดาห์ / **สั่งงาน** / วิธีสั่งงาน plus hidden `_ข้อมูลคำนวณ` + `_ตัวเลือก`.
   Every view is a FORMULA over `_ข้อมูลคำนวณ` — no Apps Script, no extra OAuth scope,
   nothing for the user to install. Column rules: **A–J belong to the sync** (values AND
   background repainted every write), K–R are the workspace's — K ความเร่งด่วน and
@@ -451,6 +451,23 @@ repeatable/scheduler — a standing delayed job pins the idle worker's blocking 
   only. The layout version is spreadsheet developer metadata; the worker checks it at
   most once per 6 h per sheet and rebuilds the generated tabs when it differs, which is
   how existing users get a new layout without doing anything.
+  **Two invariants the whole workspace rests on** (both regression-tested in
+  `sheets-workspace.service.test.ts`):
+  1. `_ข้อมูลคำนวณ` reaches the master ONLY through `INDIRECT("…")` (`pinToMaster`).
+     Sheets rewrites direct references when a row is inserted, and the sync appends
+     task rows — a literal `'งานของฉัน'!J2:J` drifted one row per task until every
+     view read from below the data and reported zero. The sync therefore also must
+     NOT use `insertDataOption:'INSERT_ROWS'`.
+  2. Row 1 of every VISIBLE tab is the nav strip. Builders author in nav-free
+     coordinates and `composeWorkspacePlans` applies the offset via `shiftPlan`;
+     a formula pointing at its own tab must go through `self()`. The hidden tabs and
+     the master are never shifted — the master's row 1 is the sync's header row.
+  A `📋 สั่งงาน` form tab assembles a copy-paste `หนูเก็บเตือนงาน …` command by
+  formula, so it works with nothing installed. `google-sheets-workspace/nookeb-addon.gs`
+  is an OPTIONAL paste-once script adding a submit button, urgency buttons and a 07:00
+  overdue check; Apps Script CANNOT be auto-installed (needs the `script.projects`
+  scope plus a per-user API toggle), so it is never required. The older 10-file
+  package in that directory is superseded and must not be installed alongside.
 - **ห้องทีม** — group-keyed room payload (`team-room.service.getTeamRoom`), reachable
   two ways: `GET /groups/:groupId/room` (capability) and `GET /spaces/:id/tasks`
   (dashboard side; 404 `NOT_A_GROUP_SPACE` for a personal space). Returns

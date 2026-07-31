@@ -41,7 +41,12 @@ dayjs.extend(timezone);
  */
 type OAuth2Client = InstanceType<typeof google.auth.OAuth2>;
 
-export const LAYOUT_VERSION = 1;
+/**
+ * v2 — every _ข้อมูลคำนวณ reference to the master is now INDIRECT (see
+ * pinToMaster). v1 sheets have references that drifted one row per task and
+ * read from below their own data, so they MUST rebuild to recover.
+ */
+export const LAYOUT_VERSION = 2;
 const METADATA_KEY = 'nookeb_layout_version';
 
 const BANGKOK_TZ = 'Asia/Bangkok';
@@ -59,6 +64,7 @@ const TAB = {
   CAL: '🗓️ ปฏิทิน',
   ANA: '📈 วิเคราะห์',
   WEEK: '📅 สรุปสัปดาห์',
+  FORM: '📋 สั่งงาน',
   HELP: '➕ วิธีสั่งงาน',
   CALC: '_ข้อมูลคำนวณ',
   CONF: '_ตัวเลือก',
@@ -67,7 +73,36 @@ const TAB = {
 /** Order shown in the tab strip: dashboard, the raw table, then the views. */
 const TAB_ORDER = [
   TAB.DASH, MASTER, TAB.PRIO, TAB.TRACK, TAB.TEAM,
-  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.HELP, TAB.CALC, TAB.CONF,
+  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.FORM, TAB.HELP, TAB.CALC, TAB.CONF,
+];
+
+/**
+ * Row 1 of every visible tab is an identical nav strip, so the workspace reads
+ * as one product rather than eleven loose sheets. Each entry is a HYPERLINK to
+ * a tab's gid, which is only known at build time — hence the gid lookup.
+ *
+ * Eight links, one per column A–H. Every visible tab is therefore at least 8
+ * columns wide (see TabPlan.cols); the calendar's 8th column is spare space
+ * beside its seven day columns.
+ */
+const NAV: { tab: string; label: string }[] = [
+  { tab: TAB.DASH, label: '📊 ภาพรวม' },
+  { tab: TAB.PRIO, label: '⚡ ความสำคัญ' },
+  { tab: TAB.TRACK, label: '🔄 ติดตาม' },
+  { tab: TAB.TEAM, label: '👥 ทีม' },
+  { tab: TAB.CAL, label: '🗓️ ปฏิทิน' },
+  { tab: TAB.ANA, label: '📈 วิเคราะห์' },
+  { tab: TAB.FORM, label: '📋 สั่งงาน' },
+  { tab: MASTER, label: '📝 งานของฉัน' },
+];
+
+/** How many rows the nav occupies at the top of every visible tab. */
+const NAV_ROWS = 1;
+
+/** Tabs that get the nav strip — the visible generated views, plus the master. */
+const NAV_TABS: string[] = [
+  TAB.DASH, TAB.PRIO, TAB.TRACK, TAB.TEAM,
+  TAB.CAL, TAB.ANA, TAB.WEEK, TAB.FORM, TAB.HELP,
 ];
 
 const HIDDEN_TABS: string[] = [TAB.CALC, TAB.CONF];
@@ -103,23 +138,54 @@ const EXT_HEADERS = [
 
 // ---- design system ----
 
+/**
+ * The palette. The first block is the brand system verbatim; the second block
+ * is the semantic names the builders actually call, mapped onto it. Keeping the
+ * aliases means a palette change happens in ONE place instead of at ~120 call
+ * sites, and no builder can quietly introduce an off-system colour.
+ */
 const C = {
-  PRIMARY: '#1B4F8A',
-  ACCENT: '#2196F3',
-  SUCCESS: '#4CAF50',
-  WARNING: '#FF9800',
-  DANGER: '#F44336',
-  NEUTRAL: '#F5F7FA',
+  NAVY: '#1A237E',
+  BLUE: '#1565C0',
+  LIGHT_BG: '#F8F9FF',
   WHITE: '#FFFFFF',
-  BORDER: '#D5DCE4',
-  TEXT: '#1F2937',
-  MUTED: '#6B7280',
-  URGENT_BG: '#FDECEA',
+  TEAL: '#00695C',
+  AMBER: '#E65100',
+  ORANGE: '#F57C00',
+  GREEN: '#2E7D32',
+  RED: '#C62828',
+  GRAY: '#546E7A',
+  DIVIDER: '#E3E8F0',
+
+  PRIMARY: '#1A237E', // NAVY  — page titles, nav bar, header bands
+  ACCENT: '#1565C0', // BLUE  — section headers, กำลังทำ
+  SUCCESS: '#2E7D32', // GREEN — เสร็จแล้ว
+  WARNING: '#F57C00', // ORANGE — ด่วน
+  DANGER: '#C62828', // RED   — เกินกำหนด
+  NEUTRAL: '#F8F9FF', // LIGHT_BG — section bands, zebra rows
+  BORDER: '#E3E8F0', // DIVIDER
+  TEXT: '#263238',
+  MUTED: '#546E7A', // GRAY
+  SLATE: '#546E7A', // GRAY
+  // รอตรวจ. The palette has no purple, so review state takes TEAL — it is the
+  // one accent not already spoken for by a status above.
+  PURPLE: '#00695C',
+
+  // Row tints. Deliberately pale: conditional formatting over A–J of the master
+  // may set FONT colour only, so these are for the generated views.
+  URGENT_BG: '#FFEBEE',
   SOON_BG: '#FFF3E0',
   OK_BG: '#FFFDE7',
-  RELAX_BG: '#E8F5E9',
-  PURPLE: '#7E57C2',
-  SLATE: '#607D8B',
+  RELAX_BG: '#F1F8E9',
+};
+
+/** Row heights, in pixels. */
+const ROW_H = {
+  NAV: 34,
+  HEADER: 40,
+  DATA: 32,
+  SECTION: 36,
+  TITLE: 42,
 };
 
 /** The Sheets API takes 0–1 floats, not hex. */
@@ -132,12 +198,15 @@ function rgb(hex: string): sheets_v4.Schema$Color {
 }
 
 /**
- * Sheets cannot install a custom font, and Sarabun is not one of the families
- * the API can set on an arbitrary file. Arial is what the existing header uses;
- * it renders Thai correctly everywhere. The .xlsx export is where the branded
- * Thai font lives (see export.service.ts).
+ * Sarabun — a Google Font with a real Thai face, so Sheets renders it without
+ * the user installing anything. `textFormat.fontFamily` takes any family name;
+ * an unknown one silently falls back to the default face rather than erroring,
+ * so this is safe even where the font is unavailable.
+ *
+ * Exported so the sync's own row formatting (google-sheets.service.ts) cannot
+ * drift to a different family — the master tab and the views must match.
  */
-const FONT = 'Arial';
+export const FONT = 'Sarabun';
 
 // ---- statuses, urgencies (must match what sheetsWorker writes) ----
 
@@ -232,7 +301,7 @@ function fmt(
   return { repeatCell: { range, cell: { userEnteredFormat: format }, fields: `userEnteredFormat(${fields})` } };
 }
 
-/** Header band: navy background, white bold text, centred, 35px tall. */
+/** Header band: navy background, white SemiBold text, centred, 40px tall. */
 function headerFormat(range: sheets_v4.Schema$GridRange): sheets_v4.Schema$Request[] {
   return [
     fmt(range, {
@@ -243,6 +312,13 @@ function headerFormat(range: sheets_v4.Schema$GridRange): sheets_v4.Schema$Reque
       textFormat: { foregroundColor: rgb(C.WHITE), bold: true, fontFamily: FONT, fontSize: 10 },
     }, 'backgroundColor,horizontalAlignment,verticalAlignment,wrapStrategy,textFormat'),
     {
+      updateBorders: {
+        range,
+        bottom: { style: 'SOLID_MEDIUM', color: rgb(C.BLUE) },
+        innerVertical: { style: 'SOLID', color: rgb(C.BLUE) },
+      },
+    },
+    {
       updateDimensionProperties: {
         range: {
           sheetId: range.sheetId!,
@@ -250,7 +326,7 @@ function headerFormat(range: sheets_v4.Schema$GridRange): sheets_v4.Schema$Reque
           startIndex: range.startRowIndex!,
           endIndex: range.startRowIndex! + 1,
         },
-        properties: { pixelSize: 35 },
+        properties: { pixelSize: ROW_H.HEADER },
         fields: 'pixelSize',
       },
     },
@@ -325,14 +401,40 @@ function arr(values: string[]): string {
 const OPEN_ARR = arr(STATUS_OPEN);
 
 /**
+ * Matches a direct master-tab range, e.g. `'งานของฉัน'!$J$2:$J` or `!R2:R`.
+ * MASTER is plain Thai text with no regex metacharacters, so it needs no escaping.
+ */
+const MASTER_REF = new RegExp(`'${MASTER}'!(\\$?[A-Z]{1,2}\\$?\\d+:\\$?[A-Z]{1,2}\\$?\\d*)`, 'g');
+
+/**
+ * Rewrite every DIRECT master reference as INDIRECT("…").
+ *
+ * Sheets auto-adjusts a direct reference whenever a row is inserted at or above
+ * it, and the sync appends task rows with values.append. So the correct
+ * `'งานของฉัน'!J2:J` written here silently drifted to J3:J, J4:J, … — one row
+ * further down per task created — until _ข้อมูลคำนวณ was reading from BELOW its
+ * own data and every view legitimately reported zero. INDIRECT takes a STRING,
+ * which no row insertion can rewrite, so the window stays pinned to row 2
+ * forever. That also makes the workspace safe against the user inserting rows
+ * by hand, which they are free to do.
+ *
+ * Applied inside `pass` rather than at each call site so that no formula added
+ * later can forget it.
+ */
+function pinToMaster(expr: string): string {
+  return expr.replace(MASTER_REF, (_full, range: string) => `INDIRECT("${M}!${range}")`);
+}
+
+/**
  * Every generated view reads _ข้อมูลคำนวณ, never the master directly, so the
  * derivations (is it overdue? how many days left? which pipeline stage?) exist
  * in exactly one place. The master's own row gate is column J: a row without a
  * รหัสงาน is not a task.
  */
-function calcFormulas(): string[][] {
+export function calcFormulas(): string[][] {
   const gate = `${M}!$J$2:$J=""`;
-  const pass = (expr: string) => `=ARRAYFORMULA(IF(${gate},, ${expr}))`;
+  const pass = (expr: string) =>
+    `=ARRAYFORMULA(IF(${pinToMaster(gate)},, ${pinToMaster(expr)}))`;
   return [[
     pass(`${M}!J2:J`),              // A  รหัสงาน
     pass(`${M}!B2:B`),              // B  ชื่องาน
@@ -413,13 +515,202 @@ const DEADLINE_SORT = `IF(${CALC}!G2:G="", 9E+99, ${CALC}!G2:G)`;
 // Tab builders — each returns the values to write and the formatting requests
 // =====================================================================
 
-interface TabPlan {
+export interface TabPlan {
   /** A1 ranges (without the sheet name) → the values to write there. */
   values: { range: string; rows: (string | number)[][] }[];
   requests: sheets_v4.Schema$Request[];
   /** Grid size the tab is created with. */
   rows: number;
   cols: number;
+  /** Rows of column headers under the title, frozen with the nav. */
+  frozen?: number;
+}
+
+/**
+ * Every builder below writes in NAV-FREE coordinates — row 1 is its own title,
+ * exactly as it would be with no nav strip. `shiftPlan` then moves the whole
+ * plan down by NAV_ROWS as the last step before it is materialised.
+ *
+ * Doing it as a transform rather than by hand keeps each builder readable in
+ * one coordinate space and, more importantly, makes the offset impossible to
+ * apply inconsistently: there is no literal row number anywhere that could be
+ * missed. Formulas that point at a builder's OWN cells go through `self()`,
+ * which applies the identical offset.
+ */
+function shiftPlan(plan: TabPlan, by: number): TabPlan {
+  return {
+    ...plan,
+    rows: plan.rows + by,
+    values: plan.values.map((v) => ({ ...v, range: shiftA1(v.range, by) })),
+    requests: plan.requests.map((r) => shiftRequest(r, by)),
+  };
+}
+
+/** "A7" / "H8" / "B2:D9" → the same range moved down `by` rows. */
+function shiftA1(a1: string, by: number): string {
+  return a1.replace(/([A-Z]+)(\d+)/g, (_m, col: string, row: string) => `${col}${Number(row) + by}`);
+}
+
+/**
+ * An A1 self-reference inside a builder's own formulas ($B$2 → $B$3).
+ * Always use this for a cell on the SAME tab; cross-tab references to _ตัวเลือก
+ * and _ข้อมูลคำนวณ must NOT be shifted (those tabs are hidden and get no nav).
+ */
+function self(a1: string): string {
+  return a1.replace(/\$?([A-Z]+)\$?(\d+)/g, (_m, col: string, row: string) => `$${col}$${Number(row) + NAV_ROWS}`);
+}
+
+/**
+ * Shift the row numbers in a conditional-format CUSTOM_FORMULA.
+ *
+ * A CF formula is evaluated RELATIVE to the top-left cell of its range, so when
+ * the range moves down the formula has to move with it or the rule reads the
+ * wrong row — `=$B5="🔴 ด่วนมาก"` on a range starting at row 5 must become
+ * `=$B6` once that range starts at row 6.
+ *
+ * A formula naming another sheet is left alone: the tabs have different offsets
+ * (the hidden ones have none), so it cannot be shifted mechanically. Those must
+ * be written with self() for the local part instead — asserted in the tests.
+ */
+function shiftConditionFormula(formula: string, by: number): string {
+  if (formula.includes('!')) return formula;
+  return formula.replace(
+    /(\$?)([A-Z]{1,2})(\$?)(\d+)/g,
+    (_m, absCol: string, col: string, absRow: string, row: string) =>
+      `${absCol}${col}${absRow}${Number(row) + by}`,
+  );
+}
+
+/** Deep-shift the row indices of every grid range a request carries. */
+function shiftRequest(req: sheets_v4.Schema$Request, by: number): sheets_v4.Schema$Request {
+  const rule = req.addConditionalFormatRule?.rule;
+  const condition = rule?.booleanRule?.condition;
+  if (condition?.type === 'CUSTOM_FORMULA' && condition.values?.length) {
+    req = {
+      ...req,
+      addConditionalFormatRule: {
+        ...req.addConditionalFormatRule,
+        rule: {
+          ...rule,
+          booleanRule: {
+            ...rule!.booleanRule,
+            condition: {
+              ...condition,
+              values: condition.values.map((v) => (
+                typeof v.userEnteredValue === 'string'
+                  ? { ...v, userEnteredValue: shiftConditionFormula(v.userEnteredValue, by) }
+                  : v
+              )),
+            },
+          },
+        },
+      },
+    };
+  }
+  const shiftRange = (r: sheets_v4.Schema$GridRange): sheets_v4.Schema$GridRange => ({
+    ...r,
+    ...(r.startRowIndex != null ? { startRowIndex: r.startRowIndex + by } : {}),
+    ...(r.endRowIndex != null ? { endRowIndex: r.endRowIndex + by } : {}),
+  });
+
+  const walk = (node: unknown, key?: string): unknown => {
+    if (Array.isArray(node)) return node.map((n) => walk(n, key));
+    if (node && typeof node === 'object') {
+      const obj = node as Record<string, unknown>;
+      // A DimensionRange over ROWS uses startIndex/endIndex, not *RowIndex.
+      if (obj.dimension === 'ROWS' && typeof obj.startIndex === 'number') {
+        return {
+          ...obj,
+          startIndex: obj.startIndex + by,
+          ...(typeof obj.endIndex === 'number' ? { endIndex: obj.endIndex + by } : {}),
+        };
+      }
+      // A DimensionRange over COLUMNS must be left exactly as it is.
+      if (obj.dimension === 'COLUMNS') return obj;
+      if (typeof obj.sheetId === 'number' && ('startRowIndex' in obj || 'endRowIndex' in obj)) {
+        return shiftRange(obj as sheets_v4.Schema$GridRange);
+      }
+      return Object.fromEntries(Object.entries(obj).map(([k, v]) => [k, walk(v, k)]));
+    }
+    return node;
+  };
+
+  return walk(req) as sheets_v4.Schema$Request;
+}
+
+/**
+ * Move an addChart's anchor cell down without touching the ranges it reads.
+ * A chart's data lives on _ตัวเลือก, which has no nav strip and must not shift;
+ * only the overlay position — which is on the chart's own tab — moves.
+ */
+function shiftChartAnchor(req: sheets_v4.Schema$Request, by: number): sheets_v4.Schema$Request {
+  const anchor = req.addChart?.chart?.position?.overlayPosition?.anchorCell;
+  if (!anchor || typeof anchor.rowIndex !== 'number') return req;
+  return {
+    ...req,
+    addChart: {
+      ...req.addChart,
+      chart: {
+        ...req.addChart!.chart,
+        position: {
+          ...req.addChart!.chart!.position,
+          overlayPosition: {
+            ...req.addChart!.chart!.position!.overlayPosition,
+            anchorCell: { ...anchor, rowIndex: anchor.rowIndex + by },
+          },
+        },
+      },
+    },
+  };
+}
+
+/**
+ * The nav strip itself, in ABSOLUTE coordinates (row 0) — built after the shift
+ * so it is never moved by it.
+ */
+function navBar(sheetId: number, cols: number, gidOf: (title: string) => number | undefined): TabPlan {
+  const links = NAV.map(({ tab, label }) => {
+    const gid = gidOf(tab);
+    // A tab whose gid we could not resolve degrades to plain text rather than a
+    // #REF link — the strip still renders and the other seven still work.
+    return gid == null ? label : `=HYPERLINK("#gid=${gid}", "${label}")`;
+  });
+
+  return {
+    rows: NAV_ROWS,
+    cols,
+    values: [{ range: `A1:${colLetter(NAV.length - 1)}1`, rows: [links] }],
+    requests: [
+      // Paint the FULL width, not just the eight link cells, so the strip runs
+      // edge to edge on the wider tabs.
+      fmt(grid(sheetId, 0, 0, 1, cols), {
+        backgroundColor: rgb(C.NAVY),
+        horizontalAlignment: 'CENTER',
+        verticalAlignment: 'MIDDLE',
+        padding: { top: 2, bottom: 2 },
+        // Explicit white + no underline: a HYPERLINK otherwise renders in the
+        // default link blue, which is unreadable on navy.
+        textFormat: {
+          foregroundColor: rgb(C.WHITE), bold: true, underline: false,
+          fontFamily: FONT, fontSize: 10,
+        },
+      }, 'backgroundColor,horizontalAlignment,verticalAlignment,padding,textFormat'),
+      {
+        updateDimensionProperties: {
+          range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 1 },
+          properties: { pixelSize: ROW_H.NAV },
+          fields: 'pixelSize',
+        },
+      },
+      {
+        updateBorders: {
+          range: grid(sheetId, 0, 0, 1, cols),
+          bottom: { style: 'SOLID_THICK', color: rgb(C.BLUE) },
+          innerVertical: { style: 'SOLID', color: rgb(C.NAVY) },
+        },
+      },
+    ],
+  };
 }
 
 function buildDashboard(gid: number): TabPlan {
@@ -576,6 +867,8 @@ function dashboardCharts(dashGid: number, confGid: number): sheets_v4.Schema$Req
           spec: {
             title: 'สัดส่วนสถานะงาน',
             fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
             pieChart: {
               legendPosition: 'RIGHT_LEGEND',
               pieHole: 0.55,
@@ -593,12 +886,14 @@ function dashboardCharts(dashGid: number, confGid: number): sheets_v4.Schema$Req
           spec: {
             title: 'งานแยกตามประเภท',
             fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
             basicChart: {
               chartType: 'COLUMN',
               legendPosition: 'NO_LEGEND',
               headerCount: 1,
               domains: [{ domain: src(0, 1 + TYPES.length, 5) }],
-              series: [{ series: src(0, 1 + TYPES.length, 6), targetAxis: 'LEFT_AXIS' }],
+              series: [{ series: src(0, 1 + TYPES.length, 6), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) }],
             },
           },
           position: anchor(31, 4, 430, 260),
@@ -611,12 +906,14 @@ function dashboardCharts(dashGid: number, confGid: number): sheets_v4.Schema$Req
           spec: {
             title: 'งานค้างต่อคน',
             fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
             basicChart: {
               chartType: 'BAR',
               legendPosition: 'NO_LEGEND',
               headerCount: 1,
               domains: [{ domain: src(0, 31, 8) }],
-              series: [{ series: src(0, 31, 9), targetAxis: 'BOTTOM_AXIS' }],
+              series: [{ series: src(0, 31, 9), targetAxis: 'BOTTOM_AXIS', color: rgb(C.BLUE) }],
             },
           },
           position: anchor(31, 8, 430, 300),
@@ -663,9 +960,11 @@ function buildPriority(gid: number): TabPlan {
   values.push({ range: 'A4', rows: [['มิเตอร์', 'ระดับ', 'ชื่องาน', 'ผู้รับผิดชอบ', 'กำหนดส่ง', 'นับถอยหลัง', 'ความคืบหน้า', 'สถานะ', 'คอขวด']] });
   requests.push(...headerFormat(grid(gid, 3, 0, 4, 9)));
 
+  // B2 is this tab's own dropdown, so it moves with the nav strip — self().
+  const pick = self('B2');
   const filter =
-    `IF($B$2="ทั้งหมด", 1, IF($B$2="เร่งด่วน", (${CALC}!K2:K<=2), ` +
-    `IF($B$2="เกินกำหนด", (${CALC}!M2:M=TRUE), (${CALC}!F2:F="รอดำเนินการ"))))`;
+    `IF(${pick}="ทั้งหมด", 1, IF(${pick}="เร่งด่วน", (${CALC}!K2:K<=2), ` +
+    `IF(${pick}="เกินกำหนด", (${CALC}!M2:M=TRUE), (${CALC}!F2:F="รอดำเนินการ"))))`;
   values.push({
     range: 'A5',
     rows: [[viewFormula({
@@ -693,13 +992,17 @@ function buildPriority(gid: number): TabPlan {
         fields: 'gridProperties.frozenRowCount',
       },
     },
+    // Banding first, urgency stripes on top — a conditional format always wins
+    // over a banded range, so the zebra only shows on rows with no stripe.
+    banding(gid, 4, 0, 320, 9),
     cfFormula(gid, [grid(gid, 4, 0, 320, 9)], `=$B5="${URGENCIES[0]}"`, { backgroundColor: rgb(C.URGENT_BG) }),
     cfFormula(gid, [grid(gid, 4, 0, 320, 9)], `=$B5="${URGENCIES[1]}"`, { backgroundColor: rgb(C.SOON_BG) }),
     cfText([grid(gid, 4, 5, 320, 6)], 'TEXT_CONTAINS', 'เกิน', { textFormat: { foregroundColor: rgb(C.DANGER), bold: true } }),
     cfText([grid(gid, 4, 8, 320, 9)], 'TEXT_CONTAINS', '⚠️', { textFormat: { foregroundColor: rgb(C.WARNING), bold: true } }),
   );
 
-  return { values, requests, rows: 320, cols: 9 };
+  // Freeze title + filter + column headers (rows 1-4) along with the nav.
+  return { values, requests, rows: 320, cols: 9, frozen: 4 };
 }
 
 function buildTracker(gid: number): TabPlan {
@@ -730,11 +1033,13 @@ function buildTracker(gid: number): TabPlan {
   values.push({ range: 'A4', rows: [['ชื่องาน', 'ประเภท', 'สายพานสถานะ', 'ความคืบหน้า', 'ผู้สั่ง', 'ผู้รับผิดชอบ', 'กำหนดส่ง', '🔗 ลิงก์ที่แนบ', '📝 หมายเหตุ']] });
   requests.push(...headerFormat(grid(gid, 3, 0, 4, 9)));
 
+  // The four filter cells live on this tab, so they move with the nav strip.
+  const [byFrom, byTo, byType, byUrg] = [self('B2'), self('D2'), self('F2'), self('H2')];
   const where =
-    `IF($B$2="", 1, ISNUMBER(SEARCH($B$2, ${CALC}!D2:D))) * ` +
-    `IF($D$2="", 1, ISNUMBER(SEARCH($D$2, ${CALC}!E2:E))) * ` +
-    `IF($F$2="", 1, (${CALC}!C2:C=$F$2)) * ` +
-    `IF($H$2="", 1, (${CALC}!J2:J=$H$2)) * (${CALC}!A2:A<>"")`;
+    `IF(${byFrom}="", 1, ISNUMBER(SEARCH(${byFrom}, ${CALC}!D2:D))) * ` +
+    `IF(${byTo}="", 1, ISNUMBER(SEARCH(${byTo}, ${CALC}!E2:E))) * ` +
+    `IF(${byType}="", 1, (${CALC}!C2:C=${byType})) * ` +
+    `IF(${byUrg}="", 1, (${CALC}!J2:J=${byUrg})) * (${CALC}!A2:A<>"")`;
   values.push({
     range: 'A5',
     rows: [[viewFormula({
@@ -760,12 +1065,14 @@ function buildTracker(gid: number): TabPlan {
         fields: 'gridProperties.frozenRowCount',
       },
     },
+    banding(gid, 4, 0, 320, 9),
     cfText([grid(gid, 4, 2, 320, 3)], 'TEXT_CONTAINS', 'ตีกลับ', { textFormat: { foregroundColor: rgb(C.DANGER), bold: true } }),
     cfText([grid(gid, 4, 2, 320, 3)], 'TEXT_CONTAINS', 'เสร็จสมบูรณ์', { textFormat: { foregroundColor: rgb(C.SUCCESS) } }),
     cfText([grid(gid, 4, 2, 320, 3)], 'TEXT_CONTAINS', 'รอตรวจ', { textFormat: { foregroundColor: rgb(C.PURPLE), bold: true } }),
   );
 
-  return { values, requests, rows: 320, cols: 9 };
+  // Freeze title + filter + column headers (rows 1-4) along with the nav.
+  return { values, requests, rows: 320, cols: 9, frozen: 4 };
 }
 
 function buildTeam(gid: number): TabPlan {
@@ -892,8 +1199,9 @@ function buildCalendar(gid: number): TabPlan {
 
   // The month's first cell is the Sunday on or before the 1st; cell i is that
   // date + i. Everything else is derived, so changing D1/E1 redraws the grid.
-  const monthNum = `MATCH($D$1, ${arr(THAI_MONTHS)}, 0)`;
-  const firstOfMonth = `DATE($E$1, ${monthNum}, 1)`;
+  // D1/E1 are this tab's own month + year pickers — they move with the nav.
+  const monthNum = `MATCH(${self('D1')}, ${arr(THAI_MONTHS)}, 0)`;
+  const firstOfMonth = `DATE(${self('E1')}, ${monthNum}, 1)`;
   const gridRows: string[][] = [];
   for (let week = 0; week < 6; week++) {
     const row: string[] = [];
@@ -947,7 +1255,8 @@ function buildCalendar(gid: number): TabPlan {
     cfFormula(gid, [grid(gid, 3, 0, 9, 7)], '=A4=""', { backgroundColor: rgb(C.NEUTRAL) }),
   );
 
-  return { values, requests, rows: 10, cols: 7 };
+  // Freeze the title, the legend and the day-name header (rows 1-3).
+  return { values, requests, rows: 10, cols: 7, frozen: 3 };
 }
 
 function buildAnalytics(gid: number): TabPlan {
@@ -1021,7 +1330,8 @@ function buildAnalytics(gid: number): TabPlan {
   values.push({
     range: 'A19',
     rows: [[
-      `="🏆 ทำงานเสร็จมากที่สุด: " & IFERROR(INDEX($K$5:$K, MATCH(MAX($L$5:$L), $L$5:$L, 0)) & " (" & MAX($L$5:$L) & " งาน)", "—") & ` +
+      // K5/L5 are this tab's own per-person table — self() moves them with the nav.
+      `="🏆 ทำงานเสร็จมากที่สุด: " & IFERROR(INDEX(${self('K5')}:$K, MATCH(MAX(${self('L5')}:$L), ${self('L5')}:$L, 0)) & " (" & MAX(${self('L5')}:$L) & " งาน)", "—") & ` +
       `"     ⏱️ เวลาเฉลี่ยทั้งทีม: " & IFERROR(ROUND(AVERAGE(FILTER(${CALC}!$U$2:$U, ${CALC}!$I$2:$I<>"")), 1) & " วัน", "—") & ` +
       `"     ⏰ เกินกำหนดตอนนี้: " & COUNTIF(${CALC}!$M$2:$M, TRUE) & " งาน"`,
     ]],
@@ -1064,14 +1374,16 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
           spec: {
             title: 'งานเข้า vs งานเสร็จ (12 สัปดาห์)',
             fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
             basicChart: {
               chartType: 'LINE',
               legendPosition: 'BOTTOM_LEGEND',
               headerCount: 1,
               domains: [{ domain: src(3, 16, 0) }],
               series: [
-                { series: src(3, 16, 1), targetAxis: 'LEFT_AXIS' },
-                { series: src(3, 16, 2), targetAxis: 'LEFT_AXIS' },
+                { series: src(3, 16, 1), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) },
+                { series: src(3, 16, 2), targetAxis: 'LEFT_AXIS', color: rgb(C.GREEN) },
               ],
             },
           },
@@ -1085,12 +1397,14 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
           spec: {
             title: 'อัตรางานเสร็จรายสัปดาห์',
             fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
             basicChart: {
               chartType: 'COLUMN',
               legendPosition: 'NO_LEGEND',
               headerCount: 1,
               domains: [{ domain: src(3, 16, 0) }],
-              series: [{ series: src(3, 16, 3), targetAxis: 'LEFT_AXIS' }],
+              series: [{ series: src(3, 16, 3), targetAxis: 'LEFT_AXIS', color: rgb(C.BLUE) }],
             },
           },
           position: anchor(20, 5, 450, 280),
@@ -1103,12 +1417,14 @@ function analyticsCharts(gid: number): sheets_v4.Schema$Request[] {
           spec: {
             title: 'เวลาเฉลี่ยกว่างานจะเสร็จ แยกตามประเภท (วัน)',
             fontName: FONT,
+            backgroundColor: rgb(C.WHITE),
+            titleTextFormat: { fontFamily: FONT, fontSize: 12, bold: true, foregroundColor: rgb(C.NAVY) },
             basicChart: {
               chartType: 'BAR',
               legendPosition: 'NO_LEGEND',
               headerCount: 1,
               domains: [{ domain: src(3, 4 + TYPES.length, 5) }],
-              series: [{ series: src(3, 4 + TYPES.length, 6), targetAxis: 'BOTTOM_AXIS' }],
+              series: [{ series: src(3, 4 + TYPES.length, 6), targetAxis: 'BOTTOM_AXIS', color: rgb(C.BLUE) }],
             },
           },
           position: anchor(36, 0, 450, 250),
@@ -1240,8 +1556,6 @@ function buildHelp(gid: number): TabPlan {
     ['', 'ตัวอย่าง:  หนูเก็บเตือนงาน @สมชาย ทำสไลด์นำเสนอ ส่งพรุ่งนี้ 17:00'],
     ['', 'หนูจะสรุปให้ดูก่อน กด "ยืนยัน" แล้วงานถึงจะถูกสร้างน้า'],
     ['', ''],
-    ['💬 สั่งงานแบบพิมพ์ธรรมดา', 'แท็กคนในกลุ่มแล้วพิมพ์งานกับกำหนดส่งได้เลย หนูจะเดาให้เองแล้วถามยืนยัน'],
-    ['', ''],
     ['🙋 งานส่วนตัว', 'ทักหนูในแชทส่วนตัว พิมพ์:  หนูเก็บเตือนงาน'],
     ['', 'หรือเปิดหน้า "งานของฉัน" บนเว็บแล้วกดปุ่มสร้างงาน'],
     ['', ''],
@@ -1254,23 +1568,211 @@ function buildHelp(gid: number): TabPlan {
     ['', 'คอลัมน์อื่นหนูเขียนทับทุกครั้งที่ sync — แก้ที่ LINE หรือหน้าเว็บแทนน้า'],
     ['', ''],
     ['🗑️ ลบแถวในชีต', 'ลบได้ ไม่พัง — งานนั้นจะกลับมาใหม่เมื่อมีการอัปเดตครั้งถัดไป'],
+    ['', ''],
+    ['📋 แท็บ "สั่งงาน"', 'กรอกฟอร์มแล้วคัดลอกคำสั่งที่ขึ้นให้ ไปวางในแชท LINE ได้เลย — ใช้ได้ทันทีไม่ต้องติดตั้งอะไร'],
+    ['', ''],
+    ['⚙️ สคริปต์เสริม (ไม่บังคับ)', 'เพิ่มปุ่ม "ส่งงาน" กดครั้งเดียว + ปุ่มเลือกความเร่งด่วน + ตรวจงานเกินกำหนดทุกเช้า 07:00'],
+    ['', 'ติดตั้ง: ส่วนขยาย → Apps Script → วางไฟล์ nookeb-addon.gs → บันทึก → รัน installTriggers()'],
+    ['', 'ไฟล์อยู่ในโปรเจกต์ที่ google-sheets-workspace/nookeb-addon.gs'],
+    ['', 'หมายเหตุ: งานที่สร้างจากปุ่มนี้อยู่ในชีตเท่านั้น (รหัส LOCAL-…) หนูจะไม่เตือนใน LINE ให้'],
   ];
   // Column A is a narrow gutter — labels go in B, prose in C.
   values.push({ range: 'B2', rows });
 
-  requests.push(...widths(gid, [30, 210, 560]));
+  requests.push(...widths(gid, [30, 230, 620]));
   requests.push(...baseFormat(gid, 30, 4));
   requests.push(
-    fmt(grid(gid, 1, 1, 25, 2), {
+    // Cover the whole prose block, not a fixed 25 rows — the copy grows.
+    fmt(grid(gid, 1, 1, 30, 2), {
       textFormat: { bold: true, fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.PRIMARY) },
       verticalAlignment: 'TOP',
     }, 'textFormat,verticalAlignment'),
-    fmt(grid(gid, 1, 2, 25, 3), {
+    fmt(grid(gid, 1, 2, 30, 3), {
       wrapStrategy: 'WRAP', verticalAlignment: 'TOP', textFormat: { fontFamily: FONT, fontSize: 10 },
     }, 'wrapStrategy,verticalAlignment,textFormat'),
   );
 
   return { values, requests, rows: 30, cols: 4 };
+}
+
+/**
+ * 📋 สั่งงาน — a two-column intake form.
+ *
+ * Deliberately useful with NO Apps Script installed: the fields feed a formula
+ * that assembles the exact `หนูเก็บเตือนงาน …` command, which the user copies
+ * into the LINE chat. That path needs nothing installed and goes through the
+ * normal confirm-card flow, so the task is created by the same code as every
+ * other task. The submit button below it is the shortcut, and only lights up
+ * once the optional script from ➕ วิธีสั่งงาน is pasted in.
+ *
+ * Written in nav-free coordinates; shiftPlan moves it down, and self() keeps
+ * the formulas pointing at the right cells after the move.
+ */
+function buildForm(gid: number): TabPlan {
+  const values: TabPlan['values'] = [];
+  const requests: sheets_v4.Schema$Request[] = [];
+
+  values.push({ range: 'A1', rows: [['📋 สั่งงานใหม่']] });
+  requests.push(...titleFormat(grid(gid, 0, 0, 1, 8)));
+  values.push({ range: 'B2', rows: [['กรอกให้ครบแล้วคัดลอกคำสั่งด้านล่างไปวางในแชท LINE ได้เลยน้า']] });
+  requests.push(fmt(grid(gid, 1, 1, 2, 8), {
+    textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
+  }, 'textFormat'));
+
+  // label row → [label, input top-left cell, merge width, placeholder/hint]
+  const fields: { row: number; label: string; span: number; hint?: string }[] = [
+    { row: 3, label: 'ชื่องาน *', span: 4 },
+    { row: 4, label: 'รายละเอียด', span: 4 },
+    { row: 5, label: 'ประเภทงาน', span: 2 },
+    { row: 6, label: 'ผู้รับผิดชอบ *', span: 2 },
+    { row: 7, label: 'วันกำหนดส่ง', span: 2, hint: 'วว/ดด/ปปปป' },
+    { row: 8, label: 'ลิงก์ / ไฟล์แนบ', span: 4 },
+    { row: 9, label: 'หมายเหตุ', span: 4 },
+  ];
+  fields.forEach(({ row, label, span, hint }) => {
+    values.push({ range: `B${row + 1}`, rows: [[label]] });
+    requests.push(
+      fmt(grid(gid, row, 1, row + 1, 2), {
+        horizontalAlignment: 'RIGHT', verticalAlignment: 'MIDDLE', padding: { right: 8 },
+        textFormat: { bold: true, fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.PRIMARY) },
+      }, 'horizontalAlignment,verticalAlignment,padding,textFormat'),
+      { mergeCells: { range: grid(gid, row, 2, row + 1, 2 + span), mergeType: 'MERGE_ALL' } },
+      fmt(grid(gid, row, 2, row + 1, 2 + span), {
+        backgroundColor: rgb(C.OK_BG), verticalAlignment: 'MIDDLE', wrapStrategy: 'WRAP',
+        padding: { left: 8 },
+        textFormat: { fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.TEXT) },
+      }, 'backgroundColor,verticalAlignment,wrapStrategy,padding,textFormat'),
+      tableBorders(grid(gid, row, 2, row + 1, 2 + span)),
+    );
+    if (hint) {
+      values.push({ range: `${colLetter(2 + span)}${row + 1}`, rows: [[hint]] });
+      requests.push(fmt(grid(gid, row, 2 + span, row + 1, 2 + span + 2), {
+        textFormat: { fontFamily: FONT, fontSize: 9, foregroundColor: rgb(C.MUTED) },
+      }, 'textFormat'));
+    }
+  });
+
+  // Roomier rows for the two free-text areas.
+  [4, 9].forEach((row) => requests.push({
+    updateDimensionProperties: {
+      range: { sheetId: gid, dimension: 'ROWS', startIndex: row, endIndex: row + 1 },
+      properties: { pixelSize: 52 },
+      fields: 'pixelSize',
+    },
+  }));
+
+  requests.push(
+    validationFromList(grid(gid, 5, 2, 6, 3), TYPES),
+    validationFromRange(grid(gid, 6, 2, 7, 3), `=${CONF}!$A$2:$A$40`),
+    fmt(grid(gid, 7, 2, 8, 3), {
+      numberFormat: { type: 'DATE', pattern: 'dd/mm/yyyy' },
+    }, 'numberFormat'),
+  );
+
+  // ---- urgency: four coloured buttons + the cell that holds the choice ----
+  values.push({ range: 'B11', rows: [['ความเร่งด่วน']] });
+  requests.push(fmt(grid(gid, 10, 1, 11, 2), {
+    horizontalAlignment: 'RIGHT', verticalAlignment: 'MIDDLE', padding: { right: 8 },
+    textFormat: { bold: true, fontFamily: FONT, fontSize: 11, foregroundColor: rgb(C.PRIMARY) },
+  }, 'horizontalAlignment,verticalAlignment,padding,textFormat'));
+  values.push({ range: 'C11', rows: [URGENCIES] });
+  const URGENCY_COLOR = [C.RED, C.ORANGE, C.WARNING, C.GREEN];
+  URGENCIES.forEach((_u, i) => {
+    requests.push(
+      fmt(grid(gid, 10, 2 + i, 11, 3 + i), {
+        backgroundColor: rgb(C.WHITE), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+        textFormat: {
+          bold: true, fontFamily: FONT, fontSize: 10,
+          foregroundColor: rgb(URGENCY_COLOR[i] ?? C.TEXT),
+        },
+      }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+      {
+        updateBorders: {
+          range: grid(gid, 10, 2 + i, 11, 3 + i),
+          top: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
+          bottom: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
+          left: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
+          right: { style: 'SOLID_MEDIUM', color: rgb(URGENCY_COLOR[i] ?? C.BORDER) },
+        },
+      },
+    );
+  });
+
+  values.push({ range: 'B12', rows: [['ระดับที่เลือก']] });
+  values.push({ range: 'C12', rows: [[DEFAULT_URGENCY]] });
+  requests.push(
+    fmt(grid(gid, 11, 1, 12, 2), {
+      horizontalAlignment: 'RIGHT', verticalAlignment: 'MIDDLE', padding: { right: 8 },
+      textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.MUTED) },
+    }, 'horizontalAlignment,verticalAlignment,padding,textFormat'),
+    { mergeCells: { range: grid(gid, 11, 2, 12, 4), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, 11, 2, 12, 4), {
+      backgroundColor: rgb(C.NEUTRAL), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+      textFormat: { bold: true, fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.PRIMARY) },
+    }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+    validationFromList(grid(gid, 11, 2, 12, 4), URGENCIES),
+    tableBorders(grid(gid, 11, 2, 12, 4)),
+  );
+
+  // ---- the copy-paste command (works with nothing installed) ----
+  requests.push(...sectionHeader(gid, 14, 0, 8, 'คำสั่งสำหรับวางในแชท LINE'));
+  values.push({ range: 'A15', rows: [['📄 คัดลอกคำสั่งนี้ไปวางในแชท LINE']] });
+
+  const [title, assignee, due] = [self('C4'), self('C7'), self('C8')];
+  values.push({
+    range: 'A16',
+    rows: [[
+      `=IF(OR(${title}="", ${assignee}=""), "⬆️ กรอก ชื่องาน และ ผู้รับผิดชอบ ก่อนน้า", ` +
+      `"หนูเก็บเตือนงาน @" & ${assignee} & " " & ${title} & ` +
+      `IF(${due}="", "", " ส่ง " & TEXT(${due}, "dd/mm/yyyy")))`,
+    ]],
+  });
+  requests.push(
+    { mergeCells: { range: grid(gid, 15, 0, 16, 8), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, 15, 0, 16, 8), {
+      backgroundColor: rgb(C.LIGHT_BG), verticalAlignment: 'MIDDLE', wrapStrategy: 'WRAP',
+      padding: { left: 10 },
+      textFormat: { fontFamily: FONT, fontSize: 11, bold: true, foregroundColor: rgb(C.ACCENT) },
+    }, 'backgroundColor,verticalAlignment,wrapStrategy,padding,textFormat'),
+    tableBorders(grid(gid, 15, 0, 16, 8)),
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex: 15, endIndex: 16 },
+        properties: { pixelSize: 44 },
+        fields: 'pixelSize',
+      },
+    },
+  );
+
+  // ---- optional one-click submit (needs the Apps Script) ----
+  values.push({ range: 'C18', rows: [['📤 ส่งงาน']] });
+  requests.push(
+    { mergeCells: { range: grid(gid, 17, 2, 18, 6), mergeType: 'MERGE_ALL' } },
+    fmt(grid(gid, 17, 2, 18, 6), {
+      backgroundColor: rgb(C.NAVY), horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE',
+      textFormat: { bold: true, fontFamily: FONT, fontSize: 13, foregroundColor: rgb(C.WHITE) },
+    }, 'backgroundColor,horizontalAlignment,verticalAlignment,textFormat'),
+    {
+      updateDimensionProperties: {
+        range: { sheetId: gid, dimension: 'ROWS', startIndex: 17, endIndex: 18 },
+        properties: { pixelSize: 40 },
+        fields: 'pixelSize',
+      },
+    },
+  );
+  values.push({
+    range: 'B20',
+    rows: [['ปุ่ม "ส่งงาน" ใช้ได้เมื่อติดตั้งสคริปต์เสริมแล้ว — ดูวิธีที่แท็บ ➕ วิธีสั่งงาน (ไม่ติดตั้งก็ใช้วิธีคัดลอกคำสั่งด้านบนได้เลย)']],
+  });
+  requests.push(fmt(grid(gid, 19, 1, 20, 8), {
+    wrapStrategy: 'WRAP',
+    textFormat: { fontFamily: FONT, fontSize: 9, foregroundColor: rgb(C.MUTED) },
+  }, 'wrapStrategy,textFormat'));
+
+  requests.push(...widths(gid, [40, 150, 150, 150, 150, 150, 90, 90]));
+  requests.push(...baseFormat(gid, 24, 8));
+
+  return { values, requests, rows: 24, cols: 8, frozen: 0 };
 }
 
 function buildConfig(gid: number): TabPlan {
@@ -1340,18 +1842,47 @@ function sectionHeader(
     { mergeCells: { range, mergeType: 'MERGE_ALL' } },
     fmt(range, {
       backgroundColor: rgb(C.NEUTRAL), verticalAlignment: 'MIDDLE',
-      textFormat: { bold: true, fontSize: 12, fontFamily: FONT, foregroundColor: rgb(C.PRIMARY) },
-    }, 'backgroundColor,verticalAlignment,textFormat'),
+      padding: { left: 8 },
+      textFormat: { bold: true, fontSize: 12, fontFamily: FONT, foregroundColor: rgb(C.ACCENT) },
+    }, 'backgroundColor,verticalAlignment,padding,textFormat'),
+    {
+      updateBorders: {
+        range,
+        bottom: { style: 'SOLID', color: rgb(C.BORDER) },
+        left: { style: 'SOLID_THICK', color: rgb(C.ACCENT) },
+      },
+    },
+    {
+      updateDimensionProperties: {
+        range: { sheetId, dimension: 'ROWS', startIndex: row, endIndex: row + 1 },
+        properties: { pixelSize: ROW_H.SECTION },
+        fields: 'pixelSize',
+      },
+    },
   ];
 }
 
-/** Font + text colour for the whole tab, plus hidden gridlines for the views. */
+/**
+ * Font, text colour, row rhythm and hidden gridlines for a whole tab.
+ *
+ * Gridlines are OFF everywhere in the workspace: the grey default grid fights
+ * the #E3E8F0 borders the views draw for themselves, and a view that is mostly
+ * merged cards reads as noise with both. Anything that needs a rule draws one.
+ */
 function baseFormat(sheetId: number, rows: number, cols: number): sheets_v4.Schema$Request[] {
   return [
     fmt(grid(sheetId, 0, 0, rows, cols), {
+      backgroundColor: rgb(C.WHITE),
       textFormat: { fontFamily: FONT, fontSize: 10, foregroundColor: rgb(C.TEXT) },
       verticalAlignment: 'MIDDLE',
-    }, 'textFormat,verticalAlignment'),
+    }, 'backgroundColor,textFormat,verticalAlignment'),
+    {
+      updateDimensionProperties: {
+        range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: rows },
+        properties: { pixelSize: ROW_H.DATA },
+        fields: 'pixelSize',
+      },
+    },
     {
       updateSheetProperties: {
         properties: { sheetId, gridProperties: { hideGridlines: true } },
@@ -1359,6 +1890,39 @@ function baseFormat(sheetId: number, rows: number, cols: number): sheets_v4.Sche
       },
     },
   ];
+}
+
+/**
+ * Zebra striping for a data table. `addBanding` is the native feature, so the
+ * stripes follow rows as the view's FILTER output grows and shrinks — a
+ * conditional format on ISEVEN(ROW()) would too, but banding also survives the
+ * user sorting the range, and costs one request instead of one per range.
+ */
+function banding(
+  sheetId: number, startRow: number, startCol: number, endRow: number, endCol: number,
+): sheets_v4.Schema$Request {
+  return {
+    addBanding: {
+      bandedRange: {
+        range: grid(sheetId, startRow, startCol, endRow, endCol),
+        rowProperties: {
+          firstBandColor: rgb(C.WHITE),
+          secondBandColor: rgb(C.LIGHT_BG),
+        },
+      },
+    },
+  };
+}
+
+/** A thin #E3E8F0 rule around and inside a range — the only grid the views show. */
+function tableBorders(range: sheets_v4.Schema$GridRange): sheets_v4.Schema$Request {
+  const line = { style: 'SOLID' as const, color: rgb(C.BORDER) };
+  return {
+    updateBorders: {
+      range, top: line, bottom: line, left: line, right: line,
+      innerHorizontal: line, innerVertical: line,
+    },
+  };
 }
 
 function validationFromList(range: sheets_v4.Schema$GridRange, list: string[]): sheets_v4.Schema$Request {
@@ -1459,6 +2023,92 @@ function masterExtensionRequests(gid: number): sheets_v4.Schema$Request[] {
 // Orchestration
 // =====================================================================
 
+/**
+ * The builders' own nav-free grid sizes. `sizeOf` adds the nav strip's row and
+ * widens anything narrower than the strip, so the grid a tab is CREATED with and
+ * the coordinates its plan writes to can never disagree.
+ */
+const BASE_SIZE: Record<string, { rows: number; cols: number }> = {
+  [TAB.DASH]: { rows: 40, cols: 14 },
+  [TAB.PRIO]: { rows: 320, cols: 9 },
+  [TAB.TRACK]: { rows: 320, cols: 9 },
+  [TAB.TEAM]: { rows: 45, cols: 10 },
+  [TAB.CAL]: { rows: 10, cols: 7 },
+  [TAB.ANA]: { rows: 60, cols: 13 },
+  [TAB.WEEK]: { rows: 45, cols: 9 },
+  [TAB.FORM]: { rows: 24, cols: 8 },
+  [TAB.HELP]: { rows: 30, cols: 4 },
+  [TAB.CALC]: { rows: 2100, cols: CALC_HEADERS.length },
+  [TAB.CONF]: { rows: 60, cols: 13 },
+};
+
+export function sizeOf(title: string): { rows: number; cols: number } {
+  const base = BASE_SIZE[title] ?? { rows: 100, cols: 12 };
+  return NAV_TABS.includes(title)
+    ? { rows: base.rows + NAV_ROWS, cols: Math.max(base.cols, NAV.length) }
+    : base;
+}
+
+/**
+ * Build every tab's plan and drop the nav strip onto the visible ones.
+ *
+ * Extracted from ensureWorkspace and exported so the layout can be asserted
+ * without a network call — this is where the nav offset is applied, and a
+ * mistake here silently misplaces every formula in the workspace.
+ *
+ * The hidden calculation tabs are deliberately skipped: nothing links to them,
+ * and shifting _ข้อมูลคำนวณ would move the ARRAYFORMULA anchors the whole
+ * workspace reads. The master tab is skipped too — its row 1 is the sync's
+ * header row, and a row above it would break every index the sync writes.
+ */
+export function composeWorkspacePlans(
+  gid: (title: string) => number,
+  masterGid: number,
+): [string, TabPlan][] {
+  const built: [string, TabPlan][] = [
+    [TAB.CONF, buildConfig(gid(TAB.CONF))],
+    [TAB.CALC, buildCalc(gid(TAB.CALC))],
+    [TAB.DASH, buildDashboard(gid(TAB.DASH))],
+    [TAB.PRIO, buildPriority(gid(TAB.PRIO))],
+    [TAB.TRACK, buildTracker(gid(TAB.TRACK))],
+    [TAB.TEAM, buildTeam(gid(TAB.TEAM))],
+    [TAB.CAL, buildCalendar(gid(TAB.CAL))],
+    [TAB.ANA, buildAnalytics(gid(TAB.ANA))],
+    [TAB.WEEK, buildWeekly(gid(TAB.WEEK))],
+    [TAB.FORM, buildForm(gid(TAB.FORM))],
+    [TAB.HELP, buildHelp(gid(TAB.HELP))],
+  ];
+
+  return built.map(([title, plan]) => {
+    if (!NAV_TABS.includes(title)) return [title, plan];
+    const sheetId = gid(title);
+    const { cols } = sizeOf(title);
+    const shifted = shiftPlan(plan, NAV_ROWS);
+    const nav = navBar(sheetId, cols, (t) => (t === MASTER ? masterGid : gid(t)));
+    return [title, {
+      ...shifted,
+      cols,
+      values: [...nav.values, ...shifted.values],
+      requests: [
+        ...shifted.requests,
+        ...nav.requests,
+        // Freeze the nav plus whatever header rows the view declared, so both
+        // stay put while the data below scrolls. Last write wins over any
+        // frozenRowCount the builder set for itself.
+        {
+          updateSheetProperties: {
+            properties: {
+              sheetId,
+              gridProperties: { frozenRowCount: NAV_ROWS + (plan.frozen ?? 0) },
+            },
+            fields: 'gridProperties.frozenRowCount',
+          },
+        },
+      ],
+    }];
+  });
+}
+
 function readVersion(metadata: sheets_v4.Schema$DeveloperMetadata[] | undefined): number | null {
   const row = metadata?.find((m) => m.metadataKey === METADATA_KEY);
   if (!row?.metadataValue) return null;
@@ -1501,21 +2151,8 @@ export async function ensureWorkspace(
     .filter((s) => GENERATED_TABS.includes((s.properties?.title ?? '') as (typeof GENERATED_TABS)[number]))
     .map((s) => ({ deleteSheet: { sheetId: s.properties!.sheetId! } }));
 
-  // Sizes have to be known up front — addSheet cannot be resized in the same batch.
-  const plansBySize: Record<string, { rows: number; cols: number }> = {
-    [TAB.DASH]: { rows: 40, cols: 14 },
-    [TAB.PRIO]: { rows: 320, cols: 9 },
-    [TAB.TRACK]: { rows: 320, cols: 9 },
-    [TAB.TEAM]: { rows: 45, cols: 10 },
-    [TAB.CAL]: { rows: 10, cols: 7 },
-    [TAB.ANA]: { rows: 60, cols: 13 },
-    [TAB.WEEK]: { rows: 45, cols: 9 },
-    [TAB.HELP]: { rows: 30, cols: 4 },
-    [TAB.CALC]: { rows: 2100, cols: CALC_HEADERS.length },
-    [TAB.CONF]: { rows: 60, cols: 13 },
-  };
   const adds: sheets_v4.Schema$Request[] = GENERATED_TABS.map((title) => {
-    const size = plansBySize[title] ?? { rows: 100, cols: 12 };
+    const size = sizeOf(title);
     return {
       addSheet: {
         properties: { title, gridProperties: { rowCount: size.rows, columnCount: size.cols } },
@@ -1553,18 +2190,7 @@ export async function ensureWorkspace(
   };
 
   // --- pass 2: values (formulas + labels) --------------------------------
-  const plans: [string, TabPlan][] = [
-    [TAB.CONF, buildConfig(gid(TAB.CONF))],
-    [TAB.CALC, buildCalc(gid(TAB.CALC))],
-    [TAB.DASH, buildDashboard(gid(TAB.DASH))],
-    [TAB.PRIO, buildPriority(gid(TAB.PRIO))],
-    [TAB.TRACK, buildTracker(gid(TAB.TRACK))],
-    [TAB.TEAM, buildTeam(gid(TAB.TEAM))],
-    [TAB.CAL, buildCalendar(gid(TAB.CAL))],
-    [TAB.ANA, buildAnalytics(gid(TAB.ANA))],
-    [TAB.WEEK, buildWeekly(gid(TAB.WEEK))],
-    [TAB.HELP, buildHelp(gid(TAB.HELP))],
-  ];
+  const plans = composeWorkspacePlans(gid, masterGid);
 
   const data: sheets_v4.Schema$ValueRange[] = [
     { range: `'${MASTER}'!${colLetter(MASTER_EXT.URGENCY)}1`, values: [EXT_HEADERS] },
@@ -1581,8 +2207,14 @@ export async function ensureWorkspace(
   const requests: sheets_v4.Schema$Request[] = [];
   plans.forEach(([, plan]) => requests.push(...plan.requests));
   requests.push(...masterExtensionRequests(masterGid));
-  requests.push(...dashboardCharts(gid(TAB.DASH), gid(TAB.CONF)));
-  requests.push(...analyticsCharts(gid(TAB.ANA)));
+  // Charts are authored in the same nav-free coordinates as their tab, so their
+  // anchor cells (and the _ตัวเลือก ranges they read) get the identical shift.
+  // _ตัวเลือก is not a nav tab, so only the anchor actually moves.
+  requests.push(
+    ...dashboardCharts(gid(TAB.DASH), gid(TAB.CONF))
+      .map((r) => shiftChartAnchor(r, NAV_ROWS)),
+    ...analyticsCharts(gid(TAB.ANA)).map((r) => shiftChartAnchor(r, NAV_ROWS)),
+  );
 
   HIDDEN_TABS.forEach((title) => {
     requests.push({
