@@ -237,21 +237,26 @@
   font-size: var(--font-size-lg);
 }
 
+/* ราคาก่อนลด — small, muted, struck through, sits ABOVE the real price. */
+.priceCompare {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+  text-decoration: line-through;
+  line-height: 1.2;
+}
+
 .priceRow {
   display: flex;
   align-items: baseline;
   gap: 4px;
 }
 
+/* The unit now lives inside the price string ("790 บาท/ปี"), so this has to
+   fit a longer line than the bare number it used to hold. */
 .price {
-  font-size: 1.9rem;
+  font-size: 1.5rem;
   font-weight: 700;
   color: var(--color-primary);
-}
-
-.pricePer {
-  font-size: var(--font-size-sm);
-  color: var(--color-text-muted);
 }
 
 .priceNote {

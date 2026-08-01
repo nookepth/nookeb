@@ -30,6 +30,14 @@ import styles from './page.module.css';
  * exists.
  */
 
+/**
+ * ราคาก่อนลดรายปี — the one number here that is NOT served by the API, for the
+ * same reason as COMPARE_AT_MONTHLY on the plan page: it is a marketing anchor,
+ * never a price the system charged, so config/plans.ts has no field for it.
+ * Yearly only — the monthly price is shown without an anchor.
+ */
+const COMPARE_AT_YEARLY = 490;
+
 /** The billing cycle toggle lives on the page; this section follows it. */
 export default function DiaryAddonSection({ cycle }: { cycle: BillingCycle }) {
   const [status, setStatus] = useState<DiaryAddonStatusResponse | null>(null);
@@ -74,11 +82,18 @@ export default function DiaryAddonSection({ cycle }: { cycle: BillingCycle }) {
           <h2 className={styles.cardName}>{status?.name ?? 'หนูเก็บความทรงจำ'}</h2>
           <p className={styles.addonTagline}>เตือนเขียนไดอารี่ทุกวัน ไม่มีวันลืม</p>
 
+          {/* ราคาก่อนลด on the yearly tab only — see COMPARE_AT_YEARLY. */}
+          {cycle === 'yearly' && price !== null && (
+            <div className={styles.priceCompare}>
+              {COMPARE_AT_YEARLY.toLocaleString('th-TH')} บาท
+            </div>
+          )}
           <div className={styles.priceRow}>
             <span className={styles.price}>
-              {price === null ? '—' : `${price.toLocaleString('th-TH')} ฿`}
+              {price === null
+                ? '—'
+                : `${price.toLocaleString('th-TH')} บาท/${cycle === 'monthly' ? 'เดือน' : 'ปี'}`}
             </span>
-            <span className={styles.pricePer}>/{cycle === 'monthly' ? 'เดือน' : 'ปี'}</span>
           </div>
           {cycle === 'yearly' && status && (
             // DERIVED from the API price, never written as a literal (file

@@ -65,11 +65,46 @@ function limitText(n: number | undefined, unit: string): string {
   return `${n.toLocaleString('th-TH')} ${unit}`;
 }
 
+/**
+ * ราคาก่อนลด (compare-at) — the ONLY numbers on this page that do not come from
+ * the API. They are a marketing anchor, not a price the system ever charged, so
+ * config/plans.ts has no field for them; adding one would imply the billing code
+ * could bill it. Keyed by plan, monthly figure only — the yearly anchor is 10×,
+ * the same "two months free" shape as the real yearly price.
+ */
+const COMPARE_AT_MONTHLY: Record<string, number> = {
+  pro: 109,
+  premium: 259,
+};
+
+function baht(amount: number): string {
+  return `${amount.toLocaleString('th-TH')} บาท`;
+}
+
+/** The struck-through anchor above the price, or null when there isn't one. */
+function compareAtText(plan: PlanSummaryDto, cycle: BillingCycle): string | null {
+  const monthly = COMPARE_AT_MONTHLY[plan.plan];
+  if (!monthly || plan.pricing.monthly <= 0) return null;
+  return baht(cycle === 'monthly' ? monthly : monthly * 10);
+}
+
 function priceText(plan: PlanSummaryDto, cycle: BillingCycle): string {
+  // The free plan has no yearly price (null) — it still reads "ฟรี" on both
+  // tabs rather than falling through to the "not sold" dash.
+  if (plan.pricing.monthly === 0) return 'ฟรี';
   const amount = cycle === 'monthly' ? plan.pricing.monthly : plan.pricing.yearly;
   if (amount === null) return '—';
-  if (amount === 0) return 'ฟรี';
-  return `${amount.toLocaleString('th-TH')} ฿`;
+  return `${baht(amount)}/${cycle === 'monthly' ? 'เดือน' : 'ปี'}`;
+}
+
+/**
+ * The line under the price: the OTHER cycle's figure, so whichever tab you are
+ * on you can see what the alternative costs without switching.
+ */
+function priceSubLabel(plan: PlanSummaryDto, cycle: BillingCycle): string | null {
+  if (plan.pricing.monthly <= 0 || plan.pricing.yearly === null) return null;
+  if (cycle === 'monthly') return `${baht(plan.pricing.yearly)}/ปี`;
+  return `เฉลี่ย ${baht(Math.round(plan.pricing.yearly / 12))}/เดือน`;
 }
 
 export default function PlansPage() {
@@ -77,7 +112,8 @@ export default function PlansPage() {
   const [plans, setPlans] = useState<PlanSummaryDto[] | null>(null);
   const [me, setMe] = useState<MyPlanResponse | null>(null);
   const [quotas, setQuotas] = useState<MyQuotasResponse | null>(null);
-  const [cycle, setCycle] = useState<BillingCycle>('monthly');
+  // รายปี is the default tab — it is the better deal and the one we lead with.
+  const [cycle, setCycle] = useState<BillingCycle>('yearly');
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -210,19 +246,19 @@ export default function PlansPage() {
       {/* ---- billing cycle toggle ---- */}
       <div className={styles.cycleToggle} role="group" aria-label="รอบการชำระเงิน">
         <button
-          className={cycle === 'monthly' ? styles.cycleActive : styles.cycleBtn}
-          onClick={() => setCycle('monthly')}
-          aria-pressed={cycle === 'monthly'}
-        >
-          รายเดือน
-        </button>
-        <button
           className={cycle === 'yearly' ? styles.cycleActive : styles.cycleBtn}
           onClick={() => setCycle('yearly')}
           aria-pressed={cycle === 'yearly'}
         >
           รายปี
           <span className={styles.cycleSave}>ประหยัด 2 เดือน</span>
+        </button>
+        <button
+          className={cycle === 'monthly' ? styles.cycleActive : styles.cycleBtn}
+          onClick={() => setCycle('monthly')}
+          aria-pressed={cycle === 'monthly'}
+        >
+          รายเดือน
         </button>
       </div>
 
@@ -246,16 +282,14 @@ export default function PlansPage() {
               {/* No emoji on tier names — brand rule. Name comes from the API. */}
               <h2 className={styles.cardName}>{plan.displayName}</h2>
 
+              {compareAtText(plan, cycle) && (
+                <div className={styles.priceCompare}>{compareAtText(plan, cycle)}</div>
+              )}
               <div className={styles.priceRow}>
                 <span className={styles.price}>{priceText(plan, cycle)}</span>
-                {plan.pricing.monthly > 0 && (
-                  <span className={styles.pricePer}>/{cycle === 'monthly' ? 'เดือน' : 'ปี'}</span>
-                )}
               </div>
-              {cycle === 'yearly' && plan.pricing.yearly !== null && plan.pricing.monthly > 0 && (
-                <div className={styles.priceNote}>
-                  เฉลี่ย {Math.round(plan.pricing.yearly / 12).toLocaleString('th-TH')} ฿/เดือน
-                </div>
+              {priceSubLabel(plan, cycle) && (
+                <div className={styles.priceNote}>{priceSubLabel(plan, cycle)}</div>
               )}
 
               <div className={styles.storage}>
