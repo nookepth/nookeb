@@ -4,7 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Image from 'next/image';
 import type { LegacyBoxDto } from '@nookeb/shared';
 import { THEMES } from '@nookeb/shared';
-import { deleteLegacyBox, hasSession, listLegacyBoxes } from '@/lib/api';
+import {
+  deleteLegacyBox,
+  findQuota,
+  getMyQuotas,
+  hasSession,
+  listLegacyBoxes,
+  type MyQuotasResponse,
+} from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { BOX_SHARE_COPY, shareOrCopy } from '@/lib/share';
 import { SITE_URL } from '@/lib/site';
@@ -55,6 +62,14 @@ export default function LegacyBoxListPage() {
   const [deleting, setDeleting] = useState(false);
   /** per-box share button state, keyed by box id */
   const [shareState, setShareState] = useState<Record<string, ShareState>>({});
+  /**
+   * MONTHLY gift-box quota (plan-dependent: 3 / 10 / 30). This is NOT the same
+   * number as `boxes.length`, which counts LIVE boxes: deleting a box frees a
+   * live slot but does not give the month's quota unit back. The counter used
+   * to render a hardcoded "/10" — the legacy live-box cap — which was simply
+   * the wrong limit for every plan.
+   */
+  const [quotas, setQuotas] = useState<MyQuotasResponse | null>(null);
   const toastTimer = useRef<number | null>(null);
   const shareTimers = useRef<number[]>([]);
 
@@ -74,6 +89,13 @@ export default function LegacyBoxListPage() {
       setError(null);
     } catch {
       setError('โหลดกล่องของขวัญไม่สำเร็จ ลองรีเฟรชอีกครั้งน้า');
+    }
+    // Separate try: the quota counter is decoration on this page. A failure
+    // must not blank the box list, so it falls back to hiding the counter.
+    try {
+      setQuotas(await getMyQuotas());
+    } catch {
+      setQuotas(null);
     }
   }, []);
 
@@ -135,6 +157,21 @@ export default function LegacyBoxListPage() {
     [boxes],
   );
 
+  /**
+   * "ใช้ไปแล้ว 4/10 กล่องเดือนนี้" — used and limit BOTH come from
+   * GET /plans/me/quotas, never from `boxes.length` and never from a literal.
+   *
+   * Falls back to a plain live-box count when the quota call failed or the
+   * feature is unlimited: showing a number the server didn't confirm would be
+   * worse than showing one fewer number.
+   */
+  const boxQuotaLabel = useMemo(() => {
+    const q = findQuota(quotas, 'gift_boxes');
+    if (!q) return `${boxes?.length ?? 0} กล่อง`;
+    if (q.unlimited) return `ใช้ไปแล้ว ${q.used} กล่องเดือนนี้`;
+    return `ใช้ไปแล้ว ${q.used}/${q.limit} กล่องเดือนนี้`;
+  }, [quotas, boxes]);
+
   if (needsLogin) {
     return (
       <div className="center-page">
@@ -175,7 +212,7 @@ export default function LegacyBoxListPage() {
 
         <div className={styles.topRow}>
           <span className={styles.stats}>
-            {boxes ? `${boxes.length}/10 กล่อง · เปิดแล้ว ${totalViews} ครั้ง` : ' '}
+            {boxes ? `${boxQuotaLabel} · เปิดแล้ว ${totalViews} ครั้ง` : ' '}
           </span>
           <a className={styles.createBtn} href="/dashboard/legacy-box/new">
             <span aria-hidden>+</span> สร้างกล่องใหม่

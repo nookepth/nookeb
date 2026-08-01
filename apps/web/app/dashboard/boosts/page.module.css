@@ -1,0 +1,154 @@
+/* บูธกลุ่ม — read-only status + how to boost from chat.
+   Shares the tokens defined in globals.css; introduces no new colours. */
+
+.container {
+  padding-bottom: 96px;
+}
+
+.header {
+  margin: 8px 0 20px;
+}
+
+.back {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.back:hover {
+  color: var(--color-primary);
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: var(--font-size-2xl);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.error {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-error-soft);
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
+
+.statusCard,
+.listCard,
+.howto {
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.slotRow {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.slotNum {
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: var(--color-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.slotLabel {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.slotHint {
+  margin: 6px 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.upsell {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: var(--color-warning-text);
+  font-size: var(--font-size-sm);
+}
+
+.upsell a {
+  color: inherit;
+  font-weight: 600;
+}
+
+.listTitle {
+  margin: 0 0 10px;
+  font-size: var(--font-size-base);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.listItem {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+}
+
+.groupId {
+  font-variant-numeric: tabular-nums;
+}
+
+.expiry {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.howtoText {
+  margin: 0 0 10px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.cmd {
+  padding: 1px 7px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-3);
+  font-family: ui-monospace, monospace;
+  font-size: 0.92em;
+  color: var(--color-text-primary);
+}
+
+.howtoNote {
+  margin: 12px 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}

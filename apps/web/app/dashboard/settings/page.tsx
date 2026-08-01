@@ -13,6 +13,7 @@ import {
   type GoogleIntegrationStatus,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { flatten, getPlanGateMessage } from '@/lib/quota-errors';
 import { ProLockModal } from '@/components/ProLockModal';
 
 /**
@@ -143,8 +144,15 @@ export default function SettingsPage() {
     setBusy(true);
     try {
       await startGoogleConnect(); // navigates away
-    } catch {
-      setNotice({ msg: 'เปิดหน้ายืนยันของ Google ไม่สำเร็จน้า', ok: false });
+    } catch (err) {
+      // §15 — Google Sheets is Premium-only, so /integrations/google/auth
+      // answers 403 PLAN_UPGRADE_REQUIRED. That is not a connection failure and
+      // must not be reported as one: retrying will never work on this plan.
+      if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
+        setNotice({ msg: flatten(getPlanGateMessage(err.details?.requiredPlan ?? 'premium')), ok: false });
+      } else {
+        setNotice({ msg: 'เปิดหน้ายืนยันของ Google ไม่สำเร็จน้า', ok: false });
+      }
       setBusy(false);
     }
   };

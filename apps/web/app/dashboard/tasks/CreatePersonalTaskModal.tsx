@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { ApiError, createPersonalTask } from '@/lib/api';
+import { flatten, getPlanGateMessage, getQuotaMessage } from '@/lib/quota-errors';
 import { URGENCY_OPTIONS, type TaskUrgency } from '@/lib/taskDraft';
 import styles from './tasks.module.css';
 
@@ -50,7 +51,14 @@ export default function CreatePersonalTaskModal({
       onCreated();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onUnauthorized();
-      else setError('สร้างงานไม่สำเร็จ ลองใหม่อีกทีน้า');
+      // §5 — the monthly task quota (7/25/100). Without this the user was told
+      // "สร้างงานไม่สำเร็จ ลองใหม่อีกทีน้า", which invites them to retry a
+      // request that cannot succeed again until the 1st.
+      else if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
+        setError(flatten(getQuotaMessage(err.details?.feature ?? 'tasks')));
+      } else if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
+        setError(flatten(getPlanGateMessage(err.details?.requiredPlan)));
+      } else setError('สร้างงานไม่สำเร็จ ลองใหม่อีกทีน้า');
     } finally {
       setSubmitting(false);
     }

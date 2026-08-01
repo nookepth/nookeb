@@ -33,7 +33,9 @@ import {
   getVaultFile,
   getVaultStats,
   insertVaultFile,
+  listDeletedVaultFiles,
   listVaultFiles,
+  restoreVaultFile,
   softDeleteVaultFile,
   toVaultFileDto,
   watermarkImage,
@@ -81,6 +83,19 @@ const listQuerySchema = z.object({
 });
 
 const idParamSchema = z.string().uuid();
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whole days until the daily purge hard-deletes this vault row. Mirrors the
+ * general trash bin's `daysUntilPurge`, but reads VAULT_PURGE_RETENTION_DAYS —
+ * the vault has its OWN window (30 days by default), independent of the
+ * plan-aware file retention, because the purge treats vault rows separately.
+ */
+function daysUntilVaultPurge(deletedAt: string, retentionDays: number): number {
+  const purgeAt = new Date(deletedAt).getTime() + retentionDays * DAY_MS;
+  return Math.max(0, Math.ceil((purgeAt - Date.now()) / DAY_MS));
+}
 
 const ARGON2_OPTIONS = {
   type: argon2.argon2id,
@@ -570,6 +585,58 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
 
     const deleted = await softDeleteVaultFile(app.supabase, request.authUser!.userId, parsedId.data);
     if (!deleted) return reply.code(404).send({ error: 'Vault file not found' });
+    return { success: true };
+  });
+
+  // GET /vault/trash — the vault's own trash bin.
+  //
+  // Behind `guarded` (premium + an UNLOCKED vault session), never in the general
+  // /trash listing: a vault filename is sensitive content, and the general bin
+  // is protected only by the session cookie. Read-only, no PIN — the PIN gates
+  // destructive and revealing actions (delete, view bytes); listing names the
+  // user already unlocked to see is what the unlock session is for.
+  app.get('/vault/trash', guarded, async (request) => {
+    const rows = await listDeletedVaultFiles(
+      app.supabase,
+      request.authUser!.userId,
+      config.VAULT_PURGE_RETENTION_DAYS,
+    );
+    return {
+      retentionDays: config.VAULT_PURGE_RETENTION_DAYS,
+      files: rows.map((row) => ({
+        ...toVaultFileDto(row),
+        deletedAt: row.deleted_at,
+        daysUntilPurge: daysUntilVaultPurge(row.deleted_at!, config.VAULT_PURGE_RETENTION_DAYS),
+      })),
+    };
+  });
+
+  // POST /vault/trash/:id/restore — undo a soft delete.
+  //
+  // Capacity is re-checked BEFORE the update: a user who deleted files to get
+  // under the vault_files ceiling must not be able to climb back over it by
+  // restoring. Storage is deliberately NOT re-charged — soft delete never
+  // refunded it (see restoreVaultFile).
+  app.post<{ Params: { id: string } }>('/vault/trash/:id/restore', guarded, async (request, reply) => {
+    const parsedId = idParamSchema.safeParse(request.params.id);
+    if (!parsedId.success) return reply.code(400).send({ error: 'Invalid file id' });
+    const userId = request.authUser!.userId;
+
+    const plan = await ensurePlan(request);
+    const vaultCount = await countVaultFiles(app.supabase, userId);
+    const capacity = evaluateCapacity({ plan, feature: 'vault_files', currentCount: vaultCount });
+    if (!capacity.allowed) {
+      return reply.code(403).send({
+        error: `ห้องนิรภัยเต็มแล้วน้า แพ็กเกจนี้เก็บได้ ${capacity.limit} ไฟล์`,
+        code: 'VAULT_FULL',
+        feature: 'vault_files',
+        limit: capacity.limit,
+        used: capacity.used,
+      });
+    }
+
+    const restored = await restoreVaultFile(app.supabase, userId, parsedId.data);
+    if (!restored) return reply.code(404).send({ error: 'Vault file not found' });
     return { success: true };
   });
 };

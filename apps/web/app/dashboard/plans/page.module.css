@@ -1,0 +1,303 @@
+/* แพลนของฉัน — pricing table + the caller's own usage.
+   Uses the shared tokens from globals.css; no new colour is introduced here. */
+
+.container {
+  padding-bottom: 96px;
+}
+
+.header {
+  margin: 8px 0 20px;
+}
+
+.back {
+  display: inline-block;
+  margin-bottom: 12px;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  text-decoration: none;
+}
+
+.back:hover {
+  color: var(--color-primary);
+}
+
+.title {
+  margin: 0 0 6px;
+  font-size: var(--font-size-2xl);
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.error {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: var(--color-error-soft);
+  color: var(--color-error);
+  font-size: var(--font-size-sm);
+}
+
+/* ---------- current plan + live usage ---------- */
+
+.current {
+  margin-bottom: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.currentTop {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.currentLabel {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.currentPlan {
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.currentStorage {
+  margin-top: 4px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.usageHead {
+  margin: 14px 0 8px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.usageList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.usageItem {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+  align-items: center;
+  font-size: var(--font-size-sm);
+}
+
+.usageName {
+  color: var(--color-text-secondary);
+}
+
+.usageNum {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-text-primary);
+}
+
+.usageTrack {
+  grid-column: 1 / -1;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-3);
+  overflow: hidden;
+}
+
+.usageFill {
+  display: block;
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-light);
+  transition: width 200ms ease;
+}
+
+/* Exhausted reads differently from merely used — the user needs to see the
+   difference between "getting close" and "cannot do this until the 1st". */
+.usageFull {
+  background: var(--color-error);
+}
+
+/* ---------- billing cycle toggle ---------- */
+
+.cycleToggle {
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  padding: 4px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-3);
+}
+
+.cycleBtn,
+.cycleActive {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border: none;
+  border-radius: var(--radius-full);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.cycleActive {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.cycleSave {
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+  background: var(--color-teal-soft);
+  color: var(--color-teal);
+  font-size: 0.68rem;
+  font-weight: 600;
+}
+
+/* ---------- plan cards ---------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  align-items: start;
+}
+
+.card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 22px 20px 20px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: 0 1px 3px var(--color-shadow);
+}
+
+.cardRecommended {
+  border-color: var(--color-primary);
+  box-shadow: 0 4px 16px rgba(192, 57, 43, 0.12);
+}
+
+.cardCurrent {
+  background: var(--color-primary-soft);
+}
+
+.badgeRecommended,
+.badgeCurrent {
+  position: absolute;
+  top: -10px;
+  left: 20px;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+}
+
+.badgeRecommended {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+.badgeCurrent {
+  left: auto;
+  right: 20px;
+  background: var(--color-surface-3);
+  color: var(--color-text-secondary);
+}
+
+.cardName {
+  margin: 4px 0 10px;
+  font-size: var(--font-size-lg);
+}
+
+.priceRow {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.price {
+  font-size: 1.9rem;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.pricePer {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+.priceNote {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.storage {
+  margin: 12px 0 4px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+.featureList {
+  list-style: none;
+  margin: 12px 0 18px;
+  padding: 12px 0 0;
+  border-top: 1px solid var(--color-border);
+  display: grid;
+  gap: 7px;
+  flex: 1;
+}
+
+.featureList li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: var(--font-size-sm);
+}
+
+.featureList li span {
+  color: var(--color-text-secondary);
+}
+
+.featureList li b {
+  font-weight: 600;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* A feature this tier does not get — muted, not hidden, so the difference
+   between the plans is legible in one glance. */
+.featureOff b {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}
+
+.cta {
+  width: 100%;
+}
+
+.footnote {
+  margin: 24px 0 0;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+  line-height: 1.7;
+}

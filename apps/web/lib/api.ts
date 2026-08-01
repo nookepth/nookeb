@@ -74,7 +74,15 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(401, 'Unauthorized');
   }
   if (!res.ok) {
-    throw new ApiError(res.status, `API error ${res.status}`);
+    // Parse the error body so quota (429) and plan-gate (403) rejections reach
+    // the caller with their `code`/`feature`/`limit` intact. This used to throw
+    // a bare "API error 429", which left every page with nothing to say beyond
+    // a generic failure. parseApiError guarantees a machine code never lands in
+    // `message`, so this cannot start leaking codes into the UI.
+    const body = (await res.json().catch(() => null)) as
+      | (Record<string, unknown> & { error?: string; code?: string })
+      | null;
+    throw parseApiError(res.status, body);
   }
   if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
@@ -86,9 +94,65 @@ export class ApiError extends Error {
     message: string,
     /** Machine-readable error code from the API body (e.g. 'VAULT_LOCKED'). */
     public code?: string,
+    /** Quota/plan context when the API sent it (feature, limit, used, reset_at). */
+    public details?: ApiErrorDetails,
   ) {
     super(message);
   }
+}
+
+export interface ApiErrorDetails {
+  feature?: string;
+  limit?: number;
+  used?: number;
+  resetAt?: string;
+  requiredPlan?: string;
+  currentPlan?: string;
+}
+
+/** SCREAMING_SNAKE_CASE — the shape of every machine code the API emits. */
+const CODE_RE = /^[A-Z][A-Z0-9_]{2,}$/;
+
+/**
+ * Turn an error body into an ApiError, and — critically — never let a machine
+ * code end up in `message`, where pages render it straight at the user.
+ *
+ * Two response shapes exist in this API and they disagree about which field
+ * holds the code:
+ *
+ *   membership quota (middleware/quota.ts):
+ *     { error: 'QUOTA_EXCEEDED', feature, limit, used, reset_at }   ← code in `error`
+ *   everything else (vault, storage, boxes):
+ *     { error: 'พื้นที่ไม่เพียงพอ', code: 'QUOTA_EXCEEDED' }        ← code in `code`
+ *
+ * Pages that fell back to `err.message` therefore printed the literal string
+ * "QUOTA_EXCEEDED" to users whenever a membership quota rejected them. So when
+ * `error` looks like a code and no `code` field was sent, it is promoted to
+ * `code` and the message is left empty — forcing the caller through
+ * lib/quota-errors.ts instead of rendering the raw token.
+ */
+export function parseApiError(
+  status: number,
+  body: (Record<string, unknown> & { error?: string; code?: string }) | null,
+): ApiError {
+  const rawError = typeof body?.error === 'string' ? body.error : undefined;
+  const rawCode = typeof body?.code === 'string' ? body.code : undefined;
+
+  const errorIsCode = rawError !== undefined && rawCode === undefined && CODE_RE.test(rawError);
+  const code = rawCode ?? (errorIsCode ? rawError : undefined);
+  const message = errorIsCode ? '' : (rawError ?? `API error ${status}`);
+
+  const num = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
+  const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
+
+  return new ApiError(status, message, code, {
+    feature: str(body?.feature),
+    limit: num(body?.limit),
+    used: num(body?.used),
+    resetAt: str(body?.reset_at),
+    requiredPlan: str(body?.required_plan),
+    currentPlan: str(body?.current_plan),
+  });
 }
 
 export interface ListFilesOptions {
@@ -175,11 +239,7 @@ async function trashFetch<T>(path: string, init?: RequestInit): Promise<T> {
     | (Record<string, unknown> & { error?: string; code?: string })
     | null;
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      typeof body?.error === 'string' ? body.error : `API error ${res.status}`,
-      typeof body?.code === 'string' ? body.code : undefined,
-    );
+    throw parseApiError(res.status, body);
   }
   return body as T;
 }
@@ -837,6 +897,31 @@ export function deleteVaultFile(fileId: string, pin: string): Promise<{ success:
   });
 }
 
+export interface VaultTrashFileDto extends VaultFileDto {
+  deletedAt: string;
+  daysUntilPurge: number;
+}
+
+export interface VaultTrashResponse {
+  retentionDays: number;
+  files: VaultTrashFileDto[];
+}
+
+/**
+ * ถังขยะห้องนิรภัย — deliberately NOT part of the general /trash listing.
+ *
+ * A vault filename is sensitive content in its own right, and /trash is
+ * protected only by the session cookie. This endpoint sits behind the vault
+ * unlock session, so call it only while the vault is open.
+ */
+export function listVaultTrash(): Promise<VaultTrashResponse> {
+  return vaultFetch(`/trash`);
+}
+
+export function restoreVaultFile(fileId: string): Promise<{ success: boolean }> {
+  return vaultFetch(`/trash/${fileId}/restore`, { method: 'POST' });
+}
+
 /**
  * View URL for <img>/<video>/<iframe> — same-origin through /api-proxy, so the
  * browser attaches the session cookie itself. The API re-checks ownership +
@@ -902,11 +987,7 @@ async function boxFetch<T>(path: string, init?: RequestInit): Promise<T> {
     | (Record<string, unknown> & { error?: string; code?: string })
     | null;
   if (!res.ok) {
-    throw new ApiError(
-      res.status,
-      typeof body?.error === 'string' ? body.error : `API error ${res.status}`,
-      typeof body?.code === 'string' ? body.code : undefined,
-    );
+    throw parseApiError(res.status, body);
   }
   return body as T;
 }
@@ -1423,4 +1504,116 @@ export function createPersonalTask(input: {
       ],
     }),
   });
+}
+
+/* ============================================================
+   ระบบสมาชิก (Membership) — routes/plans.ts, migration 051
+   ============================================================ */
+
+export type PlanKey = 'free' | 'pro' | 'premium';
+export type BillingCycle = 'monthly' | 'yearly';
+
+export interface PlanPricingDto {
+  monthly: number;
+  /** null = that plan has no yearly option (free). */
+  yearly: number | null;
+}
+
+/**
+ * Mirrors PlanSummary in apps/api/src/config/plans.ts — the single source of
+ * truth for every limit and price. Nothing in the web app may hard-code a plan
+ * number; read it from here.
+ */
+export interface PlanSummaryDto {
+  plan: PlanKey;
+  /** ชื่อแพ็กเกจจาก config/plans.ts — no emoji. */
+  displayName: string;
+  pricing: PlanPricingDto;
+  lockerBytes: number;
+  lockerMaxBytesWithReferrals: number;
+  monthly: Record<string, number>;
+  capacity: Record<string, number>;
+  features: Record<string, boolean>;
+  reminder: { maxSelectable: number; notifyOnlyPending: boolean };
+  trashRetentionDays: number;
+  slaHours: number;
+}
+
+export interface PlansResponse {
+  plans: PlanSummaryDto[];
+  reminderIntervalChoices: number[];
+  currency: string;
+}
+
+export interface MyPlanResponse {
+  plan: PlanKey;
+  summary: PlanSummaryDto;
+  referralCount: number;
+  locker: { limitBytes: number; usedBytes: number };
+  subscription: unknown | null;
+}
+
+export interface QuotaStateDto {
+  feature: string;
+  limit: number;
+  used: number;
+  /** null when the feature is unlimited on this plan. */
+  remaining: number | null;
+  unlimited: boolean;
+}
+
+export interface MyQuotasResponse {
+  plan: PlanKey;
+  /** ISO instant the monthly counters roll over (1st, 00:00 ICT). */
+  resetAt: string;
+  quotas: QuotaStateDto[];
+}
+
+/** Public price list — no session required. */
+export function getPlans(): Promise<PlansResponse> {
+  return apiFetch(`/plans`);
+}
+
+/** The caller's own membership + locker state. */
+export function getMyPlan(): Promise<MyPlanResponse> {
+  return apiFetch(`/plans/me`);
+}
+
+/**
+ * Every monthly counter for the caller. Read-only — it deliberately creates no
+ * quota rows, so polling it has no side effects.
+ */
+export function getMyQuotas(): Promise<MyQuotasResponse> {
+  return apiFetch(`/plans/me/quotas`);
+}
+
+/** Pull one feature's state out of a quotas response, or null if absent. */
+export function findQuota(
+  quotas: MyQuotasResponse | null,
+  feature: string,
+): QuotaStateDto | null {
+  return quotas?.quotas.find((q) => q.feature === feature) ?? null;
+}
+
+/* ============================================================
+   บูธกลุ่ม (Group Boost) — routes/boosts.ts, migration 051
+   ============================================================ */
+
+export interface BoostStatusResponse {
+  plan: PlanKey;
+  limit: number;
+  used: number;
+  available: number;
+  durationDays: number;
+  boosts: { groupId: string; activatedAt: string; expiresAt: string }[];
+}
+
+/**
+ * Boost slots + what is currently boosted.
+ *
+ * NOT plan-gated server-side on purpose: a free user must be able to see they
+ * have 0 slots and what upgrading would buy them.
+ */
+export function getBoosts(): Promise<BoostStatusResponse> {
+  return apiFetch(`/boosts`);
 }

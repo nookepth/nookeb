@@ -25,6 +25,25 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { normalizePlan } from '../config/plans';
 import { consumeQuota } from '../services/quota.service';
 
+/**
+ * Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
+ *
+ * Master switch for the diary nudge, mirroring TASK_NOTIFICATIONS_ENABLED in
+ * packages/shared/src/task-notifications.ts. While false:
+ *
+ *   - `scheduleMembershipJobs` registers no repeatable sweep, so nothing is
+ *     queued in the first place;
+ *   - `runDiaryReminderSweep` returns an empty result immediately, standing
+ *     down any job that was queued before the flag flipped (belt-and-braces,
+ *     the same shape as `processTaskReminder`).
+ *
+ * NOTHING ELSE IS TOUCHED: `diary_notification_settings` rows, the
+ * `diary_reminders` quota feature and every already-consumed unit are left
+ * exactly as they are. Flip this back to `true` and the sweep re-enables with
+ * no other code change.
+ */
+export const DIARY_REMINDER_ENABLED = false;
+
 /** Bangkok calendar date (YYYY-MM-DD) for an instant — same trick as billing-period. */
 function bangkokDate(at: Date): string {
   const shifted = new Date(at.getTime() + 7 * 60 * 60 * 1000);
@@ -68,6 +87,13 @@ export async function runDiaryReminderSweep(
     skippedQuota: 0,
     failed: 0,
   };
+
+  // Stand down before touching the database or consuming a single quota unit.
+  // This runs even for jobs enqueued while the flag was still true.
+  if (!DIARY_REMINDER_ENABLED) {
+    console.log('[membership] diary reminders are disabled — sweep stood down');
+    return result;
+  }
 
   // Everyone who opted in. The per-user notify_time is NOT honoured here: this
   // sweep runs once at 20:00 ICT, which is the column's default. Respecting an

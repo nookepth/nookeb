@@ -53,8 +53,8 @@ describe('plan vocabulary', () => {
 describe('pricing (THB)', () => {
   it('matches the published price list exactly', () => {
     assert.deepEqual(PLAN_PRICING.free, { monthly: 0, yearly: null });
-    assert.deepEqual(PLAN_PRICING.pro, { monthly: 59, yearly: 599 });
-    assert.deepEqual(PLAN_PRICING.premium, { monthly: 129, yearly: 1290 });
+    assert.deepEqual(PLAN_PRICING.pro, { monthly: 79, yearly: 790 });
+    assert.deepEqual(PLAN_PRICING.premium, { monthly: 149, yearly: 1490 });
   });
 
   it('reports no yearly price for free', () => {
@@ -63,10 +63,10 @@ describe('pricing (THB)', () => {
   });
 
   it('prices every paid cycle', () => {
-    assert.equal(priceOf('pro', 'monthly'), 59);
-    assert.equal(priceOf('pro', 'yearly'), 599);
-    assert.equal(priceOf('premium', 'monthly'), 129);
-    assert.equal(priceOf('premium', 'yearly'), 1290);
+    assert.equal(priceOf('pro', 'monthly'), 79);
+    assert.equal(priceOf('pro', 'yearly'), 790);
+    assert.equal(priceOf('premium', 'monthly'), 149);
+    assert.equal(priceOf('premium', 'yearly'), 1490);
   });
 });
 

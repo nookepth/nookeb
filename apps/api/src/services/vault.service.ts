@@ -176,6 +176,63 @@ export async function softDeleteVaultFile(
   return (data ?? []).length > 0;
 }
 
+/**
+ * Soft-deleted rows still inside the retention window — the vault's own trash.
+ *
+ * WHY THIS IS NOT PART OF /trash: the general trash bin lists `files` behind a
+ * plain session cookie. A vault row's FILENAME is itself sensitive content (the
+ * same reasoning that makes the purge hard-delete these rows instead of leaving
+ * a tombstone), so surfacing it there would hand every vault filename to anyone
+ * holding a session — routing around the PIN that protects the bytes. This
+ * listing is therefore served only from behind the vault unlock session.
+ *
+ * Rows past `retentionDays` are filtered OUT rather than shown as expired: the
+ * purge may not have run yet, and offering a restore that the next sweep undoes
+ * is worse than not offering one.
+ */
+export async function listDeletedVaultFiles(
+  supabase: SupabaseClient,
+  userId: string,
+  retentionDays: number,
+): Promise<VaultFileRecord[]> {
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from('vault_files')
+    .select('*')
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .gte('deleted_at', cutoff)
+    .order('deleted_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as VaultFileRecord[];
+}
+
+/**
+ * Undo a soft delete. Returns false when there is no soft-deleted row owned by
+ * this user, which the route maps to 404.
+ *
+ * No storage settlement happens here on purpose: soft delete does NOT refund
+ * vault bytes (the ciphertext still occupies R2 — the refund is at hard purge),
+ * so the user's `storage_used` never moved and restoring must not re-charge it.
+ * The one thing restore CAN violate is the live-row capacity limit, so the
+ * caller checks that first — see the route.
+ */
+export async function restoreVaultFile(
+  supabase: SupabaseClient,
+  userId: string,
+  fileId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('vault_files')
+    .update({ deleted_at: null })
+    .eq('id', fileId)
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
 // --- Watermarking ------------------------------------------------------------
 // The vault's real anti-sharing mechanism is traceability, not prevention: a
 // screenshot cannot be blocked in a browser, but a leaked one carries the

@@ -64,9 +64,27 @@ export interface PlanPricing {
 
 export const PLAN_PRICING: Record<Plan, PlanPricing> = {
   free: { monthly: 0, yearly: null },
-  pro: { monthly: 59, yearly: 599 },
-  premium: { monthly: 129, yearly: 1290 },
+  // Yearly is priced at 10× monthly — the usual "two months free" shape.
+  pro: { monthly: 79, yearly: 790 },
+  premium: { monthly: 149, yearly: 1490 },
 };
+
+/**
+ * ชื่อแพ็กเกจที่แสดงกับผู้ใช้ — the ONLY place these names are written.
+ *
+ * NO EMOJI, ever (brand rule, CLAUDE.md §3 rule 13). The web mirrors this map
+ * in apps/web/lib/quota-errors.ts because the two apps do not share a runtime;
+ * if you change a name here, change it there.
+ */
+export const PLAN_DISPLAY_NAME: Record<Plan, string> = {
+  free: 'หนูเก็บวัยเด็ก',
+  pro: 'หนูเก็บโตแย้ว',
+  premium: 'หนูเก็บแปลงร่าง',
+};
+
+export function planDisplayName(plan: Plan): string {
+  return PLAN_DISPLAY_NAME[plan];
+}
 
 /** Price in THB for a plan + cycle, or null when that combination isn't sold. */
 export function priceOf(plan: Plan, cycle: BillingCycle): number | null {
@@ -323,6 +341,8 @@ export function isMonthlyFeature(feature: QuotaFeature): feature is MonthlyFeatu
  */
 export interface PlanSummary {
   plan: Plan;
+  /** ชื่อที่แสดงกับผู้ใช้ — no emoji, see PLAN_DISPLAY_NAME. */
+  displayName: string;
   pricing: PlanPricing;
   lockerBytes: number;
   lockerMaxBytesWithReferrals: number;
@@ -337,6 +357,7 @@ export interface PlanSummary {
 export function planSummary(plan: Plan): PlanSummary {
   return {
     plan,
+    displayName: PLAN_DISPLAY_NAME[plan],
     pricing: PLAN_PRICING[plan],
     lockerBytes: lockerLimitBytes(plan, 0),
     lockerMaxBytesWithReferrals: lockerLimitBytes(plan, Number.MAX_SAFE_INTEGER),

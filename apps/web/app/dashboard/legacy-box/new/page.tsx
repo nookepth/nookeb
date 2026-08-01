@@ -15,6 +15,7 @@ import {
 } from '@nookeb/shared';
 import { ApiError, createLegacyBox, hasSession } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { flatten, getQuotaMessage } from '@/lib/quota-errors';
 import { CheckBadgeIcon, OCCASION_ICONS } from './OccasionIcons';
 import { ShareActions } from './ShareActions';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -229,11 +230,21 @@ export default function NewLegacyBoxPage() {
       );
       setCreated({ shareUrl: res.shareUrl });
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
+      // QUOTA_EXCEEDED is overloaded on this endpoint and the two meanings need
+      // different advice, so the STATUS disambiguates:
+      //   429 → the monthly gift-box quota (3/10/30) — comes back next month.
+      //   409 → personal storage bytes — waiting will never help.
+      // Telling a user out of disk space to "wait for the 1st" would be wrong.
+      if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED' && err.status === 429) {
+        setError(flatten(getQuotaMessage(err.details?.feature ?? 'gift_boxes')));
+      } else if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
         setError('พื้นที่ไม่เพียงพอ — ลบไฟล์เก่าหรือชวนเพื่อนเพิ่มพื้นที่ก่อนน้า');
       } else if (err instanceof ApiError && err.code === 'BOX_LIMIT_REACHED') {
-        setError('คุณมีกล่องของขวัญครบ 10 กล่องแล้ว ลบกล่องเก่าก่อนน้า');
+        // Live-box cap, not a monthly quota — the fix is deleting, not waiting.
+        setError('กล่องของขวัญที่เปิดอยู่ครบจำนวนแล้ว ลบกล่องเก่าก่อนน้า');
       } else if (err instanceof ApiError && err.message && err.message !== `API error ${err.status}`) {
+        // parseApiError blanks `message` when the body carried a bare machine
+        // code, so this branch can no longer print e.g. "QUOTA_EXCEEDED".
         setError(err.message);
       } else {
         setError('สร้างกล่องไม่สำเร็จ ลองใหม่อีกทีน้า');

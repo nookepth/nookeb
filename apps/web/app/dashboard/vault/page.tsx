@@ -9,16 +9,20 @@ import {
   getVaultStatus,
   hasSession,
   listVaultFiles,
+  listVaultTrash,
   lockVault,
+  restoreVaultFile,
   setupVaultPin,
   unlockVault,
   uploadVaultFile,
   vaultViewUrl,
   type VaultFileDto,
   type VaultStatus,
+  type VaultTrashResponse,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { formatBytes } from '@/lib/format';
+import { getQuotaMessage } from '@/lib/quota-errors';
 import { VaultPinPad } from '@/components/VaultPinPad';
 
 /**
@@ -82,6 +86,12 @@ export default function VaultPage() {
   const [uploadState, setUploadState] = useState<{ label: string; percent: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  // ถังขยะห้องนิรภัย — lives here, behind the unlock session, and never in the
+  // general /dashboard/trash page (a vault filename is sensitive content).
+  const [trash, setTrash] = useState<VaultTrashResponse | null>(null);
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [restoring, setRestoring] = useState<string | null>(null);
+  const [trashError, setTrashError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const clearPinFeedback = useCallback(() => {
@@ -145,9 +155,39 @@ export default function VaultPage() {
     return () => clearInterval(id);
   }, []);
 
+  const loadTrash = useCallback(async () => {
+    try {
+      setTrash(await listVaultTrash());
+    } catch {
+      // Non-fatal: the vault's own trash is a secondary panel. A failure here
+      // must never blank the file grid the user actually came for.
+      setTrash(null);
+    }
+  }, []);
+
   useEffect(() => {
-    if (status?.isUnlocked) void loadFiles(1, false);
-  }, [status?.isUnlocked, loadFiles]);
+    if (status?.isUnlocked) {
+      void loadFiles(1, false);
+      void loadTrash();
+    }
+  }, [status?.isUnlocked, loadFiles, loadTrash]);
+
+  async function handleRestore(fileId: string): Promise<void> {
+    setRestoring(fileId);
+    setTrashError(null);
+    try {
+      await restoreVaultFile(fileId);
+      await Promise.all([loadFiles(1, false), loadTrash()]);
+    } catch (err) {
+      if (err instanceof ApiError && err.code === 'VAULT_FULL') {
+        setTrashError(getQuotaMessage('vault_files').title);
+      } else {
+        setTrashError('กู้คืนไม่สำเร็จ ลองใหม่อีกทีน้า');
+      }
+    } finally {
+      setRestoring(null);
+    }
+  }
 
   const remainingSeconds =
     expiresAt !== null ? Math.max(0, Math.round((expiresAt - now) / 1000)) : null;
@@ -160,6 +200,10 @@ export default function VaultPage() {
       setViewer(null);
       setDeleting(null);
       setFiles([]);
+      // Drop the trash listing too — it carries filenames, and the session that
+      // authorised showing them has just expired.
+      setTrash(null);
+      setTrashOpen(false);
       void lockVault().catch(() => {});
     }
   }, [remainingSeconds, status?.isUnlocked]);
@@ -506,6 +550,48 @@ export default function VaultPage() {
         <button className="btn vault-load-more" onClick={() => void loadFiles(page + 1, true)}>
           โหลดเพิ่ม ({files.length}/{total})
         </button>
+      )}
+
+      {/* ถังขยะห้องนิรภัย — collapsed by default so the grid stays the focus.
+          Rendered only when there is something to restore. */}
+      {trash && trash.files.length > 0 && (
+        <section className="vault-trash">
+          <button
+            className="vault-trash-toggle"
+            aria-expanded={trashOpen}
+            onClick={() => setTrashOpen((o) => !o)}
+          >
+            ถังขยะห้องนิรภัย ({trash.files.length}) {trashOpen ? '▾' : '▸'}
+          </button>
+
+          {trashOpen && (
+            <>
+              <p className="vault-trash-hint">
+                ไฟล์ที่ลบจะเก็บไว้ {trash.retentionDays} วัน แล้วลบถาวรน้า
+              </p>
+              {trashError && <div className="vault-error">{trashError}</div>}
+              <ul className="vault-trash-list">
+                {trash.files.map((f) => (
+                  <li key={f.id} className="vault-trash-item">
+                    <span className="vault-trash-name" title={f.originalFilename}>
+                      {f.originalFilename}
+                    </span>
+                    <span className="vault-trash-days">
+                      เหลืออีก {f.daysUntilPurge} วัน
+                    </span>
+                    <button
+                      className="btn secondary"
+                      disabled={restoring === f.id}
+                      onClick={() => void handleRestore(f.id)}
+                    >
+                      {restoring === f.id ? 'กำลังกู้คืน…' : 'กู้คืน'}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
       )}
 
       {viewer && (

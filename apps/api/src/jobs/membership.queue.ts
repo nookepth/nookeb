@@ -13,8 +13,16 @@
 import { Queue, type ConnectionOptions } from 'bullmq';
 import { createRedis } from '../plugins/redis';
 import { BANGKOK_TZ, MONTHLY_RESET_CRON } from '../config/billing-period';
+import { DIARY_REMINDER_ENABLED } from './diaryReminder.job';
 
 export const MEMBERSHIP_QUEUE = 'nookeb-membership';
+
+/**
+ * Declared once because `removeRepeatable` matches on the repeat key — pattern,
+ * timezone and jobId together. If the add and the remove ever disagreed by a
+ * character, the remove would silently miss and the schedule would survive.
+ */
+const DIARY_REMINDER_CRON = '0 20 * * *';
 
 export type MembershipJob =
   | { type: 'quota_period_cleanup' }
@@ -84,9 +92,25 @@ export async function scheduleMembershipJobs(): Promise<void> {
 
   // Daily 20:00 ICT — the diary nudge goes out in the evening, when there is a
   // day worth writing about.
-  await q.add(
-    'diary_reminder_sweep',
-    { type: 'diary_reminder_sweep' },
-    { repeat: { pattern: '0 20 * * *', tz: BANGKOK_TZ }, jobId: 'membership-diary-reminder' },
-  );
+  //
+  // Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
+  //
+  // Skipping the `add` is NOT sufficient on a live deploy: a repeatable
+  // registered by a previous boot lives in Redis and keeps firing regardless of
+  // what this process does. So when the flag is off we actively REMOVE the
+  // schedule. `removeRepeatable` is a no-op when nothing is registered, which
+  // makes a first-ever boot with the flag off safe too.
+  if (DIARY_REMINDER_ENABLED) {
+    await q.add(
+      'diary_reminder_sweep',
+      { type: 'diary_reminder_sweep' },
+      { repeat: { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ }, jobId: 'membership-diary-reminder' },
+    );
+  } else {
+    await q.removeRepeatable(
+      'diary_reminder_sweep',
+      { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ },
+      'membership-diary-reminder',
+    );
+  }
 }

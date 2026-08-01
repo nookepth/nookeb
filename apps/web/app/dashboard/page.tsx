@@ -11,6 +11,7 @@ import {
   deleteFolder,
   getFileStats,
   getMe,
+  getMyPlan,
   getSpaceId,
   getUsage,
   hasSession,
@@ -20,10 +21,12 @@ import {
   listTags,
   listTrash,
   type FileStatsResponse,
+  type PlanKey,
   type UsageResponse,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { formatBytes } from '@/lib/format';
+import { planDisplayName } from '@/lib/quota-errors';
 import { fileGroup, type FileGroup } from '@/lib/filetype';
 import { FileGrid } from '@/components/FileGrid';
 import { FilePreviewModal } from '@/components/FilePreviewModal';
@@ -71,6 +74,7 @@ export default function DashboardPage() {
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const { status: vaultStatus, stats: vaultStats } = useVaultSummary();
   const [user, setUser] = useState<NavbarUser | null>(null);
+  const [plan, setPlan] = useState<PlanKey | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [trashCount, setTrashCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -119,6 +123,11 @@ export default function DashboardPage() {
         setIsAdmin(me.isAdmin);
         setUser({ displayName: me.displayName, pictureUrl: me.pictureUrl });
       })
+      .catch(() => {});
+    // Plan tier for the profile badge. Best-effort: the dashboard must render
+    // fine without it, so a failure just leaves the badge off.
+    getMyPlan()
+      .then((res) => setPlan(res.plan))
       .catch(() => {});
   }, []);
 
@@ -665,6 +674,9 @@ export default function DashboardPage() {
               >
                 กิจกรรมชวนเพื่อน
               </button>
+              <a className="btn secondary" href="/dashboard/plans">
+                แพลนของฉัน
+              </a>
               <a className="btn secondary" href="/dashboard/teams">
                 ทีม
               </a>
@@ -678,6 +690,18 @@ export default function DashboardPage() {
               {menuProfile && (
                 <>
                   <hr className="menu-divider" />
+                  {/* ชื่อ + แพลนปัจจุบัน — the pill links to the plans page so
+                      "what am I on / what else is there" is one tap. */}
+                  {user?.displayName && (
+                    <div className="profile-sheet-identity">
+                      <span className="profile-sheet-name">{user.displayName}</span>
+                      {plan && (
+                        <a className="profile-plan-pill" href="/dashboard/plans">
+                          {planDisplayName(plan)}
+                        </a>
+                      )}
+                    </div>
+                  )}
                   {usage && (
                     <div className="profile-sheet-sub" role="status">
                       ใช้ไป {formatBytes(usage.storageUsed)} จาก {formatBytes(usage.storageLimit)}

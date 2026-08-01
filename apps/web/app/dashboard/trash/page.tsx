@@ -162,10 +162,10 @@ export default function TrashPage() {
 
       {data?.plan === 'free' && (
         <div className="trash-upsell">
-          <span>อัปเกรดเป็น Pro เพื่อเก็บไฟล์ในถังขยะ 30 วัน</span>
-          <button className="btn secondary small" disabled title="เร็วๆ นี้">
-            อัปเกรด (เร็วๆ นี้)
-          </button>
+          <span>อัปเกรดเป็นหนูเก็บโตแย้ว เพื่อเก็บไฟล์ในถังขยะ 30 วัน</span>
+          <a className="btn secondary small" href="/dashboard/plans">
+            ดูแพลน
+          </a>
         </div>
       )}
 
