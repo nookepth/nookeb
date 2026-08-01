@@ -12,6 +12,8 @@ import {
 } from '../services/google-sheets.service';
 import { claimOAuthState, storeOAuthState } from '../services/google-oauth-state';
 import { enqueueHistoricalSync } from '../services/sheetsQueue';
+import { planGuard } from '../middleware/planGuard';
+import { hasFeature, normalizePlan } from '../config/plans';
 
 /**
  * Google Sheets integration (migration 046) — OAuth connect/disconnect.
@@ -85,7 +87,13 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   // fetch() through the /api-proxy rewrite, where a redirect would be followed
   // by fetch and land Google's HTML in a JSON parse. The client does the
   // top-level navigation itself.
-  app.get('/integrations/google/auth', { preHandler: app.authenticate }, async (request) => {
+  //
+  // §15 — PREMIUM ONLY. Gated at the point the flow STARTS, so a free user
+  // never reaches Google's consent screen and is never asked to grant access
+  // the product will then refuse to use.
+  app.get('/integrations/google/auth', {
+    preHandler: [app.authenticate, planGuard('google_sheets')],
+  }, async (request) => {
     const nonce = randomUUID();
     await storeOAuthState(app.redis, nonce, request.authUser!.userId);
     return { url: getAuthUrl(nonce) };
@@ -113,6 +121,21 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
     if (!boundUserId) {
       app.log.warn('google oauth callback with unknown/expired/used state — rejected');
       return reply.redirect(settingsRedirect('error', 'state_mismatch'));
+    }
+
+    // §15 re-check. planGuard cannot run here (no session survives Google's
+    // redirect — see the file header), and the nonce may have been minted
+    // before a downgrade, so the entitlement is verified against the bound user
+    // just before the token is stored. Storing a refresh token for a user who
+    // may not use the feature would be collecting a third-party credential for
+    // nothing.
+    const { data: planRow } = await app.supabase
+      .from('users')
+      .select('plan')
+      .eq('id', boundUserId)
+      .maybeSingle();
+    if (!hasFeature(normalizePlan(planRow?.plan as string | null), 'google_sheets')) {
+      return reply.redirect(settingsRedirect('error', 'plan_required'));
     }
 
     try {
@@ -145,7 +168,7 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   app.post(
     '/integrations/google/sync-historical',
     {
-      preHandler: app.authenticate,
+      preHandler: [app.authenticate, planGuard('google_sheets')],
       config: { rateLimit: { max: 3, timeWindow: '10 minutes' } },
     },
     async (request, reply) => {

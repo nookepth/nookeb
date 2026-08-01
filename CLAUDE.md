@@ -223,6 +223,7 @@ land **before** the API deploy are flagged in-file.
 | `045_task_files.sql` | `task_files` junction + item statuses `submitted`/`rejected` + `submitted_at`/`rejected_at`/`rejection_note`/`submission_note`. **Not additive-safe: `getTaskWithDetails()` SELECTs `task_files` and backs every task read — apply BEFORE deploying.** |
 | `046_google_sheets_integration.sql` | `google_integrations` (one row/user, AES-GCM `encrypted_token`, RLS deny-all) |
 | `047_task_command_reminders.sql` | `tasks.reminder_count` INT NULL CHECK 1..4 — the Pro "เตือน N ครั้ง" knob |
+| `051_membership.sql` | **ระบบสมาชิก** — widens `users.plan` to include `'premium'` (keeps `'team'`, normalised to premium in code); `subscriptions`, `user_quotas` (+ `consume_quota` / `release_quota` RPCs), `user_group_boosts` (+ `claim_group_boost`), `support_tickets`, `user_integrations`; `tasks.reminder_intervals INT[]` + `tasks.notify_only_pending`; widens `task_reminders.remind_type` for `2_days`/`6_hours`/`at_deadline`. **Apply BEFORE the API/worker deploy** — every quota-guarded route calls `consume_quota`. The monthly RESET is structural (rows are keyed by Bangkok `period_start`), so no job can fail it. Single source of truth for all limits is `apps/api/src/config/plans.ts`. |
 | `048_task_urgency.sql` | `tasks.urgency` TEXT NULL CHECK (urgent_max/urgent/normal/relaxed) — creation-time ความเร่งด่วน; apply BEFORE deploying the web/API that sends it (older clients omit the column, so old-code/new-DB is safe) |
 
 Key invariants:

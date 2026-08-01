@@ -38,6 +38,8 @@ import {
   toVaultFileDto,
   watermarkImage,
 } from '../services/vault.service';
+import { countVaultFiles, evaluateCapacity } from '../services/quota.service';
+import { ensurePlan } from '../middleware/planGuard';
 
 /**
  * ห้องนิรภัย (Vault) — PIN-protected, view-only, per-user encrypted store.
@@ -299,6 +301,28 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
       });
     }
     const userId = request.authUser!.userId;
+
+    // §10 — CAPACITY limit on total live vault items (free 10 / pro 30 /
+    // premium 100). Checked BEFORE the storage reservation and before a single
+    // byte is streamed, so a full vault costs nothing to reject.
+    //
+    // This is a count of live rows, not a monthly counter: deleting a vault
+    // file frees the slot immediately. Two simultaneous uploads at 9/10 can
+    // both pass (see evaluateCapacity's note) — bounded at one extra item and
+    // accepted deliberately rather than locking the table on every upload.
+    const plan = await ensurePlan(request);
+    const vaultCount = await countVaultFiles(app.supabase, userId);
+    const capacity = evaluateCapacity({ plan, feature: 'vault_files', currentCount: vaultCount });
+    if (!capacity.allowed) {
+      mp.file.resume(); // drain so the connection isn't left hanging
+      return reply.code(403).send({
+        error: `ห้องนิรภัยเต็มแล้วน้า แพ็กเกจนี้เก็บได้ ${capacity.limit} ไฟล์`,
+        code: 'VAULT_FULL',
+        feature: 'vault_files',
+        limit: capacity.limit,
+        used: capacity.used,
+      });
+    }
 
     // Quota — RESERVE up front, BEFORE streaming a single byte, exactly like the
     // LINE upload worker (incrementPersonalStorage with enforce). Vault files

@@ -32,6 +32,10 @@ import proInterestRoutes from './routes/pro-interest';
 import eventsRoutes from './routes/events';
 import integrationsRoutes from './routes/integrations';
 import staticRoutes from './routes/static';
+import plansRoutes from './routes/plans';
+import boostRoutes from './routes/boosts';
+import supportRoutes from './routes/support';
+import quotaPlugin from './middleware/quota';
 import { flushAll } from './services/upload-queue';
 
 async function main(): Promise<void> {
@@ -145,6 +149,11 @@ async function main(): Promise<void> {
   });
 
   await app.register(authPlugin);
+  // Quota reservation bookkeeping. Registered on the ROOT instance (via
+  // fastify-plugin, so it is not encapsulated) because its onResponse hook must
+  // see every route's status code to release reservations held by requests that
+  // ended up failing. Order: after authPlugin, before any route.
+  await app.register(quotaPlugin);
 
   app.get('/health', async () => ({
     status: 'ok',
@@ -180,6 +189,10 @@ async function main(): Promise<void> {
   await app.register(eventsRoutes);
   await app.register(integrationsRoutes);
   await app.register(staticRoutes);
+  // ระบบสมาชิก (membership) — pricing, quota status, บูธ, support SLA.
+  await app.register(plansRoutes);
+  await app.register(boostRoutes);
+  await app.register(supportRoutes);
 
   // Root error handler — sanitizes every error the routes let bubble up
   // (previously Fastify's default handler echoed error.message, which could leak

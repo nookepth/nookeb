@@ -5,6 +5,8 @@ import { createSheetsWorker } from './sheetsWorker';
 import { closeTaskQueue, scheduleTaskRepeatableJobs } from '../services/taskScheduler';
 import { closeSheetsQueue } from '../services/sheetsQueue';
 import { isGoogleSheetsConfigured } from '../services/google-sheets.service';
+import { createMembershipWorker } from '../jobs/membership.worker';
+import { closeMembershipQueue, scheduleMembershipJobs } from '../jobs/membership.queue';
 import { createRedis } from '../plugins/redis';
 import { config } from '../config';
 
@@ -15,6 +17,9 @@ const taskWorker = createTaskReminderWorker();
 // unconfigured deployment doesn't hold an idle Redis connection open for a
 // queue nothing ever writes to.
 const sheetsWorker = isGoogleSheetsConfigured() ? createSheetsWorker() : null;
+// ระบบสมาชิก maintenance: quota-period cleanup, boost/subscription expiry,
+// diary reminder sweep. Always constructed — none of it is feature-flagged.
+const membershipWorker = createMembershipWorker();
 
 // --- Liveness ------------------------------------------------------------
 // The worker has no request surface, so a crash/hang used to silently stop
@@ -70,6 +75,13 @@ scheduleRepeatableJobs().catch((err) => {
 scheduleTaskRepeatableJobs().catch((err) => {
   console.error('[worker] failed to schedule task repeatable jobs:', err);
 });
+// Membership maintenance schedule (monthly quota-period cleanup at 00:00 ICT on
+// the 1st; daily expiry sweep; daily diary reminder). NOTE: the monthly quota
+// RESET is structural — see jobs/quotaReset.job.ts — so a missed run here can
+// never lock a user out of their new month's allowance.
+scheduleMembershipJobs().catch((err) => {
+  console.error('[worker] failed to schedule membership jobs:', err);
+});
 
 // Effective scan config, printed once per boot: Railway env is per-service and
 // invisible from the repo, and a flipped SCAN_ENHANCE_ENABLED silently ships
@@ -87,8 +99,10 @@ async function shutdown(): Promise<void> {
   await uploadWorker.close();
   await taskWorker.close();
   await sheetsWorker?.close();
+  await membershipWorker.close();
   await closeTaskQueue();
   await closeSheetsQueue();
+  await closeMembershipQueue();
   await closeWorkerQueue();
   await healthRedis.quit().catch(() => {});
   process.exit(0);

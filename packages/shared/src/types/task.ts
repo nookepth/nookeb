@@ -27,7 +27,28 @@ export type TaskStatus = 'pending' | 'in_progress' | 'done' | 'cancelled';
  * states.
  */
 export type TaskItemStatus = TaskStatus | 'submitted' | 'rejected';
-export type RemindType = '3_days' | '1_day' | '3_hours' | 'overdue';
+/**
+ * Reminder shot identifiers.
+ *
+ * The first four are the ORIGINAL default schedule (migration 036). `2_days`
+ * and `6_hours` were added by the membership system (migration 051) so the §4b
+ * checkbox set — 3h / 6h / 1d / 2d / 3d — is fully expressible.
+ *
+ * There is NO zero-offset shot: a reminder fires only at an interval the
+ * creator selected, and selecting nothing schedules nothing. (`overdue` is the
+ * pre-existing +1h chase, reachable only via the legacy `reminder_count` chat
+ * command — it is not one of the five selectable intervals.)
+ *
+ * Adding a value here REQUIRES widening the task_reminders.remind_type CHECK —
+ * migration 051 does that. Keep this union and that constraint in lockstep.
+ */
+export type RemindType =
+  | '3_days'
+  | '1_day'
+  | '3_hours'
+  | 'overdue'
+  | '2_days'
+  | '6_hours';
 
 /**
  * ความเร่งด่วน picked at creation (migration 048), most→least urgent. Stored
@@ -43,9 +64,28 @@ export const TASK_URGENCIES: readonly TaskUrgency[] = [
  * negative = before). Shared so the scheduler and .ics VALARMs agree. */
 export const REMIND_OFFSETS_MINUTES: Record<RemindType, number> = {
   '3_days': -3 * 24 * 60,
+  '2_days': -2 * 24 * 60,
   '1_day': -24 * 60,
+  '6_hours': -6 * 60,
   '3_hours': -3 * 60,
   overdue: 60,
+};
+
+/**
+ * §4b — the user-selectable reminder lead times, in HOURS before the deadline,
+ * mapped to the shot they schedule. The hour values are what
+ * `tasks.reminder_intervals` stores; the RemindType is what
+ * `task_reminders.remind_type` stores.
+ *
+ * Kept here rather than in the API so the .ics VALARM builder, the scheduler
+ * and any future client all read one table.
+ */
+export const REMIND_TYPE_BY_INTERVAL_HOURS: Record<number, RemindType> = {
+  3: '3_hours',
+  6: '6_hours',
+  24: '1_day',
+  48: '2_days',
+  72: '3_days',
 };
 
 export interface RecurrenceRule {
@@ -87,6 +127,23 @@ export interface TaskRecord {
    * treat missing as NULL/default. See selectRemindTypes in task-command.ts.
    */
   reminder_count?: number | null;
+  /**
+   * §4b — the creator's reminder checkbox selection (migration 051), in HOURS
+   * before the effective deadline, e.g. [24, 6]. Values come from
+   * REMIND_INTERVAL choices only, and how many may be ticked is a plan limit
+   * (free 1 / pro 2 / premium 4) enforced server-side at create time.
+   *
+   * NULL/absent = the creator selected nothing, which schedules NO reminder
+   * shots. There is no deadline-only fallback. Optional so rows read before
+   * migration 051 don't fail the type.
+   */
+  reminder_intervals?: number[] | null;
+  /**
+   * §4c — when true, a reminder skips assignees who have already submitted.
+   * Pro/premium only, gated at write time. Optional for pre-051 rows; treat
+   * missing as false.
+   */
+  notify_only_pending?: boolean;
   /**
    * ความเร่งด่วน picked at creation (migration 048). NULL = ปกติ. Optional so
    * rows read before the migration don't fail the type; inserts only include

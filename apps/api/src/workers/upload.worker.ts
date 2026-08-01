@@ -93,6 +93,8 @@ import {
   setEntryThumbnail,
 } from '../services/diary.service';
 import { logEvent } from '../services/events.service';
+import { consumeQuota, releaseQuota, resolveUserPlan } from '../services/quota.service';
+import { quotaExceededThai } from '../services/quota-message';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -627,14 +629,65 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
     // minutes; overlapping the scans makes the batch finish in ~one scan's time.
     // progressStore.increment is an atomic Redis HINCRBY, so concurrent ticks are
     // safe, and each storeUpload still charges storage atomically on its own.
+    // §2 — GROUP FILE QUOTA. Counted per (uploader, group, month) when a file
+    // enters a group's คลังไฟล์; personal uploads are not counted at all, and
+    // nothing here counts on message send. The plan used is the UPLOADER's, per
+    // the spec, which is why it is resolved from `user` rather than from the
+    // group or the team owner.
+    const groupQuotaScope = job.lineSource === 'group' ? job.lineGroupId : null;
+    const uploaderPlan = groupQuotaScope
+      ? (await resolveUserPlan(supabase, user.id)).plan
+      : null;
+
     const results = await Promise.all(
       job.items.map(async (item): Promise<{ filename: string; url: string } | null> => {
         if (overLimit) return null;
         try {
-          const res = await withRetry(
-            () => storeUpload(user, space, item, job.lineSource, job.lineGroupId, team, uploadedBy),
-            3,
-          );
+          // Reserved per FILE, before the file is stored — a batch of 20 that
+          // crosses the limit stores what fits and rejects the rest, rather
+          // than passing a batch-level snapshot and overshooting by 19.
+          let groupQuotaSpent = false;
+          if (groupQuotaScope && uploaderPlan) {
+            const decision = await consumeQuota(supabase, {
+              userId: user.id,
+              feature: 'group_files',
+              plan: uploaderPlan,
+              scopeId: groupQuotaScope,
+            });
+            if (!decision.allowed) {
+              // FileRejectedError so this rides the existing per-batch notice
+              // dedup — one message for the whole batch, not one per file.
+              throw new FileRejectedError(
+                `group file quota exhausted for ${user.id}/${groupQuotaScope}`,
+                quotaExceededThai({
+                  feature: 'group_files',
+                  limit: decision.limit,
+                  used: decision.used,
+                  resetAt: decision.resetAt,
+                }),
+              );
+            }
+            groupQuotaSpent = true;
+          }
+
+          let res;
+          try {
+            res = await withRetry(
+              () => storeUpload(user, space, item, job.lineSource, job.lineGroupId, team, uploadedBy),
+              3,
+            );
+          } catch (err) {
+            // The file never landed in the archive, so the group unit it
+            // reserved must go back.
+            if (groupQuotaSpent) {
+              await releaseQuota(supabase, {
+                userId: user.id,
+                feature: 'group_files',
+                scopeId: groupQuotaScope!,
+              }).catch(() => undefined);
+            }
+            throw err;
+          }
           await progressStore.increment(job.batchId).catch(() => undefined);
           return { filename: res.filename, url: res.url };
         } catch (err) {
@@ -889,6 +942,29 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   // reply spent it), so the hint rides on the user's next interaction.
   if (warnings.length > 0 && job.lineUserId) {
     await notifyUser(job.lineUserId, [{ type: 'text', text: warnings.join('\n') }]);
+  }
+}
+
+/**
+ * Refund the scan/merge quota unit spent by the webhook when the user typed
+ * "เสร็จ", after the finalize job has permanently failed.
+ *
+ * Best-effort by design: this runs on an already-failed path, and throwing here
+ * would replace a "your PDF failed" message with an unhandled worker error. A
+ * lost refund costs the user one unit until the monthly reset; a thrown error
+ * costs them the notification that anything went wrong at all.
+ */
+async function releaseFinalizeQuota(sessionId: string): Promise<void> {
+  try {
+    const session = await getSession(supabase, sessionId);
+    if (!session) return;
+    // No plan lookup needed: a release only decrements the existing row.
+    await releaseQuota(supabase, {
+      userId: session.user_id,
+      feature: (session.session_kind ?? 'merge') === 'scan' ? 'scans' : 'pdf_merges',
+    });
+  } catch (err) {
+    console.error(`[upload.worker] failed to release finalize quota for ${sessionId}:`, err);
   }
 }
 
@@ -1278,6 +1354,64 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
     return;
   }
 
+  // §7 — the word-conversion quota is counted in PAGES, and the spec requires
+  // the count to be extracted BEFORE processing. Doing it here rather than
+  // after OCR is what makes an over-quota conversion free: Mistral bills per
+  // page, so charging after the OCR call would mean paying for work we then
+  // refuse to deliver.
+  //
+  // An image is one page. A PDF is parsed locally by pdf-lib (cheap — it reads
+  // the page tree, not the content streams). A PDF we cannot parse falls back
+  // to 1 rather than blocking: the conversion will fail on its own merits
+  // shortly, and refusing on a parse error would reject valid-but-unusual PDFs.
+  let sourcePages = 1;
+  if (mime === 'application/pdf') {
+    try {
+      sourcePages = (await loadSourcePdf(source)).getPageCount();
+    } catch {
+      sourcePages = 1;
+    }
+  }
+
+  const { plan: convertPlan } = await resolveUserPlan(supabase, user.id);
+  const pageSpend = await consumeQuota(supabase, {
+    userId: user.id,
+    feature: 'word_conversion_pages',
+    plan: convertPlan,
+    amount: sourcePages,
+  });
+  if (!pageSpend.allowed) {
+    await notifyUser(
+      job.lineUserId,
+      [
+        {
+          type: 'text',
+          text:
+            `ไฟล์นี้มี ${sourcePages} หน้า แต่` +
+            quotaExceededThai({
+              feature: 'word_conversion_pages',
+              limit: pageSpend.limit,
+              used: pageSpend.used,
+              resetAt: pageSpend.resetAt,
+            }),
+        },
+      ],
+      job.replyToken,
+    );
+    return;
+  }
+
+  /** Give the pages back when the conversion does not produce a document. */
+  const refundPages = async (): Promise<void> => {
+    await releaseQuota(supabase, {
+      userId: user.id,
+      feature: 'word_conversion_pages',
+      amount: sourcePages,
+    }).catch((err) =>
+      console.error(`[convert_to_docx] failed to refund ${sourcePages} page(s):`, err),
+    );
+  };
+
   // OCR → per-page markdown. Mistral handles PDFs (digital AND scanned)
   // natively. Fallback when Mistral is unconfigured (webhook normally gates
   // the command on it): plain-text OCR for images; PDFs can't be converted.
@@ -1295,16 +1429,22 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
       pagesMarkdown = [await extractText(source)];
       pageCount = 1;
     } else {
+      await refundPages();
       await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }], job.replyToken);
       return;
     }
   } catch (err) {
     if (err instanceof MistralOcrRejectedError) {
       // The document itself was refused — retrying the same bytes can't help.
+      await refundPages();
       console.warn(`[convert_to_docx] msg=${job.lineMessageId} rejected:`, err.message);
       await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNSUPPORTED }], job.replyToken);
       return;
     }
+    // Refund BEFORE rethrowing: the retry re-enters this function from the top
+    // and charges the pages again, so without this a document that needs three
+    // attempts would cost triple.
+    await refundPages();
     if (!isLastAttempt) throw err; // transient (timeout / 5xx / 429) — retry
     console.error(`[convert_to_docx] msg=${job.lineMessageId} OCR exhausted:`, err);
     await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_FAILED }], job.replyToken);
@@ -1313,6 +1453,7 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
 
   const totalChars = pagesMarkdown.join('').replace(/\s+/g, '').length;
   if (totalChars < 10) {
+    await refundPages();
     await notifyUser(job.lineUserId, [{ type: 'text', text: MSG_DOCX_UNREADABLE }], job.replyToken);
     return;
   }
@@ -1328,6 +1469,7 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
   // convert is personal-chat only, so there is no team branch).
   const reservation = await incrementPersonalStorage(supabase, user.id, docxBuf.length, { enforce: true });
   if (reservation.overLimit) {
+    await refundPages();
     await notifyUser(job.lineUserId, [{ type: 'text', text: PERSONAL_FULL_TEXT }], job.replyToken);
     return;
   }
@@ -1349,8 +1491,11 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
     chargedTo: 'personal',
   });
   if (deduped) {
-    // A concurrent attempt won the insert race and owns the store + charge.
+    // A concurrent attempt won the insert race and owns the store + charge —
+    // including the page charge, which it made independently. Ours is a
+    // duplicate and must be given back.
     await incrementPersonalStorage(supabase, user.id, -docxBuf.length, { enforce: false }).catch(() => undefined);
+    await refundPages();
     return;
   }
 
@@ -1385,6 +1530,9 @@ async function processConvertToDocx(job: ConvertToDocxJob, isLastAttempt: boolea
       .update({ status: 'error', deleted_at: new Date().toISOString() })
       .eq('id', record.id)
       .then(undefined, () => undefined);
+    // Same reasoning as the OCR catch: refund before the rethrow so the retry's
+    // fresh charge is not additive.
+    await refundPages();
     if (!isLastAttempt) throw err;
     console.error(`[convert_to_docx] msg=${job.lineMessageId} store exhausted:`, err);
     // Analytics: convert failed after all retries (funnel drop-off).
@@ -1876,6 +2024,11 @@ export function createUploadWorker(): Worker<FileJob> {
               `[upload.worker] finalize_scan exhausted job=${job.id} session=${data.sessionId}:`,
               err,
             );
+            // §8/§9 — the scan/merge unit was spent in the webhook when the user
+            // typed "เสร็จ". No output was produced, so give it back. Only on
+            // the LAST attempt: releasing on an intermediate failure would
+            // double-refund when the retry then succeeds.
+            await releaseFinalizeQuota(data.sessionId);
             await notifyUser(data.lineUserId, [{ type: 'text', text: MSG_PDF_FAILED }]);
           }
           break;

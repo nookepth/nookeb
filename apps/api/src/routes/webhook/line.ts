@@ -85,6 +85,37 @@ import {
 import { buildCreateTaskCard, buildGroupWelcomeCard } from '../../services/lineMessage';
 import { removeGroupMember, upsertGroupMember } from '../../services/task.service';
 import { config } from '../../config';
+import { handleBoostCommand, handleBoostPostback } from './boost-handlers';
+import { consumeQuota, getQuota, resolveUserPlan } from '../../services/quota.service';
+import { quotaExceededThai } from '../../services/quota-message';
+import type { MonthlyFeature } from '../../config/plans';
+
+/**
+ * Membership pre-check for a chat-initiated feature (สแกน / รวมไฟล์ / แปลงไฟล์).
+ *
+ * READ-ONLY — it does NOT spend a unit. The unit is consumed where the work is
+ * actually committed (finalize for scan/merge; page count for convert), so a
+ * user who opens a scan session and walks away is not charged. This exists for
+ * fail-fast UX: telling someone their quota is gone AFTER they have sent twelve
+ * photos is the worst possible moment.
+ *
+ * Returns the Thai sentence to reply with when blocked, or null to proceed.
+ */
+async function quotaBlockMessage(
+  app: FastifyInstance,
+  userId: string,
+  feature: MonthlyFeature,
+): Promise<string | null> {
+  const { plan } = await resolveUserPlan(app.supabase, userId);
+  const state = await getQuota(app.supabase, { userId, feature, plan });
+  if (state.unlimited || state.remaining > 0) return null;
+  return quotaExceededThai({
+    feature,
+    limit: state.limit,
+    used: state.used,
+    resetAt: state.resetAt,
+  });
+}
 
 interface LineEventSource {
   type: 'user' | 'group' | 'room';
@@ -538,6 +569,14 @@ async function handleTextCommand(
     }
   }
 
+  // §3a — "บูธ" (group boost) selector. Deliberately reachable BARE in a group,
+  // like `ผูกทีม`, because the spec is explicit: "type บูธ in any group → bot
+  // replies with inline group selector". Prefixed still works everywhere.
+  if (isCmd(text, 'บูธ') && (prefixed || source.type === 'group' || source.type === 'room')) {
+    await handleBoostCommand(app, event, source, lineUserId);
+    return;
+  }
+
   if (source.type === 'group' || source.type === 'room') {
     const isBindTeam = /^(?:ผูกทีม)\s+\d+$/i.test(text.trim());
     if (!prefixed && !isBindTeam) return;
@@ -890,6 +929,14 @@ async function handleTextCommand(
     );
     const active = await getActiveSession(app.supabase, user.id);
     if (!active) {
+      // §8 — monthly scan quota. Checked BEFORE opening the session so the user
+      // is not invited to send pages they cannot finalise. The unit is spent at
+      // "เสร็จ", not here.
+      const blocked = await quotaBlockMessage(app, user.id, 'scans');
+      if (blocked) {
+        await reply(event, blocked);
+        return;
+      }
       // No session yet → open one in the requested mode and show the scan card.
       await startSession(app.supabase, user.id, space.id, scanMode, 'scan');
       await replyFlex(event, buildScanFlexMessage());
@@ -937,6 +984,13 @@ async function handleTextCommand(
       profile?.displayName,
       profile?.pictureUrl,
     );
+    // §9 — monthly merge quota, same fail-fast placement as สแกน above. Spent
+    // at "เสร็จ" when a merged PDF is actually produced.
+    const mergeBlocked = await quotaBlockMessage(app, user.id, 'pdf_merges');
+    if (mergeBlocked) {
+      await reply(event, mergeBlocked);
+      return;
+    }
     await startSession(app.supabase, user.id, space.id, config.SCAN_DEFAULT_MODE, 'pdf');
     await replyFlex(event, buildPdfMergeFlexMessage({ kind: 'opened' }));
     return;
@@ -1002,6 +1056,18 @@ async function handleTextCommand(
       await reply(event, 'ระบบแปลงไฟล์ยังไม่เปิดตอนนี้น้า รอติดตามเร็วๆ นี้เลยน้า 🪄');
       return;
     }
+    // §7 — the word-conversion quota is counted in PAGES, and the page count is
+    // only knowable once the document arrives, so this checks only that SOME
+    // pages remain. The real charge happens in the worker, which extracts the
+    // page count before processing (upload.worker.ts, convert_to_docx).
+    const convertUserId = await findUserId(app, lineUserId);
+    if (convertUserId) {
+      const convertBlocked = await quotaBlockMessage(app, convertUserId, 'word_conversion_pages');
+      if (convertBlocked) {
+        await reply(event, convertBlocked);
+        return;
+      }
+    }
     await armDocxConvert(app.redis, lineUserId);
     await replyFlex(event, buildDocxConvertFlexMessage());
     return;
@@ -1038,6 +1104,36 @@ async function handleTextCommand(
       await reply(event, 'หนูกำลังรวมไฟล์ให้อยู่น้า รอแป๊บนึงนะน้า ⏳');
       return;
     }
+
+    // §8 / §9 — SPEND the unit here, at the moment the user commits to
+    // producing an output, and only after the compare-and-set above guarantees
+    // exactly one "เสร็จ" wins. A 'scan' session charges scans; 'pdf' and the
+    // legacy 'merge' kind charge pdf_merges.
+    //
+    // The session is already flipped to 'processing' at this point, so a
+    // rejection here must ALSO put it back — otherwise the user is left with a
+    // session they can neither finish nor add to.
+    const quotaFeature: MonthlyFeature = kind === 'scan' ? 'scans' : 'pdf_merges';
+    const { plan: finalizePlan } = await resolveUserPlan(app.supabase, userId!);
+    const spend = await consumeQuota(app.supabase, {
+      userId: userId!,
+      feature: quotaFeature,
+      plan: finalizePlan,
+    });
+    if (!spend.allowed) {
+      await setSessionStatus(app.supabase, session.id, 'collecting', 'processing');
+      await reply(
+        event,
+        quotaExceededThai({
+          feature: quotaFeature,
+          limit: spend.limit,
+          used: spend.used,
+          resetAt: spend.resetAt,
+        }),
+      );
+      return;
+    }
+
     await app.fileQueue.add(
       'finalize_scan',
       { type: 'finalize_scan', sessionId: session.id, lineUserId },
@@ -1301,6 +1397,10 @@ async function handleEvent(app: FastifyInstance, event: LineMessageEvent): Promi
       // text-command fallthrough (its data is not a "หนูเก็บ…" command).
       if (event.postback.data === 'action=remind_full_guide') {
         await handleRemindFullGuidePostback(app, event);
+        return;
+      }
+      // §3a — บูธ selector taps (action=boost_on / boost_off).
+      if (await handleBoostPostback(app, event, event.source.userId)) {
         return;
       }
       // In-chat task-command confirmation card (task_cmd_confirm / task_cmd_cancel):

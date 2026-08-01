@@ -40,6 +40,9 @@ import {
   scheduleReminders,
 } from '../services/taskScheduler';
 import { LINE_CHAT_ID_MESSAGE, LINE_CHAT_ID_RE } from '../services/line-id';
+import { quotaCheck } from '../middleware/quota';
+import { planGuard, resolveReminderConfig } from '../middleware/planGuard';
+import { REMINDER_INTERVAL_CHOICES } from '../config/plans';
 
 /**
  * ระบบตามงาน (Task Manager) API — migration 036. Tasks are created from the
@@ -77,6 +80,13 @@ const createTaskSchema = z
     urgency: z.enum(['urgent_max', 'urgent', 'normal', 'relaxed']).optional(),
     globalDeadline: z.string().datetime({ offset: true }).optional(),
     recurrenceRule: recurrenceSchema.optional(),
+    // §4b — checkbox selection of reminder lead times, in HOURS before the
+    // deadline. The closed set is validated here; the PER-PLAN count limit
+    // (free 1 / pro 2 / premium 4) is applied in the handler by
+    // resolveReminderConfig, which needs the caller's plan.
+    reminderIntervals: z.array(z.number().int()).max(REMINDER_INTERVAL_CHOICES.length).optional(),
+    // §4c — pro/premium only; gated in the handler, not here.
+    notifyOnlyPending: z.boolean().optional(),
     items: z
       .array(
         z.object({
@@ -242,8 +252,15 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
   // Keyed per-IP by @fastify/rate-limit; a per-GROUP daily cap would need the
   // parsed body (unavailable at the onRequest limiter stage), so it doesn't fit
   // this pattern — the 10/min route limit is the guard here.
+  //
+  // Middleware order: authenticate → quotaCheck('tasks') → handler (§5, 7/25/100
+  // per month). The quota unit is RESERVED by the middleware and released
+  // automatically if this handler answers 4xx — so a task rejected for a bad
+  // deadline or an unregistered assignee costs nothing. Deleting a task later
+  // does NOT refund, which is the spec's explicit rule and falls out of never
+  // calling releaseQuota on the delete path.
   app.post('/tasks', {
-    preHandler: app.authenticate,
+    preHandler: [app.authenticate, quotaCheck('tasks')],
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const parsed = createTaskSchema.safeParse(request.body);
@@ -253,6 +270,17 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     const body = parsed.data;
     const lineUid = request.authUser!.lineUserId;
     const isPersonal = body.scope === 'personal';
+
+    // §4b/§4c — reminder configuration against the caller's plan. request.plan
+    // is already resolved by quotaCheck, so this costs no extra query.
+    const reminderConfig = resolveReminderConfig({
+      plan: request.plan!,
+      intervals: body.reminderIntervals,
+      notifyOnlyPending: body.notifyOnlyPending,
+    });
+    if (!reminderConfig.ok) {
+      return reply.code(reminderConfig.status).send(reminderConfig.body);
+    }
 
     // Tenant guard. GROUP: only members of the group can create tasks in it
     // (auto-enrolls via LINE's group-scoped profile check — no /register).
@@ -369,6 +397,8 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       globalDeadline,
       recurrenceRule: (body.recurrenceRule as RecurrenceRule | undefined) ?? null,
       createdByLineUid: lineUid,
+      reminderIntervals: reminderConfig.intervals,
+      notifyOnlyPending: reminderConfig.notifyOnlyPending,
       items: body.items.map((item, i) => ({
         title: item.title,
         description: item.description ?? null,
@@ -437,8 +467,11 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
   // Streams the workbook straight back as a buffer; nothing is written to disk
   // (rule 3's spirit — and there is nothing to clean up if the client aborts).
   // Building a workbook is CPU work, so it gets a tighter per-IP cap.
+  //
+  // §14 — Pro and above. planGuard answers 403 PLAN_UPGRADE_REQUIRED for free
+  // users BEFORE any of the (expensive) task loading below runs.
   app.get('/tasks/export', {
-    preHandler: app.authenticate,
+    preHandler: [app.authenticate, planGuard('export_task_summary')],
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const parsed = exportQuerySchema.safeParse(request.query);

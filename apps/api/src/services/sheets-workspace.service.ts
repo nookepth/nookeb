@@ -2197,6 +2197,39 @@ function doneCharts(gid: number): sheets_v4.Schema$Request[] {
  * between "no evidence" and "bad" is the whole difference between a coaching
  * tool and a blame list.
  */
+/**
+ * §16 — the locked stand-in for รายงานผลการทำงานรายบุคคล on a non-premium plan.
+ *
+ * The tab is KEPT, not removed. Removing it would shorten the nav strip, change
+ * `sizeOf` for every other tab and make the layout differ structurally between
+ * plans — which would mean a user upgrading gets a rebuild that has to reflow
+ * the entire workspace. A tab that explains itself costs one screen of cells
+ * and keeps the layout identical across plans.
+ */
+function buildPerformanceLocked(gid: number): TabPlan {
+  const COLS = 13;
+  return {
+    rows: 20,
+    cols: COLS,
+    values: [
+      { range: 'A1', rows: [['📊 รายงานผลการทำงานรายบุคคล']] },
+      {
+        range: 'A3',
+        rows: [['รายงานนี้ใช้ได้กับแพ็กเกจ Premium น้า']],
+      },
+      {
+        range: 'A4',
+        rows: [
+          [
+            'อัปเกรดแล้วหนูจะเติมข้อมูลให้อัตโนมัติในรอบถัดไปน้า — งานทั้งหมด / เสร็จตรงกำหนด / เวลาตอบรับเฉลี่ย ของแต่ละคน',
+          ],
+        ],
+      },
+    ],
+    requests: [...titleFormat(grid(gid, 0, 0, 1, COLS))],
+  };
+}
+
 function buildPerformance(gid: number): TabPlan {
   const values: TabPlan['values'] = [];
   const requests: sheets_v4.Schema$Request[] = [];
@@ -2753,8 +2786,11 @@ export function sizeOf(title: string): { rows: number; cols: number } {
 export function composeWorkspacePlans(
   gid: (title: string) => number,
   masterGid: number,
-  opts: { syncUrl?: string } = {},
+  opts: { syncUrl?: string; performanceReport?: boolean } = {},
 ): [string, TabPlan][] {
+  // §16 — default TRUE so every existing caller (and every test) keeps the full
+  // layout; the worker passes the owner's real entitlement.
+  const perfUnlocked = opts.performanceReport !== false;
   const built: [string, TabPlan][] = [
     [TAB.CONF, buildConfig(gid(TAB.CONF))],
     [TAB.CALC, buildCalc(gid(TAB.CALC))],
@@ -2766,7 +2802,7 @@ export function composeWorkspacePlans(
     [TAB.ANA, buildAnalytics(gid(TAB.ANA))],
     [TAB.WEEK, buildSummary(gid(TAB.WEEK))],
     [TAB.DONE, buildDone(gid(TAB.DONE))],
-    [TAB.PERF, buildPerformance(gid(TAB.PERF))],
+    [TAB.PERF, perfUnlocked ? buildPerformance(gid(TAB.PERF)) : buildPerformanceLocked(gid(TAB.PERF))],
     [TAB.HELP, buildHelp(gid(TAB.HELP))],
   ];
 
@@ -2839,7 +2875,7 @@ function readVersion(metadata: sheets_v4.Schema$DeveloperMetadata[] | undefined)
 export async function ensureWorkspace(
   auth: OAuth2Client,
   spreadsheetId: string,
-  opts: { force?: boolean; syncUrl?: string } = {},
+  opts: { force?: boolean; syncUrl?: string; performanceReport?: boolean } = {},
 ): Promise<boolean> {
   const sheets = google.sheets({ version: 'v4', auth });
   const meta = await sheets.spreadsheets.get({
@@ -2906,7 +2942,10 @@ export async function ensureWorkspace(
   };
 
   // --- pass 2: values (formulas + labels) --------------------------------
-  const plans = composeWorkspacePlans(gid, masterGid, { syncUrl: opts.syncUrl });
+  const plans = composeWorkspacePlans(gid, masterGid, {
+    syncUrl: opts.syncUrl,
+    performanceReport: opts.performanceReport,
+  });
 
   const data: sheets_v4.Schema$ValueRange[] = [
     { range: `'${MASTER}'!${colLetter(MASTER_EXT.URGENCY)}1`, values: [EXT_HEADERS] },

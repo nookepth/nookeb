@@ -27,16 +27,24 @@ const LINE_GREEN = '#06C755';
 const INK = '#111111';
 const MUTED = '#8C8C8C';
 
+// Semantic ramp: the nearer the deadline, the hotter the colour. Every
+// RemindType must appear — the Record is exhaustive on purpose, so adding a
+// shot type (migration 051 added '2_days' and '6_hours') is a compile error
+// until its card copy exists, rather than a card that renders `undefined`.
 const URGENCY_COLOR: Record<RemindType, string> = {
   '3_days': LINE_GREEN,
+  '2_days': LINE_GREEN,
   '1_day': '#FF9800',
+  '6_hours': '#FF7043',
   '3_hours': '#FF5722',
   overdue: '#F44336',
 };
 
 const URGENCY_LABEL: Record<RemindType, string> = {
   '3_days': 'อีก 3 วันถึงกำหนด',
+  '2_days': 'อีก 2 วันถึงกำหนด',
   '1_day': 'พรุ่งนี้ถึงกำหนดแล้ว',
+  '6_hours': 'อีก 6 ชั่วโมงถึงกำหนด',
   '3_hours': 'อีก 3 ชั่วโมงถึงกำหนด',
   overdue: 'เลยกำหนดแล้ว',
 };

@@ -13,10 +13,9 @@ import {
   defaultTaglineFor,
   isOccasionId,
 } from '@nookeb/shared';
-import { ApiError, createLegacyBox, hasSession, postProInterest } from '@/lib/api';
-import { ProLockModal } from '@/components/ProLockModal';
+import { ApiError, createLegacyBox, hasSession } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
-import { AudioIcon, CheckBadgeIcon, LockIcon, OCCASION_ICONS, VideoIcon } from './OccasionIcons';
+import { CheckBadgeIcon, OCCASION_ICONS } from './OccasionIcons';
 import { ShareActions } from './ShareActions';
 import { VoiceRecorder } from './VoiceRecorder';
 import styles from './page.module.css';
@@ -54,13 +53,6 @@ interface PickedPhoto {
 
 type Step = 1 | 2 | 3 | 4;
 
-type ProFeature = 'audio' | 'video';
-
-const PRO_FEATURES: { id: ProFeature; label: string; Icon: () => JSX.Element }[] = [
-  { id: 'audio', label: 'เพิ่มเสียง / เพลง', Icon: AudioIcon },
-  { id: 'video', label: 'แนบวิดีโอสั้น', Icon: VideoIcon },
-];
-
 let nextKey = 0;
 
 export default function NewLegacyBoxPage() {
@@ -79,8 +71,6 @@ export default function NewLegacyBoxPage() {
    * while recording or previewing, so abandoning the draft leaves no orphan in R2.
    */
   const [voice, setVoice] = useState<Blob | null>(null);
-  const [proModal, setProModal] = useState<ProFeature | null>(null);
-  const [proNotified, setProNotified] = useState<ProFeature[]>([]);
   const [themeId, setThemeId] = useState<LegacyBoxThemeId>('rose');
   const [dragOverZone, setDragOverZone] = useState(false);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -168,19 +158,6 @@ export default function NewLegacyBoxPage() {
     if (showAllTaglines) return ALL_TAGLINES;
     return occasion ? OCCASIONS[occasion].taglines : OCCASIONS.special.taglines;
   }, [occasion, showAllTaglines]);
-
-  const notifyPro = useCallback(async (feature: ProFeature) => {
-    // Demand-test tap: the count is the whole point, so a failed POST still
-    // closes the modal happily rather than surfacing an error for a button whose
-    // only promise is "we'll tell you later".
-    try {
-      await postProInterest(feature);
-    } catch {
-      // swallowed on purpose — see above
-    }
-    setProNotified((prev) => (prev.includes(feature) ? prev : [...prev, feature]));
-    setProModal(null);
-  }, []);
 
   const showToast = useCallback((text: string) => {
     setToast(text);
@@ -629,33 +606,6 @@ export default function NewLegacyBoxPage() {
             {/* ---- voice message (optional) ---- */}
             <VoiceRecorder value={voice} onChange={setVoice} />
 
-            {/* ---- Pro placeholder (demand test — no upload exists) ---- */}
-            <div className={styles.proSection}>
-              <span className={styles.fieldLabel}>ฟีเจอร์พิเศษ (Pro)</span>
-              <div className={styles.proRows}>
-                {PRO_FEATURES.map(({ id, label, Icon }) => (
-                  <button
-                    key={id}
-                    type="button"
-                    className={styles.proRow}
-                    onClick={() => setProModal(id)}
-                  >
-                    <span className={styles.proRowIcon} aria-hidden>
-                      <Icon />
-                    </span>
-                    <span className={styles.proRowLabel}>{label}</span>
-                    {proNotified.includes(id) && <span className={styles.proDone}>จะแจ้งเตือนน้า</span>}
-                    <span className={styles.proBadge}>
-                      <span className={styles.proLock} aria-hidden>
-                        <LockIcon />
-                      </span>
-                      Pro
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <div className={styles.navRow}>
               <button type="button" className={`${styles.navBtn} ${styles.backBtn}`} onClick={() => setStep(2)}>
                 ← ย้อนกลับ
@@ -741,20 +691,6 @@ export default function NewLegacyBoxPage() {
           </section>
         )}
       </div>
-
-      <ProLockModal
-        open={proModal !== null}
-        accent="var(--bx-accent)"
-        title="ฟีเจอร์นี้อยู่ในแผน Pro"
-        subtitle="เร็วๆ นี้ — กดแจ้งเตือนเพื่อรับข่าวสาร"
-        ctaLabel="แจ้งเตือนฉัน"
-        notified={false}
-        notifiedLabel=""
-        onNotify={() => {
-          if (proModal) void notifyPro(proModal);
-        }}
-        onDismiss={() => setProModal(null)}
-      />
 
       {toast && <div className={styles.toast}>{toast}</div>}
     </main>

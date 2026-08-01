@@ -272,6 +272,19 @@ export interface CreateTaskInput {
    */
   reminderCount?: number | null;
   /**
+   * §4b reminder checkbox selection (migration 051), HOURS BEFORE the effective
+   * deadline — e.g. [24, 6] fires 1 day before AND 6h before. Already validated
+   * against the creator's plan by resolveReminderConfig; an empty array means
+   * "use the deadline fallback" and is stored as NULL so the column's CHECK
+   * (which requires 1..4 entries when present) is satisfied.
+   */
+  reminderIntervals?: readonly number[] | null;
+  /**
+   * §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" (migration 051). Pro/premium only —
+   * already gated by resolveReminderConfig before reaching here.
+   */
+  notifyOnlyPending?: boolean;
+  /**
    * ความเร่งด่วน (migration 048). Only written to the row when set, so a create
    * still succeeds if the migration hasn't been applied and no value was sent.
    */
@@ -352,6 +365,15 @@ export async function createTaskWithItems(
         : {}),
       // Same additive-safety rule as reminder_count (migration 048).
       ...(input.urgency ? { urgency: input.urgency } : {}),
+      // Migration 051. Both omitted unless actually set, so a create still
+      // succeeds before 051 is applied. An EMPTY selection is stored as NULL,
+      // not as '{}': the column CHECK requires 1..4 entries when non-null, and
+      // NULL is exactly what "fall back to a single reminder at the deadline"
+      // means to scheduleReminders.
+      ...(input.reminderIntervals && input.reminderIntervals.length > 0
+        ? { reminder_intervals: [...input.reminderIntervals] }
+        : {}),
+      ...(input.notifyOnlyPending ? { notify_only_pending: true } : {}),
     })
     .select('*')
     .single();

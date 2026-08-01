@@ -19,6 +19,7 @@ import {
   voiceExtensionFor,
 } from '@nookeb/shared';
 import { logEvent } from '../services/events.service';
+import { quotaCheck } from '../middleware/quota';
 import { presignedGetUrl, uploadStream, deleteObject } from '../services/r2.service';
 import { adjustStorageUsed, incrementPersonalStorage } from '../services/file.service';
 import {
@@ -139,7 +140,13 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
   // POST /legacy-box — create a box from multipart (title/message/theme + photos).
   // Per-route cap (on top of the 100/min global): up to 11 files run through
   // sharp re-encoding per request, so this is the heaviest web write — 10/min per IP.
+  //
+  // §11 — monthly creation quota (free 3 / pro 10 / premium 30), reserved by
+  // the middleware and auto-released if this handler answers 4xx. That is
+  // separate from MAX_BOXES_PER_USER below, which caps how many boxes may be
+  // LIVE at once regardless of plan — a user can hit either one first.
   app.post('/legacy-box', {
+    preHandler: quotaCheck('gift_boxes'),
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const userId = request.authUser!.userId;

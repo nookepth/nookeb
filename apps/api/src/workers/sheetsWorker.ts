@@ -26,6 +26,7 @@ import { toSheetRows } from '../services/sheets-row';
 import { ensureWorkspace } from '../services/sheets-workspace.service';
 import { historicalSync, needsHistoricalSync } from '../services/sheets-historical.service';
 import { enqueueHistoricalSync } from '../services/sheetsQueue';
+import { planAllows } from '../middleware/planGuard';
 
 /**
  * Google Sheets sync worker (migration 046) — mirrors one task into its owner's
@@ -87,11 +88,26 @@ const historicalDone = new Set<string>();
 async function ensureWorkspaceThrottled(
   auth: Parameters<typeof ensureWorkspace>[0],
   spreadsheetId: string,
+  userId: string,
 ): Promise<void> {
   const last = layoutCheckedAt.get(spreadsheetId) ?? 0;
   if (Date.now() - last < LAYOUT_CHECK_TTL_MS) return;
   try {
-    const rebuilt = await ensureWorkspace(auth, spreadsheetId, { syncUrl: HISTORICAL_SYNC_URL });
+    // §16 — the per-person performance tab is premium-only. Today only premium
+    // users reach the sync at all (§15 gates the whole integration), so this is
+    // belt-and-braces — but it is stated EXPLICITLY rather than inherited from
+    // the Sheets gate, so opening Sheets to Pro later cannot silently ship the
+    // performance report with it.
+    const { data: planRow } = await supabase
+      .from('users')
+      .select('plan')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const rebuilt = await ensureWorkspace(auth, spreadsheetId, {
+      syncUrl: HISTORICAL_SYNC_URL,
+      performanceReport: planAllows(planRow?.plan as string | null, 'performance_report'),
+    });
     layoutCheckedAt.set(spreadsheetId, Date.now());
     if (rebuilt) console.log(`[sheets] workspace layout built for ${spreadsheetId}`);
   } catch (err) {
@@ -127,7 +143,7 @@ async function resolveSheet(
   // Upgrade path for sheets created before the current layout. ensureWorkspace
   // no-ops once the version matches, and the in-process cache keeps even that
   // check off the hot path — a sheet is verified at most once every 6 hours.
-  await ensureWorkspaceThrottled(auth, sheetId);
+  await ensureWorkspaceThrottled(auth, sheetId, userId);
   return { auth, sheetId };
 }
 
@@ -142,11 +158,20 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
   // Resolve the creator → their nookeb user → their integration.
   const { data: creator } = await supabase
     .from('users')
-    .select('id, display_name')
+    .select('id, display_name, plan')
     .eq('line_user_id', task.created_by_line_uid)
     .maybeSingle();
-  const creatorRow = creator as { id: string; display_name: string | null } | null;
+  const creatorRow = creator as
+    | { id: string; display_name: string | null; plan: string | null }
+    | null;
   if (!creatorRow) return; // creator never logged into the web app
+
+  // §15 — PREMIUM only, re-checked at DELIVERY time, not just at connect time.
+  // A user who downgrades keeps their google_integrations row (their
+  // spreadsheet is theirs, and deleting the credential on downgrade would make
+  // re-upgrading a full re-consent). Without this check their sheet would keep
+  // receiving mirrored tasks on a plan that does not include the feature.
+  if (!planAllows(creatorRow.plan, 'google_sheets')) return;
 
   const integration = await getIntegration(supabase, creatorRow.id);
   if (!integration) return; // not connected — the overwhelmingly common case
@@ -213,6 +238,15 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
 export async function processSheetsHistorical(job: Job<SheetsJob>): Promise<void> {
   const { userId } = job.data as SheetsHistoricalJob;
   if (!isGoogleSheetsConfigured()) return;
+
+  // §15 — same delivery-time entitlement check as processSheetsSync: a backfill
+  // queued before a downgrade must not run after it.
+  const { data: planRow } = await supabase
+    .from('users')
+    .select('plan')
+    .eq('id', userId)
+    .maybeSingle();
+  if (!planAllows(planRow?.plan as string | null, 'google_sheets')) return;
 
   const integration = await getIntegration(supabase, userId);
   if (!integration) return; // disconnected between the press and the job

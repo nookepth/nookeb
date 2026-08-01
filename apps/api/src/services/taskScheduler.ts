@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   REMIND_OFFSETS_MINUTES,
+  REMIND_TYPE_BY_INTERVAL_HOURS,
   TASK_NOTIFICATIONS_ENABLED,
   TASK_QUEUE,
   type RemindType,
@@ -31,7 +32,50 @@ export const ROLLOVER_DELAY_MINUTES = 90;
 /** How often the recurring-task self-heal sweep runs (see scheduleTaskRepeatableJobs). */
 const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
 
-const REMIND_TYPES: RemindType[] = ['3_days', '1_day', '3_hours', 'overdue'];
+/** Ordered furthest-out → latest, so scheduled shots read chronologically. */
+const REMIND_TYPES: RemindType[] = [
+  '3_days',
+  '2_days',
+  '1_day',
+  '6_hours',
+  '3_hours',
+  'overdue',
+];
+
+/**
+ * Which shots a task fires, in schedule order.
+ *
+ * Precedence:
+ *  1. §4b `reminder_intervals` — the creator's checkbox selection, already
+ *     validated against their plan at create time. Every plan picks from the
+ *     SAME five intervals; the plan only caps how many.
+ *  2. Legacy `reminder_count` — the Pro "เตือน N ครั้ง" chat command
+ *     (migration 047). Kept working; nothing else sets it.
+ *  3. Neither → NO shots.
+ *
+ * There is deliberately no fallback schedule. A reminder fires only at a time
+ * the creator asked for: inventing one (whether the old four-shot default or a
+ * single at-deadline ping) would mean a FREE user receiving reminders they
+ * never selected, on a plan whose entitlement is exactly one selection.
+ */
+export function resolveShots(task: Pick<TaskRecord, 'reminder_count'> & {
+  reminder_intervals?: number[] | null;
+}): RemindType[] {
+  const intervals = task.reminder_intervals;
+  if (intervals && intervals.length > 0) {
+    const chosen = new Set(
+      intervals
+        .map((h) => REMIND_TYPE_BY_INTERVAL_HOURS[h])
+        .filter((t): t is RemindType => t !== undefined),
+    );
+    if (chosen.size > 0) return REMIND_TYPES.filter((t) => chosen.has(t));
+  }
+  if (typeof task.reminder_count === 'number') {
+    const chosen = new Set(selectRemindTypes(task.reminder_count));
+    return REMIND_TYPES.filter((t) => chosen.has(t));
+  }
+  return [];
+}
 
 /**
  * Shared lazy queue: the API (schedule on create/patch/done) and the reminder
@@ -181,11 +225,8 @@ export async function scheduleReminders(
     const rows: ReminderInsert[] = [];
     const delays = new Map<string, number>(); // key: `${itemId ?? 'task'}|${type}` → delay ms
 
-    // Which shots to fire. NULL (LIFF tasks, free-tier) = the full default set;
-    // a Pro "เตือน N ครั้ง" command narrows it (see selectRemindTypes). Filtered
-    // through REMIND_TYPES so ordering/DB CHECK values stay authoritative.
-    const chosen = new Set(selectRemindTypes(task.reminder_count));
-    const shots = REMIND_TYPES.filter((t) => chosen.has(t));
+    // Which shots to fire — see resolveShots for the precedence rules.
+    const shots = resolveShots(task);
 
     for (const target of reminderTargets(task)) {
       const deadlineMs = dayjs(target.deadline).valueOf();

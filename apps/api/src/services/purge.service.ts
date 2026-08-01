@@ -3,6 +3,7 @@ import type { S3Client } from '@aws-sdk/client-s3';
 import { adjustStorageUsed } from './file.service';
 import { deleteObject } from './r2.service';
 import { deleteScanTempObjects } from './scan.service';
+import { isPurgeable, maxRetentionDays, minRetentionDays } from '../jobs/trashCleanup.job';
 
 export interface PurgeResult {
   cutoff: string;
@@ -77,25 +78,32 @@ export async function purgeFileRows(
  * rule forbids hard-deleting files rows. Idempotent: deleting an already-gone
  * object is a no-op, so re-running is safe.
  *
- * Retention is PLAN-AWARE (trash bin, migration 032): free-plan (or ownerless)
- * files use `retentionDays`; files uploaded by a pro/team-plan user use
- * `retentionDaysPro` (defaults to `retentionDays` when omitted, restoring the
- * old single-cutoff behavior). The reported `cutoff` is the free-tier one.
+ * Retention is PLAN-AWARE (§12 of the membership matrix): FREE 5 days, PRO 30,
+ * PREMIUM 30. The windows come from `config/plans.ts` via
+ * `jobs/trashCleanup.job.ts`, NOT from a plan string comparison here — the old
+ * `plan === 'pro' || plan === 'team'` test would have silently handed every
+ * 'premium' user the 5-day free window.
+ *
+ * `retentionDays` / `retentionDaysPro` remain accepted as OVERRIDES so the
+ * dry-run purge script and the tests can force a window; omitting them uses the
+ * plan table, which is the only thing that can express three tiers.
  *
  * `apply=false` (default) only reports what would be deleted.
  */
 export async function purgeDeletedFiles(
   supabase: SupabaseClient,
   r2: S3Client,
-  opts: { retentionDays: number; retentionDaysPro?: number; apply: boolean },
+  opts: { retentionDays?: number; retentionDaysPro?: number; apply: boolean },
 ): Promise<PurgeResult> {
   const dayMs = 24 * 60 * 60 * 1000;
-  const retentionDaysPro = opts.retentionDaysPro ?? opts.retentionDays;
-  const freeCutoff = new Date(Date.now() - opts.retentionDays * dayMs).toISOString();
-  const proCutoff = new Date(Date.now() - retentionDaysPro * dayMs).toISOString();
-  // Query with the LATER cutoff (shorter retention) — a superset of both plans'
-  // eligible rows — then apply each row's own plan cutoff below.
-  const queryCutoff = freeCutoff > proCutoff ? freeCutoff : proCutoff;
+  const overrides = { free: opts.retentionDays, paid: opts.retentionDaysPro };
+  const freeDays = opts.retentionDays ?? minRetentionDays();
+  const paidDays = opts.retentionDaysPro ?? maxRetentionDays();
+  const freeCutoff = new Date(Date.now() - freeDays * dayMs).toISOString();
+  // Query with the LATEST cutoff (the SHORTEST retention of any plan) — a
+  // superset of every plan's eligible rows — then apply each row's own plan
+  // cutoff below via isPurgeable.
+  const queryCutoff = new Date(Date.now() - Math.min(freeDays, paidDays) * dayMs).toISOString();
 
   // `uploader` embeds the users row via the files.uploaded_by FK — null for
   // ownerless (legacy / non-member group) files, which get the free retention.
@@ -109,10 +117,13 @@ export async function purgeDeletedFiles(
 
   const rows = ((data ?? []) as unknown[])
     .map((r) => r as PurgeFileRow & { deleted_at: string; uploader: { plan: string | null } | null })
-    .filter((row) => {
-      const isPro = row.uploader?.plan === 'pro' || row.uploader?.plan === 'team';
-      return row.deleted_at < (isPro ? proCutoff : freeCutoff);
-    });
+    // Per-row retention comes from the PLAN TABLE (config/plans.ts §12), not a
+    // string comparison. The previous `plan === 'pro' || plan === 'team'` test
+    // would have silently given every 'premium' user the 5-day FREE window —
+    // a paid entitlement lost to an unlisted enum value.
+    .filter((row) =>
+      isPurgeable({ deleted_at: row.deleted_at, plan: row.uploader?.plan }, new Date(), overrides),
+    );
 
   const result: PurgeResult = {
     cutoff: freeCutoff,

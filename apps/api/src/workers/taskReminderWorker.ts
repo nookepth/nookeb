@@ -28,6 +28,9 @@ import {
   rolloverJobId,
   scheduleReminders,
 } from '../services/taskScheduler';
+import { consumeQuota } from '../services/quota.service';
+import { normalizePlan } from '../config/plans';
+import { planAllows } from '../middleware/planGuard';
 
 /**
  * ระบบตามงาน reminder worker — queue `nookeb-task-reminders`. Delivers scheduled
@@ -44,6 +47,54 @@ import {
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
+
+/**
+ * Resolve a LINE uid to its nookeb user row, which is where `plan` lives.
+ * Returns null when the creator never logged into the web app — they have no
+ * users row, hence no plan and no quota to charge.
+ */
+async function userByLineUid(
+  lineUid: string,
+): Promise<{ id: string; plan: string | null } | null> {
+  const { data } = await supabase
+    .from('users')
+    .select('id, plan')
+    .eq('line_user_id', lineUid)
+    .maybeSingle();
+  return (data as { id: string; plan: string | null } | null) ?? null;
+}
+
+/** §4c entitlement, re-checked at delivery time. */
+async function creatorMayTargetPending(creatorLineUid: string): Promise<boolean> {
+  const row = await userByLineUid(creatorLineUid);
+  return planAllows(row?.plan, 'notify_only_pending');
+}
+
+/**
+ * §4a — reserve one notification unit from the task creator's monthly
+ * allowance. Returns true when the push may go out.
+ *
+ * A creator with no users row (chat-only user who never signed in) is ALLOWED:
+ * they have no plan to meter against, and silently dropping their reminders
+ * would break a flow that works today for reasons unrelated to membership.
+ */
+async function consumeNotificationQuota(creatorLineUid: string): Promise<boolean> {
+  const row = await userByLineUid(creatorLineUid);
+  if (!row) return true;
+  try {
+    const decision = await consumeQuota(supabase, {
+      userId: row.id,
+      feature: 'task_notifications',
+      plan: normalizePlan(row.plan),
+    });
+    return decision.allowed;
+  } catch (err) {
+    // Fail OPEN. A quota lookup that errors must not silently stop reminders —
+    // the failure mode of a missed deadline is worse than one uncounted push.
+    console.error(`[task-worker] notification quota check failed for ${row.id}:`, err);
+    return true;
+  }
+}
 
 /** Items covered by a reminder round: one item, or every global-deadline item. */
 function roundItems(task: TaskWithDetails, itemId: string | null) {
@@ -74,12 +125,43 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
     return;
   }
 
+  // §4c — "เตือนเฉพาะคนที่ยังไม่ส่งงาน". When the creator enabled it (pro/premium
+  // only, gated at create time), items already SUBMITTED are excluded from the
+  // round even though they are not yet approved: the assignee has done their
+  // part and chasing them is exactly what the option is for.
+  //
+  // The flag is honoured only if the creator STILL has the entitlement — the
+  // same delivery-time re-check the Sheets mirror does, so a downgrade takes
+  // effect on the next shot rather than at the next task creation.
+  const onlyPending =
+    task.notify_only_pending === true && (await creatorMayTargetPending(task.created_by_line_uid));
+
   const items = roundItems(task, itemId).filter(
-    (i) => i.status !== 'done' && i.status !== 'cancelled',
+    (i) =>
+      i.status !== 'done' &&
+      i.status !== 'cancelled' &&
+      !(onlyPending && i.status === 'submitted'),
   );
   const pending = items.flatMap((i) => i.assignees.filter((a) => a.done_at === null));
   if (pending.length === 0) {
-    // Everyone in this round finished before the shot — stand down silently.
+    // Everyone in this round finished (or, with §4c on, has submitted) before
+    // the shot — stand down silently.
+    await stampReminder(supabase, reminderId, 'cancelled_at');
+    return;
+  }
+
+  // §4a — the monthly notification allowance (free 7 / pro 30 / premium 100) is
+  // charged to the task's CREATOR, and charged PER PUSH rather than per task:
+  // a task with four reminder shots costs four units. Reserved BEFORE the push,
+  // so an exhausted allowance never sends.
+  //
+  // A blocked reminder is stamped cancelled_at, not failed_at: nothing broke,
+  // the user simply has no allowance left, and failed_at would page ops.
+  const notifySpend = await consumeNotificationQuota(task.created_by_line_uid);
+  if (!notifySpend) {
+    console.log(
+      `[task-worker] reminder ${reminderId} skipped — notification quota exhausted for ${task.created_by_line_uid}`,
+    );
     await stampReminder(supabase, reminderId, 'cancelled_at');
     return;
   }
