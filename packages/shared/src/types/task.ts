@@ -43,10 +43,11 @@ export type TaskItemStatus = TaskStatus | 'submitted' | 'rejected';
  * remaining eight and re-based the stored unit from HOURS to MINUTES, because
  * 15/30-minute lead times are not expressible in integer hours. The six original
  * NAMES are unchanged, so every task_reminders row written before 055 is still
- * valid — only the `tasks.reminder_intervals` numbers were converted.
+ * valid — only the `tasks.reminder_intervals` numbers were converted. 056 added
+ * 5_min and at_deadline, taking the list to FIFTEEN.
  *
  * Adding a value here REQUIRES widening the task_reminders.remind_type CHECK
- * (migration 055 does that) and adding its card copy in lineMessage.ts, whose
+ * (migration 056 does that) and adding its card copy in lineMessage.ts, whose
  * exhaustive Records make a missing entry a compile error rather than a card
  * that renders `undefined`. Keep this table, that constraint and
  * REMINDER_INTERVAL_CHOICES in config/plans.ts in lockstep — plans.test.ts
@@ -65,6 +66,19 @@ export const REMIND_SHOTS = [
   { type: '1_hour', lead: 60 },
   { type: '30_min', lead: 30 },
   { type: '15_min', lead: 15 },
+  // 056. A 5-minute lead and an AT-DEADLINE ping. Both were deliberately left
+  // out of 055 on the reasoning that a shot this late leaves no time to act and
+  // is usually already past when the task is created — a UX judgement, not a
+  // functional constraint, and the product decision is to offer them anyway.
+  // Nothing special-cases them: they are ordinary rows in this table, they are
+  // skipped when already past exactly like every other shot, and the picker
+  // already strikes a past row through with "เลยเวลาแล้ว".
+  { type: '5_min', lead: 5 },
+  // lead 0 = fire AT the deadline. Zero is a REAL LEAD TIME here, never a
+  // sentinel: this table is keyed by lookup, and the only "no reminders" state
+  // in the whole feature is an EMPTY reminder_intervals array/`[]`. Nothing may
+  // reintroduce a `if (lead)` truthiness test on a lead value.
+  { type: 'at_deadline', lead: 0 },
   // The one shot AFTER the deadline. Selectable in the form since 055; before
   // that it was reachable only through the legacy `เตือน N ครั้ง` chat command.
   { type: 'overdue', lead: -60 },
@@ -87,9 +101,14 @@ export const TASK_URGENCIES: readonly TaskUrgency[] = [
 
 /** Reminder type → offset FROM the deadline (minutes; negative = before). The
  * mirror image of `lead`, kept because the scheduler adds an offset to a
- * deadline while the form asks for a lead time. Derived, never hand-written. */
+ * deadline while the form asks for a lead time. Derived, never hand-written.
+ *
+ * The `=== 0` branch normalises `-0` away (056 introduced a zero lead). The
+ * arithmetic is identical either way — `deadlineMs + -0 * 60000` is `deadlineMs`
+ * — but `-0` is a distinct value to `Object.is`, so an unnormalised entry would
+ * fail a deepStrictEqual assertion for no reason a reader could see. */
 export const REMIND_OFFSETS_MINUTES: Record<RemindType, number> = Object.fromEntries(
-  REMIND_SHOTS.map((s) => [s.type, -s.lead]),
+  REMIND_SHOTS.map((s) => [s.type, s.lead === 0 ? 0 : -s.lead]),
 ) as Record<RemindType, number>;
 
 /**

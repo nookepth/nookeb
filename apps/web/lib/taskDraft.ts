@@ -53,15 +53,22 @@ export const URGENCY_OPTIONS: { value: TaskUrgency; label: string; color: string
  * meaning; see `normalizeLeadMinutes` in packages/shared for how a draft or a
  * task row written before the change is read.
  *
- * EVERY PLAN SEES ALL THIRTEEN. A plan caps how MANY may be ticked, never which
+ * EVERY PLAN SEES ALL FIFTEEN. A plan caps how MANY may be ticked, never which
  * — so this list is never filtered per plan (see REMINDER_MAX_SELECTABLE).
  *
  * ORDERED FURTHEST-OUT → LATEST, which is the order the reminders arrive in.
  * `group` is the sheet's section heading; the groups exist because a flat list
- * of thirteen is a wall, and "how far out am I thinking" is the first decision
+ * of fifteen is a wall, and "how far out am I thinking" is the first decision
  * a user makes.
+ *
+ * `ontime` (migration 056, minutes = 0) is its OWN group rather than a row at
+ * the bottom of `minute`: "ใกล้ถึงกำหนด" promises a warning BEFORE the deadline,
+ * and a ping that lands exactly on it is a different kind of thing. Its own
+ * heading also keeps the four sections each meaning one clear thing, and keeps
+ * the whole sheet strictly descending by lead time (day → hour → minute →
+ * on time → after), which is the order the reminders actually arrive in.
  */
-export type ReminderGroup = 'day' | 'hour' | 'minute' | 'after';
+export type ReminderGroup = 'day' | 'hour' | 'minute' | 'ontime' | 'after';
 
 export interface ReminderIntervalOption {
   /** minutes before the deadline (negative = after) — the value stored in
@@ -80,10 +87,17 @@ export const REMINDER_GROUP_LABEL: Record<ReminderGroup, string> = {
   day: 'ล่วงหน้าเป็นวัน',
   hour: 'ล่วงหน้าเป็นชั่วโมง',
   minute: 'ใกล้ถึงกำหนด',
+  ontime: 'ตรงเวลากำหนด',
   after: 'หลังเลยกำหนด',
 };
 
-export const REMINDER_GROUP_ORDER: ReminderGroup[] = ['day', 'hour', 'minute', 'after'];
+export const REMINDER_GROUP_ORDER: ReminderGroup[] = [
+  'day',
+  'hour',
+  'minute',
+  'ontime',
+  'after',
+];
 
 export const REMINDER_INTERVAL_OPTIONS: ReminderIntervalOption[] = [
   { minutes: 10080, label: '1 สัปดาห์', short: '1 สัปดาห์', spoken: '1 สัปดาห์ก่อนกำหนด', group: 'day' },
@@ -98,6 +112,17 @@ export const REMINDER_INTERVAL_OPTIONS: ReminderIntervalOption[] = [
   { minutes: 60, label: '1 ชั่วโมง', short: '1 ชม.', spoken: '1 ชั่วโมงก่อนกำหนด', group: 'hour' },
   { minutes: 30, label: '30 นาที', short: '30 น.', spoken: '30 นาทีก่อนกำหนด', group: 'minute' },
   { minutes: 15, label: '15 นาที', short: '15 น.', spoken: '15 นาทีก่อนกำหนด', group: 'minute' },
+  { minutes: 5, label: '5 นาที', short: '5 น.', spoken: '5 นาทีก่อนกำหนด', group: 'minute' },
+  {
+    // Migration 056. Labelled by WHEN IT LANDS, not by its lead time: "0 นาที"
+    // is arithmetic, "ถึงกำหนดพอดี" is the thing the user wants. Same idea as
+    // iOS Calendar's "เวลาที่กิจกรรมเกิดขึ้น", said in หนูเก็บ's own voice.
+    minutes: 0,
+    label: 'ถึงกำหนดพอดี',
+    short: 'ตรงเวลา',
+    spoken: 'ตอนถึงกำหนดพอดี',
+    group: 'ontime',
+  },
   {
     minutes: -60,
     label: 'เลยกำหนด 1 ชั่วโมง',

@@ -194,10 +194,10 @@ export function lockerLimitBytes(plan: Plan, referralCount = 0): number {
 /**
  * §4b — the ONLY selectable intervals, in MINUTES before the deadline. This is
  * a closed set rendered as a checklist; free text is never accepted. Mirrored
- * by the `tasks_reminder_intervals_check` constraint in migration 055 and by
+ * by the `tasks_reminder_intervals_check` constraint in migration 056 and by
  * REMIND_SHOTS in packages/shared (plans.test.ts asserts all three agree).
  *
- * EVERY PLAN SEES THE SAME THIRTEEN OPTIONS. Plans differ only in how many may
+ * EVERY PLAN SEES THE SAME FIFTEEN OPTIONS. Plans differ only in how many may
  * be ticked — there is no per-plan menu and no plan-specific shot.
  *
  * UNIT CHANGED IN MIGRATION 055 (was hours: [3, 6, 24, 48, 72]). Minutes is now
@@ -205,11 +205,20 @@ export function lockerLimitBytes(plan: Plan, referralCount = 0): number {
  * hours. The five original lead times all survive as their minute equivalents,
  * so no user's saved selection changed meaning.
  *
- * WHY THE FLOOR IS 15 MINUTES, NOT 5. Reminders are scheduled at CREATE time
- * and a shot already in the past is silently skipped (see scheduleReminders),
- * so a 5-minute lead mostly never fires at all; when it does, a LINE push five
- * minutes out leaves no time to act on a task. 10 vs 15 is not a distinction
- * worth a row in the list.
+ * THE FLOOR WAS 15 MINUTES UNTIL 056, WHICH ADDED 5 AND 0. The original
+ * reasoning against them stands as a UX caveat and was never a functional
+ * blocker: reminders are scheduled at CREATE time and a shot already in the past
+ * is silently skipped (see scheduleReminders), so a 5-minute or at-deadline
+ * choice made on a task due in ten minutes fires once and a task due in two
+ * minutes fires not at all. That is visible BEFORE committing — the picker
+ * computes each row's real fire time and strikes past rows through with
+ * "เลยเวลาแล้ว หนูจะข้ามรอบนี้" — so the failure mode is legible rather than
+ * silent, and the choice is the creator's to make.
+ *
+ * `0` IS A LEAD TIME, NOT A SENTINEL. It means "fire at the deadline". The only
+ * "no reminders" state is an EMPTY selection; `intervalsForCount(0)` returns
+ * `[]` for that reason and does not produce the 0 interval. Never write a
+ * truthiness test against an interval value.
  *
  * WHY THE CEILING IS ONE WEEK, NOT 30 DAYS. A ping a month out arrives before
  * the work is actionable, and with a 4-tick ceiling every long-tail slot
@@ -232,13 +241,15 @@ export const REMINDER_INTERVAL_CHOICES = [
   60, //    1 ชั่วโมง
   30, //   30 นาที
   15, //   15 นาที
+  5, //     5 นาที           (056)
+  0, //    ถึงกำหนดพอดี      (056 — a real lead time, see the header)
   -60, //  เลยกำหนด 1 ชั่วโมง
 ] as const;
 export type ReminderInterval = (typeof REMINDER_INTERVAL_CHOICES)[number];
 
 export interface ReminderPolicy {
   /**
-   * §4b — how many of the thirteen options the plan may tick.
+   * §4b — how many of the fifteen options the plan may tick.
    *
    * This is the ONLY thing a plan changes about reminders. There is deliberately
    * no deadline-only fallback and no plan-specific default schedule: a task's
@@ -276,9 +287,9 @@ export function isReminderInterval(n: number): n is ReminderInterval {
  * here, because that is a chase, not a lead time, and it is not expressible as
  * an interval. Chat-created tasks keep reaching it through `reminder_count`.
  *
- * THE CEILING IS 4, NOT 13. A count is only meaningful if a distinct lead time
+ * THE CEILING IS 4, NOT 15. A count is only meaningful if a distinct lead time
  * exists for it, and four well-spaced ones cover what a chat command can
- * usefully mean; the thirteen-option list is a picker affordance, not something
+ * usefully mean; the fifteen-option list is a picker affordance, not something
  * "เตือน 9 ครั้ง" should be able to reach. The plan cap
  * (REMINDER_POLICY.maxSelectable — free 1 / pro 2 / premium 4) then applies on
  * top, so nobody can request more shots than they pay for.

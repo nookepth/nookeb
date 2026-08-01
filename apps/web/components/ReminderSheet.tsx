@@ -104,7 +104,7 @@ export default function ReminderSheet({
   /**
    * Fire times for EVERY row, not just the ticked ones — the point of the sheet
    * is that you can see "1 วัน" would land on 5 ส.ค. 18:00 BEFORE committing to
-   * it. Recomputed per open/deadline change; thirteen Date constructions is
+   * it. Recomputed per open/deadline change; fifteen Date constructions is
    * nothing, and caching it would only risk showing a stale "เลยเวลาแล้ว".
    */
   const whenByMinutes = useMemo(() => {

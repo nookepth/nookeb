@@ -41,7 +41,7 @@ const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
  * Precedence:
  *  1. §4b `reminder_intervals` — the creator's selection, already validated
  *     against their plan at create time. Every plan picks from the SAME
- *     thirteen intervals; the plan only caps how many.
+ *     fifteen intervals; the plan only caps how many.
  *  2. Legacy `reminder_count` — the Pro "เตือน N ครั้ง" chat command
  *     (migration 047). Kept working; nothing else sets it.
  *  3. Neither → NO shots.

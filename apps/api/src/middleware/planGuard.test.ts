@@ -39,7 +39,7 @@ describe('resolveReminderConfig — §4b checkbox limit', () => {
     }
   });
 
-  it('lets FREE pick any ONE of the same thirteen intervals', () => {
+  it('lets FREE pick any ONE of the same fifteen intervals', () => {
     for (const choice of REMINDER_INTERVAL_CHOICES) {
       const res = resolveReminderConfig({ plan: 'free', intervals: [choice] });
       assert.equal(res.ok, true, `free must be able to pick ${choice}m`);

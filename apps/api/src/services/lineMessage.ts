@@ -29,12 +29,12 @@ const MUTED = '#8C8C8C';
 
 // Semantic ramp: the nearer the deadline, the hotter the colour. Every
 // RemindType must appear — the Record is exhaustive on purpose, so adding a
-// shot type (051 added '2_days'/'6_hours'; 055 added the other seven) is a
-// compile error until its card copy exists, rather than a card that renders
-// `undefined`.
+// shot type (051 added '2_days'/'6_hours'; 055 added seven more; 056 added
+// '5_min'/'at_deadline') is a compile error until its card copy exists, rather
+// than a card that renders `undefined`.
 //
-// FOUR BANDS, not thirteen shades: the colour answers "how worried should I be",
-// and a user who sees one card at a time cannot read a thirteen-step gradient.
+// FOUR BANDS, not fifteen shades: the colour answers "how worried should I be",
+// and a user who sees one card at a time cannot read a fifteen-step gradient.
 // Green = plenty of runway, amber = today-ish, deep orange = hours left, red =
 // out of time.
 const URGENCY_COLOR: Record<RemindType, string> = {
@@ -50,6 +50,8 @@ const URGENCY_COLOR: Record<RemindType, string> = {
   '1_hour': '#F4511E',
   '30_min': '#F44336',
   '15_min': '#F44336',
+  '5_min': '#F44336',
+  at_deadline: '#F44336',
   overdue: '#F44336',
 };
 
@@ -66,6 +68,9 @@ const URGENCY_LABEL: Record<RemindType, string> = {
   '1_hour': 'อีก 1 ชั่วโมงถึงกำหนด',
   '30_min': 'อีก 30 นาทีถึงกำหนด',
   '15_min': 'อีก 15 นาทีถึงกำหนด',
+  '5_min': 'อีก 5 นาทีถึงกำหนด',
+  // Present tense, not "อีก 0 นาที": this card arrives AT the deadline.
+  at_deadline: 'ถึงกำหนดส่งแล้ว',
   overdue: 'เลยกำหนดแล้ว',
 };
 

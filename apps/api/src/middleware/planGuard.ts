@@ -119,7 +119,7 @@ export interface ReminderConfigRejection {
  *
  * Two independent gates:
  *  - §4b the checkbox COUNT (free 1 / pro 2 / premium 4), and every value must
- *    be one of the five allowed intervals;
+ *    be one of the fifteen allowed intervals;
  *  - §4c the "notify only non-submitters" toggle, pro and above.
  *
  * Server-side by construction: the client's own limit is a convenience, and a
