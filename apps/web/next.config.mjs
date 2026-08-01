@@ -9,76 +9,23 @@
 const API_PROXY_TARGET = process.env.API_PROXY_TARGET ?? 'http://localhost:3001';
 
 /**
- * Content-Security-Policy. Built from a directive map for readability.
+ * Security headers WITHOUT the Content-Security-Policy.
  *
- * Notes on why each relaxation exists (do NOT tighten without checking the app
- * still renders):
- * - script-src 'unsafe-inline': the landing page ships two inline <script>s
- *   (the FAQ JSON-LD and the reveal-failsafe timer in app/page.tsx) and Next.js
- *   injects its own inline hydration bootstrap. A nonce-based strict CSP would
- *   need per-request middleware — tracked as a follow-up; this is the safe
- *   first step that adds frame/clickjacking + Referrer protection today.
- * - style-src 'unsafe-inline': Next.js + next/font emit inline <style>, and the
- *   <noscript> reveal fallback is an inline style block.
- * - img-src https: — dashboard/share/diary render presigned R2 URLs and LINE
- *   profile pictures (profile.line-scdn.net); both are https on hosts we don't
- *   want to hardcode. data:/blob: cover favicons and any object URLs.
- * - object-src / frame-src allow https: because the public share page previews
- *   PDFs via <object data={presigned R2 url}>; 'none' would break that preview.
- * - connect-src 'self': the browser only ever calls the same-origin /api-proxy.
- * - frame-ancestors 'none' (mirrored by X-Frame-Options: DENY) blocks
- *   clickjacking of the dashboard.
+ * FIX 12 moved the CSP to apps/web/middleware.ts, because it now carries a
+ * per-request `'nonce-…'` in script-src and 'unsafe-inline' is gone. A static
+ * header here cannot express that, and — more importantly — shipping BOTH a
+ * static and a middleware CSP does not "merge": the browser enforces every
+ * policy it receives, so the old permissive header would not loosen anything
+ * but the old one's *absence* of a nonce would blacklist the nonced scripts
+ * the new one allows. Two CSP headers = the intersection = a broken app.
+ * Do not re-add a Content-Security-Policy entry to this list.
+ *
+ * The headers below stay here on purpose: they carry no per-request value, and
+ * next.config.mjs applies them to '/:path*' — including the static-asset paths
+ * the middleware matcher deliberately skips. See middleware.ts for the CSP
+ * itself and the reasoning behind each directive.
  */
-const csp = Object.entries({
-  'default-src': ["'self'"],
-  // 'unsafe-eval' is DEV-ONLY: next dev serves webpack eval-source-map chunks,
-  // which this CSP otherwise blocks — scripts load but never execute, so every
-  // page renders its SSR shell and silently never hydrates. Production builds
-  // don't use eval and don't get the relaxation.
-  // static.line-scdn.net: the bundled @line/liff SDK lazily fetches its edge
-  // extension scripts (liff/edge/2/sdk.js, l2m-extensions) from this CDN at
-  // runtime on /liff/tasks/*. Without it those loads are CSP-blocked — the SDK
-  // then logs "[LIFF Init] failed to load legacy extensions" and runs degraded.
-  'script-src': [
-    "'self'",
-    "'unsafe-inline'",
-    'https://static.line-scdn.net',
-    ...(process.env.NODE_ENV === 'development' ? ["'unsafe-eval'"] : []),
-  ],
-  'style-src': ["'self'", "'unsafe-inline'"],
-  'img-src': ["'self'", 'data:', 'blob:', 'https:'],
-  // media-src must exist in its own right: <audio>/<video> fall back to
-  // default-src ('self'), which blocks BOTH of the legacy-box voice sources —
-  // the recorder's blob: preview URL and the reveal page's presigned R2 https
-  // URL. Omitting it is why the player showed "ไม่สามารถโหลดเสียงได้" while the
-  // photos beside it (img-src https:) loaded fine.
-  'media-src': ["'self'", 'blob:', 'https:'],
-  'font-src': ["'self'", 'data:'],
-  // api.line.me + liff.line.me: the LIFF SDK (@line/liff, bundled via npm — no
-  // CDN script) on /liff/tasks/* calls LINE's REST endpoints directly from the
-  // page — api.line.me for init/profile/verify, liff.line.me for the app's
-  // manifest (a blocked manifest fetch makes the SDK fall back to raw keys and
-  // logs a CSP violation). access.line.me is a top-level login NAVIGATION, not a
-  // fetch, so it needs no connect-src entry. Everything else stays same-origin
-  // via /api-proxy — INCLUDING the mobile file-preview PDF viewer (pdf.js,
-  // FilePreviewModal). It fetches the PDF bytes from the same-origin route
-  // /api/file-pdf/:id, which streams them server-side out of R2. Deliberately
-  // NOT a cross-origin fetch to the presigned R2 URL: that would need an R2
-  // connect-src entry here AND R2 bucket CORS (an infra setting not in this
-  // repo) — the exact dependency that made an earlier all-in-browser-fetch
-  // attempt fail silently on-device. Same-origin 'self' covers it with neither.
-  'connect-src': ["'self'", 'https://api.line.me', 'https://liff.line.me'],
-  'object-src': ["'self'", 'https:'],
-  'frame-src': ["'self'", 'https:'],
-  'base-uri': ["'self'"],
-  'form-action': ["'self'"],
-  'frame-ancestors': ["'none'"],
-})
-  .map(([directive, values]) => `${directive} ${values.join(' ')}`)
-  .join('; ');
-
 const securityHeaders = [
-  { key: 'Content-Security-Policy', value: csp },
   { key: 'X-Frame-Options', value: 'DENY' },
   { key: 'X-Content-Type-Options', value: 'nosniff' },
   { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },

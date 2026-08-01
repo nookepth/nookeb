@@ -5,10 +5,11 @@
  * Every price served here comes from config/plans.ts (DIARY_ADDON_PRICE). If a
  * number in this file looks like a literal, it is a bug.
  *
- * NO PAYMENT PROVIDER EXISTS. POST /diary-addon/subscribe grants ACTIVE access
- * without taking money — see the TODO on that route. It is rate-limited hard and
- * is NOT wired to any button in the web app: the plans page shows a coming-soon
- * modal instead. Do not link a user-facing CTA to it before billing lands.
+ * NO PAYMENT PROVIDER EXISTS. POST /diary-addon/subscribe therefore now answers
+ * 503 BILLING_NOT_READY unconditionally — as written it granted a paid add-on
+ * for free to anyone who could call it. The original body is commented out in
+ * place; re-enable it only behind a verified payment webhook.
+ * See "Temporarily Disabled Endpoints" in CLAUDE.md.
  */
 
 import type { FastifyPluginAsync } from 'fastify';
@@ -91,21 +92,33 @@ const diaryAddonRoutes: FastifyPluginAsync = async (app) => {
   // the rest of the system (sweep, status, settings) is exercisable end to end,
   // and it is the seam the provider's webhook will call. The web app
   // deliberately does not call it — see the file header.
+  /*
+   * DISABLED — payment system not yet implemented.
+   * Any authenticated user could self-upgrade for free.
+   * Re-enable only after wiring to a verified payment webhook.
+   */
   app.post('/diary-addon/subscribe', {
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
   }, async (request, reply) => {
-    const parsed = subscribeSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
-    }
-    const now = new Date();
-    const subscription = await createSubscription(
-      app.supabase,
-      request.authUser!.userId,
-      parsed.data.billingCycle,
-      now,
-    );
-    return reply.send({ subscription: toDto(subscription, now) });
+    void request; // handler disabled below — the body is never read
+    return reply.code(503).send({
+      error: 'SERVICE_UNAVAILABLE',
+      message: 'Plan upgrades are temporarily unavailable.',
+      code: 'BILLING_NOT_READY',
+    });
+    // --- ORIGINAL HANDLER (kept for the payment-webhook rewire) --------------
+    // const parsed = subscribeSchema.safeParse(request.body);
+    // if (!parsed.success) {
+    //   return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    // }
+    // const now = new Date();
+    // const subscription = await createSubscription(
+    //   app.supabase,
+    //   request.authUser!.userId,
+    //   parsed.data.billingCycle,
+    //   now,
+    // );
+    // return reply.send({ subscription: toDto(subscription, now) });
   });
 
   // ---- POST /diary-addon/cancel ------------------------------------------

@@ -261,8 +261,13 @@ export interface ReminderPolicy {
   notifyOnlyPending: boolean;
 }
 
+// §4c DECISION (2026-08-02): notify-only-non-submitters is available on EVERY
+// tier, free included. FEATURE_ACCESS.notify_only_pending is the source of
+// truth; this table mirrors it. They disagreed (FEATURE_ACCESS said free:true,
+// this said free:false), which is exactly how a gate drifts — plans.test.ts
+// asserts the two stay equal for every plan.
 export const REMINDER_POLICY: Record<Plan, ReminderPolicy> = {
-  free: { maxSelectable: 1, notifyOnlyPending: false },
+  free: { maxSelectable: 1, notifyOnlyPending: true },
   pro: { maxSelectable: 2, notifyOnlyPending: true },
   premium: { maxSelectable: 4, notifyOnlyPending: true },
 };

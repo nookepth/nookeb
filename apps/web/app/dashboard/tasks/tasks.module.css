@@ -2113,3 +2113,102 @@
 .cardBadges .menuWrap {
   flex-shrink: 0;
 }
+
+/* ============================================================
+   FIX 11 — status pills + review-loop notices as named classes.
+   These replace the inline `style={{ background: '#…', color: '#…' }}`
+   maps that used to live in [taskId]/page.tsx. Every colour resolves
+   through a token in globals.css so the dashboard and the LIFF view
+   cannot drift apart. Brand red is NOT used here on purpose — these
+   are semantic status colours; --color-primary stays the only brand
+   accent.
+   ============================================================ */
+
+.pillPending {
+  background: var(--status-pending-bg);
+  color: var(--status-pending-fg);
+}
+.pillInProgress {
+  background: var(--status-progress-bg);
+  color: var(--status-progress-fg);
+}
+.pillDone {
+  background: var(--status-done-bg);
+  color: var(--status-done-fg);
+}
+.pillCancelled {
+  background: var(--status-cancelled-bg);
+  color: var(--status-cancelled-fg);
+}
+/* item-level variants: "ยังไม่เริ่ม" / "ยกเลิก" read as neutral, not alarming */
+.pillItemPending {
+  background: var(--status-pending-bg);
+  color: var(--status-pending-muted-fg);
+}
+.pillItemCancelled {
+  background: var(--status-pending-bg);
+  color: var(--status-pending-muted-fg);
+}
+.pillSubmitted {
+  background: var(--status-submitted-bg);
+  color: var(--status-submitted-fg);
+}
+.pillRejected {
+  background: var(--status-rejected-bg);
+  color: var(--status-rejected-fg);
+}
+
+/* the "เสร็จแล้ว" tick that replaces the item number */
+.tdNumBadgeDone {
+  background: var(--state-done-fg);
+}
+
+/* review-loop notice cards (ส่งงานกลับแล้ว / ตีกลับให้แก้) */
+.reviewCard {
+  width: 100%;
+}
+.reviewCardInfo {
+  background: var(--review-info-bg);
+  border-color: var(--review-info-border);
+}
+.reviewCardReject {
+  background: var(--review-reject-bg);
+  border-color: var(--review-reject-border);
+}
+.reviewHeadInfo,
+.reviewHeadReject {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.reviewHeadInfo {
+  color: var(--review-info-fg);
+}
+.reviewHeadReject {
+  color: var(--review-reject-fg);
+}
+.reviewBody {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--note-fg);
+  white-space: pre-wrap;
+}
+/* ตีกลับ button — a ghost button tinted danger */
+.rejectGhostBtn {
+  color: var(--review-reject-fg);
+  border-color: var(--review-reject-btn-border);
+}
+
+/* attachment meta line ("120 KB · 5 ก.ค.") */
+.attachMeta {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--state-pending-fg);
+}
+.attachName {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

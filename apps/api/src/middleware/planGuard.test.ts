@@ -97,14 +97,13 @@ describe('resolveReminderConfig — §4b checkbox limit', () => {
 });
 
 describe('resolveReminderConfig — §4c notify only non-submitters', () => {
-  it('refuses the toggle on free', () => {
+  // §4c is NOT a paid gate any more (commit 7f25220 "always true for all
+  // plans"): a free creator must never get the upgrade 403 for it. This test
+  // asserted the old refusal and had been red since.
+  it('allows the toggle on free', () => {
     const res = resolveReminderConfig({ plan: 'free', notifyOnlyPending: true });
-    assert.equal(res.ok, false);
-    if (res.ok) return;
-    assert.equal(res.status, 403);
-    assert.equal(res.body.code, 'PLAN_UPGRADE_REQUIRED');
-    assert.equal(res.body.feature, 'notify_only_pending');
-    assert.equal(res.body.required_plan, 'pro');
+    assert.equal(res.ok, true);
+    assert.equal(res.ok && res.notifyOnlyPending, true);
   });
 
   it('allows it on pro and premium', () => {

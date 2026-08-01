@@ -5,6 +5,14 @@
  * like a literal, it is a bug.
  */
 
+// BILLING SURFACE: POST /plans/change — apps/api/src/routes/plans.ts   (DISABLED, 503)
+// BILLING SURFACE: POST /diary-addon/subscribe — apps/api/src/routes/diaryAddon.ts (DISABLED, 503)
+//
+// `changePlan()` (services/membership.service.ts) has exactly ONE caller in the
+// repo — POST /plans/change below. There is no admin plan-mutation route:
+// PATCH /admin/users/:id does not write users.plan (it only reads it for the
+// user list). Verified by grep on 2026-08-02; re-check before re-enabling.
+
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
@@ -87,36 +95,51 @@ const plansRoutes: FastifyPluginAsync = async (app) => {
   // once one exists. It is therefore admin/self-service only and rate-limited
   // tightly — it must never be the thing standing between a user and a paid
   // tier in production.
+  //
+  // It now answers 503 BILLING_NOT_READY unconditionally — see the block below
+  // and "Temporarily Disabled Endpoints" in CLAUDE.md.
+  /*
+   * DISABLED — payment system not yet implemented.
+   * Any authenticated user could self-upgrade for free.
+   * Re-enable only after wiring to a verified payment webhook.
+   */
   app.post('/plans/change', {
     preHandler: app.authenticate,
     config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
   }, async (request, reply) => {
-    const parsed = changePlanSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
-    }
-    const { plan, cycle } = parsed.data;
-
-    if (plan !== 'free' && cycle === 'yearly' && planSummary(plan).pricing.yearly === null) {
-      return reply.code(400).send({ error: 'แพ็กเกจนี้ไม่มีแบบรายปีน้า', code: 'CYCLE_UNAVAILABLE' });
-    }
-
-    const result = await changePlan(
-      app.supabase,
-      request.authUser!.userId,
-      plan as Plan,
-      { cycle: cycle as BillingCycle },
-    );
-
-    return reply.send({
-      plan: result.plan,
-      previousPlan: result.previousPlan,
-      lockerLimitBytes: result.lockerLimitBytes,
-      subscription: result.subscription,
-      // Quota usage is intentionally preserved across a plan change — only the
-      // limit moves (spec: recalculate limit, do not reset used).
-      quotaUsageReset: false,
+    void request; // handler disabled below — the body is never read
+    return reply.code(503).send({
+      error: 'SERVICE_UNAVAILABLE',
+      message: 'Plan upgrades are temporarily unavailable.',
+      code: 'BILLING_NOT_READY',
     });
+    // --- ORIGINAL HANDLER (kept for the payment-webhook rewire) --------------
+    // const parsed = changePlanSchema.safeParse(request.body);
+    // if (!parsed.success) {
+    //   return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    // }
+    // const { plan, cycle } = parsed.data;
+    //
+    // if (plan !== 'free' && cycle === 'yearly' && planSummary(plan).pricing.yearly === null) {
+    //   return reply.code(400).send({ error: 'แพ็กเกจนี้ไม่มีแบบรายปีน้า', code: 'CYCLE_UNAVAILABLE' });
+    // }
+    //
+    // const result = await changePlan(
+    //   app.supabase,
+    //   request.authUser!.userId,
+    //   plan as Plan,
+    //   { cycle: cycle as BillingCycle },
+    // );
+    //
+    // return reply.send({
+    //   plan: result.plan,
+    //   previousPlan: result.previousPlan,
+    //   lockerLimitBytes: result.lockerLimitBytes,
+    //   subscription: result.subscription,
+    //   // Quota usage is intentionally preserved across a plan change — only the
+    //   // limit moves (spec: recalculate limit, do not reset used).
+    //   quotaUsageReset: false,
+    // });
   });
 };
 

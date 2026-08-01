@@ -250,8 +250,14 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     return false;
   }
 
-  // POST /vault/setup-pin — first-time activation (authenticate only). Also
-  // flips vault_plan to 'premium': the manual gate until billing lands.
+  // POST /vault/setup-pin — first-time activation (authenticate only).
+  //
+  // vault_plan is stamped from the user's ACTUAL users.plan, never a hardcoded
+  // 'premium': it used to self-grant premium to anyone who set a PIN, which made
+  // requireVaultPremium above a no-op — setting a 6-digit PIN was the whole
+  // paywall. Setting a PIN is now free and harmless; it simply does not buy the
+  // tier. ensurePlan() is the same resolver every other gate uses (it normalises
+  // the legacy 'team' value to 'premium'), so the two can never disagree.
   app.post('/vault/setup-pin', async (request, reply) => {
     const parsed = pinSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -267,14 +273,19 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
       return reply.code(409).send({ error: 'Vault PIN is already set' });
     }
 
+    // Resolve the caller's REAL plan before the write (see the note above).
+    const resolvedVaultPlan: Plan = await ensurePlan(request);
+
     const hash = await argon2.hash(parsed.data.pin, ARGON2_OPTIONS);
     const { error } = await app.supabase
       .from('users')
-      .update({ vault_pin_hash: hash, vault_plan: 'premium' })
+      .update({ vault_pin_hash: hash, vault_plan: resolvedVaultPlan })
       .eq('id', userId)
       .is('vault_pin_hash', null); // races with a concurrent setup lose here
     if (error) throw error;
-    await app.redis.set(planCacheKey(userId), 'premium', 'EX', 60);
+    // Must mirror the value just written — priming this with 'premium' would
+    // hand out a 60-second vault session the DB row does not back.
+    await app.redis.set(planCacheKey(userId), resolvedVaultPlan, 'EX', 60);
 
     void logEvent(app.supabase, { eventType: 'vault_setup', userId, source: 'web' });
     return { success: true };

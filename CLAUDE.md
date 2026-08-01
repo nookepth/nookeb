@@ -175,61 +175,75 @@ supabase/migrations/    001–047 (see §5) · supabase/backfills/ (3 idempotent
 None are auto-applied. Read each file's header for apply-order; the ones that must
 land **before** the API deploy are flagged in-file.
 
-| File | Adds |
-|---|---|
-| `001_initial.sql` | users, spaces, space_members, folders, files, tags, file_tags, scan_sessions, scan_pages (+ indexes, RLS on files) |
-| `002_google_accounts.sql` | per-user Google refresh token for Drive export — **superseded, dropped by 017** |
-| `003_reliability.sql` | atomic `increment_storage_used` RPC, `files.purged_at` + partial index, storage_limit default |
-| `004_security_features.sql` | per-file virus-scan status + per-space storage-alert dedupe |
-| `005_teams.sql` | first-class teams (replaces implicit `spaces(type='team')`), `files.team_id`, `increment_team_storage` |
-| `006_cleanup_stale_team_spaces.sql` | one-time cleanup of legacy team-space rows |
-| `007_spaces_team_id.sql` | direct `spaces → teams` link |
-| `008_team_join_requests.sql` | owner/admin approval flow for invite-link joins |
-| `009_session_version.sql` | `users.session_version` — bumping revokes outstanding JWTs |
-| `010_referrals.sql` | referral codes, `referrals`, `referral_tiers`, `redeem_referral` RPC |
-| `012_reset_quota.sql` | one-time quota clean slate for the referral launch |
-| `013_fix_tiers.sql` | corrected tier thresholds (superseded by 030) |
-| `014_personal_quota_enforcement.sql` | atomic `increment_personal_storage(enforce)` |
-| `015_add_charged_to_column.sql` | `files.charged_to` ledger column (correct refunds) |
-| `016_unique_space_constraints.sql` | one space per LINE group / one personal space per user |
-| `017_drop_google_accounts.sql` | drops 002's table (Drive removed) |
-| `018_scan_page_seq.sql` | `scan_pages.page_seq BIGSERIAL` + `result_file_id` idempotency marker |
-| `019_scan_mode.sql` | `scan_sessions.scan_mode` ('bw' \| 'color') |
-| `020_session_kind.sql` | `scan_sessions.session_kind` ('scan' \| 'merge') |
-| `021_group_notify_settings.sql` | per-group upload-confirmation toggle — **feature retired; table + service now unused** |
-| `022_fix_upload_idempotency.sql` | unique index backstop on upload `line_message_id` |
-| `023_scan_expected_pages.sql` | `scan_sessions.expected_pages` + RPC — finalize wait-gate |
-| `024_fix_referral_quota.sql` | stop referral redemption clobbering admin-raised quotas (GREATEST guard) |
-| `025_perf_indexes.sql` | `files.uploaded_by` etc. partial indexes (CONCURRENTLY) |
-| `026_aggregate_rpcs.sql` | count/aggregate RPCs so admin/analytics don't page 1000-row selects |
-| `027_file_shares.sql` | public share links for dashboard files (token) |
-| `028_diary.sql` | `diary_entries` + `diary_notification_settings`, one live entry per user+Bangkok day |
-| `029_usage_events.sql` | append-only `usage_events` + `admin_*` aggregate RPCs |
-| `030_referral_tiers_fractional.sql` | current ladder 0→1, 3→2.5, 5→4 GB (NUMERIC column + RPC local) |
-| `031_vault.sql` | `users.vault_pin_hash` / `vault_plan` + `vault_files` |
-| `032_trash.sql` | `files.trash_origin_folder_id` (restore target snapshot) |
-| `033_legacy_boxes.sql` | `legacy_boxes` + `legacy_box_photos` + `increment_box_views` RPC |
-| `034_legacy_box_occasion_tagline.sql` | `occasion` + `tagline` (nullable) + anonymous `pro_interest_log` |
-| `035_legacy_box_audio.sql` | `legacy_boxes.audio_key` (CHECK pins the `legacy-box/` prefix) |
-| `036_tasks.sql` | `tasks`, `task_items`, `task_assignees`, `task_reminders`, `group_members` (RLS, no policies) |
-| `037_task_edit.sql` | per-assignee `done_note`, task-level `task_links`, edit/cancel support columns |
-| `038_rls_backstop.sql` | enables RLS (deny-all) on every remaining table |
-| `039_increment_share_views.sql` | atomic `increment_share_views` RPC |
-| `040_pro_interest_authed.sql` | `pro_interest` — authenticated, deduped task Pro fake-door. **Retired by 057** |
-| `041_usage_events_client_dims.sql` | `usage_events.session_id` / `plan_tier` / `entry_channel` (nullable) |
-| `042_admin_analytics_rpcs.sql` | 12 read-only STABLE admin RPCs (Bangkok day buckets) |
-| `043_personal_tasks.sql` | `tasks.is_personal` + `owner_line_uid`, `group_line_id` nullable, `tasks_scope_exclusive` CHECK |
-| `044_pdf_merge_session_kind.sql` | widens `session_kind` CHECK to add `'pdf'` |
-| `045_task_files.sql` | `task_files` junction + item statuses `submitted`/`rejected` + `submitted_at`/`rejected_at`/`rejection_note`/`submission_note`. **Not additive-safe: `getTaskWithDetails()` SELECTs `task_files` and backs every task read — apply BEFORE deploying.** |
-| `046_google_sheets_integration.sql` | `google_integrations` (one row/user, AES-GCM `encrypted_token`, RLS deny-all) |
-| `047_task_command_reminders.sql` | `tasks.reminder_count` INT NULL CHECK 1..4 — the Pro "เตือน N ครั้ง" knob |
-| `051_membership.sql` | **ระบบสมาชิก** — widens `users.plan` to include `'premium'` (keeps `'team'`, normalised to premium in code); `subscriptions`, `user_quotas` (+ `consume_quota` / `release_quota` RPCs), `user_group_boosts` (+ `claim_group_boost`), `support_tickets`, `user_integrations`; `tasks.reminder_intervals INT[]` + `tasks.notify_only_pending`; widens `task_reminders.remind_type` for `2_days`/`6_hours`/`at_deadline`. **Apply BEFORE the API/worker deploy** — every quota-guarded route calls `consume_quota`. The monthly RESET is structural (rows are keyed by Bangkok `period_start`), so no job can fail it. Single source of truth for all limits is `apps/api/src/config/plans.ts`. |
-| `048_task_urgency.sql` | `tasks.urgency` TEXT NULL CHECK (urgent_max/urgent/normal/relaxed) — creation-time ความเร่งด่วน; apply BEFORE deploying the web/API that sends it (older clients omit the column, so old-code/new-DB is safe) |
-| `053_diary_push_optin.sql` | `diary_notification_settings.notification_enabled` — LINE push opt-in, default FALSE (distinct from `is_enabled`, which is the in-app banner). No diary push may go out without it. Apply BEFORE the API/worker deploy |
-| `055_reminder_intervals_minutes.sql` | §4b — re-bases `tasks.reminder_intervals` from HOURS to **MINUTES** and widens the menu from 5 lead times to 13 (15/30 นาที · 1/2/3/6/12 ชม. · 1/2/3/5 วัน · 1 สัปดาห์ · `-60` = the overdue chase, selectable in a form for the first time). Also widens `task_reminders.remind_type` for the seven new shot names; the six old names are unchanged, so no reminder row is rewritten. The hour→minute backfill is IDEMPOTENT because {3,6,24,48,72} and {3,6,24,48,72}×60 are disjoint — the same property `normalizeLeadMinutes` (packages/shared) relies on to read an un-converted row. **Apply BEFORE the API/worker deploy** (a new client's minute values fail the old CHECK); the reverse order is safe. The plan cap stays 1/2/4 — the menu widened, the entitlement did not |
-| `056_reminder_short_leads.sql` | §4b — adds the two SHORT lead times 055 deliberately floored out: `5` (ก่อนกำหนด 5 นาที) and `0` (**ถึงกำหนดพอดี** — fire AT the deadline), taking the menu to **fifteen**. Widens both CHECKs only — **no data is rewritten**, unlike 055. `0` is a REAL lead time on this column, never a "ไม่เตือน" sentinel: that convention belonged to migration 047's `tasks.reminder_count`, and the CHECK's `cardinality >= 1` still forbids `{}` so absence can only be NULL. Disjointness holds — {5, 0} misses the legacy hour set {3,6,24,48,72}, every other minute choice, and −60. Also adds `5_min` / `at_deadline` to `task_reminders.remind_type` (additive). **Apply BEFORE the API/web deploy** (a new client's 5/0 fails the old CHECK); the reverse order is safe. Plan cap unchanged at 1/2/4 |
-| `054_diary_reminder_last_sent.sql` | `diary_notification_settings.last_push_date` DATE — the per-day claim that makes the §17 sweep safe to run HOURLY (a retry / worker restart / `notify_time` edit would otherwise double-push). Claimed with a conditional UPDATE; Bangkok calendar date. Apply BEFORE the API/worker deploy |
-| `057_retire_task_pro_fake_doors.sql` | Retires the two ระบบตามงาน Pro **fake doors** (`task_auto_reminder` / `task_voice_command`, migration 040) — neither ever had a scheduler or a microphone behind it, and this is UNRELATED to the live reminder system (047/051/055/056) and to the gift-box voice notes. Closes `pro_interest.feature_id` with `CHECK (false) NOT VALID` (the allowed set is empty and a CHECK cannot spell `IN ()`; `NOT VALID` is what preserves the existing rows), DROPs `admin_pro_interest_tasks`, and DROP+CREATEs `admin_pro_interest_daily` without its now-always-zero `task_clicks` column. **No row is deleted** — `pro_interest` and its `pro_interest_*` usage_events rows stay as history. The gift-box half (`pro_interest_log`, `POST /api/pro-interest`, `admin_pro_interest_giftbox`) is untouched. Order-independent vs the deploy: the code that wrote these values is removed in the same change |
+> Migrations are applied manually. Always verify by reading the file
+> header, not the CLAUDE.md map alone. Last verified: 2026-08-02.
+>
+> Verified against `ls supabase/migrations/` on that date: 56 files, numbered
+> 001–057 with **011 skipped** (no such file has ever existed). Three entries
+> were wrong before this pass and are corrected below — 048 was documented as
+> `task_urgency` (it is the reverse-lookup indexes), 049 and 052 were missing
+> entirely, and the real `task_urgency` is 050. The 050 file's own first line
+> also said `048_task_urgency.sql`; that header is fixed in the file.
+
+| # | File | Adds |
+|---|---|---|
+| 001 | `001_initial.sql` | users, spaces, space_members, folders, files, tags, file_tags, scan_sessions, scan_pages (+ indexes, RLS on files) |
+| 002 | `002_google_accounts.sql` | per-user Google refresh token for Drive export — **superseded, dropped by 017** |
+| 003 | `003_reliability.sql` | atomic `increment_storage_used` RPC, `files.purged_at` + partial index, storage_limit default |
+| 004 | `004_security_features.sql` | per-file virus-scan status + per-space storage-alert dedupe |
+| 005 | `005_teams.sql` | first-class teams (replaces implicit `spaces(type='team')`), `files.team_id`, `increment_team_storage` |
+| 006 | `006_cleanup_stale_team_spaces.sql` | one-time cleanup of legacy team-space rows |
+| 007 | `007_spaces_team_id.sql` | direct `spaces → teams` link |
+| 008 | `008_team_join_requests.sql` | owner/admin approval flow for invite-link joins |
+| 009 | `009_session_version.sql` | `users.session_version` — bumping revokes outstanding JWTs |
+| 010 | `010_referrals.sql` | referral codes, `referrals`, `referral_tiers`, `redeem_referral` RPC |
+| 011 | *(no file — number skipped)* | — |
+| 012 | `012_reset_quota.sql` | one-time quota clean slate for the referral launch |
+| 013 | `013_fix_tiers.sql` | corrected tier thresholds (superseded by 030) |
+| 014 | `014_personal_quota_enforcement.sql` | atomic `increment_personal_storage(enforce)` |
+| 015 | `015_add_charged_to_column.sql` | `files.charged_to` ledger column (correct refunds) |
+| 016 | `016_unique_space_constraints.sql` | one space per LINE group / one personal space per user |
+| 017 | `017_drop_google_accounts.sql` | drops 002's table (Drive removed) |
+| 018 | `018_scan_page_seq.sql` | `scan_pages.page_seq BIGSERIAL` + `result_file_id` idempotency marker |
+| 019 | `019_scan_mode.sql` | `scan_sessions.scan_mode` ('bw' \| 'color') |
+| 020 | `020_session_kind.sql` | `scan_sessions.session_kind` ('scan' \| 'merge') |
+| 021 | `021_group_notify_settings.sql` | per-group upload-confirmation toggle — **feature retired; table + service now unused** |
+| 022 | `022_fix_upload_idempotency.sql` | unique index backstop on upload `line_message_id` |
+| 023 | `023_scan_expected_pages.sql` | `scan_sessions.expected_pages` + RPC — finalize wait-gate |
+| 024 | `024_fix_referral_quota.sql` | stop referral redemption clobbering admin-raised quotas (GREATEST guard) |
+| 025 | `025_perf_indexes.sql` | `files.uploaded_by` etc. partial indexes (CONCURRENTLY) |
+| 026 | `026_aggregate_rpcs.sql` | count/aggregate RPCs so admin/analytics don't page 1000-row selects |
+| 027 | `027_file_shares.sql` | public share links for dashboard files (token) |
+| 028 | `028_diary.sql` | `diary_entries` + `diary_notification_settings`, one live entry per user+Bangkok day |
+| 029 | `029_usage_events.sql` | append-only `usage_events` + `admin_*` aggregate RPCs |
+| 030 | `030_referral_tiers_fractional.sql` | current ladder 0→1, 3→2.5, 5→4 GB (NUMERIC column + RPC local) |
+| 031 | `031_vault.sql` | `users.vault_pin_hash` / `vault_plan` + `vault_files` |
+| 032 | `032_trash.sql` | `files.trash_origin_folder_id` (restore target snapshot) |
+| 033 | `033_legacy_boxes.sql` | `legacy_boxes` + `legacy_box_photos` + `increment_box_views` RPC |
+| 034 | `034_legacy_box_occasion_tagline.sql` | `occasion` + `tagline` (nullable) + anonymous `pro_interest_log` |
+| 035 | `035_legacy_box_audio.sql` | `legacy_boxes.audio_key` (CHECK pins the `legacy-box/` prefix) |
+| 036 | `036_tasks.sql` | `tasks`, `task_items`, `task_assignees`, `task_reminders`, `group_members` (RLS, no policies) |
+| 037 | `037_task_edit.sql` | per-assignee `done_note`, task-level `task_links`, edit/cancel support columns |
+| 038 | `038_rls_backstop.sql` | enables RLS (deny-all) on every remaining table |
+| 039 | `039_increment_share_views.sql` | atomic `increment_share_views` RPC |
+| 040 | `040_pro_interest_authed.sql` | `pro_interest` — authenticated, deduped task Pro fake-door. **Retired by 057** |
+| 041 | `041_usage_events_client_dims.sql` | `usage_events.session_id` / `plan_tier` / `entry_channel` (nullable) |
+| 042 | `042_admin_analytics_rpcs.sql` | 12 read-only STABLE admin RPCs (Bangkok day buckets) |
+| 043 | `043_personal_tasks.sql` | `tasks.is_personal` + `owner_line_uid`, `group_line_id` nullable, `tasks_scope_exclusive` CHECK |
+| 044 | `044_pdf_merge_session_kind.sql` | widens `session_kind` CHECK to add `'pdf'` |
+| 045 | `045_task_files.sql` | `task_files` junction + item statuses `submitted`/`rejected` + `submitted_at`/`rejected_at`/`rejection_note`/`submission_note`. **Not additive-safe: `getTaskWithDetails()` SELECTs `task_files` and backs every task read — apply BEFORE deploying.** |
+| 046 | `046_google_sheets_integration.sql` | `google_integrations` (one row/user, AES-GCM `encrypted_token`, RLS deny-all) |
+| 047 | `047_task_command_reminders.sql` | `tasks.reminder_count` INT NULL CHECK 1..4 — the Pro "เตือน N ครั้ง" knob |
+| 048 | `048_reverse_lookup_indexes.sql` | the two missing reverse-lookup indexes on junction tables whose composite PK only covers the LEADING column: `idx_space_members_user_id` (`space_members` queried by `user_id` alone in `ensureUserAndSpace` + `GET /auth/me`) and `idx_file_tags_tag_id` (`file_tags` queried by `tag_id` alone in the dashboard tag filter). **Purely additive — indexes only, safe in either deploy order and safe to re-run.** `CREATE INDEX CONCURRENTLY` cannot run inside a transaction block: run the statements one at a time, never wrapped in BEGIN/COMMIT |
+| 049 | `049_group_member_removal.sql` | `group_members.removed_at` TIMESTAMPTZ + partial index `idx_group_members_active` — turns LINE `memberLeft` removal from cosmetic into enforceable. A HARD delete was undone on the ex-member's next group-scoped request, because `ensureGroupMember` treats possession of the group id as proof of membership and re-creates the row; a tombstone can only be cleared by a LINE-OBSERVED signal (message/postback/unsend/memberJoined, or a `members/ids` roster sync) through `upsertGroupMember`. The capability-only path may still auto-enroll a caller with NO row, but must never resurrect a tombstoned one. **Additive + either-order-safe** (NULL = active) |
+| 050 | `050_task_urgency.sql` | `tasks.urgency` TEXT NULL CHECK (urgent_max/urgent/normal/relaxed) — creation-time ความเร่งด่วน; apply BEFORE deploying the web/API that sends it (older clients omit the column, so old-code/new-DB is safe). **Was mislabeled `048` in this map and in its own file header** — both corrected 2026-08-02; the `COMMENT ON COLUMN` text inside the file still says "(048)" and was left alone because it is a SQL statement |
+| 051 | `051_membership.sql` | **ระบบสมาชิก** — widens `users.plan` to include `'premium'` (keeps `'team'`, normalised to premium in code); `subscriptions`, `user_quotas` (+ `consume_quota` / `release_quota` RPCs), `user_group_boosts` (+ `claim_group_boost`), `support_tickets`, `user_integrations`; `tasks.reminder_intervals INT[]` + `tasks.notify_only_pending`; widens `task_reminders.remind_type` for `2_days`/`6_hours`/`at_deadline`. **Apply BEFORE the API/worker deploy** — every quota-guarded route calls `consume_quota`. The monthly RESET is structural (rows are keyed by Bangkok `period_start`), so no job can fail it. Single source of truth for all limits is `apps/api/src/config/plans.ts`. |
+| 052 | `052_diary_addon.sql` | **หนูเก็บความทรงจำ** — the standalone diary-reminder ADD-ON (any plan holds it; it is not a tier). New tables only, nothing existing is touched, so old code against the new schema is safe. **Apply BEFORE the API/worker deploy** — `routes/diaryAddon.ts` and the hourly sweep in `jobs/diaryReminder.job.ts` read these tables directly. The `POST /diary-addon/subscribe` route that writes them is currently **503-disabled** (see "Temporarily Disabled Endpoints") |
+| 053 | `053_diary_push_optin.sql` | `diary_notification_settings.notification_enabled` — LINE push opt-in, default FALSE (distinct from `is_enabled`, which is the in-app banner). No diary push may go out without it. Apply BEFORE the API/worker deploy |
+| 054 | `054_diary_reminder_last_sent.sql` | `diary_notification_settings.last_push_date` DATE — the per-day claim that makes the §17 sweep safe to run HOURLY (a retry / worker restart / `notify_time` edit would otherwise double-push). Claimed with a conditional UPDATE; Bangkok calendar date. Apply BEFORE the API/worker deploy |
+| 055 | `055_reminder_intervals_minutes.sql` | §4b — re-bases `tasks.reminder_intervals` from HOURS to **MINUTES** and widens the menu from 5 lead times to 13 (15/30 นาที · 1/2/3/6/12 ชม. · 1/2/3/5 วัน · 1 สัปดาห์ · `-60` = the overdue chase, selectable in a form for the first time). Also widens `task_reminders.remind_type` for the seven new shot names; the six old names are unchanged, so no reminder row is rewritten. The hour→minute backfill is IDEMPOTENT because {3,6,24,48,72} and {3,6,24,48,72}×60 are disjoint — the same property `normalizeLeadMinutes` (packages/shared) relies on to read an un-converted row. **Apply BEFORE the API/worker deploy** (a new client's minute values fail the old CHECK); the reverse order is safe. The plan cap stays 1/2/4 — the menu widened, the entitlement did not |
+| 056 | `056_reminder_short_leads.sql` | §4b — adds the two SHORT lead times 055 deliberately floored out: `5` (ก่อนกำหนด 5 นาที) and `0` (**ถึงกำหนดพอดี** — fire AT the deadline), taking the menu to **fifteen**. Widens both CHECKs only — **no data is rewritten**, unlike 055. `0` is a REAL lead time on this column, never a "ไม่เตือน" sentinel: that convention belonged to migration 047's `tasks.reminder_count`, and the CHECK's `cardinality >= 1` still forbids `{}` so absence can only be NULL. Disjointness holds — {5, 0} misses the legacy hour set {3,6,24,48,72}, every other minute choice, and −60. Also adds `5_min` / `at_deadline` to `task_reminders.remind_type` (additive). **Apply BEFORE the API/web deploy** (a new client's 5/0 fails the old CHECK); the reverse order is safe. Plan cap unchanged at 1/2/4 |
+| 057 | `057_retire_task_pro_fake_doors.sql` | Retires the two ระบบตามงาน Pro **fake doors** (`task_auto_reminder` / `task_voice_command`, migration 040) — neither ever had a scheduler or a microphone behind it, and this is UNRELATED to the live reminder system (047/051/055/056) and to the gift-box voice notes. Closes `pro_interest.feature_id` with `CHECK (false) NOT VALID` (the allowed set is empty and a CHECK cannot spell `IN ()`; `NOT VALID` is what preserves the existing rows), DROPs `admin_pro_interest_tasks`, and DROP+CREATEs `admin_pro_interest_daily` without its now-always-zero `task_clicks` column. **No row is deleted** — `pro_interest` and its `pro_interest_*` usage_events rows stay as history. The gift-box half (`pro_interest_log`, `POST /api/pro-interest`, `admin_pro_interest_giftbox`) is untouched. Order-independent vs the deploy: the code that wrote these values is removed in the same change |
 
 Key invariants:
 - Every content table carries `space_id` (or a per-feature owner key: diary/vault =
@@ -794,7 +808,7 @@ thumbnail + OCR enqueue.
 | `REMINDER_POLICY[plan].maxSelectable` (free 1 / pro 2 / premium 4) | how many of the **15** §4b lead times may be ticked (13 since 055, +5 นาที and ถึงกำหนดพอดี since 056). Every plan sees the same menu — a plan caps the COUNT, never which ones. Enforced in `resolveReminderConfig` (403 `REMINDER_INTERVAL_LIMIT`); the picker's own cap is a courtesy | `config/plans.ts`, `middleware/planGuard.ts`, `components/ReminderPicker.tsx` + `ReminderSheet.tsx` |
 | `users.plan` ∈ {pro, team} | the `เตือน N ครั้ง` custom reminder count (migration 047) | `resolvePlanIsPro` in `task-command-handlers.ts`; effective count baked into the confirm card |
 | `users.plan` | plan-aware trash retention (5 vs 30 days) | `purgeDeletedFiles` |
-| `users.vault_plan` | vault access (`VAULT_PREMIUM_REQUIRED`); setup-pin self-grants `'premium'` until billing exists | `routes/vault.ts` |
+| `users.vault_plan` | vault access (`VAULT_PREMIUM_REQUIRED`). **`POST /vault/setup-pin` no longer self-grants `'premium'`** (2026-08-02) — it stamps `vault_plan` from the caller's real `users.plan` via `ensurePlan()`, and primes the 60 s Redis cache with the same value. Setting a 6-digit PIN was the entire paywall; it is now free and simply does not buy the tier. Consequence: existing free users who already hold `vault_plan='premium'` KEEP it (no backfill was run — decide that separately), but no NEW one is minted | `routes/vault.ts` |
 | `MISTRAL_API_KEY` | แปลงไฟล์ — the command replies "not available" without it | `isMistralOcrConfigured()` |
 | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `VAULT_MASTER_KEY` | Google Sheets sync (routes 503, worker not constructed, jobs no-op) | `isGoogleSheetsConfigured()` |
 | `VAULT_MASTER_KEY` | vault routes + the encrypted Google refresh token | `config.ts`, `vault-crypto` |
@@ -823,6 +837,71 @@ Vercel needs `API_PROXY_TARGET` = the Railway origin (unset → `localhost:3001`
 every `/api-proxy/*` 404s and login breaks) and `NEXT_PUBLIC_LINE_LOGIN_CHANNEL_ID`.
 Migrations that add columns/RPCs go BEFORE the API/worker deploy; deploy API before
 web. `DEPLOYMENT.md` has the long form.
+
+---
+
+## Temporarily Disabled Endpoints
+
+Two routes granted a **paid** entitlement without taking money. There is no
+billing provider anywhere in this codebase, so any authenticated user could
+self-upgrade for free by calling them directly — the rate limit (5/min) slowed
+that down, it did not prevent it. Both now answer **`503`** unconditionally:
+
+```json
+{ "error": "SERVICE_UNAVAILABLE",
+  "message": "Plan upgrades are temporarily unavailable.",
+  "code": "BILLING_NOT_READY" }
+```
+
+| Endpoint | File | Granted | Re-enable when |
+|---|---|---|---|
+| `POST /plans/change` | `apps/api/src/routes/plans.ts` | any `users.plan` (pro/premium) + an `active` `subscriptions` row, via `changePlan()` | a verified payment webhook calls `changePlan()` — the route becomes the webhook's seam, not a self-service door |
+| `POST /diary-addon/subscribe` | `apps/api/src/routes/diaryAddon.ts` | หนูเก็บความทรงจำ (49/365฿) — an `active` add-on row **plus** the diary push opt-in as a side effect | same: a verified payment webhook calls `createSubscription()` |
+
+### `/support/*` — disabled for a different reason (no admin surface)
+
+`apps/api/src/routes/support.ts` — **all four routes**, disabled 2026-08-02:
+`GET /support/sla`, `POST /support/tickets`, `GET /support/tickets`,
+`GET /support/tickets/:id`. They answer **`503`** unconditionally with a
+different body from the billing pair above:
+
+```json
+{ "error": "NOT_IMPLEMENTED",
+  "message": "Support system is not yet available.",
+  "code": "SUPPORT_NOT_READY" }
+```
+
+This is not a billing hole — support is deliberately free on every plan. It is
+disabled because the feature has **zero UI surface on either side**: no page
+lets a user file a ticket, and **no admin panel exists to read one**
+(`/admin/*` has no ticket view). `createTicket` stamps an SLA clock
+(`support_tickets.sla_hours` + `due_at`, migration 051, 4 h on premium) that
+would start ticking on rows nobody monitors — a promise the product cannot
+keep, which is worse than having no ticket intake at all. The routes stay
+REGISTERED and `services/support.service.ts` is untouched; only the handler
+bodies are commented out. **Re-enable when the admin ticket UI is built**, not
+when a user asks for the endpoint.
+
+Rules for whoever picks this up:
+
+- **The original handler bodies are commented out in place, not deleted.** They
+  are the shape the webhook path needs; restore them under the payment check
+  rather than rewriting from scratch.
+- **`changePlan()` has exactly one caller** (`POST /plans/change`). There is no
+  admin plan-mutation route — `PATCH /admin/users/:id` reads `users.plan` for the
+  user list but never writes it. Re-grep before re-enabling; a second caller is a
+  second hole.
+- Neither route was wired to a user-facing button, so nothing in the web app
+  breaks: `/dashboard/plans` renders its upgrade CTAs DISABLED, and
+  `subscribeDiaryAddon()` in `apps/web/lib/api.ts` exists but has no caller
+  (`DiaryAddonSection.tsx` deliberately does not call it). Do not wire a CTA to
+  either before billing lands.
+- The `POST /plans/change` disable does **not** roll back plans already granted
+  through it. Auditing/reverting free self-upgrades already in `users.plan` and
+  `subscriptions` is a separate decision.
+- Same class of bug, already fixed rather than disabled: `POST /vault/setup-pin`
+  used to self-grant `vault_plan='premium'` to anyone who set a PIN — see the
+  `users.vault_plan` row in §13.
 
 ---
 

@@ -1,4 +1,5 @@
 import type { Metadata } from 'next';
+import { headers } from 'next/headers';
 import Image from 'next/image';
 import Link from 'next/link';
 import { Itim } from 'next/font/google';
@@ -327,9 +328,32 @@ const JSON_LD = {
 };
 
 export default function Home() {
+  /* FIX 12: script-src no longer carries 'unsafe-inline', so the two inline
+     <script>s below must present the per-request nonce that middleware.ts
+     minted and stamped onto the x-nonce request header. Reading it is what
+     makes this route dynamic — see the COST note in middleware.ts.
+     `?? undefined` so a missing header omits the attribute rather than
+     rendering nonce="" (an empty nonce matches nothing and would silently
+     kill the reveal failsafe).
+
+     suppressHydrationWarning on both tags is REQUIRED, not cosmetic sloppiness.
+     Browsers implement CSP "nonce hiding": once the document is parsed, the
+     nonce *content attribute* is blanked and the value survives only on the
+     `.nonce` IDL property, so that a CSS attribute-selector exfiltration trick
+     cannot read it back. React hydrates by comparing against the content
+     attribute, sees "" where it rendered the nonce, and logs a mismatch on
+     every page load. Verified as a false positive: the scripts execute, the
+     CSP raises no violation, and element.nonce still holds the real value.
+     Do NOT "fix" this by dropping the nonce — that re-breaks the CSP. */
+  const nonce = headers().get('x-nonce') ?? undefined;
   return (
     <div className={`${styles.landing} ${itim.variable}`}>
-      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }} />
+      <script
+        type="application/ld+json"
+        nonce={nonce}
+        suppressHydrationWarning
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(JSON_LD) }}
+      />
       {/* JS ปิดอยู่ → โชว์เนื้อหาทั้งหมดทันที (Reveal ไม่ทำงาน) */}
       <noscript>
         <style>{'[data-reveal]{opacity:1 !important;transform:none !important}'}</style>
@@ -337,6 +361,8 @@ export default function Home() {
       {/* Failsafe ไม่พึ่ง hydration: ถ้า reveal ตัวไหนยังไม่ถูกเปิดใน 4 วิ ให้เปิดเลย
           (กันกรณี JS โหลด/รันไม่สำเร็จ — เนื้อหาต้องไม่ค้างล่องหน) */}
       <script
+        nonce={nonce}
+        suppressHydrationWarning
         dangerouslySetInnerHTML={{
           __html:
             "setTimeout(function(){for(var l=document.querySelectorAll('[data-reveal]:not([data-visible])'),i=0;i<l.length;i++)l[i].setAttribute('data-visible','true')},4000);",

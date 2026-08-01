@@ -1155,3 +1155,181 @@
   font-size: 14px;
   line-height: 1.6;
 }
+
+/* ============================================================
+   FIX 11 — status pills + review-loop notices as named classes.
+   Mirrors the dashboard module (app/dashboard/tasks/tasks.module.css)
+   so the same status renders identically in both surfaces. Colours
+   come from the shared tokens in globals.css, which the root layout
+   applies to LIFF routes too. Brand red stays --brand / --color-primary
+   and is deliberately absent here — these are semantic status colours.
+   ============================================================ */
+
+.pillPending {
+  background: var(--status-pending-bg);
+  color: var(--status-pending-fg);
+}
+.pillInProgress {
+  background: var(--status-progress-bg);
+  color: var(--status-progress-fg);
+}
+.pillDone {
+  background: var(--status-done-bg);
+  color: var(--status-done-fg);
+}
+.pillCancelled {
+  background: var(--status-cancelled-bg);
+  color: var(--status-cancelled-fg);
+}
+.pillItemPending,
+.pillItemCancelled {
+  background: var(--status-pending-bg);
+  color: var(--status-pending-muted-fg);
+}
+.pillSubmitted {
+  background: var(--status-submitted-bg);
+  color: var(--status-submitted-fg);
+}
+.pillRejected {
+  background: var(--status-rejected-bg);
+  color: var(--status-rejected-fg);
+}
+
+/* the "เสร็จแล้ว" tick that replaces the item number */
+.numBadgeDone {
+  background: var(--state-done-fg);
+}
+
+/* review-loop notice cards (ส่งงานกลับแล้ว / ตีกลับให้แก้) */
+.reviewCard {
+  width: 100%;
+}
+.reviewCardInfo {
+  background: var(--review-info-bg);
+  border-color: var(--review-info-border);
+}
+.reviewCardReject {
+  background: var(--review-reject-bg);
+  border-color: var(--review-reject-border);
+}
+.reviewHeadInfo,
+.reviewHeadReject {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.reviewHeadInfo {
+  color: var(--review-info-fg);
+}
+.reviewHeadReject {
+  color: var(--review-reject-fg);
+}
+.reviewBody {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--note-fg);
+  white-space: pre-wrap;
+}
+.rejectGhostBtn {
+  color: var(--review-reject-fg);
+  border-color: var(--review-reject-btn-border);
+}
+
+/* ---- rows the LIFF detail page used to style inline ---- */
+
+.linkRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+.linkAnchor {
+  flex: 1;
+  min-width: 0;
+  color: var(--link-fg);
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.iconDelete {
+  border: none;
+  background: none;
+  color: var(--icon-muted-fg);
+  cursor: pointer;
+  padding: 4px;
+}
+.attachRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+.attachAnchor {
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+}
+.attachAnchorDisabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.attachName {
+  margin: 0;
+  font-size: 14px;
+  color: var(--link-fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachMeta {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--state-pending-fg);
+}
+.creatorControls {
+  display: flex;
+  gap: 10px;
+  border-top: 1px solid var(--hairline);
+  padding-top: 8px;
+}
+.assigneeRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.assigneeName {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: #333333;
+}
+.assigneeState {
+  font-size: 12px;
+  font-weight: 600;
+}
+.stateDone {
+  color: var(--state-done-fg);
+}
+.stateAccepted {
+  color: var(--state-accepted-fg);
+}
+.statePending {
+  color: var(--state-pending-fg);
+}
+.noteText {
+  font-size: 12px;
+  color: var(--note-fg);
+  background: var(--note-bg);
+  /* Brand-red hairline at 33% alpha — was the literal #b53a3255. Uses this
+     module's own --brand token (set on .page), NOT globals' --color-primary:
+     the LIFF palette is pinned to the playbook red #B53A32 and a lone
+     #C0392B hairline here would read as a rendering artifact. See the
+     DESIGN DECISION note in app/page.module.css for the same trade-off. */
+  border-left: 3px solid color-mix(in srgb, var(--brand) 33%, transparent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 2px 0 4px;
+  white-space: pre-wrap;
+}

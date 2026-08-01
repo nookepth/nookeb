@@ -35,11 +35,18 @@ const TYPE_LABEL: Record<TaskDto['type'], string> = {
   recurring: 'งานประจำ',
 };
 
-const STATUS_BADGE: Record<TaskStatus, { label: string; bg: string; fg: string }> = {
-  pending: { label: 'รอดำเนินการ', bg: '#f3f4f6', fg: '#374151' },
-  in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
-  done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
-  cancelled: { label: 'ยกเลิก', bg: '#fee2e2', fg: '#b91c1c' },
+/**
+ * FIX 11: the pill colours used to be inline hex literals here (and a second,
+ * hand-kept copy of the same table lived in the LIFF detail page). Both now
+ * name a class in tasks.module.css, which resolves the shared status tokens
+ * declared in globals.css — one place to change a status colour, and no
+ * hardcoded hex left in a `style={{}}` on this page.
+ */
+const STATUS_BADGE: Record<TaskStatus, { label: string; cls: string }> = {
+  pending: { label: 'รอดำเนินการ', cls: styles.pillPending! },
+  in_progress: { label: 'กำลังทำ', cls: styles.pillInProgress! },
+  done: { label: 'เสร็จแล้ว', cls: styles.pillDone! },
+  cancelled: { label: 'ยกเลิก', cls: styles.pillCancelled! },
 };
 
 /**
@@ -47,13 +54,13 @@ const STATUS_BADGE: Record<TaskStatus, { label: string; bg: string; fg: string }
  * plus the review loop (migration 045) — รอตรวจ=blue, ตีกลับ=red. Keyed by
  * TaskItemStatus, which is wider than the task-level TaskStatus.
  */
-const ITEM_STATUS_PILL: Record<TaskItemStatus, { label: string; bg: string; fg: string }> = {
-  pending: { label: 'ยังไม่เริ่ม', bg: '#f3f4f6', fg: '#6b7280' },
-  in_progress: { label: 'กำลังทำ', bg: '#fef3c7', fg: '#b45309' },
-  done: { label: 'เสร็จแล้ว', bg: '#d1fae5', fg: '#047857' },
-  cancelled: { label: 'ยกเลิก', bg: '#f3f4f6', fg: '#6b7280' },
-  submitted: { label: 'รอตรวจ', bg: '#dbeafe', fg: '#1d4ed8' },
-  rejected: { label: 'ตีกลับ', bg: '#fee2e2', fg: '#b91c1c' },
+const ITEM_STATUS_PILL: Record<TaskItemStatus, { label: string; cls: string }> = {
+  pending: { label: 'ยังไม่เริ่ม', cls: styles.pillItemPending! },
+  in_progress: { label: 'กำลังทำ', cls: styles.pillInProgress! },
+  done: { label: 'เสร็จแล้ว', cls: styles.pillDone! },
+  cancelled: { label: 'ยกเลิก', cls: styles.pillItemCancelled! },
+  submitted: { label: 'รอตรวจ', cls: styles.pillSubmitted! },
+  rejected: { label: 'ตีกลับ', cls: styles.pillRejected! },
 };
 
 const THAI_MONTHS = ['ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
@@ -550,9 +557,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
       <div className={styles.card}>
         <div className={styles.detailTitleRow}>
           <h1 className={styles.detailTitle}>{task.title}</h1>
-          <span className={styles.statusBadge} style={{ background: badge.bg, color: badge.fg }}>
-            {badge.label}
-          </span>
+          <span className={`${styles.statusBadge} ${badge.cls}`}>{badge.label}</span>
         </div>
         <div className={styles.detailMetaRow}>
           <span className={styles.typeTag}>{TYPE_LABEL[task.type]}</span>
@@ -714,17 +719,8 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                     rel="noreferrer"
                     style={{ opacity: f.url ? 1 : 0.5, pointerEvents: f.url ? undefined : 'none' }}
                   >
-                    <span
-                      style={{
-                        display: 'block',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {f.name}
-                    </span>
-                    <span style={{ display: 'block', marginTop: 2, fontSize: 12, color: '#8c8c8c' }}>
+                    <span className={styles.attachName}>{f.name}</span>
+                    <span className={styles.attachMeta}>
                       {formatBytes(f.size)} · {formatUploadedAt(f.createdAt)}
                       {f.kind === 'submission' ? ' · ไฟล์ที่ส่งกลับ' : ''}
                     </span>
@@ -761,16 +757,13 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
             return (
               <article key={item.id} className={styles.tdItemCard}>
                 <div className={styles.tdItemTopRow}>
-                  <span className={styles.tdNumBadge} style={itemDone ? { background: '#059669' } : undefined}>
+                  <span className={`${styles.tdNumBadge} ${itemDone ? styles.tdNumBadgeDone : ''}`}>
                     {itemDone ? <CheckIcon size={13} /> : idx + 1}
                   </span>
                   <div className={styles.tdItemBody}>
                     <div className={styles.detailTitleRow} style={{ alignItems: 'flex-start', gap: 8 }}>
                       <p className={styles.tdItemTitle}>{item.title}</p>
-                      <span
-                        className={styles.statusBadge}
-                        style={{ background: ipill.bg, color: ipill.fg, flexShrink: 0 }}
-                      >
+                      <span className={`${styles.statusBadge} ${ipill.cls}`} style={{ flexShrink: 0 }}>
                         {ipill.label}
                       </span>
                     </div>
@@ -804,18 +797,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
 
                 {/* ส่งงานกลับแล้ว — the creator's accept / send-back controls */}
                 {item.status === 'submitted' && (
-                  <div
-                    className={styles.card}
-                    style={{ width: '100%', background: '#eff6ff', borderColor: '#bfdbfe' }}
-                  >
-                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#1d4ed8' }}>
+                  <div className={`${styles.card} ${styles.reviewCard} ${styles.reviewCardInfo}`}>
+                    <p className={styles.reviewHeadInfo}>
                       {item.assignees.map((a) => a.displayName || 'สมาชิก').join(', ')} ส่งงานกลับแล้ว
                     </p>
-                    {item.submissionNote && (
-                      <p style={{ margin: '6px 0 0', fontSize: 13, color: '#555', whiteSpace: 'pre-wrap' }}>
-                        {item.submissionNote}
-                      </p>
-                    )}
+                    {item.submissionNote && <p className={styles.reviewBody}>{item.submissionNote}</p>}
                     {isCreator && !isClosed && (
                       <div className={styles.inlineFormRow} style={{ marginTop: 10 }}>
                         <button
@@ -828,8 +814,7 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                         </button>
                         <button
                           type="button"
-                          className={styles.ghostBtn}
-                          style={{ color: '#b91c1c', borderColor: '#e5b3b0' }}
+                          className={`${styles.ghostBtn} ${styles.rejectGhostBtn}`}
                           onClick={() => {
                             setRejectNote('');
                             setRejectItemId(item.id);
@@ -845,14 +830,9 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
 
                 {/* ถูกตีกลับ — the reason, shown to everyone on the item */}
                 {item.status === 'rejected' && item.rejectionNote && (
-                  <div
-                    className={styles.card}
-                    style={{ width: '100%', background: '#fef2f2', borderColor: '#fecaca' }}
-                  >
-                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#b91c1c' }}>ตีกลับให้แก้</p>
-                    <p style={{ margin: '6px 0 0', fontSize: 13, color: '#555', whiteSpace: 'pre-wrap' }}>
-                      {item.rejectionNote}
-                    </p>
+                  <div className={`${styles.card} ${styles.reviewCard} ${styles.reviewCardReject}`}>
+                    <p className={styles.reviewHeadReject}>ตีกลับให้แก้</p>
+                    <p className={styles.reviewBody}>{item.rejectionNote}</p>
                   </div>
                 )}
 

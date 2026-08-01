@@ -10,7 +10,7 @@ import {
 } from '@nookeb/shared';
 import { config } from '../config';
 import { createRedis } from '../plugins/redis';
-import { pushMessage, type LineMessage } from '../services/line.service';
+import { LinePushError, pushMessage, type LineMessage } from '../services/line.service';
 import { buildMentionTextV2, buildReminderFlex } from '../services/lineMessage';
 import {
   getReminder,
@@ -29,7 +29,7 @@ import {
   rolloverJobId,
   scheduleReminders,
 } from '../services/taskScheduler';
-import { consumeQuota } from '../services/quota.service';
+import { consumeQuota, releaseQuota } from '../services/quota.service';
 import { normalizePlan } from '../config/plans';
 import { planAllows } from '../middleware/planGuard';
 
@@ -97,6 +97,47 @@ async function consumeNotificationQuota(creatorLineUid: string): Promise<boolean
   }
 }
 
+/**
+ * §4a — hand back a unit reserved for a push that did NOT go out (LINE rejected
+ * it, timed out, or is rate-limiting us). Mirrors consumeNotificationQuota:
+ * a creator with no users row was never charged, so there is nothing to release.
+ *
+ * Never throws. The caller is already on a failure path — a release that fails
+ * must not mask the original push error, and the worst case is one uncounted
+ * unit, which is the same failure mode consumeNotificationQuota already accepts.
+ */
+async function releaseNotificationQuota(creatorLineUid: string): Promise<void> {
+  const row = await userByLineUid(creatorLineUid).catch(() => null);
+  if (!row) return;
+  try {
+    await releaseQuota(supabase, { userId: row.id, feature: 'task_notifications' });
+  } catch (err) {
+    console.error(`[task-worker] notification quota release failed for ${row.id}:`, err);
+  }
+}
+
+/**
+ * FIX 13 — is this LINE push failure permanent, i.e. will retrying it produce
+ * the exact same rejection?
+ *
+ * True for a 4xx that is NOT 429: the user blocked the OA (403), the uid is
+ * stale or was never valid (400), the token lost its scope (401). BullMQ's
+ * three attempts against any of those are three identical rejections spread
+ * over ~30 seconds of backoff, holding a worker slot behind this queue's
+ * 10/sec limiter for nothing.
+ *
+ * False — so the caller rethrows and BullMQ retries — for:
+ *   429  LINE's rate limit, the one 4xx that genuinely clears on its own;
+ *   5xx  LINE is having a bad minute;
+ *   0    LinePushError's timeout sentinel (see line.service.pushMessage), plus
+ *        any non-LinePushError (a DNS blip, a thrown network error), which
+ *        reach here as 0 and must stay retryable.
+ */
+function isPermanentPushError(err: unknown): boolean {
+  const status = err instanceof LinePushError ? err.status : 0;
+  return status >= 400 && status < 500 && status !== 429;
+}
+
 /** Items covered by a reminder round: one item, or every global-deadline item. */
 function roundItems(task: TaskWithDetails, itemId: string | null) {
   return task.items.filter((i) =>
@@ -151,22 +192,6 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
     return;
   }
 
-  // §4a — the monthly notification allowance (free 7 / pro 30 / premium 100) is
-  // charged to the task's CREATOR, and charged PER PUSH rather than per task:
-  // a task with four reminder shots costs four units. Reserved BEFORE the push,
-  // so an exhausted allowance never sends.
-  //
-  // A blocked reminder is stamped cancelled_at, not failed_at: nothing broke,
-  // the user simply has no allowance left, and failed_at would page ops.
-  const notifySpend = await consumeNotificationQuota(task.created_by_line_uid);
-  if (!notifySpend) {
-    console.log(
-      `[task-worker] reminder ${reminderId} skipped — notification quota exhausted for ${task.created_by_line_uid}`,
-    );
-    await stampReminder(supabase, reminderId, 'cancelled_at');
-    return;
-  }
-
   const header =
     remindType === 'overdue'
       ? `งาน "${task.title}" เลยกำหนดแล้วน้า รีบหน่อยน้า`
@@ -196,9 +221,65 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
         buildMentionTextV2(pending, header) as unknown as LineMessage,
         buildReminderFlex(task, item, remindType),
       ];
-  await pushMessage(target, messages);
 
-  await stampReminder(supabase, reminderId, 'sent_at');
+  // §4a — the monthly notification allowance (free 7 / pro 30 / premium 100) is
+  // charged to the task's CREATOR, and charged PER PUSH rather than per task:
+  // a task with four reminder shots costs four units. Reserved immediately
+  // BEFORE the push (nothing between this line and pushMessage may return), so
+  // an exhausted allowance never sends — and RELEASED again below if the push
+  // does not actually go out.
+  //
+  // A blocked reminder is stamped cancelled_at, not failed_at: nothing broke,
+  // the user simply has no allowance left, and failed_at would page ops.
+  const notifySpend = await consumeNotificationQuota(task.created_by_line_uid);
+  if (!notifySpend) {
+    console.log(
+      `[task-worker] reminder ${reminderId} skipped — notification quota exhausted for ${task.created_by_line_uid}`,
+    );
+    await stampReminder(supabase, reminderId, 'cancelled_at');
+    return;
+  }
+
+  try {
+    await pushMessage(target, messages);
+  } catch (err) {
+    // The message did NOT go out, so the unit reserved above must go back
+    // BEFORE we decide whether to retry. Without this, every failed attempt
+    // burned a unit permanently: the row is left unstamped on a transient
+    // failure (that is what lets BullMQ retry it), so the guard at the top of
+    // this handler does not stop the next attempt from charging again — a free
+    // creator lost all three of a shot's attempts out of seven monthly units,
+    // silently.
+    await releaseNotificationQuota(task.created_by_line_uid);
+
+    if (isPermanentPushError(err)) {
+      // Permanent LINE error (user blocked the OA, invalid/stale uid, malformed
+      // payload). Retrying cannot help, so settle the job here: stamp the miss
+      // and return WITHOUT rethrowing, instead of burning two more attempts to
+      // reach the same failed_at via the worker's 'failed' listener. A timeout
+      // reports status 0 and a 429/5xx is transient — both fall through below.
+      const status = err instanceof LinePushError ? err.status : 0;
+      await stampReminder(supabase, reminderId, 'failed_at').catch((stampErr) => {
+        console.error(`[task-worker] could not stamp failed_at for ${reminderId}:`, stampErr);
+      });
+      console.warn(
+        `[task-worker] reminder ${reminderId} permanent LINE error (status=${status}) — no quota charged, not retrying`,
+      );
+      return;
+    }
+    // Transient (429 rate limit, 5xx, network/timeout) — let BullMQ retry with
+    // its backoff. No quota is charged for this attempt.
+    throw err;
+  }
+
+  // Delivered. From here on nothing may throw: the push cannot be un-sent, so a
+  // DB hiccup while stamping must not retry the job and push a second time.
+  await stampReminder(supabase, reminderId, 'sent_at').catch((err) => {
+    console.error(
+      `[task-worker] reminder ${reminderId} was DELIVERED but sent_at could not be stamped:`,
+      err,
+    );
+  });
 }
 
 /**
@@ -220,7 +301,29 @@ async function processTaskNotify(job: Job<TaskNotifyJob>): Promise<void> {
   if (!TASK_NOTIFICATIONS_ENABLED) return;
   if (!to || messages.length === 0) return;
 
-  await pushMessage(to, messages as LineMessage[]);
+  // FIX 13 — same permanent/transient split as processTaskReminder. This path
+  // used to let EVERY failure propagate, so a creator who blocked the OA (or a
+  // group the bot was removed from) turned each announcement / cancel notice /
+  // review-loop notice into three identical 4xx rejections behind this queue's
+  // 10/sec limiter.
+  //
+  // There is no reminder row to stamp here and no §4a quota to release — this
+  // handler charges neither — so a permanent failure is simply logged and the
+  // job settles as complete. "Complete" is the honest outcome: the notice will
+  // never be deliverable to this target, and failing the job would only leave a
+  // permanently-red entry that ops cannot action.
+  try {
+    await pushMessage(to, messages as LineMessage[]);
+  } catch (err) {
+    if (isPermanentPushError(err)) {
+      const status = err instanceof LinePushError ? err.status : 0;
+      console.warn(
+        `[task-worker] ${context} notice for task ${taskId} hit a permanent LINE error (status=${status}) — not retrying`,
+      );
+      return;
+    }
+    throw err; // transient (429 / 5xx / timeout) — let BullMQ retry
+  }
   console.log(`[task-worker] ${context} notice delivered for task ${taskId}`);
 }
 

@@ -3,7 +3,9 @@ import Fastify from 'fastify';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 import { config } from './config';
+import { DIARY_ADDON_ENABLED } from './config/plans';
 import supabasePlugin from './plugins/supabase';
 import r2Plugin from './plugins/r2';
 import redisPlugin from './plugins/redis';
@@ -156,13 +158,51 @@ async function main(): Promise<void> {
   // ended up failing. Order: after authPlugin, before any route.
   await app.register(quotaPlugin);
 
-  app.get('/health', async () => ({
-    status: 'ok',
-    service: 'nookeb-api',
-    // Railway injects the deployed commit SHA — surfaced here to verify which build is live.
-    commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? 'unknown',
-    timestamp: new Date().toISOString(),
-  }));
+  // Liveness probe. Railway routes traffic on the strength of this response, so
+  // it must actually check the two dependencies without which the API can serve
+  // nothing: Redis (rate limiter state, progress store, upload debounce, every
+  // queue enqueue) and Postgres. It used to return a hardcoded 200, which meant
+  // a wedged instance kept receiving traffic and was never restarted.
+  //
+  // Mirrors workers/index.ts, which has done the Redis half correctly all along.
+  // Response shape is additive — status/service/commit/timestamp are unchanged,
+  // `checks` is new — so anything already parsing this keeps working.
+  app.get('/health', async (_request, reply) => {
+    const checks: Record<string, 'ok' | 'error'> = {};
+    let healthy = true;
+
+    // ioredis exposes its link state synchronously; no command is issued, so a
+    // dead Redis fails the probe instantly instead of hanging it.
+    try {
+      checks.redis = app.redis?.status === 'ready' ? 'ok' : 'error';
+      if (checks.redis === 'error') healthy = false;
+    } catch {
+      checks.redis = 'error';
+      healthy = false;
+    }
+
+    // Cheapest possible read: one indexed column, one row, no filter. `users` is
+    // never empty in any deployed environment, but an empty result is still
+    // treated as healthy — only a transport/permission ERROR means the DB link
+    // is down, which is what this probe is asking about.
+    try {
+      const { error } = await app.supabase.from('users').select('id').limit(1).maybeSingle();
+      checks.db = error ? 'error' : 'ok';
+      if (checks.db === 'error') healthy = false;
+    } catch {
+      checks.db = 'error';
+      healthy = false;
+    }
+
+    return reply.code(healthy ? 200 : 503).send({
+      status: healthy ? 'ok' : 'degraded',
+      service: 'nookeb-api',
+      // Railway injects the deployed commit SHA — surfaced here to verify which build is live.
+      commit: process.env.RAILWAY_GIT_COMMIT_SHA ?? 'unknown',
+      timestamp: new Date().toISOString(),
+      checks,
+    });
+  });
 
   // Webhook is registered in its own scope: it uses a raw-body content parser
   await app.register(lineWebhookRoutes);
@@ -232,6 +272,18 @@ async function main(): Promise<void> {
 
   await app.listen({ port: config.PORT, host: '0.0.0.0' });
   app.log.info(`nookeb API listening on :${config.PORT}`);
+
+  // FIX 15 — print the feature flags this SERVICE resolved, so the deployed
+  // state is auditable from the boot log (the worker does the same for the scan
+  // pipeline). Env is per Railway service: a flag set on the API but not the
+  // worker half-enables its feature, and this line is what makes that visible
+  // without shelling into the container.
+  //
+  // DIARY_ADDON_ENABLED is read from config/plans.ts — the constant the routes
+  // and the sweep actually branch on — not from `config`, so the log can never
+  // disagree with behaviour. See the note on config.ts's schema entry.
+  app.log.info({ DIARY_ADDON_ENABLED }, 'feature flag: diary add-on');
+  app.log.info({ TASK_NOTIFICATIONS_ENABLED }, 'feature flag: task notifications');
 
   // Flush any in-memory upload batches still inside the 1.5s debounce window
   // before exiting — otherwise those collected files are lost with no trace.

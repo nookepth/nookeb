@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import sharp, { type Sharp } from 'sharp';
 import { PDFDocument, type PDFFont } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
@@ -491,38 +491,38 @@ const A4_HEIGHT_PT = 841.89;
 
 /**
  * Thai-capable TTF for the invisible OCR text layer (pdf-lib StandardFonts are
- * WinAnsi-only and cannot encode Thai). Pre-seeded into apps/api/assets/fonts/
- * by scripts/download-tessdata.js; lazily downloaded on first use if missing.
- * Returns null (and logs once) when unavailable — non-ASCII words are then
- * skipped, never failing the PDF.
+ * WinAnsi-only and cannot encode Thai).
+ *
+ * FIX 16 — BUILD-TIME ASSET. This used to fall back to fetching the font from
+ * a CDN on first use and writing it into the container filesystem. Two problems
+ * with that: it put a third-party host on the serving path of a user-visible
+ * feature, and it wrote whatever bytes came back straight to disk with no
+ * integrity check. Both are gone. The font is now fetched once at build time,
+ * behind a pinned SHA-256, by scripts/download-tessdata.js — invoked from
+ * apps/api/package.json `postinstall` and, for the container, by an explicit
+ * RUN step in apps/api/Dockerfile.
+ *
+ * Reference only, do NOT re-add a fetch here — the URL and its hash live in
+ * scripts/download-tessdata.js:
+ *   https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansThai/hinted/ttf/NotoSansThai-Regular.ttf
+ *
+ * Throws when the file is absent. The single call site (buildScanPdf's text
+ * layer) already wraps this in try/catch and logs, so a missing font degrades
+ * to an image-only page exactly as the old `return null` did — but LOUDLY, with
+ * the fix in the message, instead of silently dropping every Thai word.
  */
 const THAI_FONT_PATH = path.join(__dirname, '..', '..', 'assets', 'fonts', 'NotoSansThai-Regular.ttf');
-const THAI_FONT_URL =
-  'https://cdn.jsdelivr.net/gh/notofonts/notofonts.github.io/fonts/NotoSansThai/hinted/ttf/NotoSansThai-Regular.ttf';
 
 let thaiFontPromise: Promise<Buffer | null> | null = null;
 function getThaiFontBytes(): Promise<Buffer | null> {
   if (!thaiFontPromise) {
     thaiFontPromise = (async () => {
-      try {
-        return await fs.readFile(THAI_FONT_PATH);
-      } catch {
-        /* not on disk — try downloading */
+      if (!existsSync(THAI_FONT_PATH)) {
+        throw new Error(
+          `Thai font missing at ${THAI_FONT_PATH}. Run: node scripts/download-tessdata.js`,
+        );
       }
-      try {
-        const res = await fetch(THAI_FONT_URL);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const bytes = Buffer.from(await res.arrayBuffer());
-        // Best-effort cache for the next process start
-        await fs
-          .mkdir(path.dirname(THAI_FONT_PATH), { recursive: true })
-          .then(() => fs.writeFile(THAI_FONT_PATH, bytes))
-          .catch(() => undefined);
-        return bytes;
-      } catch (err) {
-        console.error('[scan-enhance] Thai OCR font unavailable — Thai text layer disabled:', err);
-        return null;
-      }
+      return fs.readFile(THAI_FONT_PATH);
     })();
   }
   return thaiFontPromise;

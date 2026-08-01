@@ -1,4 +1,4 @@
--- 048_task_urgency.sql
+-- 050_task_urgency.sql
 --
 -- ความเร่งด่วน picked at task creation (Part G, 2026-08-01): four levels the
 -- LIFF create flow and the dashboard's personal-task modal offer as buttons.
@@ -7,7 +7,7 @@
 -- web UI and the Google Sheets workspace mapping (sheets-row.ts), and renaming
 -- a label must never require a data migration.
 --
--- NULL = not chosen (pre-048 tasks, in-chat command tasks) and renders as
+-- NULL = not chosen (pre-050 tasks, in-chat command tasks) and renders as
 -- ปกติ everywhere, so no backfill is needed.
 --
 -- APPLY ORDER: before deploying the API/web that sends `urgency`. Either-order

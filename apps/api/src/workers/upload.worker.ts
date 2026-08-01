@@ -259,6 +259,11 @@ function malwareAlertMessage(filename: string, verdict: Extract<ScanVerdict, { o
  * images. Throws on failure so `withRetry` can retry it; deterministic
  * rejections (size cap, malware) throw FileRejectedError, which is never
  * retried and carries the LINE message for the sender.
+ *
+ * `deduped: true` means this call stored NOTHING — the file was already in the
+ * archive (a batch retry, a webhook redelivery, or a lost INSERT race) and the
+ * returned row belongs to the run that really stored it. Callers must not charge
+ * any per-file quota for a deduped result: that run already paid it.
  */
 async function storeUpload(
   user: UserRecord,
@@ -268,7 +273,7 @@ async function storeUpload(
   lineGroupId: string | null,
   team: TeamRecord | null = null,
   uploadedBy: string | null = user.id,
-): Promise<{ filename: string; url: string; size: number }> {
+): Promise<{ filename: string; url: string; size: number; deduped: boolean }> {
   // [0] Idempotency fast-path (migration 022): a batch retry (worker restart /
   // stalled job) or a LINE webhook redelivery can re-run this for a message we
   // already stored. If a live file row already exists for this LINE message id,
@@ -287,7 +292,12 @@ async function storeUpload(
         `[upload.worker] dedup: file already stored for message ${item.lineMessageId} ` +
           `(file ${existing.id}) — skipping re-store/charge`,
       );
-      return { filename: existing.original_name, url: `${config.WEB_URL}/dashboard`, size: existing.file_size };
+      return {
+        filename: existing.original_name,
+        url: `${config.WEB_URL}/dashboard`,
+        size: existing.file_size,
+        deduped: true,
+      };
     }
   }
 
@@ -445,6 +455,7 @@ async function storeUpload(
         filename: created.record.original_name,
         url: `${config.WEB_URL}/dashboard`,
         size: created.record.file_size,
+        deduped: true,
       };
     }
     record = created.record;
@@ -499,7 +510,7 @@ async function storeUpload(
         console.error(`[upload.worker] failed to enqueue thumbnail/ocr for ${record.id}:`, err);
       }
     }
-    return { filename: item.originalName, url: `${config.WEB_URL}/dashboard`, size };
+    return { filename: item.originalName, url: `${config.WEB_URL}/dashboard`, size, deduped: false };
   } catch (err) {
     await releaseReservation();
     if (err instanceof SizeLimitExceededError) {
@@ -688,6 +699,23 @@ async function processUploadBatch(job: UploadBatchJob): Promise<void> {
             }
             throw err;
           }
+
+          // Nothing was stored — this file was already in the archive (batch
+          // retry / webhook redelivery / lost INSERT race) and the run that
+          // really stored it already spent its group unit. Hand ours back, or a
+          // stalled job that re-runs charges the whole batch a second time.
+          if (res.deduped && groupQuotaSpent) {
+            await releaseQuota(supabase, {
+              userId: user.id,
+              feature: 'group_files',
+              scopeId: groupQuotaScope!,
+            }).catch(() => undefined);
+            console.log(
+              `[upload.worker] dedup: group_files unit released for ${user.id}/${groupQuotaScope} ` +
+                `(message ${item.lineMessageId})`,
+            );
+          }
+
           await progressStore.increment(job.batchId).catch(() => undefined);
           return { filename: res.filename, url: res.url };
         } catch (err) {

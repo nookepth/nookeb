@@ -30,6 +30,43 @@
   --color-warning-text: #92590e;
   --color-shadow: rgba(0, 0, 0, 0.08);
 
+  /* ---- ระบบตามงาน status palette ------------------------------------------
+     Shared by the dashboard task pages and the LIFF task pages so the same
+     status never renders in two different shades. These were duplicated as
+     inline hex literals in both [taskId]/page.tsx files; they live here now.
+     They are SEMANTIC (status), deliberately NOT brand red — the brand accent
+     stays --color-primary and is the only thing that may look "หนูเก็บ red". */
+  --status-pending-bg: #f3f4f6;
+  --status-pending-fg: #374151;
+  --status-pending-muted-fg: #6b7280; /* item-level "ยังไม่เริ่ม"/"ยกเลิก" */
+  --status-progress-bg: #fef3c7;
+  --status-progress-fg: #b45309;
+  --status-done-bg: #d1fae5;
+  --status-done-fg: #047857;
+  --status-cancelled-bg: #fee2e2;
+  --status-cancelled-fg: #b91c1c;
+  --status-submitted-bg: #dbeafe;
+  --status-submitted-fg: #1d4ed8;
+  --status-rejected-bg: #fee2e2;
+  --status-rejected-fg: #b91c1c;
+
+  /* review-loop notice cards + per-assignee state text */
+  --review-info-bg: #eff6ff;
+  --review-info-border: #bfdbfe;
+  --review-info-fg: #1d4ed8;
+  --review-reject-bg: #fef2f2;
+  --review-reject-border: #fecaca;
+  --review-reject-fg: #b91c1c;
+  --review-reject-btn-border: #e5b3b0;
+  --state-done-fg: #059669;
+  --state-accepted-fg: #1971c2;
+  --state-pending-fg: #8c8c8c;
+  --note-bg: #f7f7f7;
+  --note-fg: #555555;
+  --link-fg: #1971c2;
+  --icon-muted-fg: #b0b0b0;
+  --hairline: #f0f0f0;
+
   /* Typography */
   --font-size-xs: 0.75rem;
   --font-size-sm: 0.875rem;

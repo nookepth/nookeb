@@ -164,6 +164,30 @@ const envSchema = z.object({
   // worker memory for validation + thumbnailing, so keep this small. 10 MB.
   DIARY_MAX_IMAGE_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
 
+  // หนูเก็บความทรงจำ (diary add-on, migration 052) — master switch. Default OFF:
+  // this is opt-in, unlike the task kill switch.
+  //
+  // FIX 15: declared here so a typo fails the boot instead of resolving to a
+  // silent `false` — the failure mode that makes a flag like this expensive to
+  // debug (the routes answer enabled:false and the sweep never registers, with
+  // nothing in the logs to say why).
+  //
+  // '' is accepted alongside 'true'/'false' ON PURPOSE. Railway stores a
+  // cleared variable as an empty string, which is *present* — so a bare
+  // `z.enum(['true','false']).default('false')` would treat clearing the
+  // variable as a hard boot failure. Empty means "not set" here, i.e. false.
+  //
+  // NOTE: config/plans.ts reads process.env.DIARY_ADDON_ENABLED directly and is
+  // the value the app actually branches on. It deliberately does NOT import
+  // this module — plans.ts must stay importable with no env at all (its unit
+  // tests run without --env-file; see the file header's env-free rule and
+  // CLAUDE.md §3.14). This entry is the validation + documentation half; the
+  // two agree because both test for the exact string 'true'.
+  DIARY_ADDON_ENABLED: z
+    .enum(['true', 'false', ''])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // ห้องนิรภัย (Vault) — PIN-protected encrypted file store (migration 031).
   // The feature is DISABLED (routes reply 503) until the master key is set.
   // Generate with: openssl rand -hex 32. ROTATING/LOSING THIS KEY MAKES EVERY

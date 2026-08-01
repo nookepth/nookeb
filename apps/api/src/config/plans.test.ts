@@ -429,8 +429,12 @@ describe('§4c / §14 / §15 / §16 feature gates', () => {
     assert.equal(hasFeature('premium', 'performance_report'), true);
   });
 
-  it('gates notify-only-non-submitters to pro and above', () => {
-    assert.equal(hasFeature('free', 'notify_only_pending'), false);
+  // §4c is NOT a paid gate: notify-only-non-submitters is on for every tier
+  // (commit 7f25220 "always true for all plans"). This test asserted the old
+  // pro-and-above rule and had been red since; the assertion — not the policy —
+  // was the stale half.
+  it('gives notify-only-non-submitters to every plan, free included', () => {
+    assert.equal(hasFeature('free', 'notify_only_pending'), true);
     assert.equal(hasFeature('pro', 'notify_only_pending'), true);
     assert.equal(hasFeature('premium', 'notify_only_pending'), true);
     // REMINDER_POLICY must agree with FEATURE_ACCESS — two sources of the same

@@ -16,11 +16,24 @@ const VIEW_HTML = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>หนูกำลังเก็บของให้อยู่น้า</title>
 <style>
+  /* FIX 11 — brand red is declared ONCE here and every rule below reads it
+     through var(--color-primary). This page is served by the API, not Next,
+     so it cannot import apps/web/app/globals.css; the token name and value
+     are kept identical to that file's :root on purpose, so "unify the brand
+     red" means editing two declarations, not eleven literals. If globals.css
+     --color-primary ever moves, move this line with it. */
+  :root {
+    --color-primary: #c0392b;
+    --color-primary-soft: #f5e6e5; /* progress-bar track */
+    --color-surface: #ffffff;
+    --color-text-primary: #111111;
+    --color-text-secondary: #8c8c8c;
+  }
   body {
     margin: 0;
     font-family: -apple-system, 'Segoe UI', 'Helvetica Neue', 'Noto Sans Thai', sans-serif;
-    background: #FFFFFF;
-    color: #111111;
+    background: var(--color-surface);
+    color: var(--color-text-primary);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -28,23 +41,23 @@ const VIEW_HTML = `<!DOCTYPE html>
   }
   .card { text-align: center; padding: 24px; width: 100%; max-width: 360px; }
   h1 { font-size: 18px; font-weight: 600; margin: 0 0 24px; }
-  .counter { font-size: 48px; font-weight: 700; color: #b53a32; margin: 0 0 24px; }
+  .counter { font-size: 48px; font-weight: 700; color: var(--color-primary); margin: 0 0 24px; }
   .bar-track {
     width: 100%;
     height: 12px;
-    background: #f5e6e5;
+    background: var(--color-primary-soft);
     border-radius: 6px;
     overflow: hidden;
   }
   .bar-fill {
     height: 100%;
     width: 0%;
-    background: #b53a32;
+    background: var(--color-primary);
     border-radius: 6px;
     transition: width 0.4s ease;
   }
-  .status { font-size: 14px; color: #8C8C8C; margin-top: 24px; }
-  .done .status { color: #b53a32; font-weight: 600; }
+  .status { font-size: 14px; color: var(--color-text-secondary); margin-top: 24px; }
+  .done .status { color: var(--color-primary); font-weight: 600; }
 </style>
 </head>
 <body>
