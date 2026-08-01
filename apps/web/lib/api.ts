@@ -535,17 +535,6 @@ export function getAdminPowerUsers(days = 30): Promise<{ days: number; users: Ad
 
 /* ---- Admin Pro-Interest dashboard (Task 3 / migration 042) ---- */
 
-export interface AdminProInterestTask {
-  featureId: string;
-  viewEvents: number;
-  viewUsers: number;
-  clickEvents: number;
-  clickUsers: number;
-  dismissEvents: number;
-  registeredUsers: number; // all-time deduped (pro_interest table)
-  conversionRate: number | null; // clickUsers / viewUsers, %
-}
-
 export interface AdminProInterestGiftbox {
   feature: string; // 'audio' | 'video'
   taps: number;
@@ -553,13 +542,11 @@ export interface AdminProInterestGiftbox {
 
 export interface AdminProInterestDaily {
   day: string;
-  taskClicks: number;
   giftboxTaps: number;
 }
 
 export interface AdminProInterest {
   days: number;
-  tasks: AdminProInterestTask[];
   giftbox: AdminProInterestGiftbox[];
   daily: AdminProInterestDaily[];
 }
@@ -938,6 +925,19 @@ export function listVaultTrash(): Promise<VaultTrashResponse> {
 
 export function restoreVaultFile(fileId: string): Promise<{ success: boolean }> {
   return vaultFetch(`/trash/${fileId}/restore`, { method: 'POST' });
+}
+
+/**
+ * Hard-delete one trashed vault file now instead of waiting for the purge.
+ * Irreversible, so the PIN is required — the same re-verification (and the same
+ * VaultPinError shape on a wrong PIN) as deleteVaultFile.
+ */
+export function purgeVaultFile(fileId: string, pin: string): Promise<{ success: boolean }> {
+  return vaultFetch(`/trash/${fileId}/permanent`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pin }),
+  });
 }
 
 /**
@@ -1341,9 +1341,8 @@ export function deleteTaskFile(taskId: string, attachmentId: string): Promise<{ 
 /**
  * Creator edits the task title and/or global deadline (reschedules reminders).
  *
- * `notifyOnlyPending` is §4c — Pro and above. Turning it ON can answer 403
- * PLAN_UPGRADE_REQUIRED, which the caller surfaces as the upgrade card; turning
- * it OFF is allowed on every plan.
+ * §4c notifyOnlyPending is deliberately NOT in this patch shape: the API forces
+ * it ON for every task and ignores whatever a client sends.
  */
 export function updateTask(
   taskId: string,
@@ -1351,7 +1350,6 @@ export function updateTask(
     title?: string;
     globalDeadline?: string;
     description?: string;
-    notifyOnlyPending?: boolean;
   },
 ): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks/${taskId}`, {

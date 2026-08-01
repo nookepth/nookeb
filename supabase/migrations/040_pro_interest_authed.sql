@@ -16,11 +16,16 @@
 -- NOT auto-applied — run in the Supabase SQL editor BEFORE deploying the API
 -- (POST/GET /pro-interest error without this table; nothing else is affected).
 -- Additive only.
+--
+-- RETIRED by migration 057 (2026-08-02): both fake doors were removed from the
+-- product, so the CHECK below has been replaced with CHECK (false) and the
+-- POST/GET /pro-interest routes no longer exist. The table and its rows are kept
+-- as history — read the header of 057 before touching either.
 
 CREATE TABLE pro_interest (
   id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  -- keep in sync with TASK_PRO_FEATURE_IDS in the web app (ProFeatureSection)
+  -- superseded by migration 057 — this list is now CHECK (false)
   feature_id VARCHAR(50) NOT NULL
     CHECK (feature_id IN ('task_auto_reminder', 'task_voice_command')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

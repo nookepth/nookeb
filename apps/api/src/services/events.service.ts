@@ -71,6 +71,7 @@ export const EVENT_TYPES = [
   'vault_open', // vault unlocked successfully (PIN accepted)
   'vault_unlock_failed', // wrong PIN (= spec's vault_pin_fail_count; metadata.locked = lockout hit)
   'vault_upload_done', // vault file stored (metadata: bytes, mime)
+  'vault_file_purged_manual', // vault trash item hard-deleted on demand (metadata: bytes, files)
   // --- กล่องของขวัญ (Legacy Box — web-only, migration 033) ---
   'box_created', // legacy box published (= spec's gift_box_create; metadata: photos, bytes)
   'box_viewed', // public open page loaded (= spec's gift_box_open_by_recipient; user_id = OWNER)

@@ -11,6 +11,7 @@ import {
   listVaultFiles,
   listVaultTrash,
   lockVault,
+  purgeVaultFile,
   restoreVaultFile,
   setupVaultPin,
   unlockVault,
@@ -18,6 +19,7 @@ import {
   vaultViewUrl,
   type VaultFileDto,
   type VaultStatus,
+  type VaultTrashFileDto,
   type VaultTrashResponse,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
@@ -99,6 +101,12 @@ export default function VaultPage() {
   const [trashOpen, setTrashOpen] = useState(false);
   const [restoring, setRestoring] = useState<string | null>(null);
   const [trashError, setTrashError] = useState<string | null>(null);
+  /**
+   * The trash row awaiting a ลบถาวร confirmation. Irreversible, so it goes
+   * through the same PIN pad as the soft delete rather than a bare confirm —
+   * "unlocked 12 minutes ago" is not consent to destroy something.
+   */
+  const [purging, setPurging] = useState<VaultTrashFileDto | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const clearPinFeedback = useCallback(() => {
@@ -196,6 +204,34 @@ export default function VaultPage() {
     }
   }
 
+  /**
+   * ลบถาวร — R2 object + row gone, no undo. A 404 means the daily purge (or
+   * another tab) already took it, which is the outcome the user asked for, so
+   * it closes the dialog quietly instead of erroring — same rule as
+   * handleDeleteConfirm.
+   */
+  async function handlePurgeConfirm(pin: string): Promise<void> {
+    if (!purging) return;
+    setPinBusy(true);
+    setTrashError(null);
+    try {
+      await purgeVaultFile(purging.id, pin);
+      clearPinFeedback();
+      setPurging(null);
+      await loadTrash();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setPurging(null);
+        clearPinFeedback();
+        await loadTrash();
+      } else {
+        handlePinFailure(err);
+      }
+    } finally {
+      setPinBusy(false);
+    }
+  }
+
   const remainingSeconds =
     expiresAt !== null ? Math.max(0, Math.round((expiresAt - now) / 1000)) : null;
 
@@ -211,6 +247,7 @@ export default function VaultPage() {
       // authorised showing them has just expired.
       setTrash(null);
       setTrashOpen(false);
+      setPurging(null);
       void lockVault().catch(() => {});
     }
   }, [remainingSeconds, status?.isUnlocked]);
@@ -617,6 +654,38 @@ export default function VaultPage() {
                     >
                       {restoring === f.id ? 'กำลังกู้คืน…' : 'กู้คืน'}
                     </button>
+                    {/* ลบถาวร — icon-only so the reversible action (กู้คืน)
+                        stays the visually louder one. No emoji, per the brand
+                        rule: inline SVG. */}
+                    <button
+                      className="vault-trash-purge"
+                      type="button"
+                      title="ลบถาวร"
+                      aria-label={`ลบถาวร ${f.originalFilename}`}
+                      disabled={restoring === f.id}
+                      onClick={() => {
+                        clearPinFeedback();
+                        setTrashError(null);
+                        setPurging(f);
+                      }}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        width="16"
+                        height="16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="M3 6h18" />
+                        <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                        <path d="M10 11v6M14 11v6" />
+                      </svg>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -661,6 +730,30 @@ export default function VaultPage() {
               lockRemaining={lockRemaining}
             />
             <button className="vault-modal-cancel" onClick={() => setDeleting(null)}>
+              ยกเลิก
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ลบถาวรจากถังขยะ — the warning is stated BEFORE the PIN pad, so the
+          irreversibility is read while there is still something to cancel. */}
+      {purging && (
+        <div className="vault-viewer" onClick={() => setPurging(null)}>
+          <div className="vault-modal" onClick={(e) => e.stopPropagation()}>
+            <p className="vault-purge-warning">
+              ลบถาวรแล้วจะกู้คืนไม่ได้ ยืนยันไหม?
+            </p>
+            <VaultPinPad
+              title="ยืนยันการลบถาวรด้วย PIN"
+              subtitle={`"${purging.originalFilename}" จะถูกลบทิ้งอย่างถาวร`}
+              onSubmit={(pin) => void handlePurgeConfirm(pin)}
+              resetKey={pinResetKey}
+              disabled={pinBusy}
+              error={pinError}
+              lockRemaining={lockRemaining}
+            />
+            <button className="vault-modal-cancel" onClick={() => setPurging(null)}>
               ยกเลิก
             </button>
           </div>

@@ -27,11 +27,13 @@ import {
   peekVaultSession,
   recordFailedAttempt,
 } from '../services/vault-session.service';
-import { incrementPersonalStorage } from '../services/file.service';
+import { adjustStorageUsed, incrementPersonalStorage } from '../services/file.service';
 import {
   buildVaultKey,
+  getDeletedVaultFile,
   getVaultFile,
   getVaultStats,
+  hardDeleteVaultFile,
   insertVaultFile,
   listDeletedVaultFiles,
   listVaultFiles,
@@ -653,6 +655,72 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     if (!restored) return reply.code(404).send({ error: 'Vault file not found' });
     return { success: true };
   });
+
+  // DELETE /vault/trash/:id/permanent — user-triggered hard delete of one
+  // already-trashed vault file. Same destination as the daily purge, just
+  // reached early; purgeDeletedVaultFiles stays the authority on everything
+  // nobody presses this on.
+  //
+  // The PIN is re-verified even though the vault is already unlocked, exactly
+  // like DELETE /vault/files/:id: this is strictly MORE destructive than the
+  // soft delete that the PIN already guards, so it cannot be the cheaper door.
+  //
+  // Order and settlement follow the purge, which is why they are documented
+  // there and only referenced here: R2 object → row → refund. A refund happens
+  // HERE (unlike /trash/:id/permanent for normal files, where soft delete
+  // already refunded) because vault bytes stay charged until the ciphertext is
+  // actually gone from R2 — see softDeleteVaultFile / restoreVaultFile.
+  app.delete<{ Params: { id: string } }>(
+    '/vault/trash/:id/permanent',
+    guarded,
+    async (request, reply) => {
+      const parsedId = idParamSchema.safeParse(request.params.id);
+      if (!parsedId.success) return reply.code(400).send({ error: 'Invalid file id' });
+      const parsedBody = pinSchema.safeParse(request.body);
+      if (!parsedBody.success) {
+        return reply.code(400).send({ error: 'PIN must be exactly 6 digits' });
+      }
+      const ok = await verifyPinOrReply(request, reply, parsedBody.data.pin, 'delete');
+      if (ok !== true) return;
+
+      const userId = request.authUser!.userId;
+      const row = await getDeletedVaultFile(app.supabase, userId, parsedId.data);
+      if (!row) return reply.code(404).send({ error: 'Vault file not found' });
+
+      try {
+        await deleteObject(app.r2, row.r2_key);
+      } catch {
+        // Row left intact so the daily purge (or a retry of this request) can
+        // finish the job against consistent metadata — never strand ciphertext.
+        return reply.code(502).send({ error: 'ลบถาวรไม่สำเร็จ ลองใหม่อีกครั้งน้า' });
+      }
+
+      const removed = await hardDeleteVaultFile(app.supabase, userId, parsedId.data);
+      if (!removed) {
+        // The daily purge deleted the row between our read and this write. The
+        // object is gone either way and the purge already refunded — refunding
+        // again would hand out free quota, so stop here and report success.
+        return { success: true };
+      }
+
+      // After the row commits: a crash before this can only undercount (bytes
+      // stay charged), never double-refund. Repairable via
+      // supabase/backfills/backfill_vault_storage.sql.
+      try {
+        await adjustStorageUsed(app.supabase, userId, -Number(row.file_size));
+      } catch (err) {
+        request.log.error({ err, fileId: row.id }, 'vault manual purge: refund failed');
+      }
+
+      void logEvent(app.supabase, {
+        eventType: 'vault_file_purged_manual',
+        userId,
+        source: 'web',
+        metadata: { bytes: Number(row.file_size), files: 1 },
+      });
+      return { success: true };
+    },
+  );
 };
 
 export default vaultRoutes;

@@ -16,41 +16,12 @@
 -- Section 2 — Pro-Interest dashboard
 -- ============================================================================
 
--- Task Pro features (task_auto_reminder / task_voice_command): the real
--- view -> click funnel from usage_events (deduped by user), plus the all-time
--- unique interested users from the deduped pro_interest table (migration 040).
--- feature_id rides in usage_events.metadata (set client-side, sanitised server-
--- side). These are the "unique users, deduped" features on the dashboard.
-CREATE OR REPLACE FUNCTION admin_pro_interest_tasks(p_since TIMESTAMPTZ)
-RETURNS TABLE(
-  feature_id       TEXT,
-  view_events      BIGINT,
-  view_users       BIGINT,
-  click_events     BIGINT,
-  click_users      BIGINT,
-  dismiss_events   BIGINT,
-  registered_users BIGINT   -- all-time deduped (pro_interest table)
-)
-LANGUAGE sql STABLE AS $$
-  WITH ev AS (
-    SELECT metadata->>'feature_id' AS fid, event_type, user_id
-    FROM usage_events
-    WHERE created_at >= p_since
-      AND event_type IN ('pro_interest_view','pro_interest_click','pro_interest_dismiss')
-      AND metadata->>'feature_id' IN ('task_auto_reminder','task_voice_command')
-  )
-  SELECT
-    f.fid,
-    COUNT(*) FILTER (WHERE ev.event_type = 'pro_interest_view')::BIGINT,
-    COUNT(DISTINCT ev.user_id) FILTER (WHERE ev.event_type = 'pro_interest_view')::BIGINT,
-    COUNT(*) FILTER (WHERE ev.event_type = 'pro_interest_click')::BIGINT,
-    COUNT(DISTINCT ev.user_id) FILTER (WHERE ev.event_type = 'pro_interest_click')::BIGINT,
-    COUNT(*) FILTER (WHERE ev.event_type = 'pro_interest_dismiss')::BIGINT,
-    (SELECT COUNT(*) FROM pro_interest p WHERE p.feature_id = f.fid)::BIGINT
-  FROM (VALUES ('task_auto_reminder'), ('task_voice_command')) AS f(fid)
-  LEFT JOIN ev ON ev.fid = f.fid
-  GROUP BY f.fid;
-$$;
+-- admin_pro_interest_tasks() USED TO LIVE HERE — the deduped view -> click funnel
+-- for the two ระบบตามงาน Pro fake doors (task_auto_reminder / task_voice_command).
+-- Those fake doors were retired; migration 057 DROPs the function. It is removed
+-- from this file too because 042 is re-runnable (CREATE OR REPLACE throughout) and
+-- re-running it must not resurrect a dropped RPC. Historical pro_interest rows and
+-- pro_interest_* usage_events rows are deliberately left in place.
 
 -- Gift-box demand test (migration 034): tap counts only. The source table is
 -- anonymous (no user_id), so NO views and NO conversion % are derivable here —
@@ -64,28 +35,20 @@ LANGUAGE sql STABLE AS $$
   GROUP BY feature;
 $$;
 
--- Daily interest trend. One shared date spine, SEPARATE columns so the UI draws
--- two independent charts (never one shared y-scale): task clicks (deduped source)
--- vs gift-box taps (anonymous source).
+-- Daily interest trend for the gift-box demand test (anonymous source).
+-- This RPC originally carried a second `task_clicks` column on a shared date
+-- spine; that column died with the task fake doors, and migration 057 DROPs +
+-- recreates the function with this signature. Kept here in its CURRENT shape so
+-- re-running 042 is still a no-op against an up-to-date database — but note that
+-- a re-run of this file alone cannot change an existing function's return type,
+-- so 057's DROP is what actually performs the migration.
 CREATE OR REPLACE FUNCTION admin_pro_interest_daily(p_days INT)
-RETURNS TABLE(day DATE, task_clicks BIGINT, giftbox_taps BIGINT)
+RETURNS TABLE(day DATE, giftbox_taps BIGINT)
 LANGUAGE sql STABLE AS $$
-  WITH t AS (
-    SELECT (created_at AT TIME ZONE 'Asia/Bangkok')::date AS day, COUNT(*)::BIGINT AS c
-    FROM usage_events
-    WHERE event_type = 'pro_interest_click'
-      AND created_at >= NOW() - (p_days || ' days')::interval
-      AND metadata->>'feature_id' IN ('task_auto_reminder','task_voice_command')
-    GROUP BY 1
-  ),
-  g AS (
-    SELECT (created_at AT TIME ZONE 'Asia/Bangkok')::date AS day, COUNT(*)::BIGINT AS c
-    FROM pro_interest_log
-    WHERE created_at >= NOW() - (p_days || ' days')::interval
-    GROUP BY 1
-  )
-  SELECT COALESCE(t.day, g.day), COALESCE(t.c, 0)::BIGINT, COALESCE(g.c, 0)::BIGINT
-  FROM t FULL OUTER JOIN g ON t.day = g.day
+  SELECT (created_at AT TIME ZONE 'Asia/Bangkok')::date AS day, COUNT(*)::BIGINT
+  FROM pro_interest_log
+  WHERE created_at >= NOW() - (p_days || ' days')::interval
+  GROUP BY 1
   ORDER BY 1;
 $$;
 

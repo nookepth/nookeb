@@ -41,7 +41,7 @@ import {
 } from '../services/taskScheduler';
 import { LINE_CHAT_ID_MESSAGE, LINE_CHAT_ID_RE } from '../services/line-id';
 import { quotaCheck } from '../middleware/quota';
-import { ensurePlan, planGuard, resolveReminderConfig } from '../middleware/planGuard';
+import { planGuard, resolveReminderConfig } from '../middleware/planGuard';
 import {
   intervalsForCount,
   MAX_REMINDER_COUNT,
@@ -95,7 +95,7 @@ const createTaskSchema = z
     // a way around the per-plan limit. 0 = no reminders. When both this and
     // reminderIntervals arrive, the explicit interval list wins.
     reminderCount: z.number().int().min(0).max(MAX_REMINDER_COUNT).optional(),
-    // §4c — pro/premium only; gated in the handler, not here.
+    // §4c — accepted for back-compat and IGNORED; the handler always stores true.
     notifyOnlyPending: z.boolean().optional(),
     items: z
       .array(
@@ -152,11 +152,9 @@ const patchTaskSchema = z
     // writes it onto the task's FIRST (implicit for single/recurring) item. An
     // empty string clears it (stored NULL).
     description: z.string().trim().max(1000).optional(),
-    // §4c — "เตือนเฉพาะคนที่ยังไม่ส่งงาน" (migration 051). Editable AFTER create,
-    // not only at create time: it is the one reminder setting whose right value
-    // is only obvious once a round is under way and half the group has already
-    // submitted. Pro/premium only — gated in the handler (it needs the caller's
-    // plan, which a zod schema cannot see).
+    // §4c — "เตือนเฉพาะคนที่ยังไม่ส่งงาน" (migration 051). NO LONGER a user
+    // choice: the handler forces it ON for every task. Still accepted so an
+    // older client that sends it does not 400, but the value is ignored.
     notifyOnlyPending: z.boolean().optional(),
   })
   .refine(
@@ -302,10 +300,12 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       body.reminderIntervals ??
       (body.reminderCount != null ? intervalsForCount(body.reminderCount) : undefined);
 
+    // §4c notifyOnlyPending is NOT passed through the gate any more: it is no
+    // longer a per-task choice, so it must never 403 a free creator. The body
+    // field is still accepted (older clients send it) and ignored.
     const reminderConfig = resolveReminderConfig({
       plan: request.plan!,
       intervals: requestedIntervals,
-      notifyOnlyPending: body.notifyOnlyPending,
     });
     if (!reminderConfig.ok) {
       return reply.code(reminderConfig.status).send(reminderConfig.body);
@@ -427,7 +427,9 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       recurrenceRule: (body.recurrenceRule as RecurrenceRule | undefined) ?? null,
       createdByLineUid: lineUid,
       reminderIntervals: reminderConfig.intervals,
-      notifyOnlyPending: reminderConfig.notifyOnlyPending,
+      // §4c — always ON. The worker still re-checks the creator's plan at
+      // delivery time, so a free creator's reminders simply fan out to everyone.
+      notifyOnlyPending: true,
       items: body.items.map((item, i) => ({
         title: item.title,
         description: item.description ?? null,
@@ -653,26 +655,15 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
       }
 
-      // §4c plan gate. Only when the field is actually present: a title-only
-      // edit must not cost a plan lookup, and a downgraded user must still be
-      // able to rename a task they created while they were Pro. Turning the
-      // option OFF is allowed on every plan — a free user who was downgraded
-      // needs a way to clear a setting they can no longer set.
-      if (parsed.data.notifyOnlyPending === true) {
-        const plan = await ensurePlan(request);
-        const gate = resolveReminderConfig({ plan, notifyOnlyPending: true });
-        if (!gate.ok) return reply.code(gate.status).send(gate.body);
-      }
-
       const previousDeadline = task.global_deadline;
       await updateTask(app.supabase, task.id, {
         ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
         ...(parsed.data.globalDeadline !== undefined
           ? { global_deadline: parsed.data.globalDeadline }
           : {}),
-        ...(parsed.data.notifyOnlyPending !== undefined
-          ? { notify_only_pending: parsed.data.notifyOnlyPending }
-          : {}),
+        // §4c — always ON, never read from the request. Re-asserted on every
+        // edit so tasks created before this change are corrected in place.
+        notify_only_pending: true,
       });
 
       // Task-level description writes onto the first item (see patchTaskSchema).

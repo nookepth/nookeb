@@ -208,6 +208,58 @@ export async function listDeletedVaultFiles(
 }
 
 /**
+ * One soft-deleted row owned by this user, or null. Deliberately the mirror of
+ * getVaultFile (which filters `deleted_at IS NULL`): the caller for this one is
+ * the manual hard delete, which needs the r2_key + file_size of a row that is
+ * already in the trash.
+ */
+export async function getDeletedVaultFile(
+  supabase: SupabaseClient,
+  userId: string,
+  fileId: string,
+): Promise<VaultFileRecord | null> {
+  const { data, error } = await supabase
+    .from('vault_files')
+    .select('*')
+    .eq('id', fileId)
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .maybeSingle();
+  if (error) throw error;
+  return (data as VaultFileRecord | null) ?? null;
+}
+
+/**
+ * Hard-delete one already-soft-deleted row — the user-triggered half of what
+ * purgeDeletedVaultFiles does on a schedule.
+ *
+ * ROW ONLY. The R2 object and the storage refund are the caller's job, in that
+ * order (object → row → refund), for exactly the reasons documented on the
+ * purge: deleting the row first would orphan the ciphertext with no metadata
+ * left to find it by, and refunding before the row is gone could double-refund
+ * on a retry. Scoped by user_id AND `deleted_at IS NOT NULL`, so a live file can
+ * never be destroyed through this path — soft delete (with its PIN check) stays
+ * the only way in.
+ *
+ * Returns false when a concurrent restore or the daily purge got there first.
+ */
+export async function hardDeleteVaultFile(
+  supabase: SupabaseClient,
+  userId: string,
+  fileId: string,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('vault_files')
+    .delete()
+    .eq('id', fileId)
+    .eq('user_id', userId)
+    .not('deleted_at', 'is', null)
+    .select('id');
+  if (error) throw error;
+  return (data ?? []).length > 0;
+}
+
+/**
  * Undo a soft delete. Returns false when there is no soft-deleted row owned by
  * this user, which the route maps to 404.
  *

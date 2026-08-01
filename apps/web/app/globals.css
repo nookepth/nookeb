@@ -4353,6 +4353,48 @@ a.stat-chip {
   font-size: 0.82rem;
 }
 
+/* ลบถาวร — icon-only and quiet until hovered. The reversible action (กู้คืน)
+   keeps the button shape; the irreversible one has to be aimed at. */
+.vault-trash-purge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  color: var(--muted, #8a7f86);
+  cursor: pointer;
+}
+
+.vault-trash-purge:hover:not(:disabled),
+.vault-trash-purge:focus-visible {
+  color: var(--color-error, #dc2626);
+  border-color: var(--color-error, #dc2626);
+  background: rgba(220, 38, 38, 0.06);
+}
+
+.vault-trash-purge:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Stated above the PIN pad in the ลบถาวร dialog — the last thing read before
+   the keypad takes over the screen. */
+.vault-purge-warning {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(220, 38, 38, 0.08);
+  color: var(--color-error, #dc2626);
+  font-size: 0.88rem;
+  font-weight: 600;
+  text-align: center;
+}
+
 /* ---------- viewer / modal overlay ---------- */
 
 .vault-viewer {

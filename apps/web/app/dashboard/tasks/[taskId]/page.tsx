@@ -228,8 +228,6 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   const [editTitle, setEditTitle] = useState('');
   const [editDeadline, setEditDeadline] = useState('');
   const [editDescription, setEditDescription] = useState('');
-  /** §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" — seeded from the task on openEdit. */
-  const [editOnlyPending, setEditOnlyPending] = useState(false);
   const [addingLink, setAddingLink] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [linkLabel, setLinkLabel] = useState('');
@@ -385,7 +383,6 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
     setEditTitle(task.title);
     setEditDeadline(toLocalInput(task.globalDeadline));
     setEditDescription(task.items[0]?.description ?? '');
-    setEditOnlyPending(task.notifyOnlyPending);
     setEditOpen(true);
   };
   const saveEdit = async () => {
@@ -393,11 +390,9 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
       title?: string;
       globalDeadline?: string;
       description?: string;
-      notifyOnlyPending?: boolean;
     } = {};
-    // §4c — sent only when it CHANGED, so a plain rename by a downgraded user
-    // never trips the Pro gate on a value they did not touch.
-    if (editOnlyPending !== task.notifyOnlyPending) patch.notifyOnlyPending = editOnlyPending;
+    // §4c notify_only_pending is no longer a user choice — the API forces it ON
+    // for every task, so the edit sheet neither shows it nor sends it.
     if (editTitle.trim() && editTitle.trim() !== task.title) patch.title = editTitle.trim();
     if (!isRecurring && editDeadline) {
       const iso = new Date(editDeadline).toISOString();
@@ -1006,35 +1001,6 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                   maxLength={1000}
                 />
               </>
-            )}
-            {/* §4c — group tasks only. A งานส่วนตัว has a single assignee (the
-                creator), so "เตือนเฉพาะคนที่ยังไม่ส่งงาน" has nobody to filter
-                out. Shown to every plan; the API answers PLAN_UPGRADE_REQUIRED
-                when a free user tries to turn it ON, and `run` surfaces that
-                message. */}
-            {!task.isPersonal && (
-              <label
-                style={{
-                  display: 'flex',
-                  alignItems: 'flex-start',
-                  gap: 10,
-                  marginTop: 14,
-                  cursor: 'pointer',
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={editOnlyPending}
-                  onChange={(e) => setEditOnlyPending(e.target.checked)}
-                  style={{ width: 18, height: 18, marginTop: 1, flexShrink: 0 }}
-                />
-                <span style={{ fontSize: 13, lineHeight: 1.5 }}>
-                  เตือนเฉพาะคนที่ยังไม่ส่งงาน
-                  <span style={{ display: 'block', fontSize: 12, color: '#6B7280' }}>
-                    คนที่ส่งงานกลับมาแล้วจะไม่โดนเตือนซ้ำ — ใช้ได้กับแพ็กเกจ Pro ขึ้นไปน้า
-                  </span>
-                </span>
-              </label>
             )}
             <button
               type="button"

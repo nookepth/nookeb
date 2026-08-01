@@ -11,11 +11,12 @@
  * /api-proxy session cookie authenticates it either way.
  */
 
-// Keep in sync with CLIENT_TRACKABLE_EVENTS in apps/api/src/services/events.service.ts.
+// A SUBSET of CLIENT_TRACKABLE_EVENTS in apps/api/src/services/events.service.ts —
+// never add a name the server doesn't whitelist. The server still accepts
+// pro_interest_view/click/dismiss (historical usage_events rows are read by the
+// admin panels), but no client emits them since the two ระบบตามงาน fake doors
+// were removed; the gift-box demand test writes through its own anonymous route.
 export type ClientEventName =
-  | 'pro_interest_view'
-  | 'pro_interest_click'
-  | 'pro_interest_dismiss'
   | 'task_create_start'
   | 'task_view'
   | 'task_repeat_view'

@@ -19,7 +19,6 @@ import {
   MemberRow,
   StateNotice,
 } from '../components';
-import { ProFeatureSection } from '../ProFeatureSection';
 import { trackEvent } from '../../../../lib/track';
 import { formatBytes } from '../../../../lib/format';
 import { deleteTaskFile, listTaskFiles, type TaskFileDto } from '../../../../lib/taskFiles';
@@ -959,9 +958,6 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
           })}
         </div>
       </section>
-
-      {/* Pro fake-door demand test on the task detail screen. */}
-      <ProFeatureSection />
 
       {/* edit sheet */}
       {editOpen && (

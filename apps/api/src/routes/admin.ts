@@ -258,63 +258,30 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
     };
   });
 
-  // GET /admin/pro-interest?days=30 — the fake-door demand test, split into two
-  // deliberately non-comparable panels (they must NOT share a y-scale):
-  //   * task features: real view→click funnel, deduped by user (usage_events +
-  //     the deduped pro_interest table).
-  //   * gift-box: anonymous tap counts only — no views, no dedup, no conversion.
+  // GET /admin/pro-interest?days=30 — the gift-box fake-door demand test:
+  // anonymous tap counts only, so no views, no dedup and no conversion % are
+  // derivable here (the source table has no user_id).
+  //
+  // The task half of this panel (task_auto_reminder / task_voice_command, the
+  // deduped view→click funnel over admin_pro_interest_tasks) was removed with
+  // those two fake doors; historical pro_interest rows are left untouched.
   app.get<{ Querystring: { days?: string } }>('/admin/pro-interest', async (request) => {
     const days = Math.min(Math.max(Number(request.query.days) || 30, 1), 90);
-    const [tasksRes, giftboxRes, dailyRes] = await Promise.all([
-      app.supabase.rpc('admin_pro_interest_tasks', { p_since: sinceIso(days) }),
+    const [giftboxRes, dailyRes] = await Promise.all([
       app.supabase.rpc('admin_pro_interest_giftbox', { p_since: sinceIso(days) }),
       app.supabase.rpc('admin_pro_interest_daily', { p_days: days }),
     ]);
 
-    const taskRows =
-      (tasksRes.data as
-        | {
-            feature_id: string;
-            view_events: number;
-            view_users: number;
-            click_events: number;
-            click_users: number;
-            dismiss_events: number;
-            registered_users: number;
-          }[]
-        | null) ?? [];
     const giftRows = (giftboxRes.data as { feature: string; taps: number }[] | null) ?? [];
-    const dailyRows =
-      (dailyRes.data as { day: string; task_clicks: number; giftbox_taps: number }[] | null) ?? [];
-
-    const tasks = taskRows
-      .map((r) => {
-        const viewUsers = Number(r.view_users);
-        const clickUsers = Number(r.click_users);
-        return {
-          featureId: r.feature_id,
-          viewEvents: Number(r.view_events),
-          viewUsers,
-          clickEvents: Number(r.click_events),
-          clickUsers,
-          dismissEvents: Number(r.dismiss_events),
-          registeredUsers: Number(r.registered_users),
-          // deduped-by-user conversion — unique clickers / unique viewers
-          conversionRate: viewUsers > 0 ? Math.round((clickUsers / viewUsers) * 100) : null,
-        };
-      })
-      // highest interest first (ranked list — spec Task 2)
-      .sort((a, b) => b.registeredUsers - a.registeredUsers || b.clickUsers - a.clickUsers);
+    const dailyRows = (dailyRes.data as { day: string; giftbox_taps: number }[] | null) ?? [];
 
     return {
       days,
-      tasks,
       giftbox: giftRows
         .map((r) => ({ feature: r.feature, taps: Number(r.taps) }))
         .sort((a, b) => b.taps - a.taps),
       daily: dailyRows.map((r) => ({
         day: r.day,
-        taskClicks: Number(r.task_clicks),
         giftboxTaps: Number(r.giftbox_taps),
       })),
     };

@@ -215,7 +215,7 @@ land **before** the API deploy are flagged in-file.
 | `037_task_edit.sql` | per-assignee `done_note`, task-level `task_links`, edit/cancel support columns |
 | `038_rls_backstop.sql` | enables RLS (deny-all) on every remaining table |
 | `039_increment_share_views.sql` | atomic `increment_share_views` RPC |
-| `040_pro_interest_authed.sql` | `pro_interest` — authenticated, deduped task Pro fake-door |
+| `040_pro_interest_authed.sql` | `pro_interest` — authenticated, deduped task Pro fake-door. **Retired by 057** |
 | `041_usage_events_client_dims.sql` | `usage_events.session_id` / `plan_tier` / `entry_channel` (nullable) |
 | `042_admin_analytics_rpcs.sql` | 12 read-only STABLE admin RPCs (Bangkok day buckets) |
 | `043_personal_tasks.sql` | `tasks.is_personal` + `owner_line_uid`, `group_line_id` nullable, `tasks_scope_exclusive` CHECK |
@@ -229,6 +229,7 @@ land **before** the API deploy are flagged in-file.
 | `055_reminder_intervals_minutes.sql` | §4b — re-bases `tasks.reminder_intervals` from HOURS to **MINUTES** and widens the menu from 5 lead times to 13 (15/30 นาที · 1/2/3/6/12 ชม. · 1/2/3/5 วัน · 1 สัปดาห์ · `-60` = the overdue chase, selectable in a form for the first time). Also widens `task_reminders.remind_type` for the seven new shot names; the six old names are unchanged, so no reminder row is rewritten. The hour→minute backfill is IDEMPOTENT because {3,6,24,48,72} and {3,6,24,48,72}×60 are disjoint — the same property `normalizeLeadMinutes` (packages/shared) relies on to read an un-converted row. **Apply BEFORE the API/worker deploy** (a new client's minute values fail the old CHECK); the reverse order is safe. The plan cap stays 1/2/4 — the menu widened, the entitlement did not |
 | `056_reminder_short_leads.sql` | §4b — adds the two SHORT lead times 055 deliberately floored out: `5` (ก่อนกำหนด 5 นาที) and `0` (**ถึงกำหนดพอดี** — fire AT the deadline), taking the menu to **fifteen**. Widens both CHECKs only — **no data is rewritten**, unlike 055. `0` is a REAL lead time on this column, never a "ไม่เตือน" sentinel: that convention belonged to migration 047's `tasks.reminder_count`, and the CHECK's `cardinality >= 1` still forbids `{}` so absence can only be NULL. Disjointness holds — {5, 0} misses the legacy hour set {3,6,24,48,72}, every other minute choice, and −60. Also adds `5_min` / `at_deadline` to `task_reminders.remind_type` (additive). **Apply BEFORE the API/web deploy** (a new client's 5/0 fails the old CHECK); the reverse order is safe. Plan cap unchanged at 1/2/4 |
 | `054_diary_reminder_last_sent.sql` | `diary_notification_settings.last_push_date` DATE — the per-day claim that makes the §17 sweep safe to run HOURLY (a retry / worker restart / `notify_time` edit would otherwise double-push). Claimed with a conditional UPDATE; Bangkok calendar date. Apply BEFORE the API/worker deploy |
+| `057_retire_task_pro_fake_doors.sql` | Retires the two ระบบตามงาน Pro **fake doors** (`task_auto_reminder` / `task_voice_command`, migration 040) — neither ever had a scheduler or a microphone behind it, and this is UNRELATED to the live reminder system (047/051/055/056) and to the gift-box voice notes. Closes `pro_interest.feature_id` with `CHECK (false) NOT VALID` (the allowed set is empty and a CHECK cannot spell `IN ()`; `NOT VALID` is what preserves the existing rows), DROPs `admin_pro_interest_tasks`, and DROP+CREATEs `admin_pro_interest_daily` without its now-always-zero `task_clicks` column. **No row is deleted** — `pro_interest` and its `pro_interest_*` usage_events rows stay as history. The gift-box half (`pro_interest_log`, `POST /api/pro-interest`, `admin_pro_interest_giftbox`) is untouched. Order-independent vs the deploy: the code that wrote these values is removed in the same change |
 
 Key invariants:
 - Every content table carries `space_id` (or a per-feature owner key: diary/vault =
@@ -661,7 +662,8 @@ task the user created before connecting; 3/10 min, 409 when not connected)
 
 **Analytics / admin** — `GET /me/usage` 🔒 · `POST /api/events/track` 🔒 ·
 `POST /api/pro-interest` (**unauthenticated**, anonymous gift-box demand test,
-10/min per IP) · `POST|GET /pro-interest` 🔒 (task demand test, deduped per user) ·
+10/min per IP; the authenticated `POST|GET /pro-interest` task twin was removed
+with the task fake doors — migration 057) ·
 `GET /admin/{users,spaces,overview,timeseries,features,power-users,pro-interest,tasks,funnel,adoption,storage,referral}`
 and `PATCH /admin/users/:id` — all gated by `ADMIN_LINE_USER_IDS`
 
@@ -730,7 +732,7 @@ always lands on the endpoint first with `?liff.state=…`.
 | `/liff/tasks` | redirect shim resolving `liff.state` | — |
 | `/liff/tasks/create` | type selector (งานเดียว / แยกรายการ / งานประจำ); hides auto-reminder copy while `TASK_NOTIFICATIONS_ENABLED` is false | — |
 | `/liff/tasks/create/[type]` | step 1 of that type | — |
-| `/liff/tasks/create/[type]/detail` | title/description/deadline/recurrence, file attach picker, Pro fake-door section | `POST /pro-interest` |
+| `/liff/tasks/create/[type]/detail` | title/description/deadline/recurrence, file attach picker | — |
 | `/liff/tasks/create/[type]/members` | assignee picker (skipped for `scope=personal`) | `GET /groups/:id/members`, `POST /groups/:id/register` |
 | `/liff/tasks/[taskId]` | task view, optimistic done, accept, attachments, creator's รับงาน/ตีกลับ | `GET/POST /tasks/:id…` |
 | `/liff/tasks/[taskId]/submit` | ส่งงานกลับ — uploads files FIRST, then flips status; `?item=` picks the item | `POST /tasks/:id/files`, `…/submit` |
@@ -800,7 +802,7 @@ thumbnail + OCR enqueue.
 | `ENABLE_VIRUS_SCAN` + `VIRUSTOTAL_API_KEY` | optional upload scanning | `virusTotal.service` |
 | `ADMIN_LINE_USER_IDS` | `/admin/*` access (no DB column) | `routes/admin.ts` |
 | `LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID` | LIFF deep links vs plain WEB_URL fallback | `lineMessage.ts`, web `lib/liff.ts` |
-| Pro **fake doors** (no feature behind them) | `task_auto_reminder` / `task_voice_command` (authenticated, deduped, migration 040) and gift-box `audio`/`video` (anonymous, migration 034) | `routes/pro-interest.ts`, `ProFeatureSection.tsx` |
+| Pro **fake door** (no feature behind it) | gift-box `audio`/`video` only (anonymous, migration 034). The two TASK fake doors `task_auto_reminder` / `task_voice_command` (migration 040) were **removed 2026-08-02** — UI, routes and admin panel all gone, historical rows kept, `pro_interest` closed by migration 057. Neither ever had scheduling or a microphone behind it; do not confuse `task_auto_reminder` with the live reminder system (047/051/055/056) | `routes/pro-interest.ts` |
 
 Other notable env (full schema in `apps/api/src/config.ts`):
 `DEFAULT_STORAGE_LIMIT` (1 GB), `REFERRAL_BONUS_BYTES` (0.5 GB),
@@ -852,7 +854,8 @@ web. `DEPLOYMENT.md` has the long form.
 - **Vault** — needs migration 031 + `VAULT_MASTER_KEY`.
 - **Pro reminder count** — needs migration 047 before a Pro user first sends
   `เตือน N ครั้ง`; free-tier inserts omit the column, so it is either-order safe.
-- **Pro fake doors** — demand tests only; nothing is behind them.
+- **Pro fake door** — the gift-box `audio`/`video` demand test only; nothing is
+  behind it. The two task fake doors were removed on 2026-08-02 (migration 057).
 
 **Deliberately deferred**
 - Plans / billing / subscriptions (free tier only)

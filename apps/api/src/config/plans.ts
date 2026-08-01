@@ -377,7 +377,7 @@ export const FEATURE_ACCESS: Record<PlanFeature, Record<Plan, boolean>> = {
   export_task_summary: { free: false, pro: true, premium: true },
   google_sheets: { free: false, pro: false, premium: true },
   performance_report: { free: false, pro: false, premium: true },
-  notify_only_pending: { free: false, pro: true, premium: true },
+  notify_only_pending: { free: true, pro: true, premium: true },
   group_boost: { free: false, pro: true, premium: true },
   onboarding_call: { free: false, pro: false, premium: true },
   referral_storage_bonus: { free: true, pro: false, premium: false },

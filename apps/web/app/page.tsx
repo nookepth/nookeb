@@ -29,8 +29,12 @@ const itim = Itim({
    Every claim below is checked against the playbook's ตาราง 2.2 (เคลมได้) and
    2.3 (ห้ามเคลม). The three that bite hardest, because the live v1 page broke
    two of them:
-   - NO auto-reminder claim for ตามงาน — reminders exist in code but ship
-     disabled (TASK_NOTIFICATIONS_ENABLED=false).
+   - NO auto-reminder claim for ตามงาน. The reason CHANGED on 2026-08-01:
+     reminders are now live (TASK_NOTIFICATIONS_ENABLED is a default-ON kill
+     switch), so this is no longer "the code ships disabled" — it is a playbook
+     ตาราง 2.3 claim rule. Adding the claim is a marketing decision, not a code
+     one. Unrelated to the retired เตือนงานอัตโนมัติ Pro fake door (migration
+     057), which never had any scheduling behind it at all.
    - NO group notify toggle — "หนูเก็บปิดแจ้งเตือน" was retired; groups now
      store silently, always. (v1's FAQ still taught the dead command.)
    - NO unconditional "เก็บถาวรตลอดไป" — say "ไม่หมดอายุเหมือนไฟล์ในแชท" and

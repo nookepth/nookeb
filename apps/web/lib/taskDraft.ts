@@ -217,17 +217,6 @@ export interface TaskDraft {
    * (free 1 / pro 2 / premium 4) — this is the request, not the entitlement.
    */
   reminderIntervals: number[];
-  /**
-   * §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" — when on, a reminder round skips assignees
-   * whose item is already SUBMITTED (they have done their part; chasing them is
-   * exactly what this option prevents).
-   *
-   * Pro/premium only, enforced server-side — the form shows it to everyone and
-   * lets the API answer with the upgrade copy, the same shape as the reminder
-   * picker's per-plan ceiling. Meaningless for งานส่วนตัว (one assignee, yourself), so the
-   * personal flow never renders it and never sends it.
-   */
-  notifyOnlyPending: boolean;
   title: string;
   /** datetime-local value */
   globalDeadline: string | null;
@@ -251,7 +240,6 @@ export function emptyDraft(type: TaskDraft['type'], scope: TaskScope = 'group'):
     type,
     urgency: 'normal',
     reminderIntervals: [],
-    notifyOnlyPending: false,
     title: '',
     globalDeadline: null,
     description: '',
@@ -287,7 +275,6 @@ export function loadDraft(): TaskDraft | null {
             .filter((v) => typeof v === 'number')
             .map(normalizeLeadMinutes)
         : intervalsFromLegacyCount(draft.reminderCount),
-      notifyOnlyPending: draft.notifyOnlyPending === true,
     };
   } catch {
     return null;

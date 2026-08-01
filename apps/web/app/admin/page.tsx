@@ -58,12 +58,8 @@ const EVENT_LABELS: Record<string, string> = {
   file_download: 'ดาวน์โหลดไฟล์',
 };
 
-// Pro fake-door feature labels (task Pro features + gift-box demand-test entries).
+// Gift-box fake-door demand-test labels (migration 034 / anonymous).
 const PRO_FEATURE_LABELS: Record<string, string> = {
-  // task Pro features (migration 040 / ProFeatureSection)
-  task_auto_reminder: 'เตือนงานอัตโนมัติ',
-  task_voice_command: 'สั่งงานด้วยเสียง',
-  // gift-box demand test (migration 034 / anonymous)
   audio: 'เพิ่มเสียง/เพลง',
   video: 'แนบวิดีโอสั้น',
 };
@@ -277,7 +273,7 @@ export default function AdminPage() {
 
             {/* Tasks dashboard (priority) */}
             <SectionTitle>ระบบตามงาน (Tasks) — {days} วัน</SectionTitle>
-            <TasksSection data={tasks} proInterest={proInterest} />
+            <TasksSection data={tasks} />
 
             {/* Power users — revenue signal */}
             <SectionTitle>ผู้ใช้ตัวจริง — คนที่ควรชวนอัปเกรด</SectionTitle>
@@ -851,26 +847,14 @@ const TASK_TYPE_COLORS: Record<'single' | 'multi' | 'recurring', string> = {
 };
 
 /**
- * ระบบตามงาน dashboard: creation-by-type over time, current-status breakdown,
- * completion timing, and the two task Pro-features compared head-to-head (spec
- * Task 4). Completion % is over completable tasks only — recurring tasks never
- * reach 'done' by design, so they're excluded from the rate.
+ * ระบบตามงาน dashboard: creation-by-type over time, current-status breakdown and
+ * completion timing. Completion % is over completable tasks only — recurring
+ * tasks never reach 'done' by design, so they're excluded from the rate.
  */
-function TasksSection({
-  data,
-  proInterest,
-}: {
-  data: AdminTasks | null;
-  proInterest: AdminProInterest | null;
-}) {
+function TasksSection({ data }: { data: AdminTasks | null }) {
   if (!data) return <p style={{ ...S.emptyCell, padding: 24 }}>กำลังโหลด…</p>;
   const t = data.totals;
   const st = t.byStatus;
-
-  // Task Pro-feature interest, as directly-comparable bars (unique interested
-  // users, deduped). Pulled from the already-loaded pro-interest data.
-  const proFeatures = proInterest?.tasks ?? [];
-  const proMax = Math.max(1, ...proFeatures.map((f) => f.registeredUsers));
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
@@ -926,32 +910,6 @@ function TasksSection({
         />
       </div>
 
-      {/* Pro-feature interest — directly comparable bars */}
-      <div style={S.card}>
-        <div style={S.panelHead}>
-          <strong>ความสนใจฟีเจอร์ Pro ของงาน</strong>
-          <span style={S.panelTag}>ผู้ใช้สนใจไม่ซ้ำ (deduped)</span>
-        </div>
-        <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
-          {proFeatures.length === 0 && <p style={S.emptyCell}>ยังไม่มีข้อมูล</p>}
-          {proFeatures.map((f) => (
-            <div key={f.featureId}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--font-size-sm)' }}>
-                <span>{PRO_FEATURE_LABELS[f.featureId] ?? f.featureId}</span>
-                <strong>{f.registeredUsers.toLocaleString()} คน</strong>
-              </div>
-              <div style={{ ...S.funnelBarTrack, marginTop: 4 }}>
-                <div
-                  style={{
-                    ...S.funnelBarFill,
-                    width: `${Math.round((f.registeredUsers / proMax) * 100)}%`,
-                  }}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
     </div>
   );
 }
@@ -1053,10 +1011,10 @@ function StackedBars<T extends { day: string }>({
 }
 
 /**
- * Pro-interest demand test — TWO deliberately separate panels. Task features
- * have a real deduped view→click funnel; the gift-box test is anonymous tap
- * counts only. They are never put on a shared scale (that would imply the two
- * numbers are comparable, which they are not).
+ * Pro-interest demand test — the gift-box fake door. Its source table is
+ * anonymous, so this is tap counts only: no views, no dedup, no conversion %.
+ * (The task-feature panel that used to sit above it, with a real deduped
+ * view→click funnel, went away with the two ระบบตามงาน fake doors.)
  */
 function ProInterestSection({ data }: { data: AdminProInterest | null }) {
   if (!data) {
@@ -1066,58 +1024,6 @@ function ProInterestSection({ data }: { data: AdminProInterest | null }) {
 
   return (
     <div style={{ display: 'grid', gap: 16 }}>
-      {/* --- Task Pro features: unique users, deduped --- */}
-      <div style={S.card}>
-        <div style={S.panelHead}>
-          <strong>ฟีเจอร์งาน (Task)</strong>
-          <span style={S.panelTag}>ผู้ใช้ไม่ซ้ำ · นับแบบ deduped</span>
-        </div>
-        <div className="admin-table-wrap" style={{ marginTop: 12 }}>
-          <table className="admin-table">
-            <thead>
-              <tr>
-                <th>ฟีเจอร์</th>
-                <th>เห็น (คน)</th>
-                <th>กด “แจ้งเตือน” (คน)</th>
-                <th>คอนเวอร์ชัน</th>
-                <th>สนใจสะสม (คน)</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.tasks.length === 0 && (
-                <tr>
-                  <td colSpan={5} style={S.emptyCell}>
-                    ยังไม่มีข้อมูล
-                  </td>
-                </tr>
-              )}
-              {data.tasks.map((t) => (
-                <tr key={t.featureId}>
-                  <td>{label(t.featureId)}</td>
-                  <td>{t.viewUsers.toLocaleString()}</td>
-                  <td>{t.clickUsers.toLocaleString()}</td>
-                  <td>
-                    {t.conversionRate === null ? (
-                      '—'
-                    ) : (
-                      <strong style={{ color: 'var(--color-primary)' }}>{t.conversionRate}%</strong>
-                    )}
-                  </td>
-                  <td>{t.registeredUsers.toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <div style={S.miniChartLabel}>คลิกสนใจต่อวัน (ฟีเจอร์งาน)</div>
-          <MiniLineChart
-            points={data.daily.map((d) => ({ day: d.day, value: d.taskClicks }))}
-            stroke="var(--color-primary)"
-          />
-        </div>
-      </div>
-
       {/* --- Gift-box: anonymous, event count only --- */}
       <div style={S.card}>
         <div style={S.panelHead}>
@@ -1127,7 +1033,7 @@ function ProInterestSection({ data }: { data: AdminProInterest | null }) {
           </span>
         </div>
         <p style={S.panelNote}>
-          แหล่งข้อมูลนี้ไม่บันทึกผู้ใช้ จึงมีแค่ “จำนวนการกด” — เทียบกับตัวเลขฟีเจอร์งานด้านบนไม่ได้
+          แหล่งข้อมูลนี้ไม่บันทึกผู้ใช้ จึงมีแค่ “จำนวนการกด” — ไม่ใช่จำนวนคน และไม่มีคอนเวอร์ชัน
         </p>
         <div style={{ display: 'grid', gap: 8, marginTop: 8 }}>
           {data.giftbox.length === 0 && <p style={S.emptyCell}>ยังไม่มีข้อมูล</p>}

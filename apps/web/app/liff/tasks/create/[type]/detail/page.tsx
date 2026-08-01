@@ -15,7 +15,6 @@ import {
 import ReminderPicker from '../../../../../../components/ReminderPicker';
 import { AvatarStack, DeadlineChip, IconCalendar, IconCheck } from '../../../components';
 import { FileAttach } from '../../../FileAttach';
-import { ProFeatureSection } from '../../../ProFeatureSection';
 import { trackEvent } from '../../../../../../lib/track';
 import { describeRejection, uploadTaskFiles } from '../../../../../../lib/taskFiles';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
@@ -178,11 +177,8 @@ export default function DetailPage({ params }: { params: { type: string } }) {
         draft.reminderIntervals.length > 0
           ? { reminderIntervals: draft.reminderIntervals }
           : {};
-      // §4c — group scope only, and only when ticked. A personal task has one
-      // assignee (the creator), so "เตือนเฉพาะคนที่ยังไม่ส่งงาน" has nothing to
-      // filter; sending it there would spend a Pro gate on a no-op.
-      const onlyPending =
-        !isPersonal && draft.notifyOnlyPending ? { notifyOnlyPending: true } : {};
+      // §4c notifyOnlyPending is no longer sent at all — the API forces it ON
+      // for every task, so there is nothing for the form to choose or submit.
       const base = isPersonal
         ? {
             scope: 'personal' as const,
@@ -197,7 +193,6 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             type: draft.type,
             urgency: draft.urgency,
             ...reminder,
-            ...onlyPending,
           };
       const assigneesOf = (members: { lineUid: string }[]) =>
         isPersonal ? {} : { assignees: members.map((a) => a.lineUid) };
@@ -471,42 +466,6 @@ export default function DetailPage({ params }: { params: { type: string } }) {
               : 'ตอนนี้หนูยังไม่ได้เปิดระบบเตือนอัตโนมัติ แต่ค่าที่ตั้งไว้จะถูกใช้ทันทีที่เปิดน้า'
           }
         />
-
-        {/* §4c — group tasks only (a personal task has one assignee: you).
-            Shown to every plan; the API answers PLAN_UPGRADE_REQUIRED for free
-            users and the message is surfaced verbatim, the same way the
-            reminder ceiling is handled. Hidden entirely when the creator asked
-            for no reminders — there is no round for it to filter. */}
-        {!isPersonal && draft.reminderIntervals.length > 0 && (
-          <label
-            style={{
-              display: 'flex',
-              alignItems: 'flex-start',
-              gap: 10,
-              marginTop: 14,
-              cursor: 'pointer',
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={draft.notifyOnlyPending}
-              onChange={(e) => setDraft({ ...draft, notifyOnlyPending: e.target.checked })}
-              style={{ width: 18, height: 18, marginTop: 1, flexShrink: 0 }}
-            />
-            <span style={{ fontSize: 13, lineHeight: 1.5 }}>
-              เตือนเฉพาะคนที่ยังไม่ส่งงาน
-              <span
-                style={{
-                  display: 'block',
-                  fontSize: 12,
-                  color: 'var(--text-muted, #6B7280)',
-                }}
-              >
-                คนที่ส่งงานกลับมาแล้วจะไม่โดนเตือนซ้ำ — ใช้ได้กับแพ็กเกจ Pro ขึ้นไปน้า
-              </span>
-            </span>
-          </label>
-        )}
       </section>
 
       {/* single */}
@@ -700,9 +659,6 @@ export default function DetailPage({ params }: { params: { type: string } }) {
           progress={uploadProgress}
         />
       </section>
-
-      {/* Pro fake-door demand test — below the assignees, above submit. */}
-      <ProFeatureSection />
 
       {error && <div className={styles.errorBox}>{error}</div>}
 
