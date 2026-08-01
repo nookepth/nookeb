@@ -8,7 +8,7 @@ const STROKE = 8;
 const R = (SIZE - STROKE) / 2;
 const CIRC = 2 * Math.PI * R;
 
-/** Animated month-progress ring: sweeps 0 → pct on mount (skipped for
+/** Animated completion ring: sweeps 0 → pct on mount (skipped for
  * prefers-reduced-motion). Center shows "X/Y งาน". */
 export default function ProgressRing({ done, total }: { done: number; total: number }) {
   const target = total > 0 ? done / total : 0;
@@ -43,7 +43,7 @@ export default function ProgressRing({ done, total }: { done: number; total: num
     <div
       className={styles.ringWrap}
       role="img"
-      aria-label={`เดือนนี้เสร็จ ${done} จาก ${total} งาน (${Math.round(target * 100)}%)`}
+      aria-label={`เสร็จแล้ว ${done} จาก ${total} งาน (${Math.round(target * 100)}%)`}
     >
       <svg width={SIZE} height={SIZE} viewBox={`0 0 ${SIZE} ${SIZE}`} aria-hidden>
         <circle cx={SIZE / 2} cy={SIZE / 2} r={R} fill="none" stroke="#f0e2e1" strokeWidth={STROKE} />

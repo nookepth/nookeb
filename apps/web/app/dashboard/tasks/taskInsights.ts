@@ -205,36 +205,24 @@ export function computeStreak(tasks: TaskDto[], viewerUid: string): number {
 }
 
 /**
- * This month's completion ratio for the ring: done = tasks completed this
- * month; total = those + tasks still live with a deadline this month (or
- * already overdue — they still demand attention this month).
+ * Completion ratio for the ring, over the SAME set the four stat cards
+ * partition: every task /tasks/mine returns (created by OR assigned to the
+ * viewer, `deleted_at IS NULL`). done = status 'done'; total = all of them,
+ * cancelled included — so the ring can never contradict the tab counts.
+ *
+ * This was month-scoped, and that is what made it read "5/10" while the cards
+ * said 6 เสร็จสิ้น out of 15. It dropped three things silently: a done task
+ * whose assignees carry no `doneAt` (completionTime returns null, so it counted
+ * in NEITHER half), a live task with no deadline at all, and every cancelled
+ * task. Nothing in the visible card said "เดือนนี้" — only the aria-label did —
+ * so the gap had no explanation on screen.
  */
-export function monthProgress(tasks: TaskDto[]): { done: number; total: number } {
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
-  const ms = monthStart.getTime();
-  const nextMonth = new Date(monthStart);
-  nextMonth.setMonth(nextMonth.getMonth() + 1);
-  const me = nextMonth.getTime();
+export function overallProgress(tasks: TaskDto[]): { done: number; total: number } {
   let done = 0;
-  let total = 0;
   for (const t of tasks) {
-    if (t.status === 'done') {
-      const ct = completionTime(t);
-      if (ct && new Date(ct).getTime() >= ms && new Date(ct).getTime() < me) {
-        done += 1;
-        total += 1;
-      }
-    } else if (t.status !== 'cancelled') {
-      const dl = effectiveDeadline(t);
-      if (dl) {
-        const dt = new Date(dl).getTime();
-        if (dt < me) total += 1; // due this month or already overdue
-      }
-    }
+    if (t.status === 'done') done += 1;
   }
-  return { done, total };
+  return { done, total: tasks.length };
 }
 
 /* ---- activity feed ---- */

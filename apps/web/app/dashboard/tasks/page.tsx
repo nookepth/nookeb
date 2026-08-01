@@ -37,7 +37,7 @@ import {
   loadFilterSort,
   loadPins,
   loadViewMode,
-  monthProgress,
+  overallProgress,
   pinnedFirst,
   saveCollapsed,
   saveFilterSort,
@@ -584,7 +584,7 @@ export default function TasksPage() {
   }
 
   const streak = computeStreak(all, viewerUid);
-  const ring = monthProgress(all);
+  const ring = overallProgress(all);
   const focus = focusTasks(all);
 
   const TABS: { key: Tab; label: string; count: number; alert?: boolean }[] = [
