@@ -652,11 +652,14 @@ export default function DashboardPage() {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <h3 className="modal-title">เมนู</h3>
             <div className="profile-sheet-actions">
-              <a className="btn secondary" href="/dashboard/vault">
-                ห้องนิรภัย
+              <a className="btn secondary" href="/dashboard/plans">
+                แพลนของฉัน
               </a>
               <a className="btn secondary" href="/dashboard/tasks">
                 งานของฉัน
+              </a>
+              <a className="btn secondary" href="/dashboard/vault">
+                ห้องนิรภัย
               </a>
               <a className="btn secondary" href="/dashboard/diary">
                 ไดอารี่ของฉัน
@@ -674,9 +677,6 @@ export default function DashboardPage() {
               >
                 กิจกรรมชวนเพื่อน
               </button>
-              <a className="btn secondary" href="/dashboard/plans">
-                แพลนของฉัน
-              </a>
               <a className="btn secondary" href="/dashboard/teams">
                 ทีม
               </a>
