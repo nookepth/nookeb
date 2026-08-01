@@ -886,6 +886,9 @@ export default function TasksPage() {
       )}
       {createOpen && (
         <CreatePersonalTaskModal
+          /* Drives the reminder picker's per-plan cap. `me` is best-effort, and
+             an absent plan falls back to the ceiling — the API is the gate. */
+          plan={me?.plan ?? null}
           onClose={() => setCreateOpen(false)}
           onCreated={() => {
             setCreateOpen(false);

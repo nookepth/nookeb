@@ -13,6 +13,7 @@ import type { FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastif
 import {
   hasFeature,
   normalizePlan,
+  REMINDER_INTERVAL_CHOICES,
   REMINDER_POLICY,
   validateReminderSelection,
   type Plan,
@@ -141,7 +142,10 @@ export function resolveReminderConfig(args: {
           ? {
               error: 'ช่วงเวลาเตือนไม่ถูกต้องน้า',
               code: 'INVALID_REMINDER_INTERVAL',
-              allowed: [3, 6, 24, 48, 72],
+              // Read from the source of truth, never re-typed: this literal was
+              // a stale copy of the pre-055 hour list within one edit of the
+              // list itself changing.
+              allowed: REMINDER_INTERVAL_CHOICES,
             }
           : {
               error: `แพ็กเกจนี้เลือกเวลาเตือนได้สูงสุด ${selection.max} ช่วงน้า`,

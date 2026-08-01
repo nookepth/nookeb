@@ -43,26 +43,132 @@ export const URGENCY_OPTIONS: { value: TaskUrgency; label: string; color: string
 ];
 
 /**
- * Ceiling for "จำนวนการแจ้งเตือน (ครั้ง)". Mirrors MAX_REMINDER_COUNT in
- * apps/api/src/config/plans.ts, which is the source of truth — there are four
- * distinct lead times to hand out (1 วัน / 3 ชม. / 3 วัน / 2 วัน ก่อนกำหนด), so a
- * fifth "ครั้ง" would have no time to fire at.
+ * §4b — the reminder lead times a creator may tick, in MINUTES before the
+ * deadline. MIRRORS `REMINDER_INTERVAL_CHOICES` in apps/api/src/config/plans.ts,
+ * which is the source of truth and the only enforcer: a hand-rolled request with
+ * an off-menu value is rejected there with `INVALID_REMINDER_INTERVAL`.
  *
- * This is only the field's range. How many the caller may actually schedule is
- * their PLAN limit (free 1 / pro 2 / premium 4), enforced server-side; the form
- * shows the limit as a hint and surfaces the API's upgrade message if exceeded,
- * rather than second-guessing the plan client-side.
+ * MINUTES, NOT HOURS, SINCE MIGRATION 055. The five original lead times are all
+ * still here as their minute equivalents, so nobody's saved selection changed
+ * meaning; see `normalizeLeadMinutes` in packages/shared for how a draft or a
+ * task row written before the change is read.
+ *
+ * EVERY PLAN SEES ALL THIRTEEN. A plan caps how MANY may be ticked, never which
+ * — so this list is never filtered per plan (see REMINDER_MAX_SELECTABLE).
+ *
+ * ORDERED FURTHEST-OUT → LATEST, which is the order the reminders arrive in.
+ * `group` is the sheet's section heading; the groups exist because a flat list
+ * of thirteen is a wall, and "how far out am I thinking" is the first decision
+ * a user makes.
  */
-export const MAX_REMINDER_COUNT = 4;
+export type ReminderGroup = 'day' | 'hour' | 'minute' | 'after';
 
-/** Human copy for each count — what the creator is actually buying into. */
-export const REMINDER_COUNT_HINT: Record<number, string> = {
-  0: 'ไม่ต้องเตือน',
-  1: 'เตือน 1 วันก่อนกำหนด',
-  2: '+ 3 ชั่วโมงก่อนกำหนด',
-  3: '+ 3 วันก่อนกำหนด',
-  4: '+ 2 วันก่อนกำหนด',
+export interface ReminderIntervalOption {
+  /** minutes before the deadline (negative = after) — the value stored in
+   *  tasks.reminder_intervals */
+  minutes: number;
+  /** row label in the sheet, e.g. "1 วัน" */
+  label: string;
+  /** compact form for the field's summary line, e.g. "1 ว." */
+  short: string;
+  /** spoken form for the preview/aria line, e.g. "1 วันก่อนกำหนด" */
+  spoken: string;
+  group: ReminderGroup;
+}
+
+export const REMINDER_GROUP_LABEL: Record<ReminderGroup, string> = {
+  day: 'ล่วงหน้าเป็นวัน',
+  hour: 'ล่วงหน้าเป็นชั่วโมง',
+  minute: 'ใกล้ถึงกำหนด',
+  after: 'หลังเลยกำหนด',
 };
+
+export const REMINDER_GROUP_ORDER: ReminderGroup[] = ['day', 'hour', 'minute', 'after'];
+
+export const REMINDER_INTERVAL_OPTIONS: ReminderIntervalOption[] = [
+  { minutes: 10080, label: '1 สัปดาห์', short: '1 สัปดาห์', spoken: '1 สัปดาห์ก่อนกำหนด', group: 'day' },
+  { minutes: 7200, label: '5 วัน', short: '5 ว.', spoken: '5 วันก่อนกำหนด', group: 'day' },
+  { minutes: 4320, label: '3 วัน', short: '3 ว.', spoken: '3 วันก่อนกำหนด', group: 'day' },
+  { minutes: 2880, label: '2 วัน', short: '2 ว.', spoken: '2 วันก่อนกำหนด', group: 'day' },
+  { minutes: 1440, label: '1 วัน', short: '1 ว.', spoken: '1 วันก่อนกำหนด', group: 'day' },
+  { minutes: 720, label: '12 ชั่วโมง', short: '12 ชม.', spoken: '12 ชั่วโมงก่อนกำหนด', group: 'hour' },
+  { minutes: 360, label: '6 ชั่วโมง', short: '6 ชม.', spoken: '6 ชั่วโมงก่อนกำหนด', group: 'hour' },
+  { minutes: 180, label: '3 ชั่วโมง', short: '3 ชม.', spoken: '3 ชั่วโมงก่อนกำหนด', group: 'hour' },
+  { minutes: 120, label: '2 ชั่วโมง', short: '2 ชม.', spoken: '2 ชั่วโมงก่อนกำหนด', group: 'hour' },
+  { minutes: 60, label: '1 ชั่วโมง', short: '1 ชม.', spoken: '1 ชั่วโมงก่อนกำหนด', group: 'hour' },
+  { minutes: 30, label: '30 นาที', short: '30 น.', spoken: '30 นาทีก่อนกำหนด', group: 'minute' },
+  { minutes: 15, label: '15 นาที', short: '15 น.', spoken: '15 นาทีก่อนกำหนด', group: 'minute' },
+  {
+    minutes: -60,
+    label: 'เลยกำหนด 1 ชั่วโมง',
+    short: 'เลย 1 ชม.',
+    spoken: 'หลังเลยกำหนด 1 ชั่วโมง',
+    group: 'after',
+  },
+];
+
+export const REMINDER_OPTION_BY_MINUTES = new Map(
+  REMINDER_INTERVAL_OPTIONS.map((o) => [o.minutes, o]),
+);
+
+/**
+ * Pre-055 hour values, for drafts composed before the unit change. Mirrors
+ * LEGACY_REMINDER_INTERVAL_HOURS / normalizeLeadMinutes in packages/shared —
+ * the web cannot import the API's build, and the two sets are disjoint from the
+ * minute choices, which is what makes the conversion unambiguous.
+ */
+const LEGACY_INTERVAL_HOURS = [3, 6, 24, 48, 72];
+
+export function normalizeLeadMinutes(stored: number): number {
+  return LEGACY_INTERVAL_HOURS.includes(stored) ? stored * 60 : stored;
+}
+
+/**
+ * How many options each plan may tick. MIRRORS `REMINDER_POLICY[plan].maxSelectable`
+ * in apps/api/src/config/plans.ts — same mirroring contract the old
+ * MAX_REMINDER_COUNT had, and for the same reason: the two apps share no runtime,
+ * and the API re-validates every selection (403 `REMINDER_INTERVAL_LIMIT`), so
+ * this copy can only ever cost a user a nicer message, never an entitlement.
+ */
+export const REMINDER_MAX_SELECTABLE: Record<'free' | 'pro' | 'premium', number> = {
+  free: 1,
+  pro: 2,
+  premium: 4,
+};
+
+/** Hard ceiling across every plan — the fallback when the viewer's plan is unknown. */
+export const MAX_REMINDER_INTERVALS = REMINDER_MAX_SELECTABLE.premium;
+
+/**
+ * Plan → how many selections, tolerating anything unknown.
+ *
+ * An unknown/missing plan resolves to the CEILING, not to free: the picker is a
+ * convenience and the API is the gate, so letting a premium user whose profile
+ * fetch failed tick four beats silently downgrading them to one. Legacy 'team'
+ * rows are premium (normalizePlan in config/plans.ts).
+ */
+export function maxRemindersForPlan(plan: string | null | undefined): number {
+  if (plan === 'free') return REMINDER_MAX_SELECTABLE.free;
+  if (plan === 'pro') return REMINDER_MAX_SELECTABLE.pro;
+  if (plan === 'premium' || plan === 'team') return REMINDER_MAX_SELECTABLE.premium;
+  return MAX_REMINDER_INTERVALS;
+}
+
+/**
+ * Legacy "จำนวนการแจ้งเตือน (ครั้ง)" → intervals, for drafts written by the old
+ * stepper UI. Mirrors REMINDER_COUNT_PRIORITY_MINUTES in config/plans.ts (most
+ * useful lead time first) so a draft mid-flight when the build shipped keeps the
+ * reminders it was showing rather than silently losing them.
+ */
+const LEGACY_COUNT_PRIORITY_MINUTES = [1440, 180, 4320, 2880];
+
+export function intervalsFromLegacyCount(count: number | null | undefined): number[] {
+  if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return [];
+  return LEGACY_COUNT_PRIORITY_MINUTES.slice(
+    0,
+    Math.min(count, LEGACY_COUNT_PRIORITY_MINUTES.length),
+  );
+}
 
 export interface TaskDraft {
   /**
@@ -76,22 +182,24 @@ export interface TaskDraft {
   /** ความเร่งด่วน — always present in new drafts; old drafts default ปกติ. */
   urgency: TaskUrgency;
   /**
-   * จำนวนการแจ้งเตือน (ครั้ง) before the deadline, 0–MAX_REMINDER_COUNT.
+   * §4b — the ticked reminder lead times, in MINUTES before the deadline (e.g.
+   * [1440, 180]; -60 = one hour after). Values come from
+   * REMINDER_INTERVAL_OPTIONS only.
    *
-   * 0 = no reminders, and it is the DEFAULT: reminders are pushes, and a task
-   * must not start chasing people because a form field happened to be
-   * pre-filled. How many a plan may actually schedule is enforced server-side
+   * EMPTY = no reminders, and it is the DEFAULT: a reminder is a LINE push, and
+   * a task must not start chasing people because a form field happened to be
+   * pre-filled. How many may actually be ticked is enforced server-side
    * (free 1 / pro 2 / premium 4) — this is the request, not the entitlement.
    */
-  reminderCount: number;
+  reminderIntervals: number[];
   /**
    * §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" — when on, a reminder round skips assignees
    * whose item is already SUBMITTED (they have done their part; chasing them is
    * exactly what this option prevents).
    *
    * Pro/premium only, enforced server-side — the form shows it to everyone and
-   * lets the API answer with the upgrade copy, the same shape as reminderCount's
-   * per-plan ceiling. Meaningless for งานส่วนตัว (one assignee, yourself), so the
+   * lets the API answer with the upgrade copy, the same shape as the reminder
+   * picker's per-plan ceiling. Meaningless for งานส่วนตัว (one assignee, yourself), so the
    * personal flow never renders it and never sends it.
    */
   notifyOnlyPending: boolean;
@@ -117,7 +225,7 @@ export function emptyDraft(type: TaskDraft['type'], scope: TaskScope = 'group'):
     groupId: null,
     type,
     urgency: 'normal',
-    reminderCount: 0,
+    reminderIntervals: [],
     notifyOnlyPending: false,
     title: '',
     globalDeadline: null,
@@ -134,15 +242,26 @@ export function loadDraft(): TaskDraft | null {
   try {
     const raw = sessionStorage.getItem(KEY);
     if (!raw) return null;
-    const draft = JSON.parse(raw) as TaskDraft;
-    // A draft written before scope/urgency/reminderCount existed: group draft,
-    // ปกติ urgency, no reminders (0 — never invent chases the creator never asked
-    // for, same rule as the server's "selected nothing schedules nothing").
+    const draft = JSON.parse(raw) as TaskDraft & { reminderCount?: number };
+    // A draft written before scope/urgency/reminders existed: group draft,
+    // ปกติ urgency, no reminders (empty — never invent chases the creator never
+    // asked for, same rule as the server's "selected nothing schedules nothing").
+    //
+    // `reminderCount` is the old stepper's field. A draft still carrying it was
+    // composed in a tab opened before this build shipped, so it is translated
+    // rather than dropped — the user saw those reminders on screen.
     return {
       ...draft,
       scope: draft.scope ?? 'group',
       urgency: draft.urgency ?? 'normal',
-      reminderCount: typeof draft.reminderCount === 'number' ? draft.reminderCount : 0,
+      // normalizeLeadMinutes converts a draft composed before the hours→minutes
+      // change (migration 055) instead of dropping it — same reasoning as
+      // reminderCount below, one unit change later.
+      reminderIntervals: Array.isArray(draft.reminderIntervals)
+        ? draft.reminderIntervals
+            .filter((v) => typeof v === 'number')
+            .map(normalizeLeadMinutes)
+        : intervalsFromLegacyCount(draft.reminderCount),
       notifyOnlyPending: draft.notifyOnlyPending === true,
     };
   } catch {

@@ -1,0 +1,508 @@
+/* §4b reminder lead-time picker — shared by the LIFF create flow and the
+   dashboard สร้างงานส่วนตัว modal.
+
+   Self-contained by design: it is mounted inside two different stylesheets
+   (app/liff/tasks/tasks.module.css and app/dashboard/tasks/tasks.module.css),
+   so it inherits nothing from either and hard-codes the shared brand palette
+   they both already use — red #b53a32, #f5f5f5 backdrop, #e5e5e5 borders.
+   No emoji (brand rule 13); the tick, padlock, chevron and close are inline SVG.
+
+   TWO PARTS. The FIELD (.field + .preview) sits in the form. The SHEET
+   (.sheetOverlay …) is portalled to <body>, so it is styled here but is NOT a
+   descendant of .wrap — never write a `.wrap .sheetPanel` selector.
+
+   The sheet is a BOTTOM SHEET at ≤640px and a CENTRED MODAL above it. That is
+   the only difference between the LIFF and dashboard presentations, and it is
+   keyed to the viewport rather than the app so a dashboard user on a phone gets
+   the thumb-reachable control too. */
+
+.wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.label {
+  font-size: 13px;
+  font-weight: 700;
+  color: #111;
+}
+
+/* "1/2 · Pro" — the plan limit lives WITH the count instead of in a paragraph
+   below, so "how many can I still pick" needs no reading. */
+.counter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8c8c8c;
+  white-space: nowrap;
+}
+
+.planTag {
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f5f5f5;
+  border: 1px solid #e5e5e5;
+  font-size: 11px;
+  font-weight: 700;
+  color: #8c8c8c;
+}
+
+/* ---- the collapsed field ---- */
+
+.field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 12px 14px;
+  border: 1.5px solid #e5e5e5;
+  border-radius: 12px;
+  background: #fff;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.field:hover:not(:disabled) {
+  border-color: #d4d4d4;
+}
+
+.field:focus-visible {
+  outline: 2px solid #b53a32;
+  outline-offset: 2px;
+}
+
+.field:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.fieldBody {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* The summary is the whole value of the collapsed state, so it must never be
+   clipped mid-word — it wraps instead, and the field grows. */
+.fieldValue {
+  display: block;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.45;
+  color: #b53a32;
+  overflow-wrap: anywhere;
+}
+
+.fieldPlaceholder {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.45;
+  color: #8c8c8c;
+}
+
+.fieldChevron {
+  flex-shrink: 0;
+  color: #b0b0b0;
+}
+
+/* ---- the sheet ---- */
+
+.sheetOverlay {
+  position: fixed;
+  inset: 0;
+  /* Above the dashboard's .modalOverlay (z-index 100) and the LIFF's own sheets
+     (100) — this control can legitimately open from inside either. */
+  z-index: 1000;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  animation: rpFade 0.16s ease;
+}
+
+@keyframes rpFade {
+  from {
+    opacity: 0;
+  }
+}
+
+.sheetPanel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 520px;
+  /* dvh, not vh: the LINE in-app browser's toolbar changes the visible height
+     and vh would leave the footer button under it. */
+  max-height: 88dvh;
+  background: #fff;
+  border-radius: 20px 20px 0 0;
+  box-shadow: 0 -8px 40px rgba(0, 0, 0, 0.25);
+  animation: rpSlide 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  outline: none;
+}
+
+@keyframes rpSlide {
+  from {
+    transform: translateY(14%);
+  }
+}
+
+.sheetGrabber {
+  width: 38px;
+  height: 4px;
+  margin: 8px auto 2px;
+  border-radius: 999px;
+  background: #e0e0e0;
+  flex-shrink: 0;
+}
+
+.sheetHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 18px 12px;
+  border-bottom: 1px solid #f0f0f0;
+  flex-shrink: 0;
+}
+
+.sheetTitle {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #111;
+}
+
+.sheetSub {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8c8c8c;
+}
+
+.sheetClose {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 50%;
+  background: #f5f5f5;
+  color: #6b7280;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sheetClose:focus-visible {
+  outline: 2px solid #b53a32;
+  outline-offset: 2px;
+}
+
+.sheetList {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 4px 12px 8px;
+  /* Momentum scrolling inside the sheet must not chain to the page behind it. */
+  overscroll-behavior: contain;
+}
+
+.sheetGroup {
+  padding-top: 6px;
+}
+
+.sheetGroupLabel {
+  margin: 6px 0 2px;
+  padding: 0 6px;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #a3a3a3;
+}
+
+/* One option. 48px min so every row clears the touch target on a phone. */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 48px;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.row + .row {
+  box-shadow: inset 0 1px 0 #f4f4f4;
+}
+
+.row:hover {
+  background: #fafafa;
+}
+
+.row:focus-visible {
+  outline: 2px solid #b53a32;
+  outline-offset: -2px;
+}
+
+.rowOn {
+  background: #fef2f2;
+}
+
+.rowOn:hover {
+  background: #fdeaea;
+}
+
+/* Locked = the plan cap is reached. Still tappable (it answers with the reason
+   — see the lockHint note in ReminderSheet); dimmed, never hidden, so the user
+   can see what upgrading would buy. */
+.rowLocked .rowLabel,
+.rowLocked .rowWhen {
+  color: #b0b0b0;
+}
+
+.rowBox {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid #dcdcdc;
+  border-radius: 6px;
+  background: #fff;
+  color: transparent;
+}
+
+.rowOn .rowBox {
+  border-color: #b53a32;
+  background: #b53a32;
+  color: #fff;
+}
+
+.rowLocked .rowBox {
+  border-style: dashed;
+  background: #fafafa;
+  color: #c9c9c9;
+}
+
+.rowLabel {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  color: #111;
+}
+
+.rowOn .rowLabel {
+  color: #b53a32;
+  font-weight: 700;
+}
+
+/* The live preview, per row: the exact moment this option would fire. */
+.rowWhen {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: #8c8c8c;
+}
+
+.rowWhenPast {
+  text-decoration: line-through;
+  color: #c0c0c0;
+}
+
+.rowPastTag {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #b45309;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.sheetFoot {
+  flex-shrink: 0;
+  padding: 10px 16px calc(12px + env(safe-area-inset-bottom));
+  border-top: 1px solid #f0f0f0;
+  background: #fff;
+}
+
+.sheetDone {
+  width: 100%;
+  min-height: 46px;
+  border: none;
+  border-radius: 12px;
+  background: #b53a32;
+  color: #fff;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.sheetDone:hover {
+  background: #9c2f28;
+}
+
+.sheetDone:focus-visible {
+  outline: 2px solid #b53a32;
+  outline-offset: 2px;
+}
+
+.lockHint {
+  margin: 10px 16px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fef2f2;
+  color: #b53a32;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---- the preview under the field ---- */
+
+.preview {
+  list-style: none;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f9fafb;
+  border: 1px solid #eee;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.preview li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 13px;
+  color: #111;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b53a32;
+  flex-shrink: 0;
+}
+
+.previewWhen {
+  font-weight: 700;
+}
+
+.previewLead {
+  color: #8c8c8c;
+  font-size: 12px;
+}
+
+.previewPast {
+  color: #8c8c8c;
+}
+
+.previewPast .dot {
+  background: #c9c9c9;
+}
+
+.previewPast .previewWhen {
+  text-decoration: line-through;
+}
+
+.previewFlag {
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #fff4e5;
+  color: #b45309;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8c8c8c;
+}
+
+/* ---- desktop: the same sheet becomes a centred modal ---- */
+
+@media (min-width: 641px) {
+  .sheetOverlay {
+    align-items: center;
+    padding: 20px;
+  }
+
+  .sheetPanel {
+    max-width: 440px;
+    max-height: 78dvh;
+    border-radius: 16px;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.28);
+    animation: rpPop 0.16s ease;
+  }
+
+  @keyframes rpPop {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+
+  /* The grab handle is a touch affordance and reads as noise on a pointer
+     device, where the header's × is the obvious way out. */
+  .sheetGrabber {
+    display: none;
+  }
+
+  .sheetFoot {
+    padding-bottom: 14px;
+  }
+}
+
+/* Respect a reduced-motion preference: the sheet still appears, it just does
+   not travel. */
+@media (prefers-reduced-motion: reduce) {
+  .sheetOverlay,
+  .sheetPanel {
+    animation: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .rowLabel {
+    font-size: 14px;
+  }
+
+  .rowWhen {
+    font-size: 11.5px;
+  }
+}

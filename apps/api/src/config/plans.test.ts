@@ -25,8 +25,16 @@ import {
   validateReminderSelection,
   intervalsForCount,
   MAX_REMINDER_COUNT,
-  REMINDER_COUNT_PRIORITY_HOURS,
+  REMINDER_COUNT_PRIORITY_MINUTES,
 } from './plans';
+// The lockstep assertions below are the ONLY thing keeping the API's choice
+// list, the shared shot table and migration 055's CHECK from drifting apart.
+import {
+  LEGACY_REMINDER_INTERVAL_HOURS,
+  REMIND_SHOTS,
+  REMIND_TYPE_BY_LEAD_MINUTES,
+  normalizeLeadMinutes,
+} from '@nookeb/shared';
 
 const GB = 1024 * 1024 * 1024;
 
@@ -157,24 +165,67 @@ describe('§10 vault + §3 boosts are capacity, not monthly', () => {
 });
 
 describe('§4b reminder interval selection', () => {
-  it('offers exactly the five documented intervals', () => {
-    assert.deepEqual([...REMINDER_INTERVAL_CHOICES], [3, 6, 24, 48, 72]);
+  it('offers exactly the thirteen documented intervals, in MINUTES', () => {
+    assert.deepEqual(
+      [...REMINDER_INTERVAL_CHOICES],
+      [10080, 7200, 4320, 2880, 1440, 720, 360, 180, 120, 60, 30, 15, -60],
+    );
   });
 
-  it('allows free 1, pro 2, premium 4 checkboxes', () => {
+  it('keeps every pre-055 lead time reachable as its minute equivalent', () => {
+    // The unit change must not have quietly retired a choice: a user whose task
+    // was created with "3 ชม." must still find 3 ชม. in the list.
+    for (const hours of LEGACY_REMINDER_INTERVAL_HOURS) {
+      assert.ok(
+        (REMINDER_INTERVAL_CHOICES as readonly number[]).includes(hours * 60),
+        `${hours}h (= ${hours * 60}m) must still be selectable`,
+      );
+    }
+  });
+
+  it('keeps the legacy HOUR values disjoint from the minute choices', () => {
+    // This is the property that makes migration 055's backfill and
+    // normalizeLeadMinutes idempotent and unambiguous. If a future choice
+    // collides with one of these, a stored value stops being self-describing
+    // and the conversion silently corrupts data.
+    for (const hours of LEGACY_REMINDER_INTERVAL_HOURS) {
+      assert.ok(
+        !(REMINDER_INTERVAL_CHOICES as readonly number[]).includes(hours),
+        `${hours} must not be a valid minute choice`,
+      );
+    }
+  });
+
+  it('agrees with the shared shot table — every choice maps to exactly one shot', () => {
+    // The DB stores a NAMED shot in task_reminders.remind_type, so a choice with
+    // no shot would validate at the API and then schedule nothing at all.
+    for (const choice of REMINDER_INTERVAL_CHOICES) {
+      assert.ok(
+        REMIND_TYPE_BY_LEAD_MINUTES[choice],
+        `interval ${choice} has no RemindType`,
+      );
+    }
+    // ...and no shot exists that the picker cannot reach.
+    assert.deepEqual(
+      REMIND_SHOTS.map((s) => s.lead).sort((a, b) => b - a),
+      [...REMINDER_INTERVAL_CHOICES].sort((a, b) => b - a),
+    );
+  });
+
+  it('allows free 1, pro 2, premium 4 selections', () => {
     assert.equal(REMINDER_POLICY.free.maxSelectable, 1);
     assert.equal(REMINDER_POLICY.pro.maxSelectable, 2);
     assert.equal(REMINDER_POLICY.premium.maxSelectable, 4);
   });
 
-  it('offers the SAME five options to every plan — only the count differs', () => {
-    // FREE is not given a reduced or special menu; it picks 1 of the same 5.
+  it('offers the SAME thirteen options to every plan — only the count differs', () => {
+    // FREE is not given a reduced or special menu; it picks 1 of the same 13.
     for (const p of PLANS) {
       for (const choice of REMINDER_INTERVAL_CHOICES) {
         assert.deepEqual(
           validateReminderSelection(p, [choice]),
           { ok: true, intervals: [choice] },
-          `${p} must be able to pick ${choice}h`,
+          `${p} must be able to pick ${choice}m`,
         );
       }
     }
@@ -199,71 +250,114 @@ describe('§4b reminder interval selection', () => {
     }
   });
 
-  it('rejects one more checkbox than the plan allows', () => {
-    assert.deepEqual(validateReminderSelection('free', [24, 6]), {
+  it('rejects one more selection than the plan allows', () => {
+    assert.deepEqual(validateReminderSelection('free', [1440, 360]), {
       ok: false,
       code: 'TOO_MANY_INTERVALS',
       max: 1,
     });
-    assert.deepEqual(validateReminderSelection('pro', [72, 24, 6]), {
+    assert.deepEqual(validateReminderSelection('pro', [4320, 1440, 360]), {
       ok: false,
       code: 'TOO_MANY_INTERVALS',
       max: 2,
     });
-    assert.deepEqual(validateReminderSelection('premium', [72, 48, 24, 6, 3]), {
+    assert.deepEqual(validateReminderSelection('premium', [4320, 2880, 1440, 360, 180]), {
       ok: false,
       code: 'TOO_MANY_INTERVALS',
       max: 4,
     });
   });
 
+  it('widening the MENU did not widen the ENTITLEMENT', () => {
+    // Thirteen options, still four ticks at the top tier. Regression guard for
+    // the obvious mistake of sizing the cap off the choice list.
+    assert.ok(REMINDER_INTERVAL_CHOICES.length > REMINDER_POLICY.premium.maxSelectable);
+    assert.equal(REMINDER_POLICY.premium.maxSelectable, 4);
+  });
+
   it('accepts exactly the plan maximum', () => {
-    assert.deepEqual(validateReminderSelection('free', [24]), { ok: true, intervals: [24] });
-    assert.deepEqual(validateReminderSelection('pro', [6, 24]), { ok: true, intervals: [24, 6] });
-    assert.deepEqual(validateReminderSelection('premium', [3, 6, 24, 48]), {
+    assert.deepEqual(validateReminderSelection('free', [1440]), { ok: true, intervals: [1440] });
+    assert.deepEqual(validateReminderSelection('pro', [360, 1440]), {
       ok: true,
-      intervals: [48, 24, 6, 3],
+      intervals: [1440, 360],
+    });
+    assert.deepEqual(validateReminderSelection('premium', [180, 360, 1440, 2880]), {
+      ok: true,
+      intervals: [2880, 1440, 360, 180],
     });
   });
 
   it("sorts furthest-out first so the schedule reads chronologically", () => {
-    const res = validateReminderSelection('premium', [3, 72, 24]);
+    const res = validateReminderSelection('premium', [180, 4320, 1440]);
     assert.equal(res.ok, true);
-    assert.deepEqual(res.ok && res.intervals, [72, 24, 3]);
+    assert.deepEqual(res.ok && res.intervals, [4320, 1440, 180]);
+  });
+
+  it('sorts the overdue chase LAST — it is the only shot after the deadline', () => {
+    const res = validateReminderSelection('premium', [-60, 15, 1440]);
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.ok && res.intervals, [1440, 15, -60]);
   });
 
   it('dedupes before counting — a double-ticked box is not a second slot', () => {
-    // A client bug that sends [24,24] must not fail a FREE user's single slot.
-    assert.deepEqual(validateReminderSelection('free', [24, 24]), { ok: true, intervals: [24] });
+    // A client bug that sends [1440,1440] must not fail a FREE user's single slot.
+    assert.deepEqual(validateReminderSelection('free', [1440, 1440]), {
+      ok: true,
+      intervals: [1440],
+    });
   });
 
   it('rejects intervals outside the closed set', () => {
-    for (const bad of [0, 1, 5, 12, 96, -3, 2.5]) {
+    // 3/6/24/48/72 are the PRE-055 hour values: a client that was not redeployed
+    // must be told its request is invalid, not silently given a 3-minute shot.
+    for (const bad of [0, 1, 5, 10, 12, 90, 96, 43200, -3, -60.5, 2.5, 3, 6, 24, 48, 72]) {
       const res = validateReminderSelection('premium', [bad]);
       assert.deepEqual(res, { ok: false, code: 'INVALID_INTERVAL', max: 4 }, `interval ${bad}`);
     }
   });
 
   it('rejects an invalid value even when the count is within the limit', () => {
-    assert.equal(validateReminderSelection('premium', [24, 99]).ok, false);
+    assert.equal(validateReminderSelection('premium', [1440, 99]).ok, false);
+  });
+});
+
+describe('pre-055 hour values (normalizeLeadMinutes)', () => {
+  it('converts a legacy hour value to minutes', () => {
+    assert.equal(normalizeLeadMinutes(3), 180);
+    assert.equal(normalizeLeadMinutes(24), 1440);
+    assert.equal(normalizeLeadMinutes(72), 4320);
+  });
+
+  it('is idempotent — the SQL backfill and this function must agree', () => {
+    for (const hours of LEGACY_REMINDER_INTERVAL_HOURS) {
+      const once = normalizeLeadMinutes(hours);
+      assert.equal(normalizeLeadMinutes(once), once, `${hours} converted twice`);
+    }
+  });
+
+  it('leaves every current choice alone', () => {
+    for (const choice of REMINDER_INTERVAL_CHOICES) {
+      assert.equal(normalizeLeadMinutes(choice), choice, `choice ${choice} was rewritten`);
+    }
   });
 });
 
 describe('จำนวนการแจ้งเตือน (ครั้ง) → intervals', () => {
   it('is sugar over the SAME closed interval set — never a back door', () => {
-    // Every hour a count can produce must be one the checkbox validator already
-    // accepts, or the count field would be a way to schedule an unlisted shot.
-    for (const h of REMINDER_COUNT_PRIORITY_HOURS) {
+    // Every value a count can produce must be one the selection validator
+    // already accepts, or the count field would be a way to schedule an
+    // unlisted shot.
+    for (const m of REMINDER_COUNT_PRIORITY_MINUTES) {
       assert.ok(
-        (REMINDER_INTERVAL_CHOICES as readonly number[]).includes(h),
-        `${h}h must be a documented interval`,
+        (REMINDER_INTERVAL_CHOICES as readonly number[]).includes(m),
+        `${m}m must be a documented interval`,
       );
     }
   });
 
   it('gives the day-before nudge first — the most useful single reminder', () => {
-    assert.deepEqual(intervalsForCount(1), [24]);
-    assert.deepEqual(intervalsForCount(2), [24, 3]);
+    assert.deepEqual(intervalsForCount(1), [1440]);
+    assert.deepEqual(intervalsForCount(2), [1440, 180]);
   });
 
   it('treats 0, null and undefined as "no reminders", never as a default schedule', () => {
@@ -274,7 +368,7 @@ describe('จำนวนการแจ้งเตือน (ครั้ง) 
 
   it('clamps above the ceiling instead of inventing a fifth lead time', () => {
     assert.equal(intervalsForCount(99).length, MAX_REMINDER_COUNT);
-    assert.deepEqual(intervalsForCount(MAX_REMINDER_COUNT), [...REMINDER_COUNT_PRIORITY_HOURS]);
+    assert.deepEqual(intervalsForCount(MAX_REMINDER_COUNT), [...REMINDER_COUNT_PRIORITY_MINUTES]);
   });
 
   it('never returns duplicates, so the plan cap counts real shots', () => {
@@ -285,7 +379,7 @@ describe('จำนวนการแจ้งเตือน (ครั้ง) 
   it('expands to something the plan gate then judges — free 1 passes, free 2 does not', () => {
     assert.deepEqual(validateReminderSelection('free', intervalsForCount(1)), {
       ok: true,
-      intervals: [24],
+      intervals: [1440],
     });
     const overCap = validateReminderSelection('free', intervalsForCount(2));
     assert.equal(overCap.ok, false);

@@ -192,19 +192,53 @@ export function lockerLimitBytes(plan: Plan, referralCount = 0): number {
 // ---------------------------------------------------------------------------
 
 /**
- * §4b — the ONLY selectable intervals, in hours before the deadline. This is a
- * closed set rendered as checkboxes; free text is never accepted. Mirrored by
- * the `tasks_reminder_intervals_check` constraint in migration 051.
+ * §4b — the ONLY selectable intervals, in MINUTES before the deadline. This is
+ * a closed set rendered as a checklist; free text is never accepted. Mirrored
+ * by the `tasks_reminder_intervals_check` constraint in migration 055 and by
+ * REMIND_SHOTS in packages/shared (plans.test.ts asserts all three agree).
  *
- * EVERY PLAN SEES THE SAME FIVE OPTIONS. Plans differ only in how many boxes
- * may be ticked — there is no per-plan menu and no plan-specific shot.
+ * EVERY PLAN SEES THE SAME THIRTEEN OPTIONS. Plans differ only in how many may
+ * be ticked — there is no per-plan menu and no plan-specific shot.
+ *
+ * UNIT CHANGED IN MIGRATION 055 (was hours: [3, 6, 24, 48, 72]). Minutes is now
+ * the unit because 15- and 30-minute lead times are not expressible in integer
+ * hours. The five original lead times all survive as their minute equivalents,
+ * so no user's saved selection changed meaning.
+ *
+ * WHY THE FLOOR IS 15 MINUTES, NOT 5. Reminders are scheduled at CREATE time
+ * and a shot already in the past is silently skipped (see scheduleReminders),
+ * so a 5-minute lead mostly never fires at all; when it does, a LINE push five
+ * minutes out leaves no time to act on a task. 10 vs 15 is not a distinction
+ * worth a row in the list.
+ *
+ * WHY THE CEILING IS ONE WEEK, NOT 30 DAYS. A ping a month out arrives before
+ * the work is actionable, and with a 4-tick ceiling every long-tail slot
+ * displaces a useful one. One week is the "เริ่มทำได้แล้ว" nudge.
+ *
+ * `-60` IS THE ONE NEGATIVE VALUE: 60 minutes AFTER the deadline (the overdue
+ * chase). Sorted last by the descending normaliser in validateReminderSelection,
+ * which is also the order it fires in — nothing special-cases it.
  */
-export const REMINDER_INTERVAL_CHOICES = [3, 6, 24, 48, 72] as const;
+export const REMINDER_INTERVAL_CHOICES = [
+  10080, // 1 สัปดาห์
+  7200, //  5 วัน
+  4320, //  3 วัน
+  2880, //  2 วัน
+  1440, //  1 วัน
+  720, //  12 ชั่วโมง
+  360, //   6 ชั่วโมง
+  180, //   3 ชั่วโมง
+  120, //   2 ชั่วโมง
+  60, //    1 ชั่วโมง
+  30, //   30 นาที
+  15, //   15 นาที
+  -60, //  เลยกำหนด 1 ชั่วโมง
+] as const;
 export type ReminderInterval = (typeof REMINDER_INTERVAL_CHOICES)[number];
 
 export interface ReminderPolicy {
   /**
-   * §4b — how many of the five checkboxes the plan may tick.
+   * §4b — how many of the thirteen options the plan may tick.
    *
    * This is the ONLY thing a plan changes about reminders. There is deliberately
    * no deadline-only fallback and no plan-specific default schedule: a task's
@@ -242,16 +276,19 @@ export function isReminderInterval(n: number): n is ReminderInterval {
  * here, because that is a chase, not a lead time, and it is not expressible as
  * an interval. Chat-created tasks keep reaching it through `reminder_count`.
  *
- * THE CEILING IS 4, NOT 10. A count is only meaningful if a distinct lead time
- * exists for it, and there are four here (five intervals, minus 6h which is too
- * close to 3h to be worth a slot in an ordered count). The plan cap
+ * THE CEILING IS 4, NOT 13. A count is only meaningful if a distinct lead time
+ * exists for it, and four well-spaced ones cover what a chat command can
+ * usefully mean; the thirteen-option list is a picker affordance, not something
+ * "เตือน 9 ครั้ง" should be able to reach. The plan cap
  * (REMINDER_POLICY.maxSelectable — free 1 / pro 2 / premium 4) then applies on
  * top, so nobody can request more shots than they pay for.
+ *
+ * MINUTES since migration 055, like every other interval value.
  */
-export const REMINDER_COUNT_PRIORITY_HOURS = [24, 3, 72, 48] as const;
+export const REMINDER_COUNT_PRIORITY_MINUTES = [1440, 180, 4320, 2880] as const;
 
 /** Hard ceiling on the count field, independent of plan. */
-export const MAX_REMINDER_COUNT = REMINDER_COUNT_PRIORITY_HOURS.length;
+export const MAX_REMINDER_COUNT = REMINDER_COUNT_PRIORITY_MINUTES.length;
 
 /**
  * Expand a count into intervals. 0 / null → `[]`, which schedules NOTHING —
@@ -266,7 +303,7 @@ export const MAX_REMINDER_COUNT = REMINDER_COUNT_PRIORITY_HOURS.length;
 export function intervalsForCount(count: number | null | undefined): number[] {
   if (count == null || !Number.isFinite(count)) return [];
   const n = Math.max(0, Math.min(MAX_REMINDER_COUNT, Math.floor(count)));
-  return REMINDER_COUNT_PRIORITY_HOURS.slice(0, n);
+  return REMINDER_COUNT_PRIORITY_MINUTES.slice(0, n);
 }
 
 /**

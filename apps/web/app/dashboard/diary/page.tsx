@@ -10,11 +10,10 @@ import {
   getDiaryTodayStatus,
   hasSession,
   listDiaryEntries,
-  setDiaryPushEnabled,
-  updateDiaryNotification,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { DiaryReminderBanner } from '@/components/DiaryReminderBanner';
+import DiaryReminderSettings from '@/components/DiaryReminderSettings';
 
 /** Today's calendar date in Asia/Bangkok as 'YYYY-MM-DD' ('en-CA' = ISO order). */
 function bangkokToday(): string {
@@ -58,17 +57,9 @@ export default function DiaryDashboardPage() {
   const [status, setStatus] = useState<DiaryTodayStatusResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // notification settings form
-  const [notifyEnabled, setNotifyEnabled] = useState(true);
-  const [notifyTime, setNotifyTime] = useState('20:00');
-  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-
-  // LINE push opt-in (migration 053) — DEFAULT OFF, and separate from the
-  // banner settings above: it is the only thing that authorises หนูเก็บ to send
-  // a push, so it gets its own optimistic toggle and its own endpoint.
-  const [pushEnabled, setPushEnabled] = useState(false);
-  const [pushSaving, setPushSaving] = useState(false);
-  const [pushError, setPushError] = useState<string | null>(null);
+  // The reminder settings form lives in <DiaryReminderSettings> — one card for
+  // the push channel, the banner channel and the shared clock (see that file's
+  // header for why they used to be two).
 
   // grid hover preview (desktop)
   const [preview, setPreview] = useState<{ entry: DiaryEntryDto; x: number; y: number } | null>(null);
@@ -89,9 +80,6 @@ export default function DiaryDashboardPage() {
       setEntries(entriesRes.entries);
       setStreak(streakRes);
       setStatus(statusRes);
-      setNotifyEnabled(statusRes.notification.isEnabled);
-      setNotifyTime(statusRes.notification.notifyTime);
-      setPushEnabled(statusRes.notification.notificationEnabled);
       setError(null);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
@@ -123,48 +111,6 @@ export default function DiaryDashboardPage() {
   }, [year, leadingBlanks]);
 
   const recent = useMemo(() => (entries ?? []).slice(-7).reverse(), [entries]);
-
-  /**
-   * Optimistic push opt-in. Flip the switch first (the control has to feel
-   * instant), then reconcile against the value the server actually stored —
-   * NOT against the value we sent, so a rejected or coerced write shows the
-   * truth instead of a lie the user would only discover by not being reminded.
-   * A failure rolls the switch back and says so.
-   */
-  async function togglePush(next: boolean): Promise<void> {
-    if (pushSaving) return;
-    const previous = pushEnabled;
-    setPushEnabled(next);
-    setPushSaving(true);
-    setPushError(null);
-    try {
-      const res = await setDiaryPushEnabled(next);
-      setPushEnabled(res.notificationEnabled);
-    } catch (err) {
-      setPushEnabled(previous);
-      if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
-      else setPushError('เปลี่ยนการแจ้งเตือนไม่สำเร็จ ลองใหม่อีกทีน้า');
-    } finally {
-      setPushSaving(false);
-    }
-  }
-
-  async function saveNotification(): Promise<void> {
-    setSaveState('saving');
-    try {
-      await updateDiaryNotification({
-        notifyTime,
-        isEnabled: notifyEnabled,
-        timezone: status?.notification.timezone ?? 'Asia/Bangkok',
-        // Carried so the PUT never contradicts the toggle's own state.
-        notificationEnabled: pushEnabled,
-      });
-      setSaveState('saved');
-      setTimeout(() => setSaveState('idle'), 2000);
-    } catch {
-      setSaveState('error');
-    }
-  }
 
   if (needsLogin) {
     return (
@@ -317,82 +263,15 @@ export default function DiaryDashboardPage() {
         <p className="diary-empty">ยังไม่มีบันทึกในปีนี้เลยน้า เริ่มวันแรกได้เลย 🌸</p>
       )}
 
-      {/* ---------- LINE push opt-in (migration 053) ----------
-          Its own card, above the banner settings, because it is a different
-          promise: this one lets หนูเก็บ message the user in LINE. Default OFF,
-          and the current state is spelled out in words — a bare checkbox makes
-          "am I being messaged or not?" a question about a tick mark. */}
-      <section className="diary-settings">
-        <h2>ให้หนูเก็บทักเตือนใน LINE</h2>
-        <p className="diary-settings-hint">
-          ถ้าเปิดไว้ หนูเก็บจะทักไปในแชท LINE ตอนที่ยังไม่ได้บันทึกไดอารี่ของวันนั้น
-          — ถ้าไม่เปิด หนูจะไม่ส่งข้อความหาเลยน้า
-        </p>
-        <div className="diary-settings-row">
-          <label className="diary-toggle">
-            <input
-              type="checkbox"
-              checked={pushEnabled}
-              disabled={pushSaving}
-              onChange={(e) => void togglePush(e.target.checked)}
-            />
-            <span>เปิดให้หนูเก็บทักใน LINE</span>
-          </label>
-          <span
-            role="status"
-            aria-live="polite"
-            style={{
-              display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '4px 12px',
-              borderRadius: 999,
-              fontSize: 13,
-              fontWeight: 700,
-              background: pushEnabled ? '#E8F5E9' : '#F3F4F6',
-              color: pushEnabled ? '#2E7D32' : '#6B7280',
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: '50%',
-                background: pushEnabled ? '#2E7D32' : '#9CA3AF',
-              }}
-            />
-            {pushSaving ? 'กำลังบันทึก…' : pushEnabled ? 'เปิดอยู่' : 'ปิดอยู่'}
-          </span>
-        </div>
-        {pushError && <p className="diary-error">{pushError}</p>}
-      </section>
-
-      {/* ---------- notification settings ---------- */}
-      <section className="diary-settings">
-        <h2>แจ้งเตือนบันทึกไดอารี่</h2>
-        <p className="diary-settings-hint">
-          ถ้ายังไม่ได้บันทึก เราจะแสดงแถบเตือนบนหน้าเว็บหลังเวลาที่เลือกไว้
-        </p>
-        <div className="diary-settings-row">
-          <label className="diary-toggle">
-            <input
-              type="checkbox"
-              checked={notifyEnabled}
-              onChange={(e) => setNotifyEnabled(e.target.checked)}
-            />
-            <span>เปิดแจ้งเตือน</span>
-          </label>
-          <label className="diary-time">
-            เวลา
-            <input type="time" value={notifyTime} onChange={(e) => setNotifyTime(e.target.value)} />
-          </label>
-          <button className="btn diary-save-btn" onClick={saveNotification} disabled={saveState === 'saving'}>
-            {saveState === 'saving' ? 'กำลังบันทึก…' : saveState === 'saved' ? 'บันทึกแล้ว ✓' : 'บันทึก'}
-          </button>
-        </div>
-        {saveState === 'error' && <p className="diary-error">บันทึกการตั้งค่าไม่สำเร็จ ลองใหม่อีกทีน้า</p>}
-      </section>
+      {/* ---------- เตือนให้เขียนไดอารี่ ----------
+          ONE card (components/DiaryReminderSettings.tsx), replacing the old
+          "ให้หนูเก็บทักเตือนใน LINE" + "แจ้งเตือนบันทึกไดอารี่" pair — same
+          reminder, same clock, two places to configure it. See that file's
+          header for the full reasoning. */}
+      <DiaryReminderSettings
+        settings={status?.notification ?? null}
+        onUnauthorized={() => setNeedsLogin(true)}
+      />
     </main>
   );
 }

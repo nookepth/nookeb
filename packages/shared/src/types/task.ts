@@ -28,27 +28,52 @@ export type TaskStatus = 'pending' | 'in_progress' | 'done' | 'cancelled';
  */
 export type TaskItemStatus = TaskStatus | 'submitted' | 'rejected';
 /**
- * Reminder shot identifiers.
+ * THE reminder shot vocabulary — one table, everything else is derived.
  *
- * The first four are the ORIGINAL default schedule (migration 036). `2_days`
- * and `6_hours` were added by the membership system (migration 051) so the §4b
- * checkbox set — 3h / 6h / 1d / 2d / 3d — is fully expressible.
+ * `lead` is MINUTES BEFORE the deadline. Negative = after it (`overdue`, the
+ * +1h chase). That sign convention is deliberately the one `tasks.reminder_intervals`
+ * stores, so a stored value maps to a shot by lookup and never by arithmetic.
  *
- * There is NO zero-offset shot: a reminder fires only at an interval the
- * creator selected, and selecting nothing schedules nothing. (`overdue` is the
- * pre-existing +1h chase, reachable only via the legacy `reminder_count` chat
- * command — it is not one of the five selectable intervals.)
+ * ORDERED furthest-out → latest, which is both the order shots are scheduled in
+ * and the order they arrive in. Readers that need "schedule order" filter this
+ * array rather than keeping their own copy (see REMIND_TYPES_IN_ORDER).
  *
- * Adding a value here REQUIRES widening the task_reminders.remind_type CHECK —
- * migration 051 does that. Keep this union and that constraint in lockstep.
+ * HISTORY. Migration 036 shipped four shots (3_days / 1_day / 3_hours /
+ * overdue); 051 added 2_days + 6_hours for the §4b checkbox set; 055 added the
+ * remaining eight and re-based the stored unit from HOURS to MINUTES, because
+ * 15/30-minute lead times are not expressible in integer hours. The six original
+ * NAMES are unchanged, so every task_reminders row written before 055 is still
+ * valid — only the `tasks.reminder_intervals` numbers were converted.
+ *
+ * Adding a value here REQUIRES widening the task_reminders.remind_type CHECK
+ * (migration 055 does that) and adding its card copy in lineMessage.ts, whose
+ * exhaustive Records make a missing entry a compile error rather than a card
+ * that renders `undefined`. Keep this table, that constraint and
+ * REMINDER_INTERVAL_CHOICES in config/plans.ts in lockstep — plans.test.ts
+ * asserts all three agree.
  */
-export type RemindType =
-  | '3_days'
-  | '1_day'
-  | '3_hours'
-  | 'overdue'
-  | '2_days'
-  | '6_hours';
+export const REMIND_SHOTS = [
+  { type: '1_week', lead: 7 * 24 * 60 },
+  { type: '5_days', lead: 5 * 24 * 60 },
+  { type: '3_days', lead: 3 * 24 * 60 },
+  { type: '2_days', lead: 2 * 24 * 60 },
+  { type: '1_day', lead: 24 * 60 },
+  { type: '12_hours', lead: 12 * 60 },
+  { type: '6_hours', lead: 6 * 60 },
+  { type: '3_hours', lead: 3 * 60 },
+  { type: '2_hours', lead: 2 * 60 },
+  { type: '1_hour', lead: 60 },
+  { type: '30_min', lead: 30 },
+  { type: '15_min', lead: 15 },
+  // The one shot AFTER the deadline. Selectable in the form since 055; before
+  // that it was reachable only through the legacy `เตือน N ครั้ง` chat command.
+  { type: 'overdue', lead: -60 },
+] as const satisfies readonly { type: string; lead: number }[];
+
+export type RemindType = (typeof REMIND_SHOTS)[number]['type'];
+
+/** Shot ids in schedule order (furthest-out → latest). */
+export const REMIND_TYPES_IN_ORDER: readonly RemindType[] = REMIND_SHOTS.map((s) => s.type);
 
 /**
  * ความเร่งด่วน picked at creation (migration 048), most→least urgent. Stored
@@ -60,33 +85,51 @@ export const TASK_URGENCIES: readonly TaskUrgency[] = [
   'urgent_max', 'urgent', 'normal', 'relaxed',
 ] as const;
 
-/** Ordered mapping of reminder type → offset from the deadline (minutes;
- * negative = before). Shared so the scheduler and .ics VALARMs agree. */
-export const REMIND_OFFSETS_MINUTES: Record<RemindType, number> = {
-  '3_days': -3 * 24 * 60,
-  '2_days': -2 * 24 * 60,
-  '1_day': -24 * 60,
-  '6_hours': -6 * 60,
-  '3_hours': -3 * 60,
-  overdue: 60,
-};
+/** Reminder type → offset FROM the deadline (minutes; negative = before). The
+ * mirror image of `lead`, kept because the scheduler adds an offset to a
+ * deadline while the form asks for a lead time. Derived, never hand-written. */
+export const REMIND_OFFSETS_MINUTES: Record<RemindType, number> = Object.fromEntries(
+  REMIND_SHOTS.map((s) => [s.type, -s.lead]),
+) as Record<RemindType, number>;
 
 /**
- * §4b — the user-selectable reminder lead times, in HOURS before the deadline,
- * mapped to the shot they schedule. The hour values are what
+ * §4b — the user-selectable lead times, in MINUTES before the deadline, mapped
+ * to the shot they schedule. The minute values are what
  * `tasks.reminder_intervals` stores; the RemindType is what
  * `task_reminders.remind_type` stores.
  *
- * Kept here rather than in the API so the .ics VALARM builder, the scheduler
- * and any future client all read one table.
+ * Kept here rather than in the API so the scheduler and any future client all
+ * read one table.
  */
-export const REMIND_TYPE_BY_INTERVAL_HOURS: Record<number, RemindType> = {
-  3: '3_hours',
-  6: '6_hours',
-  24: '1_day',
-  48: '2_days',
-  72: '3_days',
-};
+export const REMIND_TYPE_BY_LEAD_MINUTES: Record<number, RemindType> = Object.fromEntries(
+  REMIND_SHOTS.map((s) => [s.lead, s.type]),
+) as Record<number, RemindType>;
+
+/**
+ * The pre-055 choice set, in HOURS. Kept ONLY to recognise rows written before
+ * the unit change; it is not selectable and must never be offered to a user.
+ *
+ * The conversion is unambiguous BY LUCK AND BY CHECK: {3,6,24,48,72} × 60 =
+ * {180,360,1440,2880,4320}, which is disjoint from {3,6,24,48,72}. So a value
+ * in this set can only ever be a legacy hour count, never a valid new minute
+ * count — which is what makes both `normalizeLeadMinutes` and migration 055's
+ * SQL backfill idempotent. Do not add a value here that is also a valid minute
+ * choice; plans.test.ts asserts the two sets stay disjoint.
+ */
+export const LEGACY_REMINDER_INTERVAL_HOURS: readonly number[] = [3, 6, 24, 48, 72];
+
+/**
+ * Read one stored `reminder_intervals` value as MINUTES, converting a pre-055
+ * hour value on the fly.
+ *
+ * Exists so code and data may land in either order: a task row read before
+ * migration 055's backfill has run still schedules the reminders its creator
+ * chose, and re-reading a converted row is a no-op. Mirrors the SQL backfill
+ * exactly — change one and you must change the other.
+ */
+export function normalizeLeadMinutes(stored: number): number {
+  return LEGACY_REMINDER_INTERVAL_HOURS.includes(stored) ? stored * 60 : stored;
+}
 
 export interface RecurrenceRule {
   freq: 'daily' | 'weekly' | 'monthly';
@@ -128,10 +171,15 @@ export interface TaskRecord {
    */
   reminder_count?: number | null;
   /**
-   * §4b — the creator's reminder checkbox selection (migration 051), in HOURS
-   * before the effective deadline, e.g. [24, 6]. Values come from
-   * REMIND_INTERVAL choices only, and how many may be ticked is a plan limit
-   * (free 1 / pro 2 / premium 4) enforced server-side at create time.
+   * §4b — the creator's reminder selection (migration 051), in MINUTES before
+   * the effective deadline, e.g. [1440, 360]. `-60` is the one value after the
+   * deadline (the overdue chase). Values come from REMINDER_INTERVAL_CHOICES
+   * only, and how many may be ticked is a plan limit (free 1 / pro 2 /
+   * premium 4) enforced server-side at create time.
+   *
+   * WAS HOURS BEFORE MIGRATION 055. Never read this array raw — put every
+   * element through `normalizeLeadMinutes`, which converts a row the backfill
+   * has not reached yet and leaves a converted one alone.
    *
    * NULL/absent = the creator selected nothing, which schedules NO reminder
    * shots. There is no deadline-only fallback. Optional so rows read before

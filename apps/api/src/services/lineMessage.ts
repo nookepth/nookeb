@@ -29,23 +29,43 @@ const MUTED = '#8C8C8C';
 
 // Semantic ramp: the nearer the deadline, the hotter the colour. Every
 // RemindType must appear — the Record is exhaustive on purpose, so adding a
-// shot type (migration 051 added '2_days' and '6_hours') is a compile error
-// until its card copy exists, rather than a card that renders `undefined`.
+// shot type (051 added '2_days'/'6_hours'; 055 added the other seven) is a
+// compile error until its card copy exists, rather than a card that renders
+// `undefined`.
+//
+// FOUR BANDS, not thirteen shades: the colour answers "how worried should I be",
+// and a user who sees one card at a time cannot read a thirteen-step gradient.
+// Green = plenty of runway, amber = today-ish, deep orange = hours left, red =
+// out of time.
 const URGENCY_COLOR: Record<RemindType, string> = {
+  '1_week': LINE_GREEN,
+  '5_days': LINE_GREEN,
   '3_days': LINE_GREEN,
   '2_days': LINE_GREEN,
   '1_day': '#FF9800',
+  '12_hours': '#FF9800',
   '6_hours': '#FF7043',
   '3_hours': '#FF5722',
+  '2_hours': '#FF5722',
+  '1_hour': '#F4511E',
+  '30_min': '#F44336',
+  '15_min': '#F44336',
   overdue: '#F44336',
 };
 
 const URGENCY_LABEL: Record<RemindType, string> = {
+  '1_week': 'อีก 1 สัปดาห์ถึงกำหนด',
+  '5_days': 'อีก 5 วันถึงกำหนด',
   '3_days': 'อีก 3 วันถึงกำหนด',
   '2_days': 'อีก 2 วันถึงกำหนด',
   '1_day': 'พรุ่งนี้ถึงกำหนดแล้ว',
+  '12_hours': 'อีก 12 ชั่วโมงถึงกำหนด',
   '6_hours': 'อีก 6 ชั่วโมงถึงกำหนด',
   '3_hours': 'อีก 3 ชั่วโมงถึงกำหนด',
+  '2_hours': 'อีก 2 ชั่วโมงถึงกำหนด',
+  '1_hour': 'อีก 1 ชั่วโมงถึงกำหนด',
+  '30_min': 'อีก 30 นาทีถึงกำหนด',
+  '15_min': 'อีก 15 นาทีถึงกำหนด',
   overdue: 'เลยกำหนดแล้ว',
 };
 

@@ -1547,11 +1547,13 @@ export function createPersonalTask(input: {
   /** ความเร่งด่วน (migration 048); omitted = ปกติ */
   urgency?: 'urgent_max' | 'urgent' | 'normal' | 'relaxed';
   /**
-   * จำนวนการแจ้งเตือน (ครั้ง) before the deadline, 0–4. Omitted or 0 = none.
-   * The plan ceiling (free 1 / pro 2 / premium 4) is enforced by the API, which
-   * answers an over-limit request with 403 REMINDER_INTERVAL_LIMIT.
+   * §4b — reminder lead times in HOURS before the deadline, from the closed set
+   * [3, 6, 24, 48, 72]. Omitted or empty = no reminders. How many may be sent is
+   * the plan limit (free 1 / pro 2 / premium 4), enforced by the API, which
+   * answers an over-limit request with 403 REMINDER_INTERVAL_LIMIT and an
+   * off-menu value with 400 INVALID_REMINDER_INTERVAL.
    */
-  reminderCount?: number;
+  reminderIntervals?: number[];
 }): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks`, {
     method: 'POST',
@@ -1562,7 +1564,9 @@ export function createPersonalTask(input: {
       title: input.title,
       globalDeadline: input.globalDeadline,
       ...(input.urgency ? { urgency: input.urgency } : {}),
-      ...(input.reminderCount ? { reminderCount: input.reminderCount } : {}),
+      ...(input.reminderIntervals?.length
+        ? { reminderIntervals: input.reminderIntervals }
+        : {}),
       items: [
         {
           title: input.title,

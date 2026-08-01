@@ -2,8 +2,10 @@ import { Queue } from 'bullmq';
 import dayjs from 'dayjs';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
+  normalizeLeadMinutes,
   REMIND_OFFSETS_MINUTES,
-  REMIND_TYPE_BY_INTERVAL_HOURS,
+  REMIND_TYPE_BY_LEAD_MINUTES,
+  REMIND_TYPES_IN_ORDER,
   TASK_NOTIFICATIONS_ENABLED,
   TASK_QUEUE,
   type RemindType,
@@ -33,23 +35,13 @@ export const ROLLOVER_DELAY_MINUTES = 90;
 /** How often the recurring-task self-heal sweep runs (see scheduleTaskRepeatableJobs). */
 const SWEEP_INTERVAL_MS = 30 * 60 * 1000;
 
-/** Ordered furthest-out → latest, so scheduled shots read chronologically. */
-const REMIND_TYPES: RemindType[] = [
-  '3_days',
-  '2_days',
-  '1_day',
-  '6_hours',
-  '3_hours',
-  'overdue',
-];
-
 /**
  * Which shots a task fires, in schedule order.
  *
  * Precedence:
- *  1. §4b `reminder_intervals` — the creator's checkbox selection, already
- *     validated against their plan at create time. Every plan picks from the
- *     SAME five intervals; the plan only caps how many.
+ *  1. §4b `reminder_intervals` — the creator's selection, already validated
+ *     against their plan at create time. Every plan picks from the SAME
+ *     thirteen intervals; the plan only caps how many.
  *  2. Legacy `reminder_count` — the Pro "เตือน N ครั้ง" chat command
  *     (migration 047). Kept working; nothing else sets it.
  *  3. Neither → NO shots.
@@ -58,6 +50,10 @@ const REMIND_TYPES: RemindType[] = [
  * the creator asked for: inventing one (whether the old four-shot default or a
  * single at-deadline ping) would mean a FREE user receiving reminders they
  * never selected, on a plan whose entitlement is exactly one selection.
+ *
+ * `normalizeLeadMinutes` is what makes this safe to deploy in either order
+ * around migration 055: a row still holding pre-055 HOURS resolves to the same
+ * shots it always did, and a converted row is passed through untouched.
  */
 export function resolveShots(task: Pick<TaskRecord, 'reminder_count'> & {
   reminder_intervals?: number[] | null;
@@ -66,14 +62,14 @@ export function resolveShots(task: Pick<TaskRecord, 'reminder_count'> & {
   if (intervals && intervals.length > 0) {
     const chosen = new Set(
       intervals
-        .map((h) => REMIND_TYPE_BY_INTERVAL_HOURS[h])
+        .map((v) => REMIND_TYPE_BY_LEAD_MINUTES[normalizeLeadMinutes(v)])
         .filter((t): t is RemindType => t !== undefined),
     );
-    if (chosen.size > 0) return REMIND_TYPES.filter((t) => chosen.has(t));
+    if (chosen.size > 0) return REMIND_TYPES_IN_ORDER.filter((t) => chosen.has(t));
   }
   if (typeof task.reminder_count === 'number') {
     const chosen = new Set(selectRemindTypes(task.reminder_count));
-    return REMIND_TYPES.filter((t) => chosen.has(t));
+    return REMIND_TYPES_IN_ORDER.filter((t) => chosen.has(t));
   }
   return [];
 }

@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { planAllows, resolveReminderConfig } from './planGuard';
+import { REMINDER_INTERVAL_CHOICES } from '../config/plans';
 import { retentionDaysForPlan, isPurgeable, maxRetentionDays, minRetentionDays } from '../jobs/trashCleanup.job';
 
 /**
@@ -38,16 +39,16 @@ describe('resolveReminderConfig — §4b checkbox limit', () => {
     }
   });
 
-  it('lets FREE pick any ONE of the same five intervals', () => {
-    for (const choice of [3, 6, 24, 48, 72]) {
+  it('lets FREE pick any ONE of the same thirteen intervals', () => {
+    for (const choice of REMINDER_INTERVAL_CHOICES) {
       const res = resolveReminderConfig({ plan: 'free', intervals: [choice] });
-      assert.equal(res.ok, true, `free must be able to pick ${choice}h`);
+      assert.equal(res.ok, true, `free must be able to pick ${choice}m`);
       assert.deepEqual(res.ok && res.intervals, [choice]);
     }
   });
 
   it('rejects a second interval on free with 403 + a machine code', () => {
-    const res = resolveReminderConfig({ plan: 'free', intervals: [24, 6] });
+    const res = resolveReminderConfig({ plan: 'free', intervals: [1440, 360] });
     assert.equal(res.ok, false);
     if (res.ok) return;
     assert.equal(res.status, 403);
@@ -55,22 +56,25 @@ describe('resolveReminderConfig — §4b checkbox limit', () => {
     assert.equal(res.body.limit, 1);
   });
 
-  it("honours the spec's PRO example: [6, 1d] → notified 1 day before AND 6h before", () => {
-    const res = resolveReminderConfig({ plan: 'pro', intervals: [6, 24] });
+  it("honours the spec's PRO example: [6h, 1d] → notified 1 day before AND 6h before", () => {
+    const res = resolveReminderConfig({ plan: 'pro', intervals: [360, 1440] });
     assert.equal(res.ok, true);
-    assert.deepEqual(res.ok && res.intervals, [24, 6]);
+    assert.deepEqual(res.ok && res.intervals, [1440, 360]);
   });
 
   it('rejects a third interval on pro', () => {
-    const res = resolveReminderConfig({ plan: 'pro', intervals: [6, 24, 72] });
+    const res = resolveReminderConfig({ plan: 'pro', intervals: [360, 1440, 4320] });
     assert.equal(res.ok, false);
     assert.equal(!res.ok && res.body.limit, 2);
   });
 
   it('lets premium pick four but not five', () => {
-    assert.equal(resolveReminderConfig({ plan: 'premium', intervals: [3, 6, 24, 48] }).ok, true);
     assert.equal(
-      resolveReminderConfig({ plan: 'premium', intervals: [3, 6, 24, 48, 72] }).ok,
+      resolveReminderConfig({ plan: 'premium', intervals: [180, 360, 1440, 2880] }).ok,
+      true,
+    );
+    assert.equal(
+      resolveReminderConfig({ plan: 'premium', intervals: [180, 360, 1440, 2880, 4320] }).ok,
       false,
     );
   });
@@ -78,7 +82,7 @@ describe('resolveReminderConfig — §4b checkbox limit', () => {
   it('rejects an off-menu interval with 400, not 403', () => {
     // A bad value is a malformed request; a too-long selection is a plan limit.
     // Distinguishing them is what lets the client show the right message.
-    const res = resolveReminderConfig({ plan: 'premium', intervals: [5] });
+    const res = resolveReminderConfig({ plan: 'premium', intervals: [7] });
     assert.equal(res.ok, false);
     if (res.ok) return;
     assert.equal(res.status, 400);
@@ -87,7 +91,7 @@ describe('resolveReminderConfig — §4b checkbox limit', () => {
 
   it('is enforced server-side regardless of what the client sends', () => {
     // The whole point of §4b's "not just client-side" note.
-    const res = resolveReminderConfig({ plan: 'free', intervals: [3, 6, 24, 48, 72] });
+    const res = resolveReminderConfig({ plan: 'free', intervals: [180, 360, 1440, 2880, 4320] });
     assert.equal(res.ok, false);
   });
 });
@@ -124,7 +128,7 @@ describe('resolveReminderConfig — §4c notify only non-submitters', () => {
     // a free user fixing the toggle alone does not get a second rejection.
     const res = resolveReminderConfig({
       plan: 'free',
-      intervals: [24, 6],
+      intervals: [1440, 360],
       notifyOnlyPending: true,
     });
     assert.equal(res.ok, false);
