@@ -309,27 +309,56 @@ export interface VaultPurgeResult {
  * charged) and never double-refund (which would understate usage and hand out
  * free quota on every retry). The drift is repairable by re-running
  * supabase/backfills/backfill_vault_storage.sql.
+ *
+ * Retention is PLAN-AWARE, exactly like the general trash (§12): free 5 days,
+ * pro/premium 30. It used to be one flat 30-day window for everyone, which
+ * quietly handed free users a paid entitlement — and told them so in the vault
+ * trash UI ("เหลืออีก 30 วัน"). The numbers come from config/plans.ts through
+ * `isPurgeable`; there is deliberately no separate vault retention table,
+ * because a second copy of {free:5, pro:30, premium:30} is a drift waiting to
+ * happen. `retentionDaysPro` still exists as the VAULT_PURGE_RETENTION_DAYS env
+ * override for the PAID window (the vault's historical knob).
  */
 export async function purgeDeletedVaultFiles(
   supabase: SupabaseClient,
   r2: S3Client,
-  opts: { retentionDays: number; apply: boolean },
+  opts: { retentionDays?: number; retentionDaysPro?: number; apply: boolean },
 ): Promise<VaultPurgeResult> {
-  const cutoff = new Date(Date.now() - opts.retentionDays * 24 * 60 * 60 * 1000).toISOString();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const overrides = { free: opts.retentionDays, paid: opts.retentionDaysPro };
+  const freeDays = opts.retentionDays ?? minRetentionDays();
+  const paidDays = opts.retentionDaysPro ?? maxRetentionDays();
+  const cutoff = new Date(Date.now() - freeDays * dayMs).toISOString();
+  // Query with the SHORTEST retention of any plan — a superset of every plan's
+  // eligible rows — then apply each row's own plan cutoff below via isPurgeable.
+  const queryCutoff = new Date(Date.now() - Math.min(freeDays, paidDays) * dayMs).toISOString();
 
+  // `owner` embeds the users row via the vault_files.user_id FK. It is NOT NULL
+  // with ON DELETE CASCADE (migration 031), so unlike files there are no
+  // ownerless rows — a null here would mean a broken FK, and falls back to the
+  // free (shortest) window, which never promises retention nobody paid for.
   const { data, error } = await supabase
     .from('vault_files')
-    .select('id, r2_key, user_id, file_size')
+    .select('id, r2_key, user_id, file_size, deleted_at, owner:users!user_id(plan)')
     .not('deleted_at', 'is', null)
-    .lt('deleted_at', cutoff);
+    .lt('deleted_at', queryCutoff);
   if (error) throw error;
 
-  const rows = (data ?? []) as {
-    id: string;
-    r2_key: string;
-    user_id: string;
-    file_size: number;
-  }[];
+  const rows = ((data ?? []) as unknown[])
+    .map(
+      (r) =>
+        r as {
+          id: string;
+          r2_key: string;
+          user_id: string;
+          file_size: number;
+          deleted_at: string;
+          owner: { plan: string | null } | null;
+        },
+    )
+    .filter((row) =>
+      isPurgeable({ deleted_at: row.deleted_at, plan: row.owner?.plan }, new Date(), overrides),
+    );
   const result: VaultPurgeResult = {
     cutoff,
     scanned: rows.length,

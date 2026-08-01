@@ -1057,13 +1057,13 @@ export function createLegacyBox(
         return;
       }
       if (xhr.status === 401) clearSession();
-      reject(
-        new ApiError(
-          xhr.status,
-          typeof body?.error === 'string' ? body.error : `API error ${xhr.status}`,
-          typeof body?.code === 'string' ? body.code : undefined,
-        ),
-      );
+      // Through parseApiError, NOT a hand-rolled ApiError. The membership quota
+      // middleware answers `{ error: 'QUOTA_EXCEEDED', feature, limit, … }` —
+      // the code lives in `error` with no `code` field — so building the error
+      // here put that literal token in `message` and left `code`/`details`
+      // empty, which is how "QUOTA_EXCEEDED" ended up rendered on the create
+      // page. parseApiError promotes it to `code` and carries `feature` along.
+      reject(parseApiError(xhr.status, body));
     };
     const form = new FormData();
     form.append('title', input.title);

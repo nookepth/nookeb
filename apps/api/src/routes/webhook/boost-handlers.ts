@@ -1,7 +1,9 @@
 /**
  * บูธ (Group Boost) — the in-chat half of §3a.
  *
- * "type บูธ in any group → bot replies with inline group selector."
+ * "type หนูเก็บบูธ in any group → bot replies with inline group selector."
+ * The address prefix is REQUIRED (see the dispatcher in line.ts): บูธ is an
+ * ordinary Thai word, and the bare form made the bot interrupt normal chatter.
  *
  * LINE has no multi-select control, so the "checkbox picker with a max" is
  * rendered as quick replies: one button per group the user can act on, and the
@@ -86,7 +88,7 @@ function groupLabel(groupId: string, boosted: boolean): string {
 }
 
 /**
- * Handle the `บูธ` text command.
+ * Handle the `หนูเก็บบูธ` text command.
  *
  * In a GROUP: offers to boost/un-boost THIS group (the one the user is in) and
  * lists the slots already spent. In a 1-on-1: lists the boosts they currently
@@ -136,7 +138,7 @@ export async function handleBoostCommand(
     await reply(
       textWithQuickReplies(
         `บูธของพี่: ใช้ไป ${status.used}/${max} กลุ่มน้า\n${lines.join('\n')}\n\n` +
-          'พิมพ์ "บูธ" ในกลุ่มที่อยากบูธได้เลยน้า 🚀',
+          'พิมพ์ "หนูเก็บบูธ" ในกลุ่มที่อยากบูธได้เลยน้า 🚀',
         status.boosts.map((b) => ({
           label: `ปลดบูธ …${b.groupId.slice(-6)}`,
           data: `action=boost_off&groupId=${b.groupId}`,
@@ -164,7 +166,7 @@ export async function handleBoostCommand(
   } else {
     // Slots full — the spec's rule is "un-boost the current group first (or
     // replace if under limit)", so offer each occupied slot as the thing to
-    // free. The user then taps บูธ again.
+    // free. The user then types หนูเก็บบูธ again.
     for (const b of status.boosts) {
       items.push({
         label: `ปลด …${b.groupId.slice(-6)}`,

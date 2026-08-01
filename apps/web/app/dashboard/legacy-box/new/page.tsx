@@ -15,7 +15,7 @@ import {
 } from '@nookeb/shared';
 import { ApiError, createLegacyBox, hasSession } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
-import { flatten, getQuotaMessage } from '@/lib/quota-errors';
+import { messageForCode } from '@/lib/quota-errors';
 import { CheckBadgeIcon, OCCASION_ICONS } from './OccasionIcons';
 import { ShareActions } from './ShareActions';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -54,6 +54,18 @@ interface PickedPhoto {
 
 type Step = 1 | 2 | 3 | 4;
 
+/**
+ * Two-line error copy. `subtitle` is optional (unlike quota-errors' own
+ * QuotaMessage, where it is always present): a validation error like "รูปใหญ่
+ * เกิน 20 MB" already says what to do, and padding it with a second line of
+ * filler would only make the real advice on the quota errors read as noise.
+ * Every QuotaMessage is assignable to this.
+ */
+interface ErrorCopy {
+  title: string;
+  subtitle?: string;
+}
+
 let nextKey = 0;
 
 export default function NewLegacyBoxPage() {
@@ -78,7 +90,9 @@ export default function NewLegacyBoxPage() {
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [error, setError] = useState<string | null>(null);
+  // Two-line error copy: `title` is what went wrong, `subtitle` is the advice
+  // (only quota/plan rejections have any — see lib/quota-errors.ts).
+  const [error, setError] = useState<ErrorCopy | null>(null);
   const [created, setCreated] = useState<{ shareUrl: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -176,7 +190,7 @@ export default function NewLegacyBoxPage() {
         const accepted: PickedPhoto[] = [];
         for (const file of incoming.slice(0, Math.max(0, room))) {
           if (file.size > MAX_SOURCE_MB * 1024 * 1024) {
-            setError(`รูป "${file.name}" ใหญ่เกิน ${MAX_SOURCE_MB} MB น้า`);
+            setError({ title: `รูป "${file.name}" ใหญ่เกิน ${MAX_SOURCE_MB} MB น้า` });
             continue;
           }
           accepted.push({
@@ -185,7 +199,7 @@ export default function NewLegacyBoxPage() {
             previewUrl: URL.createObjectURL(file),
           });
         }
-        if (incoming.length > room) setError(`ใส่ได้สูงสุด ${MAX_PHOTOS} รูปน้า`);
+        if (incoming.length > room) setError({ title: `ใส่ได้สูงสุด ${MAX_PHOTOS} รูปน้า` });
         return [...prev, ...accepted];
       });
     },
@@ -236,18 +250,30 @@ export default function NewLegacyBoxPage() {
       //   409 → personal storage bytes — waiting will never help.
       // Telling a user out of disk space to "wait for the 1st" would be wrong.
       if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED' && err.status === 429) {
-        setError(flatten(getQuotaMessage(err.details?.feature ?? 'gift_boxes')));
+        // messageForCode owns the wording for every quota/plan code, so the bot
+        // and the web never describe the same limit two different ways.
+        setError(
+          messageForCode(err.code, { feature: err.details?.feature ?? 'gift_boxes' }) ?? {
+            title: 'สร้างกล่องไม่สำเร็จ ลองใหม่อีกทีน้า',
+          },
+        );
       } else if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
-        setError('พื้นที่ไม่เพียงพอ — ลบไฟล์เก่าหรือชวนเพื่อนเพิ่มพื้นที่ก่อนน้า');
+        setError({
+          title: 'พื้นที่ไม่พอแล้วน้า',
+          subtitle: 'ลบไฟล์เก่าหรือชวนเพื่อนเพื่อเพิ่มพื้นที่ก่อนน้า',
+        });
       } else if (err instanceof ApiError && err.code === 'BOX_LIMIT_REACHED') {
         // Live-box cap, not a monthly quota — the fix is deleting, not waiting.
-        setError('กล่องของขวัญที่เปิดอยู่ครบจำนวนแล้ว ลบกล่องเก่าก่อนน้า');
+        setError({
+          title: 'กล่องของขวัญที่เปิดอยู่ครบจำนวนแล้ว',
+          subtitle: 'ลบกล่องเก่าออกสักกล่องแล้วสร้างใหม่ได้เลยน้า',
+        });
       } else if (err instanceof ApiError && err.message && err.message !== `API error ${err.status}`) {
         // parseApiError blanks `message` when the body carried a bare machine
         // code, so this branch can no longer print e.g. "QUOTA_EXCEEDED".
-        setError(err.message);
+        setError({ title: err.message });
       } else {
-        setError('สร้างกล่องไม่สำเร็จ ลองใหม่อีกทีน้า');
+        setError({ title: 'สร้างกล่องไม่สำเร็จ ลองใหม่อีกทีน้า' });
       }
     } finally {
       setSubmitting(false);
@@ -501,7 +527,12 @@ export default function NewLegacyBoxPage() {
               </>
             )}
 
-            {error && <div className={styles.error}>{error}</div>}
+            {error && (
+              <div className={styles.error} role="alert">
+                <p className={styles.errorTitle}>{error.title}</p>
+                {error.subtitle && <p className={styles.errorHint}>{error.subtitle}</p>}
+              </div>
+            )}
 
             <div className={styles.navRow}>
               <button type="button" className={`${styles.navBtn} ${styles.backBtn}`} onClick={() => setStep(1)}>
@@ -678,7 +709,12 @@ export default function NewLegacyBoxPage() {
                 </div>
               </div>
             )}
-            {error && <div className={styles.error}>{error}</div>}
+            {error && (
+              <div className={styles.error} role="alert">
+                <p className={styles.errorTitle}>{error.title}</p>
+                {error.subtitle && <p className={styles.errorHint}>{error.subtitle}</p>}
+              </div>
+            )}
 
             <div className={styles.navRow}>
               <button

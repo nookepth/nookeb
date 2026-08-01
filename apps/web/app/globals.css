@@ -4123,6 +4123,12 @@ a.stat-chip {
   font-size: 0.78rem;
   color: var(--muted, #8a7f86);
 }
+/* Last day (or already at 0) — the countdown stops being background
+   information and becomes the reason to act, so it stops looking like it. */
+.vault-trash-days.is-urgent {
+  color: var(--color-error, #dc2626);
+  font-weight: 700;
+}
 
 .vault-trash-item .btn {
   flex-shrink: 0;

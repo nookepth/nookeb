@@ -16,7 +16,7 @@ import styles from './page.module.css';
  * therefore only offer "กลุ่ม …a1b2c3" — six characters of an opaque id — which
  * is not a choice anyone can make correctly.
  *
- * The in-chat `บูธ` command has the context the web lacks: it runs INSIDE the
+ * The in-chat `หนูเก็บบูธ` command has the context the web lacks: it runs INSIDE the
  * group being boosted, so the user never has to identify it. That command is
  * fully implemented (routes/webhook/boost-handlers.ts), so this page states the
  * real state and points at the path that works, rather than pretending a web
@@ -127,12 +127,12 @@ export default function BoostsPage() {
         <ol className={styles.steps}>
           <li>เปิดแชทกลุ่มที่อยากบูธ (ต้องมีหนูเก็บอยู่ในกลุ่มน้า)</li>
           <li>
-            พิมพ์ว่า <code className={styles.cmd}>บูธ</code>
+            พิมพ์ว่า <code className={styles.cmd}>หนูเก็บบูธ</code>
           </li>
           <li>หนูจะยืนยันให้ในแชทเลยน้า</li>
         </ol>
         <p className={styles.howtoNote}>
-          พิมพ์ <code className={styles.cmd}>บูธ</code> ในแชทส่วนตัวกับหนู
+          พิมพ์ <code className={styles.cmd}>หนูเก็บบูธ</code> ในแชทส่วนตัวกับหนู
           เพื่อดูหรือปลดบูธที่ใช้อยู่ได้น้า
         </p>
       </section>

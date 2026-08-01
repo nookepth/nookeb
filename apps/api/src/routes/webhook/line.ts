@@ -569,10 +569,11 @@ async function handleTextCommand(
     }
   }
 
-  // §3a — "บูธ" (group boost) selector. Deliberately reachable BARE in a group,
-  // like `ผูกทีม`, because the spec is explicit: "type บูธ in any group → bot
-  // replies with inline group selector". Prefixed still works everywhere.
-  if (isCmd(text, 'บูธ') && (prefixed || source.type === 'group' || source.type === 'room')) {
+  // §3a — "หนูเก็บบูธ" (group boost) selector. PREFIX REQUIRED, everywhere.
+  // The bare form used to work in groups (like `ผูกทีม`), but "บูธ" is a common
+  // enough Thai word that the bot spoke up in the middle of normal group chatter;
+  // requiring the address prefix puts it back in line with every other command.
+  if (prefixed && isCmd(text, 'บูธ')) {
     await handleBoostCommand(app, event, source, lineUserId);
     return;
   }

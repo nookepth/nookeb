@@ -576,7 +576,13 @@ export default function VaultPage() {
                     <span className="vault-trash-name" title={f.originalFilename}>
                       {f.originalFilename}
                     </span>
-                    <span className="vault-trash-days">
+                    {/* retentionDays / daysUntilPurge are computed server-side
+                        from the caller's plan (free 5 วัน, pro/premium 30) —
+                        never hard-coded here, or the countdown would drift from
+                        the purge that actually enforces it. */}
+                    <span
+                      className={`vault-trash-days${f.daysUntilPurge <= 1 ? ' is-urgent' : ''}`}
+                    >
                       เหลืออีก {f.daysUntilPurge} วัน
                     </span>
                     <button

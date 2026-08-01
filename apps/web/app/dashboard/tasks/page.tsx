@@ -18,6 +18,7 @@ import TaskStatsCard from './TaskStatsCard';
 import TaskActivitySummary from './TaskActivitySummary';
 import TaskListItem, { type TaskQuickActions } from './TaskListItem';
 import CreatePersonalTaskModal from './CreatePersonalTaskModal';
+import ExportUpgradeModal from './ExportUpgradeModal';
 import UserPlanBadge from './UserPlanBadge';
 import ProgressRing from './ProgressRing';
 import FilterSortBar from './FilterSortBar';
@@ -242,6 +243,7 @@ export default function TasksPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [toast, setToast] = useState<{ msg: string; ok?: boolean } | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -270,6 +272,15 @@ export default function TasksPage() {
   }, []);
 
   /**
+   * Is Export behind the plan gate for this viewer? Mirrors
+   * FEATURE_ACCESS.export_task_summary in apps/api/src/config/plans.ts (free
+   * false, pro/premium true) — expressed as "free is locked" rather than a list
+   * of allowed tiers, so a future tier is never accidentally locked out.
+   * Undefined `me` (profile fetch failed) reads as unlocked; see handleExport.
+   */
+  const exportLocked = me?.plan === 'free';
+
+  /**
    * Export every task the user can see — deliberately NOT the current
    * tab/filter selection. Those are browsing aids (scope chips, an "เกินกำหนด"
    * tab); a downloaded report that silently omitted rows because a chip was
@@ -277,6 +288,17 @@ export default function TasksPage() {
    */
   async function handleExport(): Promise<void> {
     if (exporting) return;
+    // §14 — Export is Pro and above. The server gate (planGuard) is the real
+    // boundary and stays untouched, but it can only answer 403 JSON — and the
+    // download below is a TOP-LEVEL navigation, so that JSON would replace the
+    // whole page with `{"error":"PLAN_UPGRADE_REQUIRED"}` on white. So a free
+    // user never starts the navigation: they get the upgrade modal instead.
+    // `me` is best-effort (see the load effect); if it never arrived we let the
+    // navigation happen rather than block a paying user on a missing profile.
+    if (exportLocked) {
+      setUpgradeOpen(true);
+      return;
+    }
     setExporting(true);
     try {
       // Auth is the HttpOnly session cookie (app-signed JWT) — client JS cannot
@@ -734,6 +756,7 @@ export default function TasksPage() {
                   onSort={changeSort}
                   onExport={() => void handleExport()}
                   exporting={exporting}
+                  exportLocked={exportLocked}
                 />
                 <div className={styles.tabs} role="tablist">
                   {TABS.map((t) => (
@@ -861,6 +884,9 @@ export default function TasksPage() {
           }}
         />
       )}
+
+      {/* H2. Export Excel plan gate — shown instead of the 403 JSON page */}
+      {upgradeOpen && <ExportUpgradeModal onClose={() => setUpgradeOpen(false)} />}
 
       {/* I. postpone-deadline modal (quick action) */}
       {postponeTask && (

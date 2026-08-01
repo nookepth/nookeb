@@ -810,6 +810,17 @@
   color: #a33;
   margin-top: 14px;
 }
+/* Two-line error copy: what happened, then what to do about it. Quota and
+   plan rejections carry the second line; simple validation errors don't. */
+.errorTitle {
+  margin: 0;
+  font-weight: 600;
+}
+.errorHint {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #8a6b6b;
+}
 
 /* ---------- success state ---------- */
 

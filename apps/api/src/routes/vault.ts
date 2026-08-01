@@ -42,6 +42,8 @@ import {
 } from '../services/vault.service';
 import { countVaultFiles, evaluateCapacity } from '../services/quota.service';
 import { ensurePlan } from '../middleware/planGuard';
+import { retentionDaysForPlan } from '../jobs/trashCleanup.job';
+import type { Plan } from '../config/plans';
 
 /**
  * ห้องนิรภัย (Vault) — PIN-protected, view-only, per-user encrypted store.
@@ -87,14 +89,27 @@ const idParamSchema = z.string().uuid();
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Whole days until the daily purge hard-deletes this vault row. Mirrors the
- * general trash bin's `daysUntilPurge`, but reads VAULT_PURGE_RETENTION_DAYS —
- * the vault has its OWN window (30 days by default), independent of the
- * plan-aware file retention, because the purge treats vault rows separately.
+ * Whole days until the daily purge hard-deletes this vault row.
+ *
+ * `retentionDays` is PLAN-AWARE (see vaultRetentionDaysFor): free 5, paid 30.
+ * It used to be a flat VAULT_PURGE_RETENTION_DAYS for everyone, so a free user
+ * was told "เหลืออีก 30 วัน" for a file the purge would take on day 5 — the
+ * worst direction for a countdown to be wrong in.
  */
 function daysUntilVaultPurge(deletedAt: string, retentionDays: number): number {
   const purgeAt = new Date(deletedAt).getTime() + retentionDays * DAY_MS;
   return Math.max(0, Math.ceil((purgeAt - Date.now()) / DAY_MS));
+}
+
+/**
+ * The vault trash window for a plan. Must stay in lockstep with
+ * purgeDeletedVaultFiles — the countdown this route reports and the sweep that
+ * enforces it are the same policy seen from two sides, so both read
+ * `retentionDaysForPlan` (config/plans.ts §12) and both let
+ * VAULT_PURGE_RETENTION_DAYS override the PAID window only.
+ */
+function vaultRetentionDaysFor(plan: Plan): number {
+  return retentionDaysForPlan(plan, { paid: config.VAULT_PURGE_RETENTION_DAYS });
 }
 
 const ARGON2_OPTIONS = {
@@ -596,17 +611,16 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
   // destructive and revealing actions (delete, view bytes); listing names the
   // user already unlocked to see is what the unlock session is for.
   app.get('/vault/trash', guarded, async (request) => {
-    const rows = await listDeletedVaultFiles(
-      app.supabase,
-      request.authUser!.userId,
-      config.VAULT_PURGE_RETENTION_DAYS,
-    );
+    // §12 — the window depends on the MEMBERSHIP plan (free 5 / pro 30 /
+    // premium 30), not on vault_plan (which is only the premium access gate).
+    const retentionDays = vaultRetentionDaysFor(await ensurePlan(request));
+    const rows = await listDeletedVaultFiles(app.supabase, request.authUser!.userId, retentionDays);
     return {
-      retentionDays: config.VAULT_PURGE_RETENTION_DAYS,
+      retentionDays,
       files: rows.map((row) => ({
         ...toVaultFileDto(row),
         deletedAt: row.deleted_at,
-        daysUntilPurge: daysUntilVaultPurge(row.deleted_at!, config.VAULT_PURGE_RETENTION_DAYS),
+        daysUntilPurge: daysUntilVaultPurge(row.deleted_at!, retentionDays),
       })),
     };
   });

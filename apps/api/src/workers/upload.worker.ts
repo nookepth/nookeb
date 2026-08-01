@@ -1863,12 +1863,15 @@ async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
     console.error('[upload.worker] purge: diary sweep failed:', err);
   }
 
-  // Vault files (migration 031): after their own longer retention window the
-  // R2 ciphertext AND the row are removed (vault-scoped deviation from rule 6
-  // — see purgeDeletedVaultFiles). Best-effort like the diary sweep.
+  // Vault files (migration 031): after the retention window the R2 ciphertext
+  // AND the row are removed (vault-scoped deviation from rule 6 — see
+  // purgeDeletedVaultFiles). PLAN-AWARE like the general trash: free gets the
+  // 5-day window from config/plans.ts, paid tiers keep the vault's own longer
+  // one (VAULT_PURGE_RETENTION_DAYS, 30 by default).
+  // Best-effort like the diary sweep.
   try {
     const vaultSweep = await purgeDeletedVaultFiles(supabase, r2, {
-      retentionDays: config.VAULT_PURGE_RETENTION_DAYS,
+      retentionDaysPro: config.VAULT_PURGE_RETENTION_DAYS,
       apply: true,
     });
     console.log(

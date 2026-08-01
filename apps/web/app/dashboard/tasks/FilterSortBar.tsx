@@ -20,6 +20,15 @@ function DownloadIcon({ size = 14 }: { size?: number }) {
   );
 }
 
+function LockIcon({ size = 12 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
+      <rect x="4.5" y="10.5" width="15" height="9.5" rx="2.2" stroke="currentColor" strokeWidth="2.2" />
+      <path d="M8 10.5V7.8a4 4 0 0 1 8 0v2.7" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 /** Scope-filter chips + sort dropdown + Excel export. Selection persists in
  * sessionStorage (handled by the page). Chips scroll horizontally at 375px. */
 export default function FilterSortBar({
@@ -29,6 +38,7 @@ export default function FilterSortBar({
   onSort,
   onExport,
   exporting = false,
+  exportLocked = false,
 }: {
   filter: TaskFilter;
   sort: TaskSort;
@@ -36,6 +46,9 @@ export default function FilterSortBar({
   onSort: (s: TaskSort) => void;
   onExport?: () => void;
   exporting?: boolean;
+  /** Free tier — the button stays tappable and explains the gate (see
+   *  ExportUpgradeModal); it is never hidden, so the feature is discoverable. */
+  exportLocked?: boolean;
 }) {
   return (
     <div className={styles.filterBar}>
@@ -76,10 +89,19 @@ export default function FilterSortBar({
             className={styles.exportBtn}
             onClick={onExport}
             disabled={exporting}
-            aria-label="ดาวน์โหลดงานเป็นไฟล์ Excel"
+            aria-label={
+              exportLocked
+                ? 'ดาวน์โหลดงานเป็นไฟล์ Excel (ต้องใช้แพลน Pro ขึ้นไป)'
+                : 'ดาวน์โหลดงานเป็นไฟล์ Excel'
+            }
           >
             <DownloadIcon />
             {exporting ? 'กำลังสร้างไฟล์...' : 'Export Excel'}
+            {exportLocked && !exporting && (
+              <span className={styles.exportLock}>
+                <LockIcon />
+              </span>
+            )}
           </button>
         )}
       </div>
