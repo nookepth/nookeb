@@ -12,6 +12,8 @@ import {
   SUPPORT_SLA_HOURS,
   TRASH_RETENTION_DAYS,
   UNLIMITED,
+  DIARY_ADDON_GIFT_BOX_QUOTA,
+  effectiveMonthlyLimit,
   hasFeature,
   isUnlimited,
   limitFor,
@@ -295,6 +297,46 @@ describe('§4c / §14 / §15 / §16 feature gates', () => {
 describe('§12 trash retention', () => {
   it('keeps free 5 days and both paid plans 30', () => {
     assert.deepEqual(TRASH_RETENTION_DAYS, { free: 5, pro: 30, premium: 30 });
+  });
+});
+
+describe('หนูเก็บความทรงจำ add-on: gift box floor', () => {
+  it('raises free and pro up to 15 gift boxes a month', () => {
+    assert.equal(DIARY_ADDON_GIFT_BOX_QUOTA, 15);
+    assert.equal(effectiveMonthlyLimit('free', 'gift_boxes', { diaryAddon: true }), 15);
+    assert.equal(effectiveMonthlyLimit('pro', 'gift_boxes', { diaryAddon: true }), 15);
+  });
+
+  // The whole point of a FLOOR: buying an add-on must never cut a paid tier's
+  // allowance (premium's 30) down to the add-on's number.
+  it('never lowers a plan that already exceeds the floor', () => {
+    assert.equal(effectiveMonthlyLimit('premium', 'gift_boxes', { diaryAddon: true }), 30);
+  });
+
+  it('leaves every other feature and every non-holder untouched', () => {
+    for (const plan of PLANS) {
+      for (const feature of MONTHLY_FEATURES) {
+        assert.equal(
+          effectiveMonthlyLimit(plan, feature),
+          MONTHLY_QUOTAS[feature][plan],
+          `${plan}/${feature} changed without the add-on`,
+        );
+      }
+      // Holding it must move gift_boxes and nothing else.
+      for (const feature of MONTHLY_FEATURES) {
+        if (feature === 'gift_boxes') continue;
+        assert.equal(
+          effectiveMonthlyLimit(plan, feature, { diaryAddon: true }),
+          MONTHLY_QUOTAS[feature][plan],
+          `${plan}/${feature} moved for an add-on holder`,
+        );
+      }
+    }
+  });
+
+  it('leaves an unlimited limit unlimited', () => {
+    // diary_reminders is UNLIMITED on paid plans; a floor must not cap it.
+    assert.ok(isUnlimited(effectiveMonthlyLimit('pro', 'diary_reminders', { diaryAddon: true })));
   });
 });
 

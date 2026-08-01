@@ -35,6 +35,7 @@ import {
 } from '../../services/task-confirm';
 import { logEvent } from '../../services/events.service';
 import { config } from '../../config';
+import { normalizePlan } from '../../config/plans';
 import { enqueueSheetsSync } from '../../services/sheetsQueue';
 
 /**
@@ -161,14 +162,22 @@ function isBareCommand(rawText: string): boolean {
   );
 }
 
+/**
+ * "Is this a paid tier?" for the เตือน N ครั้ง gate.
+ *
+ * Goes through normalizePlan rather than comparing strings: the old
+ * `plan === 'pro' || plan === 'team'` test predated 'premium' and denied the
+ * TOP tier a feature the middle one had. normalizePlan also folds legacy 'team'
+ * into premium and any unknown value down to free, so an unrecognised plan can
+ * never unlock this.
+ */
 async function resolvePlanIsPro(app: FastifyInstance, lineUserId: string): Promise<boolean> {
   const { data } = await app.supabase
     .from('users')
     .select('plan')
     .eq('line_user_id', lineUserId)
     .maybeSingle();
-  const plan = (data as { plan?: string } | null)?.plan;
-  return plan === 'pro' || plan === 'team';
+  return normalizePlan((data as { plan?: string } | null)?.plan) !== 'free';
 }
 
 /**

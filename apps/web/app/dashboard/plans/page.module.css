@@ -337,16 +337,103 @@
   background: var(--color-border);
 }
 
-/* Narrower than a plan card and centred: one offer, not a comparison. */
+/* FULL-WIDTH and HORIZONTAL: the offer reads as a band under the comparison
+   grid rather than a fourth (narrower) tier card. Two tracks — identity/price
+   left, features + CTA right — collapsing to one stacked column below 720px,
+   where side-by-side would squeeze both halves. */
 .addonCard {
-  max-width: 420px;
-  margin: 0 auto;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 2fr 3fr; /* 40 / 60 */
+  gap: 24px;
+  align-items: center;
+  padding: 24px;
+}
+
+@media (max-width: 720px) {
+  .addonCard {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+.addonIdentity {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The "เสริมพลังพิเศษ" pill inside the card. The band's divider carries the
+   same words above; here it labels the offer itself once the card is wide. */
+.addonBadge {
+  align-self: flex-start;
+  margin-bottom: 8px;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: var(--font-size-xs);
+  font-weight: 600;
 }
 
 .addonTagline {
   margin: -4px 0 10px;
   font-size: var(--font-size-sm);
   color: var(--color-text-secondary);
+}
+
+.addonOffer {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Two columns of features. No top border/flex:1 here (unlike .featureList in a
+   tier card) — this list sits beside the price, not under a header rule. */
+.addonFeatures {
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 18px;
+}
+
+@media (max-width: 560px) {
+  .addonFeatures {
+    grid-template-columns: 1fr;
+  }
+}
+
+.addonFeatures li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+}
+
+/* Bullet as a shape, not an emoji — brand rule (no emoji anywhere in the UI). */
+.addonFeatures li::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;
+  border-radius: 50%;
+  background: var(--color-primary);
+}
+
+/* The CTA fills a tier card's width; here it hugs its label so it does not
+   stretch across the whole 60 % track. */
+.addonCta {
+  align-self: flex-start;
+  width: auto;
+}
+
+@media (max-width: 720px) {
+  .addonCta {
+    align-self: stretch;
+    width: 100%;
+  }
 }
 
 /* ---------- subscriber settings ---------- */

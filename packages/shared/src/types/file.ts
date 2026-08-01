@@ -99,8 +99,12 @@ export interface TrashListResponse {
   total: number;
   page: number;
   limit: number;
-  /** trash retention plan bucket — 'pro' covers the 'team' plan too */
-  plan: 'free' | 'pro';
+  /**
+   * the caller's normalised membership plan — legacy 'team' rows arrive as
+   * 'premium'. Anything other than 'free' gets the paid retention window, so
+   * the UI must never test for 'pro' alone.
+   */
+  plan: 'free' | 'pro' | 'premium';
   /** effective retention window in days for this user's plan */
   retentionDays: number;
 }

@@ -18,6 +18,7 @@ import {
 import { periodResetAtIso } from '../config/billing-period';
 import { changePlan, getMembership } from '../services/membership.service';
 import { listMonthlyQuotas } from '../services/quota.service';
+import { isActiveSubscriber } from '../services/diaryAddon.service';
 import { ensurePlan } from '../middleware/planGuard';
 
 const changePlanSchema = z.object({
@@ -55,10 +56,15 @@ const plansRoutes: FastifyPluginAsync = async (app) => {
   // page has no write side effects.
   app.get('/plans/me/quotas', { preHandler: app.authenticate }, async (request) => {
     const plan = await ensurePlan(request);
+    // Add-ons can RAISE a limit (หนูเก็บความทรงจำ floors gift_boxes at 15), so
+    // this display path must resolve them exactly like the enforcing path in
+    // quotaCheck does — otherwise the account page and the 429 disagree.
+    const diaryAddon = await isActiveSubscriber(app.supabase, request.authUser!.userId);
     const quotas = await listMonthlyQuotas(app.supabase, {
       userId: request.authUser!.userId,
       plan,
       features: MONTHLY_FEATURES,
+      addons: { diaryAddon },
     });
     return {
       plan,

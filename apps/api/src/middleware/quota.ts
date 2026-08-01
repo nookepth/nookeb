@@ -23,8 +23,9 @@
 
 import type { FastifyInstance, FastifyReply, FastifyRequest, preHandlerHookHandler } from 'fastify';
 import fp from 'fastify-plugin';
-import type { MonthlyFeature } from '../config/plans';
+import type { AddonContext, MonthlyFeature } from '../config/plans';
 import { consumeQuota, quotaExceededPayload, releaseQuota } from '../services/quota.service';
+import { isActiveSubscriber } from '../services/diaryAddon.service';
 import { ensurePlan } from './planGuard';
 
 /** A reservation held for the duration of one request. */
@@ -62,6 +63,13 @@ export interface QuotaCheckOptions {
    * handler already committed before failing.
    */
   releaseOnError?: boolean;
+  /**
+   * Look the caller's หนูเก็บความทรงจำ subscription up and let it raise the
+   * limit (see effectiveMonthlyLimit). Costs one extra SELECT, so it is opt-in
+   * per route rather than global — only `gift_boxes` is affected today, and
+   * every other quota check must not pay for it.
+   */
+  honorDiaryAddon?: boolean;
 }
 
 // --- Common scope resolvers -------------------------------------------------
@@ -125,12 +133,24 @@ export function quotaCheck(
     }
     const units = Number.isFinite(amount) && amount >= 0 ? Math.floor(amount) : 1;
 
+    // A failed add-on lookup must not fail the request: fall back to "holds
+    // none", which enforces the bare plan limit. Wrong in the safe direction.
+    let addons: AddonContext | undefined;
+    if (options.honorDiaryAddon) {
+      try {
+        addons = { diaryAddon: await isActiveSubscriber(request.server.supabase, auth.userId) };
+      } catch (err) {
+        request.log.error({ err, feature }, 'quotaCheck: diary add-on lookup failed');
+      }
+    }
+
     const decision = await consumeQuota(request.server.supabase, {
       userId: auth.userId,
       feature,
       plan,
       scopeId,
       amount: units,
+      addons,
     });
 
     if (!decision.allowed) {

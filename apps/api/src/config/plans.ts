@@ -341,6 +341,43 @@ export function diaryAddonPrice(cycle: BillingCycle): number {
   return cycle === 'monthly' ? DIARY_ADDON_PRICE.monthly : DIARY_ADDON_PRICE.yearly;
 }
 
+/**
+ * กล่องของขวัญ 15 กล่อง/เดือน — a perk bundled with the add-on.
+ *
+ * A FLOOR, never a replacement: see effectiveMonthlyLimit. The add-on lifts a
+ * free (3) or pro (10) holder up to 15; a premium holder keeps their 30, because
+ * an add-on that DOWNGRADED a paid tier's quota would be the worst possible
+ * outcome of buying it.
+ */
+export const DIARY_ADDON_GIFT_BOX_QUOTA = 15;
+
+/** Add-ons a user may hold, as far as quota resolution is concerned. */
+export interface AddonContext {
+  /** Holder of a LIVE หนูเก็บความทรงจำ subscription (status active + unexpired). */
+  diaryAddon?: boolean;
+}
+
+/**
+ * The monthly limit a user actually gets: their plan's limit, raised by any
+ * add-on floor they hold.
+ *
+ * EVERY quota read/reserve goes through this, not through limitFor directly, so
+ * the enforced limit and the limit the account page displays can never disagree.
+ * UNLIMITED (-1) always wins — an add-on floor must not cap an uncapped plan.
+ */
+export function effectiveMonthlyLimit(
+  plan: Plan,
+  feature: MonthlyFeature,
+  addons?: AddonContext,
+): number {
+  const base = MONTHLY_QUOTAS[feature][plan];
+  if (isUnlimited(base)) return base;
+  if (feature === 'gift_boxes' && addons?.diaryAddon) {
+    return Math.max(base, DIARY_ADDON_GIFT_BOX_QUOTA);
+  }
+  return base;
+}
+
 // ---------------------------------------------------------------------------
 // Retention + support (§12, §18)
 // ---------------------------------------------------------------------------

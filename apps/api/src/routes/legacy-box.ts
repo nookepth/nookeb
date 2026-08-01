@@ -19,7 +19,7 @@ import {
   voiceExtensionFor,
 } from '@nookeb/shared';
 import { logEvent } from '../services/events.service';
-import { quotaCheck } from '../middleware/quota';
+import { quotaCheck, userScope } from '../middleware/quota';
 import { presignedGetUrl, uploadStream, deleteObject } from '../services/r2.service';
 import { adjustStorageUsed, incrementPersonalStorage } from '../services/file.service';
 import {
@@ -145,8 +145,12 @@ const legacyBoxRoutes: FastifyPluginAsync = async (app) => {
   // the middleware and auto-released if this handler answers 4xx. That is
   // separate from MAX_BOXES_PER_USER below, which caps how many boxes may be
   // LIVE at once regardless of plan — a user can hit either one first.
+  //
+  // honorDiaryAddon: a หนูเก็บความทรงจำ holder gets a FLOOR of 15/month here
+  // (so free 3 → 15, pro 10 → 15, premium keeps 30). This is the only route
+  // that spends gift_boxes, so it is the only one that needs the flag.
   app.post('/legacy-box', {
-    preHandler: quotaCheck('gift_boxes'),
+    preHandler: quotaCheck('gift_boxes', userScope, { honorDiaryAddon: true }),
     config: { rateLimit: { max: 10, timeWindow: '1 minute' } },
   }, async (request, reply) => {
     const userId = request.authUser!.userId;

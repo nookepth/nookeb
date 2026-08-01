@@ -1643,6 +1643,12 @@ export interface DiaryAddonStatusResponse {
   /** THE prices. A component must never write 49 or 365 itself. */
   pricing: { monthly: number; yearly: number };
   currency: string;
+  /**
+   * กล่องของขวัญ/เดือน the add-on guarantees. A FLOOR, not a replacement — a
+   * premium holder keeps their higher plan quota, so never present this as the
+   * user's own limit, only as what the add-on includes.
+   */
+  giftBoxQuota: number;
   active: boolean;
   subscription: DiaryAddonSubscriptionDto | null;
 }

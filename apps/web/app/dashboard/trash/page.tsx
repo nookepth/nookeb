@@ -163,7 +163,11 @@ export default function TrashPage() {
             <TrashIcon size={26} />
           </span>
           ถังขยะ{data ? ` (${data.total} ไฟล์)` : ''}
-          {data?.plan === 'pro' && <span className="trash-pro-badge">Pro — เก็บไว้ {retentionDays} วัน</span>}
+          {/* Any PAID plan earns the badge — testing for 'pro' alone hid it from
+              premium users, who get the same 30-day window. */}
+          {data && data.plan !== 'free' && (
+            <span className="trash-pro-badge">เก็บไว้ {retentionDays} วัน</span>
+          )}
         </h1>
         <p className="trash-hint">ไฟล์ที่ลบจะอยู่ที่นี่ {retentionDays} วันก่อนถูกลบถาวร</p>
       </header>

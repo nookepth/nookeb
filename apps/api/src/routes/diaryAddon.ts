@@ -17,6 +17,7 @@ import {
   DIARY_ADDON_ENABLED,
   DIARY_ADDON_PRICE,
   DIARY_ADDON_DISPLAY_NAME,
+  DIARY_ADDON_GIFT_BOX_QUOTA,
 } from '../config/plans';
 import {
   InvalidNotifyTimeError,
@@ -74,6 +75,10 @@ const diaryAddonRoutes: FastifyPluginAsync = async (app) => {
       enabled: DIARY_ADDON_ENABLED,
       pricing: DIARY_ADDON_PRICE,
       currency: 'THB',
+      // The perk the add-on bundles, so the plans page renders the number the
+      // server actually enforces (a FLOOR — see effectiveMonthlyLimit) rather
+      // than a literal in a component.
+      giftBoxQuota: DIARY_ADDON_GIFT_BOX_QUOTA,
       active,
       subscription: subscription ? toDto(subscription, now) : null,
     };

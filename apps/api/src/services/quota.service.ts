@@ -23,9 +23,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import {
   CAPACITY_LIMITS,
+  effectiveMonthlyLimit,
   isUnlimited,
-  limitFor,
   normalizePlan,
+  type AddonContext,
   type CapacityFeature,
   type MonthlyFeature,
   type Plan,
@@ -181,6 +182,12 @@ export interface QuotaArgs {
   scopeId?: string;
   amount?: number;
   now?: Date;
+  /**
+   * Add-ons the caller holds. Omitted = holds none, which is the safe default:
+   * a caller that forgets to pass it enforces the bare plan limit rather than
+   * silently handing out an add-on's allowance.
+   */
+  addons?: AddonContext;
 }
 
 /**
@@ -195,7 +202,7 @@ export async function getQuota(
   const now = args.now ?? new Date();
   const scopeId = args.scopeId ?? GLOBAL_SCOPE;
   const periodStart = currentPeriodStart(now);
-  const limit = limitFor(args.plan, args.feature);
+  const limit = effectiveMonthlyLimit(args.plan, args.feature, args.addons);
 
   const { data, error } = await supabase
     .from('user_quotas')
@@ -233,7 +240,7 @@ export async function consumeQuota(
   const now = args.now ?? new Date();
   const scopeId = args.scopeId ?? GLOBAL_SCOPE;
   const periodStart = currentPeriodStart(now);
-  const limit = limitFor(args.plan, args.feature);
+  const limit = effectiveMonthlyLimit(args.plan, args.feature, args.addons);
   const amount = args.amount ?? 1;
 
   if (amount <= 0) {
@@ -358,7 +365,13 @@ export async function countVaultFiles(
  */
 export async function listMonthlyQuotas(
   supabase: SupabaseClient,
-  args: { userId: string; plan: Plan; features: readonly MonthlyFeature[]; now?: Date },
+  args: {
+    userId: string;
+    plan: Plan;
+    features: readonly MonthlyFeature[];
+    now?: Date;
+    addons?: AddonContext;
+  },
 ): Promise<QuotaState[]> {
   const now = args.now ?? new Date();
   const periodStart = currentPeriodStart(now);
@@ -385,7 +398,7 @@ export async function listMonthlyQuotas(
     toState({
       feature,
       scopeId: GLOBAL_SCOPE,
-      limit: limitFor(args.plan, feature),
+      limit: effectiveMonthlyLimit(args.plan, feature, args.addons),
       used: usedByFeature.get(feature) ?? 0,
       periodStart,
       now,

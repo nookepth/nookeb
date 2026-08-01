@@ -2,6 +2,8 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { FileRecord, TrashFileDto, TrashListResponse } from '@nookeb/shared';
 import { config } from '../config';
+import { normalizePlan, type Plan } from '../config/plans';
+import { retentionDaysForPlan } from '../jobs/trashCleanup.job';
 import { presignedGetUrl } from '../services/r2.service';
 import { incrementPersonalStorage } from '../services/file.service';
 import { incrementTeamStorage, StorageQuotaError } from '../services/team.service';
@@ -13,7 +15,9 @@ import { logEvent } from '../services/events.service';
  * soft-deleted row whose R2 object the daily purge hasn't removed yet
  * (`deleted_at IS NOT NULL AND purged_at IS NULL`); these routes let the web
  * dashboard list, restore, and manually purge them within the retention window
- * (free: PURGE_RETENTION_DAYS, pro/team plan: TRASH_RETENTION_DAYS_PRO).
+ * (§12 — free 5 days, pro/premium 30; see jobs/trashCleanup.job.ts, which the
+ * purge sweep reads too, with PURGE_RETENTION_DAYS / TRASH_RETENTION_DAYS_PRO
+ * as the free/paid env overrides).
  *
  * All routes are scoped to the UPLOADER (uploaded_by = the authenticated user)
  * — deliberately NOT space membership: a teammate must never restore or purge
@@ -45,19 +49,31 @@ function daysUntilPurge(deletedAt: string, retentionDays: number): number {
 const trashRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', app.authenticate);
 
-  /** The user's effective trash retention (their `users.plan` decides the window). */
-  async function getRetention(userId: string): Promise<{ plan: 'free' | 'pro'; retentionDays: number }> {
+  /**
+   * The user's effective trash retention (their `users.plan` decides the window).
+   *
+   * Goes through normalizePlan + retentionDaysForPlan — the SAME policy module
+   * the purge job uses. The previous local `plan === 'pro' || plan === 'team'`
+   * test predated the 'premium' tier and quietly told every premium user their
+   * files were kept 5 days, while the purge actually kept them 30: the
+   * countdown, the upsell banner and the sweep all disagreed.
+   */
+  async function getRetention(userId: string): Promise<{ plan: Plan; retentionDays: number }> {
     const { data, error } = await app.supabase
       .from('users')
       .select('plan')
       .eq('id', userId)
       .maybeSingle();
     if (error) throw error;
-    const plan = (data as { plan: string | null } | null)?.plan;
-    const isPro = plan === 'pro' || plan === 'team';
+    const plan = normalizePlan((data as { plan: string | null } | null)?.plan);
     return {
-      plan: isPro ? 'pro' : 'free',
-      retentionDays: isPro ? config.TRASH_RETENTION_DAYS_PRO : config.PURGE_RETENTION_DAYS,
+      plan,
+      // The env pair overrides free/paid together, exactly as the purge does —
+      // the reported countdown and the sweep must read one policy.
+      retentionDays: retentionDaysForPlan(plan, {
+        free: config.PURGE_RETENTION_DAYS,
+        paid: config.TRASH_RETENTION_DAYS_PRO,
+      }),
     };
   }
 
