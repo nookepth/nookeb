@@ -55,8 +55,21 @@ export function toDiaryEntryDto(e: DiaryEntryRecord): DiaryEntryDto {
 export interface DiaryNotificationSettingsDto {
   /** 'HH:MM' (seconds dropped for the web time picker) */
   notifyTime: string;
+  /**
+   * The IN-APP dashboard banner (migration 028). Default TRUE — it costs
+   * nothing and only renders on a page the user already opened.
+   */
   isEnabled: boolean;
   timezone: string;
+  /**
+   * LINE PUSH opt-in (migration 053). Default FALSE, and the ONLY thing that
+   * authorises a diary push: no sweep may message a user whose value is false,
+   * including a user with no settings row at all.
+   *
+   * Deliberately separate from `isEnabled` — see the header of
+   * 053_diary_push_optin.sql for why the banner flag could not be reused.
+   */
+  notificationEnabled: boolean;
 }
 
 export interface DiaryStreakResponse {

@@ -1,7 +1,12 @@
 import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { runDiaryAddonSweep, buildDiaryAddonReminderCard } from './diaryReminder.job';
+import {
+  runDiaryAddonSweep,
+  buildDiaryAddonReminderCard,
+  hourInTimezone,
+  isDueThisHour,
+} from './diaryReminder.job';
 import type { DiaryAddonSubscriptionRecord } from '../services/diaryAddon.service';
 
 /**
@@ -29,6 +34,12 @@ interface Scenario {
   wroteToday: Set<string>;
   /** user ids whose per-user re-check should report a live subscription */
   live: Set<string>;
+  /**
+   * user ids with diary_notification_settings.notification_enabled = TRUE
+   * (migration 053). Defaults to "every due subscriber", since buying the
+   * add-on sets the flag — the opt-out cases pass a narrower set explicitly.
+   */
+  optedIn: Set<string>;
 }
 
 interface Recorded {
@@ -120,6 +131,27 @@ function fakeSupabase(scenario: Scenario, rec: Recorded): SupabaseClient {
         };
       }
 
+      if (table === 'diary_notification_settings') {
+        // listPushOptedInUserIds: .select('user_id').in(...).eq('notification_enabled', true)
+        return {
+          select: () => {
+            let ids: string[] = [];
+            const api: Record<string, unknown> = {
+              in(_col: string, values: string[]) {
+                ids = values;
+                return api;
+              },
+              eq: () =>
+                Promise.resolve({
+                  data: ids.filter((id) => scenario.optedIn.has(id)).map((id) => ({ user_id: id })),
+                  error: null,
+                }),
+            };
+            return api;
+          },
+        };
+      }
+
       if (table === 'diary_addon_logs') {
         return {
           insert: (values: Record<string, unknown>) => {
@@ -159,6 +191,7 @@ function run(scenario: Partial<Scenario>, over: { enabled?: boolean; failFor?: s
     lineIds: scenario.lineIds ?? {},
     wroteToday: scenario.wroteToday ?? new Set(),
     live: scenario.live ?? new Set((scenario.due ?? []).map((s) => s.user_id)),
+    optedIn: scenario.optedIn ?? new Set((scenario.due ?? []).map((s) => s.user_id)),
   };
   return runDiaryAddonSweep(fakeSupabase(full, rec), {
     enabled: over.enabled ?? true,
@@ -196,6 +229,7 @@ describe('runDiaryAddonSweep — master switch', () => {
       skippedWroteToday: 0,
       skippedExpired: 0,
       skippedAlreadyLogged: 0,
+      skippedNotOptedIn: 0,
       failed: 0,
     });
   });
@@ -321,6 +355,44 @@ describe('runDiaryAddonSweep — isolation between users', () => {
   });
 });
 
+describe('runDiaryAddonSweep — push opt-in (migration 053)', () => {
+  it('sends nothing to a subscriber who switched the toggle off', async () => {
+    const result = await run({
+      due: [sub('u1')],
+      lineIds: { u1: 'U1' },
+      optedIn: new Set(),
+    });
+
+    assert.equal(result.candidates, 1);
+    assert.equal(result.sent, 0);
+    assert.equal(result.skippedNotOptedIn, 1);
+    assert.deepEqual(rec.pushes, []);
+  });
+
+  it('does not burn the day on an opt-out, so turning it back on still works', async () => {
+    // diary_addon_logs' UNIQUE(user_id, date) is the day's idempotency key: a
+    // log row written for "not opted in" would block the nudge for the rest of
+    // the day even after the user re-enabled it.
+    await run({ due: [sub('u1')], lineIds: { u1: 'U1' }, optedIn: new Set() });
+    assert.deepEqual(rec.logs, []);
+  });
+
+  it('nudges the opted-in subscriber and skips the opted-out one in the same run', async () => {
+    const result = await run({
+      due: [sub('u1'), sub('u2')],
+      lineIds: { u1: 'U1', u2: 'U2' },
+      optedIn: new Set(['u2']),
+    });
+
+    assert.equal(result.sent, 1);
+    assert.equal(result.skippedNotOptedIn, 1);
+    assert.deepEqual(
+      rec.pushes.map((p) => p.to),
+      ['U2'],
+    );
+  });
+});
+
 describe('buildDiaryAddonReminderCard', () => {
   it('carries the Thai copy and a diary deep link', () => {
     const card = buildDiaryAddonReminderCard('https://example.test');
@@ -339,5 +411,63 @@ describe('buildDiaryAddonReminderCard', () => {
   it('contains no emoji (brand rule 13)', () => {
     const json = JSON.stringify(buildDiaryAddonReminderCard('https://example.test'));
     assert.equal(/\p{Extended_Pictographic}/u.test(json), false);
+  });
+});
+
+/**
+ * §17 hour matching — the whole reason the sweep went from daily to hourly.
+ *
+ * Pure and therefore cheap to pin down, which matters: this is the decision
+ * that determines whether a user is messaged at the time they picked or at the
+ * time the cron happened to fire. Two properties are load-bearing:
+ *
+ *   - notify_time is matched to the HOUR (an hourly sweep cannot do better);
+ *   - the per-user `timezone` column, stored since migration 028 and never
+ *     honoured server-side until now, actually shifts the match.
+ */
+describe('§17 diary reminder — hour matching', () => {
+  // 2026-08-01 13:00 UTC = 20:00 Bangkok = 15:00 UTC+2 = 06:00 America/Los_Angeles
+  const at = new Date('2026-08-01T13:00:00Z');
+
+  it('reads the current hour in the user’s own timezone', () => {
+    assert.equal(hourInTimezone(at, 'Asia/Bangkok'), 20);
+    assert.equal(hourInTimezone(at, 'UTC'), 13);
+    assert.equal(hourInTimezone(at, 'America/Los_Angeles'), 6);
+  });
+
+  it('falls back to Bangkok for a missing or unparseable timezone', () => {
+    assert.equal(hourInTimezone(at, null), 20);
+    assert.equal(hourInTimezone(at, ''), 20);
+    assert.equal(hourInTimezone(at, 'Not/AZone'), 20);
+  });
+
+  it('matches notify_time to the hour, ignoring minutes', () => {
+    assert.equal(isDueThisHour('20:00:00', at, 'Asia/Bangkok'), true);
+    assert.equal(isDueThisHour('20:45:00', at, 'Asia/Bangkok'), true);
+    assert.equal(isDueThisHour('21:00:00', at, 'Asia/Bangkok'), false);
+    assert.equal(isDueThisHour('19:59:00', at, 'Asia/Bangkok'), false);
+  });
+
+  it('honours the timezone: 20:00 means 20:00 WHERE THE USER IS', () => {
+    // Same instant, same stored notify_time, different timezone → not due.
+    assert.equal(isDueThisHour('20:00:00', at, 'Asia/Bangkok'), true);
+    assert.equal(isDueThisHour('20:00:00', at, 'UTC'), false);
+    // ...and the UTC user is due at their own 20:00 instead.
+    assert.equal(isDueThisHour('20:00:00', new Date('2026-08-01T20:00:00Z'), 'UTC'), true);
+  });
+
+  it('treats a missing or malformed notify_time as never due', () => {
+    // Never due beats always due: a bad row must not push every hour.
+    assert.equal(isDueThisHour(null, at, 'Asia/Bangkok'), false);
+    assert.equal(isDueThisHour(undefined, at, 'Asia/Bangkok'), false);
+    assert.equal(isDueThisHour('', at, 'Asia/Bangkok'), false);
+    assert.equal(isDueThisHour('99:00:00', at, 'Asia/Bangkok'), false);
+    assert.equal(isDueThisHour('ab:cd:ef', at, 'Asia/Bangkok'), false);
+  });
+
+  it('covers midnight, where an hour12 formatter would report 24', () => {
+    const midnightBkk = new Date('2026-08-01T17:00:00Z'); // 00:00 next day in ICT
+    assert.equal(hourInTimezone(midnightBkk, 'Asia/Bangkok'), 0);
+    assert.equal(isDueThisHour('00:00:00', midnightBkk, 'Asia/Bangkok'), true);
   });
 });

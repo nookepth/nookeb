@@ -23,7 +23,27 @@ export const MEMBERSHIP_QUEUE = 'nookeb-membership';
  * timezone and jobId together. If the add and the remove ever disagreed by a
  * character, the remove would silently miss and the schedule would survive.
  */
-const DIARY_REMINDER_CRON = '0 20 * * *';
+/**
+ * HOURLY, not the old daily '0 20 * * *'.
+ *
+ * §17 stores a per-user `notify_time` (migration 028) and the daily 20:00 cron
+ * ignored it — everyone was messaged at the column's DEFAULT time, so a user
+ * who chose 08:00 got their nudge twelve hours late. An hourly sweep serves
+ * whoever falls in the current hour, exactly like DIARY_ADDON_CRON below, and
+ * `runDiaryReminderSweep` claims the Bangkok day per user (migration 054) so
+ * the finer cadence cannot double-push.
+ *
+ * CHANGING THIS STRING ORPHANS THE OLD SCHEDULE. `removeRepeatable` matches on
+ * pattern + timezone + jobId together, so the '0 20 * * *' repeatable that a
+ * previous boot registered in Redis is NOT removed by the branch below — it
+ * would keep firing the daily sweep forever alongside the hourly one. That is
+ * what LEGACY_DIARY_REMINDER_CRON exists to clean up; delete it only once every
+ * environment has booted at least once on this version.
+ */
+const DIARY_REMINDER_CRON = '0 * * * *';
+
+/** The pre-2026-08 daily pattern, removed on boot. See DIARY_REMINDER_CRON. */
+const LEGACY_DIARY_REMINDER_CRON = '0 20 * * *';
 
 /**
  * หนูเก็บความทรงจำ runs at the top of EVERY hour, because each subscriber picks
@@ -100,9 +120,19 @@ export async function scheduleMembershipJobs(): Promise<void> {
     { repeat: { pattern: '45 3 * * *', tz: BANGKOK_TZ }, jobId: 'membership-boost-expiry' },
   );
 
-  // Daily 20:00 ICT — the diary nudge goes out in the evening, when there is a
-  // day worth writing about.
+  // Hourly — the §17 diary nudge, delivered in each user's chosen hour.
   //
+  // Unconditional cleanup of the OLD daily 20:00 schedule, run on every boot
+  // regardless of the flag: a repeatable is keyed by its pattern, so switching
+  // to the hourly pattern above does not replace it — it would sit in Redis
+  // beside the new one and fire a second, whole-userbase sweep every evening.
+  // A no-op once gone, and on a first-ever boot.
+  await q.removeRepeatable(
+    'diary_reminder_sweep',
+    { pattern: LEGACY_DIARY_REMINDER_CRON, tz: BANGKOK_TZ },
+    'membership-diary-reminder',
+  );
+
   // Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
   //
   // Skipping the `add` is NOT sufficient on a live deploy: a repeatable

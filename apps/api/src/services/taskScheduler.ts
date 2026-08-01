@@ -8,6 +8,7 @@ import {
   TASK_QUEUE,
   type RemindType,
   type TaskJob,
+  type TaskNotifyJob,
   type TaskRecord,
   type TaskReminderJob,
 } from '@nookeb/shared';
@@ -115,6 +116,41 @@ export async function closeTaskQueue(): Promise<void> {
   }
   await queue?.close();
   queue = null;
+}
+
+/**
+ * Queue ONE immediate task push (announcement / cancel notice / review-loop
+ * notice). See TaskNotifyJob for why these are queued rather than pushed inline.
+ *
+ * Fire-and-forget by design: the caller is an HTTP handler whose write has
+ * already committed, so a Redis hiccup must degrade to "the notice was not
+ * sent", never to a 500 on a request that succeeded. The await-less contract is
+ * the same one enqueueSheetsSync already uses.
+ *
+ * NO custom jobId. These are one-shot notices, and a stable id would make BullMQ
+ * silently swallow the second legitimate notice of the same kind for the same
+ * task (the sheets_sync lesson) — e.g. a submit → ตีกลับ → submit round trip.
+ *
+ * Gated on TASK_NOTIFICATIONS_ENABLED here as well as in the worker: while the
+ * switch is off nothing is even queued, so flipping it on does not release a
+ * backlog of stale notices.
+ */
+export function enqueueTaskNotify(params: {
+  to: string;
+  messages: unknown[];
+  taskId: string;
+  context: string;
+}): void {
+  if (!TASK_NOTIFICATIONS_ENABLED) return;
+  const job: TaskNotifyJob = { type: 'task_notify', ...params };
+  void getTaskQueue()
+    .add('task_notify', job)
+    .catch((err) => {
+      console.error(
+        `[taskScheduler] could not queue ${params.context} notice for task ${params.taskId}:`,
+        err,
+      );
+    });
 }
 
 export const reminderJobId = (reminderId: string): string => `reminder-${reminderId}`;

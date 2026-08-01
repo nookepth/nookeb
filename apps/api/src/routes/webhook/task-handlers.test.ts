@@ -112,7 +112,9 @@ describe('handleTaskPostback — every transition mirrors to the sheet', () => {
     const { handled, synced, replies } = run('action=task_accept&taskId=T1');
     assert.equal(await handled, true);
     assert.deepEqual(synced, [['T1', 'upsert']]);
-    assert.equal(replies.length, 1);
+    // The รับทราบ confirmation reply was removed per product decision — the
+    // postback still writes and syncs, it just says nothing back.
+    assert.equal(replies.length, 0);
   });
 
   test('รับทราบ promotes the pending item AND task to กำลังทำ', async () => {

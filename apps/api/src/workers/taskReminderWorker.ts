@@ -4,6 +4,7 @@ import {
   TASK_NOTIFICATIONS_ENABLED,
   TASK_QUEUE,
   type TaskJob,
+  type TaskNotifyJob,
   type TaskRecurNextJob,
   type TaskReminderJob,
 } from '@nookeb/shared';
@@ -200,6 +201,29 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
   await stampReminder(supabase, reminderId, 'sent_at');
 }
 
+/**
+ * Deliver one immediate task notice (announcement / cancel / review loop).
+ *
+ * Deliberately thinner than processTaskReminder: there is no row to stamp and
+ * no per-recipient state, so BullMQ's own attempts/backoff is the whole retry
+ * story. It does NOT charge the §4a notification quota — that allowance meters
+ * SCHEDULED reminders, which the creator opted into by count; an announcement
+ * or a "งานผ่านแล้ว" notice is part of the task action itself, and metering it
+ * would silently disable the review loop for a free user who used their seven
+ * units on reminders.
+ */
+async function processTaskNotify(job: Job<TaskNotifyJob>): Promise<void> {
+  const { to, messages, taskId, context } = job.data;
+
+  // Belt-and-braces for jobs queued before the switch flipped (the enqueue side
+  // is gated too, so in practice this only catches an in-flight backlog).
+  if (!TASK_NOTIFICATIONS_ENABLED) return;
+  if (!to || messages.length === 0) return;
+
+  await pushMessage(to, messages as LineMessage[]);
+  console.log(`[task-worker] ${context} notice delivered for task ${taskId}`);
+}
+
 /** Close the current round and open the next: reset marks, move the deadline
  * to the next occurrence, schedule the new round's reminders + rollover. */
 async function rollTaskOver(task: TaskWithDetails): Promise<void> {
@@ -312,6 +336,8 @@ export function createTaskReminderWorker(): Worker<TaskJob> {
           return processRecurNext(job as Job<TaskRecurNextJob>);
         case 'task_recur_sweep':
           return processRecurSweep();
+        case 'task_notify':
+          return processTaskNotify(job as Job<TaskNotifyJob>);
       }
     },
     // drainDelay is in SECONDS (default 5): a high value makes an EMPTY queue
@@ -327,6 +353,29 @@ export function createTaskReminderWorker(): Worker<TaskJob> {
       drainDelay: 20000,
       stalledInterval: 60_000,
       lockDuration: 60_000,
+      // ---- LINE push throttle ----
+      //
+      // EVERY task push in the product now lands on this queue (reminders +
+      // announcements + cancel + review loop), so this one limiter is the whole
+      // product's push governor. BullMQ enforces it ACROSS the worker, not per
+      // job, so `concurrency: 5` can never exceed it.
+      //
+      // 10/sec is far below anything LINE rejects — the Messaging API's
+      // documented technical ceiling is 2,000 requests/second for /message/push
+      // (replies are separate and unmetered). The number is chosen against the
+      // OTHER limit, the one that actually bites: the monthly push-message
+      // ALLOWANCE, which is quota-metered and fails silently once spent. A
+      // reminder round that fans out over minutes instead of milliseconds costs
+      // nothing in user experience (these messages are deadline-driven, not
+      // conversational) and keeps a bad day from draining the month.
+      //
+      // It is also the blast shield for the first boot with
+      // TASK_NOTIFICATIONS_ENABLED on: a backlog of due reminder jobs drains at
+      // a bounded rate instead of stampeding LINE. (Reminder ROWS are only
+      // written by scheduleReminders while the switch is on, so there is no
+      // hidden backlog from the disabled period — but a large group's first real
+      // day is burst-shaped all the same.)
+      limiter: { max: 10, duration: 1000 },
     },
   );
 

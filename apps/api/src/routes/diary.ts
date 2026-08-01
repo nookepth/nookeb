@@ -15,6 +15,7 @@ import {
   getNotificationSettings,
   getStreak,
   listEntriesByYear,
+  setPushNotificationEnabled,
   softDeleteEntry,
   upsertNotificationSettings,
 } from '../services/diary.service';
@@ -39,7 +40,17 @@ const notificationBodySchema = z.object({
   notify_time: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
   is_enabled: z.boolean(),
   timezone: z.string().min(1).max(100).default('Asia/Bangkok'),
+  /**
+   * LINE push opt-in (migration 053). OPTIONAL, and absence means "leave it
+   * alone" rather than false — an older web build that still posts the three
+   * original fields must not silently revoke a consent the user gave in the
+   * newer UI. The handler reads the stored value when this is omitted.
+   */
+  notification_enabled: z.boolean().optional(),
 });
+
+/** PATCH /diary/notification/push — the opt-in toggle, one field, on its own. */
+const pushToggleBodySchema = z.object({ notification_enabled: z.boolean() });
 
 const diaryRoutes: FastifyPluginAsync = async (app) => {
   app.addHook('preHandler', async (request, reply) => app.authenticate(request, reply));
@@ -136,19 +147,52 @@ const diaryRoutes: FastifyPluginAsync = async (app) => {
     return reply.code(204).send();
   });
 
-  // PUT /diary/notification — reminder preferences (in-app banner; this
-  // project's LINE messaging is reply-only, so there is no scheduled push).
+  // PUT /diary/notification — the whole preferences form: the in-app banner
+  // (is_enabled + notify_time) and, optionally, the push opt-in.
   app.put('/diary/notification', async (request, reply) => {
     const parsed = notificationBodySchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
     }
-    await upsertNotificationSettings(app.supabase, request.authUser!.userId, {
+    const userId = request.authUser!.userId;
+    // Omitted notification_enabled = keep whatever is stored. Reading it back
+    // costs one query and is the difference between an old client saving the
+    // banner time and an old client silently cancelling a push consent.
+    const notificationEnabled =
+      parsed.data.notification_enabled ??
+      (await getNotificationSettings(app.supabase, userId)).notificationEnabled;
+
+    await upsertNotificationSettings(app.supabase, userId, {
       notifyTime: parsed.data.notify_time,
       isEnabled: parsed.data.is_enabled,
       timezone: parsed.data.timezone,
+      notificationEnabled,
     });
     return reply.code(204).send();
+  });
+
+  // PATCH /diary/notification/push — the LINE-push opt-in on its own
+  // (migration 053).
+  //
+  // A separate route from the PUT above because the dashboard toggle is
+  // optimistic and independent: it must not have to send — and therefore must
+  // not be able to clobber — notify_time, is_enabled or timezone. Responds with
+  // the value actually stored so the client can reconcile rather than assume.
+  //
+  // This flag is the ONLY authorisation for a diary push. Nothing here sends
+  // one: delivery stays in the BullMQ membership sweeps, which re-read this
+  // column at send time (project rule: no LINE API call from a request handler).
+  app.patch('/diary/notification/push', async (request, reply) => {
+    const parsed = pushToggleBodySchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const notificationEnabled = await setPushNotificationEnabled(
+      app.supabase,
+      request.authUser!.userId,
+      parsed.data.notification_enabled,
+    );
+    return { notificationEnabled };
   });
 };
 

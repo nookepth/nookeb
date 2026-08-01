@@ -225,6 +225,8 @@ land **before** the API deploy are flagged in-file.
 | `047_task_command_reminders.sql` | `tasks.reminder_count` INT NULL CHECK 1..4 — the Pro "เตือน N ครั้ง" knob |
 | `051_membership.sql` | **ระบบสมาชิก** — widens `users.plan` to include `'premium'` (keeps `'team'`, normalised to premium in code); `subscriptions`, `user_quotas` (+ `consume_quota` / `release_quota` RPCs), `user_group_boosts` (+ `claim_group_boost`), `support_tickets`, `user_integrations`; `tasks.reminder_intervals INT[]` + `tasks.notify_only_pending`; widens `task_reminders.remind_type` for `2_days`/`6_hours`/`at_deadline`. **Apply BEFORE the API/worker deploy** — every quota-guarded route calls `consume_quota`. The monthly RESET is structural (rows are keyed by Bangkok `period_start`), so no job can fail it. Single source of truth for all limits is `apps/api/src/config/plans.ts`. |
 | `048_task_urgency.sql` | `tasks.urgency` TEXT NULL CHECK (urgent_max/urgent/normal/relaxed) — creation-time ความเร่งด่วน; apply BEFORE deploying the web/API that sends it (older clients omit the column, so old-code/new-DB is safe) |
+| `053_diary_push_optin.sql` | `diary_notification_settings.notification_enabled` — LINE push opt-in, default FALSE (distinct from `is_enabled`, which is the in-app banner). No diary push may go out without it. Apply BEFORE the API/worker deploy |
+| `054_diary_reminder_last_sent.sql` | `diary_notification_settings.last_push_date` DATE — the per-day claim that makes the §17 sweep safe to run HOURLY (a retry / worker restart / `notify_time` edit would otherwise double-push). Claimed with a conditional UPDATE; Bangkok calendar date. Apply BEFORE the API/worker deploy |
 
 Key invariants:
 - Every content table carries `space_id` (or a per-feature owner key: diary/vault =
@@ -407,15 +409,34 @@ someone, run BEFORE the group guard): a deliberate heuristic, not NLP.
   Then the creator either **รับงาน** (`…/approve` → `markAllAssigneesDone` →
   `rollUpCompletion` owns the status) or **ตีกลับ** (`…/reject`, reason MANDATORY →
   item `rejected`, `rejection_note`).
-All three review transitions fire ONE best-effort inline push (personal tasks skip
-it). `resetRecurringRound` clears review fields so a new round starts clean.
+All three review transitions QUEUE one `task_notify` job (personal tasks skip it,
+and so does a false `TASK_NOTIFICATIONS_ENABLED` — that guard was missing until
+2026-08-01 and let the review loop message groups while every other task push was
+disabled). `resetRecurringRound` clears review fields so a new round starts clean.
 
-### Reminders (currently OFF)
+### Reminders (ON since 2026-08-01)
 
-`TASK_NOTIFICATIONS_ENABLED = false` in `packages/shared/src/task-notifications.ts`.
-While false: `scheduleReminders` creates no `task_reminders` rows and no delayed
-jobs, `processTaskReminder` stands any in-flight job down, and the LIFF hides copy
-promising reminders. Recurring **rollover still schedules** so rounds keep advancing.
+`TASK_NOTIFICATIONS_ENABLED` in `packages/shared/src/task-notifications.ts` is now
+a **default-ON kill switch**, not a hard-coded `false`: it reads
+`process.env.TASK_NOTIFICATIONS_ENABLED` and only the exact string `"false"`
+disables. The env read is guarded for the browser bundle (the LIFF imports this
+module), so the web always resolves to ON.
+
+It gates EVERY task push — scheduled reminders, the create announcement, the
+cancel notice, and the review-loop notices. While false: `scheduleReminders`
+creates no `task_reminders` rows and no delayed jobs, `enqueueTaskNotify` queues
+nothing, both worker handlers stand in-flight jobs down, and the LIFF hides copy
+promising reminders. Recurring **rollover still schedules** so rounds keep
+advancing.
+
+**Every task push goes through the queue.** `enqueueTaskNotify` (taskScheduler)
+adds a `task_notify` job; no route calls `pushMessage` directly any more. That
+puts announcements, cancel notices and review notices behind the SAME worker
+rate limiter as reminders — `limiter: { max: 10, duration: 1000 }` on
+`createTaskReminderWorker`, which is the whole product's push governor. LINE's
+technical ceiling is ~2,000 req/s; the 10/s figure is chosen against the monthly
+push ALLOWANCE (metered, fails silently when spent), not the rate limit.
+`POST /tasks` now returns `announced` meaning QUEUED, not delivered.
 
 When on: offsets `REMIND_OFFSETS_MINUTES` = −3 d / −1 d / −3 h / +1 h relative to the
 effective deadline; one row + one delayed BullMQ job per shot
@@ -733,7 +754,7 @@ Keep them separate — merging re-couples the failure domains they were split to
 | Queue | Worker | Jobs |
 |---|---|---|
 | `nookeb-file-processing` | `upload.worker.ts` | `upload_batch`, `generate_thumbnail`, `ocr_image`, `add_scan_page`, `finalize_scan`, `convert_to_docx`, `create_diary_entry`, `purge_deleted` (daily repeatable) |
-| `nookeb-task-reminders` | `taskReminderWorker.ts` | `task_reminder`, `task_recur_next`, `task_recur_sweep` |
+| `nookeb-task-reminders` | `taskReminderWorker.ts` | `task_reminder`, `task_recur_next`, `task_recur_sweep`, `task_notify` (every immediate task push — announce / cancel / review loop). Worker `limiter: 10/sec` governs ALL task pushes. |
 | `nookeb-sheets-sync` | `sheetsWorker.ts` (constructed ONLY when Google is configured) | `sheets_sync` (`upsert` \| `delete`), `sheets_historical` (backfill; jobId `sheets-historical-{userId}`, removed on settle so a later press can re-queue) |
 
 Retry policy: `add_scan_page` / `finalize_scan` / `convert_to_docx` /
@@ -764,7 +785,8 @@ thumbnail + OCR enqueue.
 
 | Flag / gate | Controls | Checked where |
 |---|---|---|
-| `TASK_NOTIFICATIONS_ENABLED` (constant, **false**) | all scheduled task reminders (rows, jobs, delivery, and the LIFF copy promising them) | `packages/shared/src/task-notifications.ts`; `taskScheduler.scheduleReminders`, `taskReminderWorker`, LIFF create pages, `task-command-handlers` success copy |
+| `TASK_NOTIFICATIONS_ENABLED` (env, **default true**; only `"false"` disables) | EVERY task push: scheduled reminders (rows, jobs, delivery), the create announcement, the cancel notice, the review-loop notices, and the LIFF copy promising them. Set on BOTH Railway services. | `packages/shared/src/task-notifications.ts`; `taskScheduler.scheduleReminders` + `enqueueTaskNotify`, `taskReminderWorker` (`processTaskReminder`, `processTaskNotify`), `routes/tasks.ts` `notifyTaskChat`, LIFF create pages, `task-command-handlers` success copy |
+| `DIARY_REMINDER_ENABLED` (constant, **false**) | the §17 plan-based diary nudge (hourly sweep + its repeatable schedule) | `apps/api/src/jobs/diaryReminder.job.ts`; `scheduleMembershipJobs` |
 | `users.plan` ∈ {pro, team} | the `เตือน N ครั้ง` custom reminder count (migration 047) | `resolvePlanIsPro` in `task-command-handlers.ts`; effective count baked into the confirm card |
 | `users.plan` | plan-aware trash retention (5 vs 30 days) | `purgeDeletedFiles` |
 | `users.vault_plan` | vault access (`VAULT_PREMIUM_REQUIRED`); setup-pin self-grants `'premium'` until billing exists | `routes/vault.ts` |
@@ -816,9 +838,11 @@ web. `DEPLOYMENT.md` has the long form.
   dashboard task views
 
 **Built but dormant / conditional**
-- **Scheduled task reminders** — code complete, switched off at
-  `TASK_NOTIFICATIONS_ENABLED = false`. Personal and command-created tasks therefore
-  ship with no working reminders today.
+- **§17 plan-based diary reminder** — code complete, switched off at
+  `DIARY_REMINDER_ENABLED = false` in `jobs/diaryReminder.job.ts`. Now an HOURLY
+  sweep that honours each user's `notify_time` + `timezone` (it used to be a daily
+  20:00 cron that ignored both); needs migration 054 before it is switched on.
+  The paid หนูเก็บความทรงจำ add-on is separate and unaffected.
 - **Google Sheets sync** — needs migration 046 applied + `GOOGLE_CLIENT_*` on both
   Railway services + the redirect URI registered in Google Cloud.
 - **แปลงไฟล์** — needs `MISTRAL_API_KEY` on both services.

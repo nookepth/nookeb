@@ -23,6 +23,9 @@ import {
   priceOf,
   slaHoursFor,
   validateReminderSelection,
+  intervalsForCount,
+  MAX_REMINDER_COUNT,
+  REMINDER_COUNT_PRIORITY_HOURS,
 } from './plans';
 
 const GB = 1024 * 1024 * 1024;
@@ -243,6 +246,49 @@ describe('§4b reminder interval selection', () => {
 
   it('rejects an invalid value even when the count is within the limit', () => {
     assert.equal(validateReminderSelection('premium', [24, 99]).ok, false);
+  });
+});
+
+describe('จำนวนการแจ้งเตือน (ครั้ง) → intervals', () => {
+  it('is sugar over the SAME closed interval set — never a back door', () => {
+    // Every hour a count can produce must be one the checkbox validator already
+    // accepts, or the count field would be a way to schedule an unlisted shot.
+    for (const h of REMINDER_COUNT_PRIORITY_HOURS) {
+      assert.ok(
+        (REMINDER_INTERVAL_CHOICES as readonly number[]).includes(h),
+        `${h}h must be a documented interval`,
+      );
+    }
+  });
+
+  it('gives the day-before nudge first — the most useful single reminder', () => {
+    assert.deepEqual(intervalsForCount(1), [24]);
+    assert.deepEqual(intervalsForCount(2), [24, 3]);
+  });
+
+  it('treats 0, null and undefined as "no reminders", never as a default schedule', () => {
+    assert.deepEqual(intervalsForCount(0), []);
+    assert.deepEqual(intervalsForCount(null), []);
+    assert.deepEqual(intervalsForCount(undefined), []);
+  });
+
+  it('clamps above the ceiling instead of inventing a fifth lead time', () => {
+    assert.equal(intervalsForCount(99).length, MAX_REMINDER_COUNT);
+    assert.deepEqual(intervalsForCount(MAX_REMINDER_COUNT), [...REMINDER_COUNT_PRIORITY_HOURS]);
+  });
+
+  it('never returns duplicates, so the plan cap counts real shots', () => {
+    const all = intervalsForCount(MAX_REMINDER_COUNT);
+    assert.equal(new Set(all).size, all.length);
+  });
+
+  it('expands to something the plan gate then judges — free 1 passes, free 2 does not', () => {
+    assert.deepEqual(validateReminderSelection('free', intervalsForCount(1)), {
+      ok: true,
+      intervals: [24],
+    });
+    const overCap = validateReminderSelection('free', intervalsForCount(2));
+    assert.equal(overCap.ok, false);
   });
 });
 

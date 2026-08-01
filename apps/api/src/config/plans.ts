@@ -227,6 +227,49 @@ export function isReminderInterval(n: number): n is ReminderInterval {
 }
 
 /**
+ * "จำนวนการแจ้งเตือน (ครั้ง)" → which intervals that many reminders means.
+ *
+ * The create forms ask for a COUNT, not five checkboxes: on a phone (LIFF) a
+ * number is one tap and a checkbox grid is five, and the count is also what the
+ * chat command has always accepted ("เตือน 2 ครั้ง"). The server expands the
+ * count here so both doors end up writing the same `tasks.reminder_intervals`
+ * and go through the same plan gate — a count is sugar over the selection, not
+ * a second reminder model.
+ *
+ * ORDER IS THE POINT: most-useful-first, so `n = 1` gives the day-before nudge
+ * rather than an arbitrary one. It mirrors REMIND_PRIORITY in task-command.ts
+ * with one deliberate difference — `overdue` (+1h AFTER the deadline) is not
+ * here, because that is a chase, not a lead time, and it is not expressible as
+ * an interval. Chat-created tasks keep reaching it through `reminder_count`.
+ *
+ * THE CEILING IS 4, NOT 10. A count is only meaningful if a distinct lead time
+ * exists for it, and there are four here (five intervals, minus 6h which is too
+ * close to 3h to be worth a slot in an ordered count). The plan cap
+ * (REMINDER_POLICY.maxSelectable — free 1 / pro 2 / premium 4) then applies on
+ * top, so nobody can request more shots than they pay for.
+ */
+export const REMINDER_COUNT_PRIORITY_HOURS = [24, 3, 72, 48] as const;
+
+/** Hard ceiling on the count field, independent of plan. */
+export const MAX_REMINDER_COUNT = REMINDER_COUNT_PRIORITY_HOURS.length;
+
+/**
+ * Expand a count into intervals. 0 / null → `[]`, which schedules NOTHING —
+ * the same "selected nothing" state as an empty checkbox set, deliberately not
+ * a default schedule.
+ *
+ * Does NOT apply the plan cap: it returns what was asked for, and
+ * `resolveReminderConfig` rejects an over-cap request with the upgrade copy.
+ * Silently trimming here would ship a task with fewer reminders than the form
+ * showed and tell the creator nothing.
+ */
+export function intervalsForCount(count: number | null | undefined): number[] {
+  if (count == null || !Number.isFinite(count)) return [];
+  const n = Math.max(0, Math.min(MAX_REMINDER_COUNT, Math.floor(count)));
+  return REMINDER_COUNT_PRIORITY_HOURS.slice(0, n);
+}
+
+/**
  * Validate a checkbox selection against the plan. Pure — the server-side half
  * of "validation: enforce checkbox limit server-side (not just client-side)".
  *

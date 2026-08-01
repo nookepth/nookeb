@@ -271,10 +271,19 @@ export async function softDeleteEntry(
   return (data as DiaryEntryRecord[] | null)?.[0] ?? null;
 }
 
+/**
+ * What a user with NO settings row gets.
+ *
+ * `isEnabled: true` (banner) but `notificationEnabled: false` (push) is not an
+ * inconsistency — it is the whole point of migration 053. The banner is free
+ * and renders only on a page the user opened; a push is metered and reaches
+ * them uninvited, so absence of a row must read as "never opted in".
+ */
 const DEFAULT_NOTIFICATION: DiaryNotificationSettingsDto = {
   notifyTime: '20:00',
   isEnabled: true,
   timezone: 'Asia/Bangkok',
+  notificationEnabled: false,
 };
 
 /** Reminder preferences, falling back to the defaults for users who never saved any. */
@@ -284,16 +293,24 @@ export async function getNotificationSettings(
 ): Promise<DiaryNotificationSettingsDto> {
   const { data, error } = await supabase
     .from('diary_notification_settings')
-    .select('notify_time, is_enabled, timezone')
+    .select('notify_time, is_enabled, timezone, notification_enabled')
     .eq('user_id', userId)
     .maybeSingle();
   if (error) throw error;
   if (!data) return { ...DEFAULT_NOTIFICATION };
-  const row = data as { notify_time: string; is_enabled: boolean; timezone: string };
+  const row = data as {
+    notify_time: string;
+    is_enabled: boolean;
+    timezone: string;
+    notification_enabled: boolean | null;
+  };
   return {
     notifyTime: row.notify_time.slice(0, 5), // 'HH:MM:SS' → 'HH:MM'
     isEnabled: row.is_enabled,
     timezone: row.timezone,
+    // NULL only happens if this row is read before migration 053 lands — and
+    // "unknown" must resolve to not-opted-in, never to a push.
+    notificationEnabled: row.notification_enabled === true,
   };
 }
 
@@ -308,9 +325,61 @@ export async function upsertNotificationSettings(
       notify_time: `${settings.notifyTime}:00`,
       is_enabled: settings.isEnabled,
       timezone: settings.timezone,
+      notification_enabled: settings.notificationEnabled,
       updated_at: new Date().toISOString(),
     },
     { onConflict: 'user_id' },
   );
   if (error) throw error;
+}
+
+/**
+ * Flip the push opt-in ALONE, creating the row if the user never saved settings.
+ *
+ * Separate from `upsertNotificationSettings` because the toggle in the dashboard
+ * is optimistic and fires on its own: routing it through the full-settings
+ * upsert would make the toggle write notifyTime/isEnabled/timezone too, and a
+ * stale copy of those in the client (or a second tab) would silently clobber a
+ * change made elsewhere. The insert path supplies only the column defaults for
+ * the other fields, which is exactly what a first-time toggler should get.
+ *
+ * Returns the value actually stored, which is what the client reconciles its
+ * optimistic state against.
+ */
+export async function setPushNotificationEnabled(
+  supabase: SupabaseClient,
+  userId: string,
+  enabled: boolean,
+): Promise<boolean> {
+  const { data, error } = await supabase
+    .from('diary_notification_settings')
+    .upsert(
+      { user_id: userId, notification_enabled: enabled, updated_at: new Date().toISOString() },
+      { onConflict: 'user_id' },
+    )
+    .select('notification_enabled')
+    .single();
+  if (error) throw error;
+  return (data as { notification_enabled: boolean }).notification_enabled === true;
+}
+
+/**
+ * Of `userIds`, the subset who have opted IN to LINE push.
+ *
+ * The sweeps ask this way round on purpose: a user id that has no row here is
+ * simply absent from the result, so "never saved settings" and "explicitly off"
+ * both resolve to no-push without the caller having to special-case either.
+ */
+export async function listPushOptedInUserIds(
+  supabase: SupabaseClient,
+  userIds: readonly string[],
+): Promise<Set<string>> {
+  if (userIds.length === 0) return new Set();
+  const { data, error } = await supabase
+    .from('diary_notification_settings')
+    .select('user_id')
+    .in('user_id', [...userIds])
+    .eq('notification_enabled', true);
+  if (error) throw error;
+  return new Set(((data as { user_id: string }[] | null) ?? []).map((r) => r.user_id));
 }

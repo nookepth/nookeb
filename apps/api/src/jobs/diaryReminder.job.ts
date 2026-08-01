@@ -33,6 +33,7 @@ import {
   logSkipped,
 } from '../services/diaryAddon.service';
 import type { FlexMessage } from '../services/flex.service';
+import { listPushOptedInUserIds } from '../services/diary.service';
 
 /**
  * Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
@@ -62,13 +63,85 @@ function bangkokDate(at: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+const BANGKOK_TZ_NAME = 'Asia/Bangkok';
+
+/**
+ * The hour (0–23) it currently is for a user, in THEIR timezone.
+ *
+ * `diary_notification_settings.timezone` has existed since migration 028 with a
+ * default of 'Asia/Bangkok'. Nothing has ever honoured it server-side — only the
+ * in-app banner, which runs in the browser and gets the timezone for free. Now
+ * that the sweep decides WHEN to message someone, ignoring the column would mean
+ * quietly sending at 20:00 Bangkok to a user who set 20:00 in their own zone.
+ *
+ * A bad/unknown IANA name falls back to Bangkok rather than throwing: the
+ * product is ICT and the column is free text, so a typo must cost that one user
+ * a shifted reminder, not the whole sweep.
+ *
+ * (The paid add-on takes the opposite approach — migration 052 has no timezone
+ * column at all and reads its `notify_time` as Bangkok wall clock by decree.
+ * The difference is deliberate: this table already carries the column, and
+ * dropping a preference a user set is worse than honouring one.)
+ */
+export function hourInTimezone(at: Date, timezone: string | null | undefined): number {
+  const tz = timezone && timezone.trim() ? timezone : BANGKOK_TZ_NAME;
+  try {
+    const hh = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour: '2-digit',
+      hour12: false,
+    }).format(at);
+    const n = Number.parseInt(hh, 10);
+    // 'en-US' with hour12:false emits "24" for midnight in some ICU versions.
+    return Number.isFinite(n) ? n % 24 : bangkokHour(at);
+  } catch {
+    return bangkokHour(at);
+  }
+}
+
+/**
+ * Is this user due a nudge in the sweep's current hour?
+ *
+ * `notify_time` is a bare Postgres TIME ('HH:MM:SS'). An hourly sweep can only
+ * ever resolve to the HOUR, so 20:00 and 20:45 are both served by the 20:00 run
+ * — the same granularity the add-on sweep uses, and the reason the UI offers
+ * whole hours. Anything finer would need a per-user scheduled job, which is the
+ * thousands-of-standing-jobs design the add-on's header already rejected.
+ *
+ * Exported for the unit tests: it is the whole timezone decision, and it is pure.
+ */
+export function isDueThisHour(
+  notifyTime: string | null | undefined,
+  at: Date,
+  timezone: string | null | undefined,
+): boolean {
+  if (!notifyTime) return false;
+  const hour = Number.parseInt(notifyTime.slice(0, 2), 10);
+  if (!Number.isFinite(hour) || hour < 0 || hour > 23) return false;
+  return hour === hourInTimezone(at, timezone);
+}
+
 export interface DiaryReminderResult {
+  /** Opted-in users whose notify_time falls in this sweep's hour. */
   candidates: number;
   sent: number;
   skippedWroteToday: number;
   skippedQuota: number;
+  /** Already claimed for this Bangkok day — a retry or an overlapping run. */
+  skippedAlreadySent: number;
   failed: number;
 }
+
+/**
+ * The push opt-in (migration 053) — see the header of 053_diary_push_optin.sql.
+ *
+ * `diary_notification_settings.is_enabled` is NOT this flag. It defaults TRUE
+ * and has meant "show me the in-app banner" since migration 028; pointing the
+ * push sweep at it (as this file used to) messages users who only ever agreed
+ * to a banner. Both sweeps below therefore intersect their candidate set with
+ * `notification_enabled = TRUE` before anything leaves the process.
+ */
+
 
 export interface DiaryReminderDeps {
   /** Injected so the sweep is testable without the LINE SDK. */
@@ -86,7 +159,6 @@ export async function runDiaryReminderSweep(
   deps: DiaryReminderDeps,
 ): Promise<DiaryReminderResult> {
   const now = deps.now ?? new Date();
-  const today = bangkokDate(now);
   const cap = deps.maxRecipients ?? 5000;
 
   const result: DiaryReminderResult = {
@@ -94,6 +166,7 @@ export async function runDiaryReminderSweep(
     sent: 0,
     skippedWroteToday: 0,
     skippedQuota: 0,
+    skippedAlreadySent: 0,
     failed: 0,
   };
 
@@ -104,22 +177,52 @@ export async function runDiaryReminderSweep(
     return result;
   }
 
-  // Everyone who opted in. The per-user notify_time is NOT honoured here: this
-  // sweep runs once at 20:00 ICT, which is the column's default. Respecting an
-  // arbitrary per-user time needs an hourly sweep — noted in the gap report
-  // rather than silently pretending the preference is applied.
+  // Everyone who opted in TO PUSH (migration 053) — `notification_enabled`, not
+  // `is_enabled`; the latter is the in-app banner and defaults to TRUE, so it
+  // never authorised a message. A user with no settings row has no row here
+  // either, which is the correct not-opted-in answer.
+  //
+  // THE PER-USER notify_time IS NOW HONOURED. This sweep runs HOURLY (see
+  // DIARY_REMINDER_CRON in membership.queue.ts) and serves whoever falls in the
+  // current hour, the same shape as the add-on sweep. It used to run once at
+  // 20:00 ICT and message everyone, which meant a user who picked 08:00 got
+  // their nudge twelve hours late — the preference was stored and ignored.
+  //
+  // The hour filter is applied in PROCESS, not in SQL, because it depends on
+  // each row's `timezone` (see hourInTimezone). The candidate set is the
+  // opted-in set, which migration 053's partial index keeps small — this is one
+  // indexed read per hour over a table with one row per diary user, not a scan.
+  // `last_push_date` is fetched here only to skip the obvious no-ops cheaply;
+  // the AUTHORITATIVE day claim is the conditional UPDATE further down.
+  const today = bangkokDate(now);
   const { data: settings, error } = await supabase
     .from('diary_notification_settings')
-    .select('user_id')
-    .eq('is_enabled', true)
+    .select('user_id, notify_time, timezone, last_push_date')
+    .eq('notification_enabled', true)
+    .or(`last_push_date.is.null,last_push_date.neq.${today}`)
     .limit(cap);
   if (error) throw error;
 
-  const userIds = (settings ?? []).map((s) => s.user_id as string);
+  const dueRows = (
+    (settings ?? []) as {
+      user_id: string;
+      notify_time: string | null;
+      timezone: string | null;
+      last_push_date: string | null;
+    }[]
+  ).filter((s) => isDueThisHour(s.notify_time, now, s.timezone));
+
+  const userIds = dueRows.map((s) => s.user_id);
   result.candidates = userIds.length;
   if (userIds.length === 0) return result;
 
   // Who already has a live entry for today — one query, not one per user.
+  //
+  // `today` is the BANGKOK date even for a user whose `timezone` is something
+  // else, and deliberately so: diary_entries.entry_date is a Bangkok calendar
+  // day by construction (migration 028's unique index), so asking about any
+  // other day would query a key the entry was never stored under. The timezone
+  // preference decides WHEN to message someone, never which day is "today".
   const { data: written, error: wErr } = await supabase
     .from('diary_entries')
     .select('user_id')
@@ -166,6 +269,35 @@ export async function runDiaryReminderSweep(
       continue;
     }
 
+    // Claim the day BEFORE pushing (migration 054). One conditional UPDATE is
+    // the whole idempotency story: two concurrent sweeps race, exactly one gets
+    // a row back and sends. Without it the hourly cadence would double-push on
+    // a job retry, on a worker restart mid-run, and for any user who edits
+    // notify_time to a later hour after already being nudged.
+    //
+    // The cost of claiming first is that a push failing AFTER the claim loses
+    // that day's nudge. That is the cheaper error — the same trade the paid
+    // add-on makes, and here the quota unit is already spent anyway.
+    let claimed: boolean;
+    try {
+      const { data: claim, error: claimErr } = await supabase
+        .from('diary_notification_settings')
+        .update({ last_push_date: today })
+        .eq('user_id', row.id)
+        .or(`last_push_date.is.null,last_push_date.neq.${today}`)
+        .select('user_id');
+      if (claimErr) throw claimErr;
+      claimed = ((claim as { user_id: string }[] | null) ?? []).length > 0;
+    } catch (err) {
+      console.error(`[membership] diary reminder day-claim failed for ${row.id}:`, err);
+      result.failed += 1;
+      continue;
+    }
+    if (!claimed) {
+      result.skippedAlreadySent += 1;
+      continue;
+    }
+
     try {
       await deps.push(row.line_user_id, REMINDER_TEXT);
       result.sent += 1;
@@ -180,8 +312,10 @@ export async function runDiaryReminderSweep(
   }
 
   console.log(
-    `[membership] diary reminders: sent=${result.sent} wroteToday=${result.skippedWroteToday} ` +
-      `quotaBlocked=${result.skippedQuota} failed=${result.failed}`,
+    `[membership] diary reminders: hour=${hourInTimezone(now, BANGKOK_TZ_NAME)} ` +
+      `candidates=${result.candidates} sent=${result.sent} ` +
+      `wroteToday=${result.skippedWroteToday} quotaBlocked=${result.skippedQuota} ` +
+      `alreadySent=${result.skippedAlreadySent} failed=${result.failed}`,
   );
   return result;
 }
@@ -216,6 +350,8 @@ export interface DiaryAddonSweepResult {
   skippedExpired: number;
   /** Already logged for this Bangkok day — a retry or a duplicate run. */
   skippedAlreadyLogged: number;
+  /** Live subscription, but the push toggle is off (migration 053). */
+  skippedNotOptedIn: number;
   failed: number;
 }
 
@@ -348,6 +484,7 @@ export async function runDiaryAddonSweep(
     skippedWroteToday: 0,
     skippedExpired: 0,
     skippedAlreadyLogged: 0,
+    skippedNotOptedIn: 0,
     failed: 0,
   };
 
@@ -361,6 +498,18 @@ export async function runDiaryAddonSweep(
   const due = await listDueSubscribers(supabase, hour, now, deps.maxRecipients ?? 5000);
   result.candidates = due.length;
   if (due.length === 0) return result;
+
+  // The push opt-in (migration 053) applies here too, even though these users
+  // PAID. Buying the add-on turns the toggle ON — createSubscription writes it,
+  // and 053 backfilled every pre-existing subscriber — so an opted-out row means
+  // the holder went to /dashboard/diary and switched it off ON PURPOSE. Honour
+  // that: a paid nudge someone actively silenced is still an unwanted push.
+  //
+  // One query for the whole batch, not one per subscriber.
+  const optedIn = await listPushOptedInUserIds(
+    supabase,
+    due.map((s) => s.user_id),
+  );
 
   // LINE ids for the whole batch in one query — the push needs line_user_id and
   // diary_addon_subscriptions only carries the internal users.id.
@@ -383,6 +532,20 @@ export async function runDiaryAddonSweep(
 
   for (const sub of due) {
     try {
+      // 0. Push opt-in (migration 053). Checked FIRST — before any other query
+      //    and before any log row — because it is the cheapest gate and the one
+      //    that must never be bypassed.
+      //
+      //    Deliberately NOT written to diary_addon_logs: that table's
+      //    UNIQUE(user_id, date) is the day's idempotency key, so logging an
+      //    opt-out would consume the day. A user who toggles the reminder back
+      //    on at 19:50 for a 20:00 nudge would then get nothing, and the reason
+      //    would be a row we wrote about a decision they had since reversed.
+      if (!optedIn.has(sub.user_id)) {
+        result.skippedNotOptedIn += 1;
+        continue;
+      }
+
       // 1. Already wrote today → nothing to nudge about. Logged as a skip so
       //    "หนูเก็บไม่ทักเลย" is answerable from data.
       if (await alreadyWrittenToday(supabase, sub.user_id, today)) {
@@ -433,7 +596,8 @@ export async function runDiaryAddonSweep(
   console.log(
     `[diary-addon] hour=${hour} candidates=${result.candidates} sent=${result.sent} ` +
       `wroteToday=${result.skippedWroteToday} expired=${result.skippedExpired} ` +
-      `alreadyLogged=${result.skippedAlreadyLogged} failed=${result.failed}`,
+      `alreadyLogged=${result.skippedAlreadyLogged} notOptedIn=${result.skippedNotOptedIn} ` +
+      `failed=${result.failed}`,
   );
   return result;
 }

@@ -170,6 +170,23 @@ export async function createSubscription(
     .select('*')
     .single();
   if (error) throw error;
+
+  // Buying a reminder add-on IS the opt-in to being reminded (migration 053),
+  // so grant it here rather than making the buyer hunt for a toggle to make the
+  // thing they just paid for work. The hourly sweep still reads the column at
+  // send time, so a subscriber who later switches it off is honoured.
+  //
+  // Best-effort ON PURPOSE: the subscription is already committed above, and
+  // failing the purchase because a preferences row would not write is the wrong
+  // trade. The user can still turn it on from /dashboard/diary.
+  const { error: optInError } = await supabase.from('diary_notification_settings').upsert(
+    { user_id: userId, notification_enabled: true, updated_at: now.toISOString() },
+    { onConflict: 'user_id' },
+  );
+  if (optInError) {
+    console.error(`[diary-addon] could not set push opt-in for ${userId}:`, optInError);
+  }
+
   return data as DiaryAddonSubscriptionRecord;
 }
 

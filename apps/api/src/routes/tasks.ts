@@ -1,8 +1,7 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import ical, { ICalAlarmType, ICalEventRepeatingFreq } from 'ical-generator';
-import type { RecurrenceRule, TaskDto } from '@nookeb/shared';
-import { pushMessage } from '../services/line.service';
+import { TASK_NOTIFICATIONS_ENABLED, type RecurrenceRule, type TaskDto } from '@nookeb/shared';
 import { buildTaskCreatedFlex } from '../services/lineMessage';
 import { logEvent } from '../services/events.service';
 import {
@@ -36,13 +35,18 @@ import { enqueueSheetsSync } from '../services/sheetsQueue';
 import {
   cancelReminders,
   computeNextOccurrence,
+  enqueueTaskNotify,
   rescheduleReminders,
   scheduleReminders,
 } from '../services/taskScheduler';
 import { LINE_CHAT_ID_MESSAGE, LINE_CHAT_ID_RE } from '../services/line-id';
 import { quotaCheck } from '../middleware/quota';
-import { planGuard, resolveReminderConfig } from '../middleware/planGuard';
-import { REMINDER_INTERVAL_CHOICES } from '../config/plans';
+import { ensurePlan, planGuard, resolveReminderConfig } from '../middleware/planGuard';
+import {
+  intervalsForCount,
+  MAX_REMINDER_COUNT,
+  REMINDER_INTERVAL_CHOICES,
+} from '../config/plans';
 
 /**
  * ระบบตามงาน (Task Manager) API — migration 036. Tasks are created from the
@@ -85,6 +89,12 @@ const createTaskSchema = z
     // (free 1 / pro 2 / premium 4) is applied in the handler by
     // resolveReminderConfig, which needs the caller's plan.
     reminderIntervals: z.array(z.number().int()).max(REMINDER_INTERVAL_CHOICES.length).optional(),
+    // "จำนวนการแจ้งเตือน (ครั้ง)" — the count form of the same setting, used by
+    // the LIFF and dashboard create forms. Expanded to intervals by
+    // intervalsForCount and then put through the SAME plan gate, so this is not
+    // a way around the per-plan limit. 0 = no reminders. When both this and
+    // reminderIntervals arrive, the explicit interval list wins.
+    reminderCount: z.number().int().min(0).max(MAX_REMINDER_COUNT).optional(),
     // §4c — pro/premium only; gated in the handler, not here.
     notifyOnlyPending: z.boolean().optional(),
     items: z
@@ -142,9 +152,19 @@ const patchTaskSchema = z
     // writes it onto the task's FIRST (implicit for single/recurring) item. An
     // empty string clears it (stored NULL).
     description: z.string().trim().max(1000).optional(),
+    // §4c — "เตือนเฉพาะคนที่ยังไม่ส่งงาน" (migration 051). Editable AFTER create,
+    // not only at create time: it is the one reminder setting whose right value
+    // is only obvious once a round is under way and half the group has already
+    // submitted. Pro/premium only — gated in the handler (it needs the caller's
+    // plan, which a zod schema cannot see).
+    notifyOnlyPending: z.boolean().optional(),
   })
   .refine(
-    (v) => v.title !== undefined || v.globalDeadline !== undefined || v.description !== undefined,
+    (v) =>
+      v.title !== undefined ||
+      v.globalDeadline !== undefined ||
+      v.description !== undefined ||
+      v.notifyOnlyPending !== undefined,
     { message: 'nothing to update' },
   );
 
@@ -273,9 +293,18 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
     // §4b/§4c — reminder configuration against the caller's plan. request.plan
     // is already resolved by quotaCheck, so this costs no extra query.
+    //
+    // The count is expanded BEFORE the gate, never after: a free user asking for
+    // 3 reminders gets the 403 upgrade card, not three shots quietly trimmed to
+    // one. An explicit reminderIntervals list takes precedence — it is the more
+    // specific request, and a client that sends both means the checkboxes.
+    const requestedIntervals =
+      body.reminderIntervals ??
+      (body.reminderCount != null ? intervalsForCount(body.reminderCount) : undefined);
+
     const reminderConfig = resolveReminderConfig({
       plan: request.plan!,
-      intervals: body.reminderIntervals,
+      intervals: requestedIntervals,
       notifyOnlyPending: body.notifyOnlyPending,
     });
     if (!reminderConfig.ok) {
@@ -409,23 +438,31 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
     await scheduleReminders(app.supabase, task);
 
-    // Announce into the group (push — LIFF submits have no replyToken). The
-    // task exists and is scheduled either way; a failed push is logged loudly
-    // (quota exhaustion is this API's silent-failure trap) but not fatal.
+    // Announce into the group (push — LIFF submits have no replyToken), via the
+    // task queue: the push is a metered third-party call and this request is
+    // one the user is waiting on.
     //
     // PERSONAL: no announcement at all. The only recipient would be the caller,
     // who just submitted the form and is looking at the result — a push there
     // buys nothing and spends metered quota.
-    let announced = false;
-    const announceTo = isPersonal ? null : notifyTarget(task);
+    //
+    // Guarded by TASK_NOTIFICATIONS_ENABLED — while the flag is false no task
+    // notification push leaves the app, announcement included.
+    //
+    // `announced` now means QUEUED, not delivered. That is a deliberate change
+    // of meaning: the route no longer waits for LINE, so it cannot honestly
+    // report delivery. The LIFF only uses this to pick between "ส่งการ์ดเข้ากลุ่ม
+    // แล้ว" and a softer fallback line, and a queued-then-failed push is rare
+    // enough that claiming the optimistic copy is the right trade.
+    const announceTo = isPersonal || !TASK_NOTIFICATIONS_ENABLED ? null : notifyTarget(task);
+    const announced = announceTo !== null;
     if (announceTo) {
-      announced = true;
-      try {
-        await pushMessage(announceTo, [buildTaskCreatedFlex(task)]);
-      } catch (err) {
-        announced = false;
-        app.log.error({ err, taskId: task.id }, 'task announcement push failed');
-      }
+      enqueueTaskNotify({
+        to: announceTo,
+        messages: [buildTaskCreatedFlex(task)],
+        taskId: task.id,
+        context: 'announce',
+      });
     }
 
     // Analytics: task successfully created (funnel bottom for task_create_start).
@@ -616,11 +653,25 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
       }
 
+      // §4c plan gate. Only when the field is actually present: a title-only
+      // edit must not cost a plan lookup, and a downgraded user must still be
+      // able to rename a task they created while they were Pro. Turning the
+      // option OFF is allowed on every plan — a free user who was downgraded
+      // needs a way to clear a setting they can no longer set.
+      if (parsed.data.notifyOnlyPending === true) {
+        const plan = await ensurePlan(request);
+        const gate = resolveReminderConfig({ plan, notifyOnlyPending: true });
+        if (!gate.ok) return reply.code(gate.status).send(gate.body);
+      }
+
       const previousDeadline = task.global_deadline;
       await updateTask(app.supabase, task.id, {
         ...(parsed.data.title !== undefined ? { title: parsed.data.title } : {}),
         ...(parsed.data.globalDeadline !== undefined
           ? { global_deadline: parsed.data.globalDeadline }
+          : {}),
+        ...(parsed.data.notifyOnlyPending !== undefined
+          ? { notify_only_pending: parsed.data.notifyOnlyPending }
           : {}),
       });
 
@@ -794,27 +845,30 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
   // ---- review loop: submit → approve / reject (migration 045) ----
   //
-  // Deliberately NOT routed through BullMQ. Every notification here is a single
-  // best-effort push fired from an HTTP route the user is waiting on — exactly
-  // what POST /tasks (announce) and DELETE /tasks/:id (cancel notice) already
-  // do. A queue would buy retry for a message whose whole value is immediacy,
-  // at the cost of a new job type + worker branch. The scheduled reminders stay
-  // on the queue, where the delay is the point.
+  // Three gates, in this order — all three are load-bearing:
   //
-  // Personal tasks skip the push entirely (same rule as announce/cancel): the
-  // only recipient would be the person who just pressed the button.
-  async function notifyTaskChat(
-    task: TaskWithDetails,
-    text: string,
-    context: string,
-  ): Promise<void> {
+  //  1. TASK_NOTIFICATIONS_ENABLED. This used to be missing here, and it was a
+  //     real hole: while every other task push was disabled, submit / approve /
+  //     reject kept messaging groups. The master switch now means what it says —
+  //     off = no task push leaves the app, review loop included.
+  //  2. is_personal. The only recipient would be the person who just pressed the
+  //     button (same rule as announce/cancel).
+  //  3. notifyTarget(). The single task → destination mapper; a null target
+  //     means a row violating the migration-043 CHECK, so stand down rather than
+  //     guess a destination.
+  //
+  // Delivery goes through the task queue (see TaskNotifyJob): a push is metered
+  // third-party I/O and must not run inside a request the user is waiting on.
+  function notifyTaskChat(task: TaskWithDetails, text: string, context: string): void {
+    if (!TASK_NOTIFICATIONS_ENABLED) return;
     const to = task.is_personal ? null : notifyTarget(task);
     if (!to) return;
-    try {
-      await pushMessage(to, [{ type: 'text', text }]);
-    } catch (err) {
-      app.log.error({ err, taskId: task.id, context }, 'task review push failed');
-    }
+    enqueueTaskNotify({
+      to,
+      messages: [{ type: 'text', text }],
+      taskId: task.id,
+      context,
+    });
   }
 
   // ---- POST /tasks/:id/items/:itemId/submit — assignee sends work back for review ----
@@ -855,7 +909,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
 
       const who = me.display_name || 'สมาชิก';
       const what = task.type === 'single' ? task.title : `${task.title} — ${item.title}`;
-      await notifyTaskChat(task, `${who} ส่งงาน "${what}" กลับมาแล้วน้า รอคนสั่งตรวจอยู่`, 'submit');
+      notifyTaskChat(task, `${who} ส่งงาน "${what}" กลับมาแล้วน้า รอคนสั่งตรวจอยู่`, 'submit');
 
       void logEvent(app.supabase, {
         eventType: 'task_mark_done',
@@ -902,7 +956,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (taskDone) await cancelReminders(app.supabase, task);
 
       const what = task.type === 'single' ? task.title : `${task.title} — ${item.title}`;
-      await notifyTaskChat(task, `งาน "${what}" ผ่านแล้วน้า ขอบคุณมากน้า`, 'approve');
+      notifyTaskChat(task, `งาน "${what}" ผ่านแล้วน้า ขอบคุณมากน้า`, 'approve');
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       return { task: toTaskDto(updated), taskDone };
@@ -941,11 +995,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       await rejectTaskItem(app.supabase, item.id, parsed.data.note);
 
       const what = task.type === 'single' ? task.title : `${task.title} — ${item.title}`;
-      await notifyTaskChat(
-        task,
-        `งาน "${what}" ถูกตีกลับน้า\nเหตุผล: ${parsed.data.note}`,
-        'reject',
-      );
+      notifyTaskChat(task, `งาน "${what}" ถูกตีกลับน้า\nเหตุผล: ${parsed.data.note}`, 'reject');
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
       return { task: toTaskDto(updated) };
@@ -977,19 +1027,21 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       // Withdraw outstanding reminders + the recurring rollover job.
       await cancelReminders(app.supabase, task);
 
-      // Notify the group (push — same sanctioned exception as the announcement).
-      // Best-effort: the cancel already committed; a failed push is logged only.
+      // Notify the group (push — same sanctioned exception as the announcement),
+      // queued like every other task push. The cancel already committed; a
+      // failed notice is logged by the worker and never fails this request.
       // Skipped for personal tasks for the same reason as the announcement: the
       // only recipient is the caller who just pressed cancel.
-      const cancelTo = task.is_personal ? null : notifyTarget(task);
+      // Guarded by TASK_NOTIFICATIONS_ENABLED
+      const cancelTo =
+        task.is_personal || !TASK_NOTIFICATIONS_ENABLED ? null : notifyTarget(task);
       if (cancelTo) {
-        try {
-          await pushMessage(cancelTo, [
-            { type: 'text', text: `ยกเลิกงาน "${task.title}" แล้วน้า ไม่ต้องทำต่อแล้ว` },
-          ]);
-        } catch (err) {
-          app.log.error({ err, taskId: task.id }, 'task cancel push failed');
-        }
+        enqueueTaskNotify({
+          to: cancelTo,
+          messages: [{ type: 'text', text: `ยกเลิกงาน "${task.title}" แล้วน้า ไม่ต้องทำต่อแล้ว` }],
+          taskId: task.id,
+          context: 'cancel',
+        });
       }
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;

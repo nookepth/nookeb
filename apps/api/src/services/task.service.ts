@@ -584,7 +584,13 @@ export async function listTasksForGroup(
 export async function updateTask(
   supabase: SupabaseClient,
   taskId: string,
-  patch: { title?: string; global_deadline?: string; status?: TaskRecord['status'] },
+  patch: {
+    title?: string;
+    global_deadline?: string;
+    status?: TaskRecord['status'];
+    /** §4c — "เตือนเฉพาะคนที่ยังไม่ส่งงาน" (migration 051). Plan-gated at the route. */
+    notify_only_pending?: boolean;
+  },
 ): Promise<void> {
   const { error } = await supabase.from('tasks').update(patch).eq('id', taskId);
   if (error) throw error;
@@ -1148,6 +1154,7 @@ export function toTaskDto(task: TaskWithDetails): TaskDto {
     status: task.status,
     createdByLineUid: task.created_by_line_uid,
     createdAt: task.created_at,
+    notifyOnlyPending: task.notify_only_pending === true,
     items: task.items.map((item) => ({
       id: item.id,
       title: item.title,

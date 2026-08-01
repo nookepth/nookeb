@@ -269,7 +269,41 @@ export interface TaskRecurSweepJob {
   type: 'task_recur_sweep';
 }
 
-export type TaskJob = TaskReminderJob | TaskRecurNextJob | TaskRecurSweepJob;
+/**
+ * Job: deliver ONE immediate task push (group announcement on create, the
+ * ยกเลิกงาน notice on cancel, and the review-loop notices submit/approve/reject).
+ *
+ * These used to be fired inline from the HTTP route with a bare `pushMessage`.
+ * They go through the queue now for two reasons:
+ *
+ *  1. Project rule — every LINE push is enqueued, never called from a request
+ *     handler. A push is a metered third-party call; a request the user is
+ *     waiting on must not block on it, and a failed one must not be lost.
+ *  2. It puts ALL task pushes behind the ONE worker rate limiter (see
+ *     createTaskReminderWorker), which is what keeps a burst of reminders and a
+ *     burst of review notices from competing for the same LINE budget.
+ *
+ * `messages` is the LINE message array verbatim (text or Flex). It is typed
+ * loosely here on purpose: the Flex builders live in the API package and this
+ * shared package must not depend on them. BullMQ serialises the payload to JSON
+ * either way, so nothing is lost.
+ */
+export interface TaskNotifyJob {
+  type: 'task_notify';
+  /** LINE destination: a group id for group tasks, a user id for personal ones. */
+  to: string;
+  messages: unknown[];
+  /** Task this notice belongs to — for logging/idempotency only. */
+  taskId: string;
+  /** Free-text tag for logs: 'announce' | 'cancel' | 'submit' | 'approve' | 'reject'. */
+  context: string;
+}
+
+export type TaskJob =
+  | TaskReminderJob
+  | TaskRecurNextJob
+  | TaskRecurSweepJob
+  | TaskNotifyJob;
 
 /**
  * BullMQ queue for Google Sheets sync (migration 046) — its OWN queue, separate
@@ -374,6 +408,15 @@ export interface TaskDto {
   status: TaskStatus;
   createdByLineUid: string;
   createdAt: string;
+  /**
+   * §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" (migration 051). Exposed so the task detail
+   * page can render the creator's checkbox in its CURRENT state rather than
+   * guessing — a toggle that always renders unchecked silently loses the
+   * setting the next time anyone saves the form. Non-optional with a `false`
+   * default from toTaskDto: a missing column and an off toggle mean the same
+   * thing to every reader.
+   */
+  notifyOnlyPending: boolean;
   items: TaskItemDto[];
   links: TaskLinkDto[];
   /**

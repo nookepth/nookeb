@@ -89,7 +89,7 @@ export async function handleTaskPostback(
       // webhook postback has no such hook, so every DB write here must enqueue
       // its own mirror sync or the sheet silently never learns about it.
       enqueueSync(task.id, 'upsert');
-      await replyText(`รับทราบ "${task.title}" แล้วน้า สู้ๆ น้า`);
+      // Removed: รับทราบ confirmation per product decision
       return true;
     }
 

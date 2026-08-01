@@ -21,8 +21,10 @@ import {
   addTaskLink,
   deleteTaskLink,
   listGroupTaskMembers,
+  downloadTaskIcs,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { trackEvent } from '@/lib/track';
 import { formatBytes } from '@/lib/format';
 import { CloseIcon } from '@/components/icons';
 import styles from '../tasks.module.css';
@@ -79,26 +81,21 @@ function toLocalInput(iso: string | null): string {
   )}`;
 }
 
-function buildGoogleCalendarUrl(title: string, deadlineIso: string | null): string {
-  if (!deadlineIso) return 'https://calendar.google.com';
-  const fmt = (d: Date) => {
-    const date = new Date(d);
-    date.setSeconds(0, 0);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return (
-      date.getFullYear().toString() +
-      pad(date.getMonth() + 1) +
-      pad(date.getDate()) +
-      'T' +
-      pad(date.getHours()) +
-      pad(date.getMinutes()) +
-      '00'
-    );
-  };
-  const start = new Date(deadlineIso);
-  const startStr = fmt(start);
-  const text = encodeURIComponent(title || '');
-  return `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${text}&dates=${startStr}/${startStr}`;
+/**
+ * Filename for the downloaded .ics. Derived from the task title so a user who
+ * saves several tasks does not end up with nookeb-task(3).ics — the API's
+ * Content-Disposition is a fixed generic name, which is right for the LINE
+ * button (no title context there) and wrong here.
+ *
+ * Stripped to characters every OS accepts as a filename; an empty result falls
+ * back to the generic name rather than producing a bare ".ics".
+ */
+function icsFilename(title: string): string {
+  const safe = title
+    .replace(/[\\/:*?"<>|]/g, '')
+    .trim()
+    .slice(0, 60);
+  return safe ? `${safe}.ics` : 'nookeb-task.ics';
 }
 
 /* ---- small inline icons (brand rule: no emoji in UI text) ---- */
@@ -231,6 +228,8 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
   const [editTitle, setEditTitle] = useState('');
   const [editDeadline, setEditDeadline] = useState('');
   const [editDescription, setEditDescription] = useState('');
+  /** §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" — seeded from the task on openEdit. */
+  const [editOnlyPending, setEditOnlyPending] = useState(false);
   const [addingLink, setAddingLink] = useState(false);
   const [linkUrl, setLinkUrl] = useState('');
   const [linkLabel, setLinkLabel] = useState('');
@@ -303,6 +302,11 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setState('login');
+      } else if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
+        // Show the API's own copy: it names the feature and the plan that
+        // unlocks it, which a generic "ทำรายการไม่สำเร็จ" cannot — and unlike a
+        // transient failure, retrying will never fix this one.
+        showToast(err.message);
       } else {
         showToast(errMsg);
       }
@@ -381,10 +385,19 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
     setEditTitle(task.title);
     setEditDeadline(toLocalInput(task.globalDeadline));
     setEditDescription(task.items[0]?.description ?? '');
+    setEditOnlyPending(task.notifyOnlyPending);
     setEditOpen(true);
   };
   const saveEdit = async () => {
-    const patch: { title?: string; globalDeadline?: string; description?: string } = {};
+    const patch: {
+      title?: string;
+      globalDeadline?: string;
+      description?: string;
+      notifyOnlyPending?: boolean;
+    } = {};
+    // §4c — sent only when it CHANGED, so a plain rename by a downgraded user
+    // never trips the Pro gate on a value they did not touch.
+    if (editOnlyPending !== task.notifyOnlyPending) patch.notifyOnlyPending = editOnlyPending;
     if (editTitle.trim() && editTitle.trim() !== task.title) patch.title = editTitle.trim();
     if (!isRecurring && editDeadline) {
       const iso = new Date(editDeadline).toISOString();
@@ -555,14 +568,27 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
       {/* action buttons row — evenly spaced, consistent border-radius */}
       {((isCreator && !isClosed) || calendarDeadline) && (
         <div className={styles.detailActions}>
+          {/* Downloads the real .ics from GET /tasks/:id/ics instead of the old
+              Google-Calendar template redirect. Three things the redirect could
+              not do: it carries EVERY item's deadline (a multi task used to
+              export only the global one), it carries the -1d/-3h alarms the
+              endpoint already builds, and it works with whatever calendar app
+              the user actually uses. Staying on the page also means the
+              in-progress edit sheet / scroll position survive. */}
           {calendarDeadline && (
-            <a
+            <button
+              type="button"
               className={styles.secondaryBtn}
               style={{ flex: 1, padding: '13px 10px', whiteSpace: 'nowrap' }}
-              href={buildGoogleCalendarUrl(task.title, calendarDeadline)}
+              onClick={() => {
+                trackEvent('task_ics_download', { task_type: task.type });
+                void downloadTaskIcs(task.id, icsFilename(task.title)).catch(() => {
+                  showToast('ดาวน์โหลดไฟล์ปฏิทินไม่สำเร็จ ลองใหม่อีกทีน้า');
+                });
+              }}
             >
               <CalendarIcon /> บันทึกลงปฏิทิน
-            </a>
+            </button>
           )}
           {isCreator && !isClosed && (
             <button
@@ -980,6 +1006,35 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
                   maxLength={1000}
                 />
               </>
+            )}
+            {/* §4c — group tasks only. A งานส่วนตัว has a single assignee (the
+                creator), so "เตือนเฉพาะคนที่ยังไม่ส่งงาน" has nobody to filter
+                out. Shown to every plan; the API answers PLAN_UPGRADE_REQUIRED
+                when a free user tries to turn it ON, and `run` surfaces that
+                message. */}
+            {!task.isPersonal && (
+              <label
+                style={{
+                  display: 'flex',
+                  alignItems: 'flex-start',
+                  gap: 10,
+                  marginTop: 14,
+                  cursor: 'pointer',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={editOnlyPending}
+                  onChange={(e) => setEditOnlyPending(e.target.checked)}
+                  style={{ width: 18, height: 18, marginTop: 1, flexShrink: 0 }}
+                />
+                <span style={{ fontSize: 13, lineHeight: 1.5 }}>
+                  เตือนเฉพาะคนที่ยังไม่ส่งงาน
+                  <span style={{ display: 'block', fontSize: 12, color: '#6B7280' }}>
+                    คนที่ส่งงานกลับมาแล้วจะไม่โดนเตือนซ้ำ — ใช้ได้กับแพ็กเกจ Pro ขึ้นไปน้า
+                  </span>
+                </span>
+              </label>
             )}
             <button
               type="button"

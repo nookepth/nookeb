@@ -766,7 +766,25 @@ export function updateDiaryNotification(settings: DiaryNotificationSettingsDto):
       notify_time: settings.notifyTime,
       is_enabled: settings.isEnabled,
       timezone: settings.timezone,
+      notification_enabled: settings.notificationEnabled,
     }),
+  });
+}
+
+/**
+ * Toggle the LINE-push opt-in on its own (migration 053).
+ *
+ * Its own endpoint rather than a field on the PUT above so the toggle can be
+ * optimistic without carrying — and therefore without being able to overwrite —
+ * the banner time and timezone the user may be editing at the same moment.
+ * Returns the value the server stored; reconcile against it rather than
+ * assuming the optimistic value won.
+ */
+export function setDiaryPushEnabled(enabled: boolean): Promise<{ notificationEnabled: boolean }> {
+  return apiFetch(`/diary/notification/push`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notification_enabled: enabled }),
   });
 }
 
@@ -1320,16 +1338,58 @@ export function deleteTaskFile(taskId: string, attachmentId: string): Promise<{ 
   return apiFetch(`/tasks/${taskId}/files/${attachmentId}`, { method: 'DELETE' });
 }
 
-/** Creator edits the task title and/or global deadline (reschedules reminders). */
+/**
+ * Creator edits the task title and/or global deadline (reschedules reminders).
+ *
+ * `notifyOnlyPending` is §4c — Pro and above. Turning it ON can answer 403
+ * PLAN_UPGRADE_REQUIRED, which the caller surfaces as the upgrade card; turning
+ * it OFF is allowed on every plan.
+ */
 export function updateTask(
   taskId: string,
-  patch: { title?: string; globalDeadline?: string; description?: string },
+  patch: {
+    title?: string;
+    globalDeadline?: string;
+    description?: string;
+    notifyOnlyPending?: boolean;
+  },
 ): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks/${taskId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(patch),
   });
+}
+
+/**
+ * Download a task's .ics and hand it to the browser as a file.
+ *
+ * Fetches the BYTES rather than navigating to the endpoint. A plain
+ * `<a href>`/redirect leaves the task page — and on iOS Safari a navigation to
+ * a `text/calendar` response is just as likely to render as text or open a
+ * blank tab as it is to hand off to Calendar. Fetch + blob keeps the user
+ * exactly where they were and always produces a real file.
+ *
+ * GET /tasks/:id/ics is unauthenticated by design (the task UUID is the
+ * capability — the button in the LINE Flex card has no cookie to send), so this
+ * needs no session; it still goes through the same-origin proxy like every
+ * other call.
+ */
+export async function downloadTaskIcs(taskId: string, filename = 'nookeb-task.ics'): Promise<void> {
+  const res = await fetch(`${API_URL}/tasks/${taskId}/ics`);
+  if (!res.ok) throw new ApiError(res.status, 'ดาวน์โหลดไฟล์ปฏิทินไม่สำเร็จ');
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on the next tick, not immediately: Safari reads the blob
+  // asynchronously after the click and a synchronous revoke races it to an
+  // empty download.
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 // ---- Google Sheets integration (migration 046) ----
@@ -1486,6 +1546,12 @@ export function createPersonalTask(input: {
   description?: string;
   /** ความเร่งด่วน (migration 048); omitted = ปกติ */
   urgency?: 'urgent_max' | 'urgent' | 'normal' | 'relaxed';
+  /**
+   * จำนวนการแจ้งเตือน (ครั้ง) before the deadline, 0–4. Omitted or 0 = none.
+   * The plan ceiling (free 1 / pro 2 / premium 4) is enforced by the API, which
+   * answers an over-limit request with 403 REMINDER_INTERVAL_LIMIT.
+   */
+  reminderCount?: number;
 }): Promise<{ task: TaskDto }> {
   return apiFetch(`/tasks`, {
     method: 'POST',
@@ -1496,6 +1562,7 @@ export function createPersonalTask(input: {
       title: input.title,
       globalDeadline: input.globalDeadline,
       ...(input.urgency ? { urgency: input.urgency } : {}),
+      ...(input.reminderCount ? { reminderCount: input.reminderCount } : {}),
       items: [
         {
           title: input.title,

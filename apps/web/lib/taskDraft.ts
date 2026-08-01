@@ -42,6 +42,28 @@ export const URGENCY_OPTIONS: { value: TaskUrgency; label: string; color: string
   { value: 'urgent_max', label: 'ด่วนมาก', color: '#C62828' },
 ];
 
+/**
+ * Ceiling for "จำนวนการแจ้งเตือน (ครั้ง)". Mirrors MAX_REMINDER_COUNT in
+ * apps/api/src/config/plans.ts, which is the source of truth — there are four
+ * distinct lead times to hand out (1 วัน / 3 ชม. / 3 วัน / 2 วัน ก่อนกำหนด), so a
+ * fifth "ครั้ง" would have no time to fire at.
+ *
+ * This is only the field's range. How many the caller may actually schedule is
+ * their PLAN limit (free 1 / pro 2 / premium 4), enforced server-side; the form
+ * shows the limit as a hint and surfaces the API's upgrade message if exceeded,
+ * rather than second-guessing the plan client-side.
+ */
+export const MAX_REMINDER_COUNT = 4;
+
+/** Human copy for each count — what the creator is actually buying into. */
+export const REMINDER_COUNT_HINT: Record<number, string> = {
+  0: 'ไม่ต้องเตือน',
+  1: 'เตือน 1 วันก่อนกำหนด',
+  2: '+ 3 ชั่วโมงก่อนกำหนด',
+  3: '+ 3 วันก่อนกำหนด',
+  4: '+ 2 วันก่อนกำหนด',
+};
+
 export interface TaskDraft {
   /**
    * 'personal' = งานส่วนตัว created from a 1-on-1 DM (migration 043): groupId
@@ -53,6 +75,26 @@ export interface TaskDraft {
   type: 'single' | 'multi' | 'recurring';
   /** ความเร่งด่วน — always present in new drafts; old drafts default ปกติ. */
   urgency: TaskUrgency;
+  /**
+   * จำนวนการแจ้งเตือน (ครั้ง) before the deadline, 0–MAX_REMINDER_COUNT.
+   *
+   * 0 = no reminders, and it is the DEFAULT: reminders are pushes, and a task
+   * must not start chasing people because a form field happened to be
+   * pre-filled. How many a plan may actually schedule is enforced server-side
+   * (free 1 / pro 2 / premium 4) — this is the request, not the entitlement.
+   */
+  reminderCount: number;
+  /**
+   * §4c "เตือนเฉพาะคนที่ยังไม่ส่งงาน" — when on, a reminder round skips assignees
+   * whose item is already SUBMITTED (they have done their part; chasing them is
+   * exactly what this option prevents).
+   *
+   * Pro/premium only, enforced server-side — the form shows it to everyone and
+   * lets the API answer with the upgrade copy, the same shape as reminderCount's
+   * per-plan ceiling. Meaningless for งานส่วนตัว (one assignee, yourself), so the
+   * personal flow never renders it and never sends it.
+   */
+  notifyOnlyPending: boolean;
   title: string;
   /** datetime-local value */
   globalDeadline: string | null;
@@ -75,6 +117,8 @@ export function emptyDraft(type: TaskDraft['type'], scope: TaskScope = 'group'):
     groupId: null,
     type,
     urgency: 'normal',
+    reminderCount: 0,
+    notifyOnlyPending: false,
     title: '',
     globalDeadline: null,
     description: '',
@@ -91,8 +135,16 @@ export function loadDraft(): TaskDraft | null {
     const raw = sessionStorage.getItem(KEY);
     if (!raw) return null;
     const draft = JSON.parse(raw) as TaskDraft;
-    // A draft written before scope/urgency existed: group draft, ปกติ urgency.
-    return { ...draft, scope: draft.scope ?? 'group', urgency: draft.urgency ?? 'normal' };
+    // A draft written before scope/urgency/reminderCount existed: group draft,
+    // ปกติ urgency, no reminders (0 — never invent chases the creator never asked
+    // for, same rule as the server's "selected nothing schedules nothing").
+    return {
+      ...draft,
+      scope: draft.scope ?? 'group',
+      urgency: draft.urgency ?? 'normal',
+      reminderCount: typeof draft.reminderCount === 'number' ? draft.reminderCount : 0,
+      notifyOnlyPending: draft.notifyOnlyPending === true,
+    };
   } catch {
     return null;
   }

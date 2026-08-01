@@ -8,6 +8,8 @@ import {
   clearDraft,
   loadDraft,
   localToIso,
+  MAX_REMINDER_COUNT,
+  REMINDER_COUNT_HINT,
   saveDraft,
   URGENCY_OPTIONS,
   type TaskDraft,
@@ -157,18 +159,31 @@ export default function DetailPage({ params }: { params: { type: string } }) {
     try {
       // personal sends NO groupId and NO assignees — the API rejects both for
       // this scope and derives owner+assignee from the session (migration 043).
+      // reminderCount rides on both scopes. Sent only when > 0 so an untouched
+      // form stays byte-identical to what older builds posted — the API treats
+      // absent and 0 the same (no shots), but not sending it keeps the request
+      // honest about what the creator actually chose.
+      const reminder = draft.reminderCount > 0 ? { reminderCount: draft.reminderCount } : {};
+      // §4c — group scope only, and only when ticked. A personal task has one
+      // assignee (the creator), so "เตือนเฉพาะคนที่ยังไม่ส่งงาน" has nothing to
+      // filter; sending it there would spend a Pro gate on a no-op.
+      const onlyPending =
+        !isPersonal && draft.notifyOnlyPending ? { notifyOnlyPending: true } : {};
       const base = isPersonal
         ? {
             scope: 'personal' as const,
             title: draft.title.trim(),
             type: draft.type,
             urgency: draft.urgency,
+            ...reminder,
           }
         : {
             groupId: draft.groupId!,
             title: draft.title.trim(),
             type: draft.type,
             urgency: draft.urgency,
+            ...reminder,
+            ...onlyPending,
           };
       const assigneesOf = (members: { lineUid: string }[]) =>
         isPersonal ? {} : { assignees: members.map((a) => a.lineUid) };
@@ -417,6 +432,88 @@ export default function DetailPage({ params }: { params: { type: string } }) {
             );
           })}
         </div>
+      </section>
+
+      {/* จำนวนการแจ้งเตือน — how many times หนูเก็บ chases before the deadline.
+          Default 0: a reminder is a LINE push, so it happens because the
+          creator asked, never because a field defaulted to something. The
+          per-plan ceiling is enforced by the API (free 1 / pro 2 / premium 4)
+          and its message is shown verbatim if the request exceeds it. */}
+      <section className={styles.section}>
+        <label className={styles.fieldLabel} htmlFor="reminderCount">
+          จำนวนการแจ้งเตือน (ครั้ง)
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input
+            id="reminderCount"
+            className={styles.input}
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={MAX_REMINDER_COUNT}
+            step={1}
+            value={draft.reminderCount}
+            onChange={(e) => {
+              // Clamp on the way IN so the draft can never hold a value the API
+              // would reject — an empty field reads as 0, not NaN.
+              const raw = Number.parseInt(e.target.value, 10);
+              const next = Number.isFinite(raw) ? Math.min(MAX_REMINDER_COUNT, Math.max(0, raw)) : 0;
+              setDraft({ ...draft, reminderCount: next });
+            }}
+            style={{ width: 96, textAlign: 'center' }}
+          />
+          <span style={{ fontSize: 13, color: 'var(--text-muted, #6B7280)' }}>
+            {REMINDER_COUNT_HINT[draft.reminderCount] ?? ''}
+          </span>
+        </div>
+        <p
+          style={{
+            margin: '6px 0 0',
+            fontSize: 12,
+            lineHeight: 1.5,
+            color: 'var(--text-muted, #6B7280)',
+          }}
+        >
+          {TASK_NOTIFICATIONS_ENABLED
+            ? `0 = ไม่เตือน · สูงสุด ${MAX_REMINDER_COUNT} ครั้ง — จำนวนที่ตั้งได้จริงขึ้นกับแพ็กเกจ (ฟรี 1 / Pro 2 / Premium 4)`
+            : `บันทึกไว้กับงานได้เลยน้า ตอนนี้หนูยังไม่ได้เปิดระบบเตือนอัตโนมัติ แต่ค่าที่ตั้งไว้จะถูกใช้ทันทีที่เปิด`}
+        </p>
+
+        {/* §4c — group tasks only (a personal task has one assignee: you).
+            Shown to every plan; the API answers PLAN_UPGRADE_REQUIRED for free
+            users and the message is surfaced verbatim, the same way the
+            reminder-count ceiling is handled. Hidden entirely when the creator
+            asked for no reminders — there is no round for it to filter. */}
+        {!isPersonal && draft.reminderCount > 0 && (
+          <label
+            style={{
+              display: 'flex',
+              alignItems: 'flex-start',
+              gap: 10,
+              marginTop: 14,
+              cursor: 'pointer',
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={draft.notifyOnlyPending}
+              onChange={(e) => setDraft({ ...draft, notifyOnlyPending: e.target.checked })}
+              style={{ width: 18, height: 18, marginTop: 1, flexShrink: 0 }}
+            />
+            <span style={{ fontSize: 13, lineHeight: 1.5 }}>
+              เตือนเฉพาะคนที่ยังไม่ส่งงาน
+              <span
+                style={{
+                  display: 'block',
+                  fontSize: 12,
+                  color: 'var(--text-muted, #6B7280)',
+                }}
+              >
+                คนที่ส่งงานกลับมาแล้วจะไม่โดนเตือนซ้ำ — ใช้ได้กับแพ็กเกจ Pro ขึ้นไปน้า
+              </span>
+            </span>
+          </label>
+        )}
       </section>
 
       {/* single */}

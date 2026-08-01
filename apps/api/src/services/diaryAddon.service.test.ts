@@ -62,6 +62,11 @@ interface FakeState {
   subs: DiaryAddonSubscriptionRecord[];
   logs: LogRow[];
   entries: DiaryEntryRow[];
+  /**
+   * diary_notification_settings rows touched by createSubscription's push
+   * opt-in write (migration 053) — user_id → notification_enabled.
+   */
+  pushOptIn: Map<string, boolean>;
 }
 
 const UNIQUE_VIOLATION = { code: '23505', message: 'duplicate key value' };
@@ -183,6 +188,16 @@ function fakeSupabase(state: FakeState) {
         },
 
         upsert(values: Record<string, unknown>) {
+          // createSubscription grants the push opt-in as a side effect. It is
+          // fire-and-forget and terminal (no .select()), so the fake records it
+          // and returns the bare PostgREST result shape.
+          if (table === 'diary_notification_settings') {
+            state.pushOptIn.set(
+              values.user_id as string,
+              values.notification_enabled as boolean,
+            );
+            return Promise.resolve({ data: null, error: null });
+          }
           if (table !== 'diary_addon_subscriptions') throw new Error('unexpected upsert');
           const existing = state.subs.find((s) => s.user_id === values.user_id);
           let row: DiaryAddonSubscriptionRecord;
@@ -241,7 +256,7 @@ let state: FakeState;
 let db: SupabaseClient;
 
 beforeEach(() => {
-  state = { subs: [], logs: [], entries: [] };
+  state = { subs: [], logs: [], entries: [], pushOptIn: new Map() };
   db = fakeSupabase(state);
 });
 
@@ -370,6 +385,14 @@ describe('createSubscription', () => {
     assert.equal(row.price_thb, 49);
     assert.equal(row.expires_at, '2026-09-01T10:00:00.000Z');
     assert.equal(state.subs.length, 1);
+  });
+
+  it('grants the LINE push opt-in, so the thing they paid for actually sends', async () => {
+    // migration 053 defaults notification_enabled to FALSE. Without this write a
+    // buyer would get a working subscription that never delivers — the exact
+    // failure the opt-in must not cause for someone who paid to be nudged.
+    await createSubscription(db, 'u1', 'monthly', now);
+    assert.equal(state.pushOptIn.get('u1'), true);
   });
 
   it('records a yearly row at the yearly price', async () => {

@@ -2,7 +2,12 @@
 
 import { useState } from 'react';
 import { ApiError, createPersonalTask } from '@/lib/api';
-import { URGENCY_OPTIONS, type TaskUrgency } from '@/lib/taskDraft';
+import {
+  MAX_REMINDER_COUNT,
+  REMINDER_COUNT_HINT,
+  URGENCY_OPTIONS,
+  type TaskUrgency,
+} from '@/lib/taskDraft';
 import styles from './tasks.module.css';
 
 /** Modal form for creating a งานส่วนตัว directly from the dashboard.
@@ -31,6 +36,9 @@ export default function CreatePersonalTaskModal({
   const [deadline, setDeadline] = useState('');
   const [description, setDescription] = useState('');
   const [urgency, setUrgency] = useState<TaskUrgency>('normal');
+  // จำนวนการแจ้งเตือน — 0 by default; a reminder is a LINE push, so it is opted
+  // into, not defaulted into. The plan ceiling is the API's to enforce.
+  const [reminderCount, setReminderCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -56,6 +64,7 @@ export default function CreatePersonalTaskModal({
         title: title.trim(),
         globalDeadline: new Date(deadline).toISOString(),
         urgency,
+        ...(reminderCount > 0 ? { reminderCount } : {}),
         ...(description.trim() ? { description: description.trim() } : {}),
       });
       onCreated();
@@ -65,6 +74,11 @@ export default function CreatePersonalTaskModal({
         onQuotaExceeded(err.details?.feature ?? 'tasks', err.details?.resetAt);
       } else if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
         onPlanGate(err.details?.requiredPlan);
+      } else if (err instanceof ApiError && err.code === 'REMINDER_INTERVAL_LIMIT') {
+        // Shown INLINE, unlike the quota/plan cards above: this one the user can
+        // fix right here by lowering the count, so closing the form would be
+        // hostile. The API's message already names their limit.
+        setError(err.message);
       } else setError('สร้างงานไม่สำเร็จ ลองใหม่อีกทีน้า');
     } finally {
       setSubmitting(false);
@@ -145,6 +159,36 @@ export default function CreatePersonalTaskModal({
             );
           })}
         </div>
+
+        <label className={styles.fieldLabel} style={{ marginTop: 12 }} htmlFor="reminderCount">
+          จำนวนการแจ้งเตือน (ครั้ง)
+        </label>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <input
+            id="reminderCount"
+            className={styles.input}
+            type="number"
+            inputMode="numeric"
+            min={0}
+            max={MAX_REMINDER_COUNT}
+            step={1}
+            value={reminderCount}
+            onChange={(e) => {
+              const raw = Number.parseInt(e.target.value, 10);
+              setReminderCount(
+                Number.isFinite(raw) ? Math.min(MAX_REMINDER_COUNT, Math.max(0, raw)) : 0,
+              );
+            }}
+            style={{ width: 96, textAlign: 'center' }}
+          />
+          <span style={{ fontSize: 13, color: '#6B7280' }}>
+            {REMINDER_COUNT_HINT[reminderCount] ?? ''}
+          </span>
+        </div>
+        <p style={{ margin: '6px 0 0', fontSize: 12, lineHeight: 1.5, color: '#6B7280' }}>
+          0 = ไม่เตือน · สูงสุด {MAX_REMINDER_COUNT} ครั้ง — จำนวนที่ตั้งได้จริงขึ้นกับแพ็กเกจ (ฟรี 1 / Pro 2 /
+          Premium 4)
+        </p>
 
         <label className={styles.fieldLabel} style={{ marginTop: 12 }}>
           รายละเอียด (ไม่บังคับ)
