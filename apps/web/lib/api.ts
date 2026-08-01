@@ -1617,3 +1617,73 @@ export interface BoostStatusResponse {
 export function getBoosts(): Promise<BoostStatusResponse> {
   return apiFetch(`/boosts`);
 }
+
+/* ============================================================
+   หนูเก็บความทรงจำ (diary reminder add-on) — routes/diaryAddon.ts,
+   migration 052
+   ============================================================ */
+
+export interface DiaryAddonSubscriptionDto {
+  status: 'active' | 'cancelled' | 'expired';
+  billingCycle: BillingCycle;
+  priceThb: number;
+  startedAt: string;
+  expiresAt: string;
+  cancelledAt: string | null;
+  /** 'HH:MM', Bangkok wall clock. */
+  notifyTime: string;
+  daysLeft: number;
+}
+
+export interface DiaryAddonStatusResponse {
+  /** ชื่อจาก config/plans.ts — no emoji, never hard-coded in a component. */
+  name: string;
+  /** Server-side master switch (DIARY_ADDON_ENABLED). */
+  enabled: boolean;
+  /** THE prices. A component must never write 49 or 365 itself. */
+  pricing: { monthly: number; yearly: number };
+  currency: string;
+  active: boolean;
+  subscription: DiaryAddonSubscriptionDto | null;
+}
+
+/**
+ * The caller's add-on state plus the price list.
+ *
+ * Not gated: a user who does not hold the add-on still gets `active: false`
+ * and the prices, which is what the plans page renders the offer from.
+ */
+export function getDiaryAddonStatus(): Promise<DiaryAddonStatusResponse> {
+  return apiFetch(`/diary-addon/status`);
+}
+
+/**
+ * NOT CALLED FROM THE UI. Payment is not live, so the plans page shows a
+ * coming-soon modal instead — wiring a button to this would hand out a paid
+ * add-on for free.
+ *
+ * TODO(payment): call this only from a payment-success flow.
+ */
+export function subscribeDiaryAddon(
+  billingCycle: BillingCycle,
+): Promise<{ subscription: DiaryAddonSubscriptionDto }> {
+  return apiFetch(`/diary-addon/subscribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ billingCycle }),
+  });
+}
+
+/** Cancel = "do not renew". Access continues until `expiresAt`. */
+export function cancelDiaryAddon(): Promise<{ cancelledAt: string; expiresAt: string }> {
+  return apiFetch(`/diary-addon/cancel`, { method: 'POST' });
+}
+
+/** `notifyTime` is 'HH:MM' Bangkok time, 00:00–23:59. */
+export function setDiaryAddonNotifyTime(notifyTime: string): Promise<{ notifyTime: string }> {
+  return apiFetch(`/diary-addon/notify-time`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ notifyTime }),
+  });
+}

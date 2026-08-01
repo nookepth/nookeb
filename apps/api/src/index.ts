@@ -35,6 +35,7 @@ import staticRoutes from './routes/static';
 import plansRoutes from './routes/plans';
 import boostRoutes from './routes/boosts';
 import supportRoutes from './routes/support';
+import diaryAddonRoutes from './routes/diaryAddon';
 import quotaPlugin from './middleware/quota';
 import { flushAll } from './services/upload-queue';
 
@@ -193,6 +194,9 @@ async function main(): Promise<void> {
   await app.register(plansRoutes);
   await app.register(boostRoutes);
   await app.register(supportRoutes);
+  // หนูเก็บความทรงจำ — the diary-reminder add-on (migration 052). Separate from
+  // plansRoutes on purpose: it is an add-on any tier may hold, not a plan.
+  await app.register(diaryAddonRoutes);
 
   // Root error handler — sanitizes every error the routes let bubble up
   // (previously Fastify's default handler echoed error.message, which could leak

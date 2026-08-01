@@ -15,6 +15,7 @@ import {
 import { startLineLogin } from '@/lib/auth';
 import { BOX_SHARE_COPY, shareOrCopy } from '@/lib/share';
 import { SITE_URL } from '@/lib/site';
+import { QuotaBanner, quotaLevel } from '@/components/QuotaBanner';
 import styles from './page.module.css';
 
 /**
@@ -165,12 +166,14 @@ export default function LegacyBoxListPage() {
    * feature is unlimited: showing a number the server didn't confirm would be
    * worse than showing one fewer number.
    */
+  const boxQuota = useMemo(() => findQuota(quotas, 'gift_boxes'), [quotas]);
   const boxQuotaLabel = useMemo(() => {
-    const q = findQuota(quotas, 'gift_boxes');
-    if (!q) return `${boxes?.length ?? 0} กล่อง`;
-    if (q.unlimited) return `ใช้ไปแล้ว ${q.used} กล่องเดือนนี้`;
-    return `ใช้ไปแล้ว ${q.used}/${q.limit} กล่องเดือนนี้`;
-  }, [quotas, boxes]);
+    if (!boxQuota) return `${boxes?.length ?? 0} กล่อง`;
+    if (boxQuota.unlimited) return `ใช้ไปแล้ว ${boxQuota.used} กล่องเดือนนี้`;
+    return `ใช้ไปแล้ว ${boxQuota.used}/${boxQuota.limit} กล่องเดือนนี้`;
+  }, [boxQuota, boxes]);
+  /** 'full' recolours the counter itself; the banner under it says what to do. */
+  const quotaState = quotaLevel(boxQuota);
 
   if (needsLogin) {
     return (
@@ -211,13 +214,19 @@ export default function LegacyBoxListPage() {
         {error && <div className={styles.error}>{error}</div>}
 
         <div className={styles.topRow}>
-          <span className={styles.stats}>
+          <span
+            className={`${styles.stats}${quotaState === 'full' ? ` ${styles.statsFull}` : ''}`}
+          >
             {boxes ? `${boxQuotaLabel} · เปิดแล้ว ${totalViews} ครั้ง` : ' '}
           </span>
           <a className={styles.createBtn} href="/dashboard/legacy-box/new">
             <span aria-hidden>+</span> สร้างกล่องใหม่
           </a>
         </div>
+
+        {/* §11 — shown on load, so it is a banner and not a modal: nothing was
+            pressed, and interrupting a page the user just opened is an ambush. */}
+        {boxes && <QuotaBanner quota={boxQuota} resetAt={quotas?.resetAt} unit="กล่อง" />}
 
         {boxes !== null && boxes.length === 0 && (
           <div className={styles.empty}>

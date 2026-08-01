@@ -22,8 +22,17 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { normalizePlan } from '../config/plans';
+import { DIARY_ADDON_ENABLED, normalizePlan } from '../config/plans';
 import { consumeQuota } from '../services/quota.service';
+import {
+  alreadyWrittenToday,
+  bangkokHour,
+  isActiveSubscriber,
+  listDueSubscribers,
+  logSent,
+  logSkipped,
+} from '../services/diaryAddon.service';
+import type { FlexMessage } from '../services/flex.service';
 
 /**
  * Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
@@ -173,6 +182,258 @@ export async function runDiaryReminderSweep(
   console.log(
     `[membership] diary reminders: sent=${result.sent} wroteToday=${result.skippedWroteToday} ` +
       `quotaBlocked=${result.skippedQuota} failed=${result.failed}`,
+  );
+  return result;
+}
+
+// ===========================================================================
+// หนูเก็บความทรงจำ — the paid ADD-ON sweep (migration 052)
+//
+// COMPLETELY SEPARATE from runDiaryReminderSweep above, which is the plan-based
+// §17 allowance and stays switched off at DIARY_REMINDER_ENABLED. The two never
+// share a flag, a queue entry, a quota or a log table:
+//
+//   §17 allowance : plan-gated, monthly quota, ONE daily 20:00 sweep, off.
+//   the add-on    : paid per user on any plan, no quota, HOURLY sweep so each
+//                   subscriber is nudged at the time THEY picked.
+//
+// A user could in principle hold both. They would then get two nudges on a day
+// they wrote nothing — acceptable and currently impossible, since §17 is off.
+// If §17 is ever switched on, decide there whether add-on holders are excluded.
+//
+// Why hourly rather than a per-user scheduled job: a delayed BullMQ job per
+// subscriber per day is thousands of standing jobs whose ids must be revoked on
+// every time change and cancellation. One cheap hourly query over an indexed
+// column has none of that state, and the (user, date) unique log row makes a
+// double run harmless.
+// ===========================================================================
+
+export interface DiaryAddonSweepResult {
+  /** Live subscriptions whose notify_time fell in this Bangkok hour. */
+  candidates: number;
+  sent: number;
+  skippedWroteToday: number;
+  skippedExpired: number;
+  /** Already logged for this Bangkok day — a retry or a duplicate run. */
+  skippedAlreadyLogged: number;
+  failed: number;
+}
+
+export interface DiaryAddonSweepDeps {
+  /** Injected so the sweep is testable without the LINE SDK. */
+  push: (to: string, messages: FlexMessage[]) => Promise<void>;
+  now?: Date;
+  /**
+   * Public web origin for the "เขียนเลย" button. Passed in rather than read
+   * from config so this module stays importable without an .env — the worker,
+   * which already loads config, supplies it. Omitted → the card ships with no
+   * button rather than a broken link.
+   */
+  webUrl?: string;
+  /** Safety cap per run — a runaway sweep must not drain the push quota. */
+  maxRecipients?: number;
+  /**
+   * Master-switch override. Defaults to DIARY_ADDON_ENABLED, which is a
+   * module-level env read and therefore fixed for the lifetime of the process —
+   * this exists so the unit tests can exercise BOTH sides of the flag without
+   * re-importing the module. Production callers must never pass it.
+   */
+  enabled?: boolean;
+}
+
+const ADDON_TITLE = 'หนูเก็บ ทักมาเตือนน้า';
+const ADDON_BODY =
+  'วันนี้ยังไม่ได้เขียนไดอารี่เลยน้า อย่าลืมบันทึกความทรงจำของวันนี้ไว้นะ';
+const ADDON_CTA = 'เขียนเลย';
+
+const DIARY_PINK = '#E8608F';
+const DIARY_PINK_SOFT = '#FDEFF5';
+
+/**
+ * The nudge card. No emoji (brand rule 13) — the accent is a coloured header,
+ * the same shape as buildDiaryPromptCard in flex.service.
+ *
+ * The CTA deep-links to the DASHBOARD diary page rather than to the chat flow:
+ * the user is already in the chat when they read this, and the web page is
+ * where they can see the 365-grid they are about to leave a hole in.
+ */
+export function buildDiaryAddonReminderCard(webUrl?: string): FlexMessage {
+  const footer = webUrl
+    ? {
+        footer: {
+          type: 'box',
+          layout: 'vertical',
+          paddingAll: '12px',
+          contents: [
+            {
+              type: 'button',
+              style: 'primary',
+              color: DIARY_PINK,
+              height: 'sm',
+              action: { type: 'uri', label: ADDON_CTA, uri: `${webUrl}/dashboard/diary` },
+            },
+          ],
+        },
+      }
+    : {};
+
+  return {
+    type: 'flex',
+    altText: `${ADDON_TITLE} — ${ADDON_BODY}`,
+    contents: {
+      type: 'bubble',
+      size: 'kilo',
+      header: {
+        type: 'box',
+        layout: 'vertical',
+        backgroundColor: DIARY_PINK,
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: ADDON_TITLE, weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
+        ],
+      },
+      body: {
+        type: 'box',
+        layout: 'vertical',
+        spacing: 'md',
+        paddingAll: '16px',
+        contents: [
+          { type: 'text', text: ADDON_BODY, size: 'sm', color: '#333333', wrap: true },
+          {
+            type: 'box',
+            layout: 'vertical',
+            backgroundColor: DIARY_PINK_SOFT,
+            cornerRadius: '8px',
+            paddingAll: '10px',
+            contents: [
+              {
+                type: 'text',
+                text: 'ส่งรูปกับข้อความมาให้หนูเก็บได้เลยน้า',
+                size: 'xs',
+                color: DIARY_PINK,
+                weight: 'bold',
+                align: 'center',
+                wrap: true,
+              },
+            ],
+          },
+        ],
+      },
+      ...footer,
+      styles: { header: { backgroundColor: DIARY_PINK }, body: { backgroundColor: '#FFFFFF' } },
+    },
+  };
+}
+
+/**
+ * One hourly pass of the add-on nudge.
+ *
+ * Per-user work is individually try/caught: a blocked bot, an exhausted push
+ * quota or one bad row must never stop the rest of the hour's subscribers from
+ * being nudged. A failure is counted and the loop continues — and NO log row is
+ * written for it, so the next hourly run (or a job retry) may try that user
+ * again within the same day.
+ */
+export async function runDiaryAddonSweep(
+  supabase: SupabaseClient,
+  deps: DiaryAddonSweepDeps,
+): Promise<DiaryAddonSweepResult> {
+  const now = deps.now ?? new Date();
+  const today = bangkokDate(now);
+  const hour = bangkokHour(now);
+
+  const result: DiaryAddonSweepResult = {
+    candidates: 0,
+    sent: 0,
+    skippedWroteToday: 0,
+    skippedExpired: 0,
+    skippedAlreadyLogged: 0,
+    failed: 0,
+  };
+
+  // Stand down before touching the database. This runs even for jobs enqueued
+  // while the flag was still true (same belt-and-braces as the §17 sweep).
+  if (!(deps.enabled ?? DIARY_ADDON_ENABLED)) {
+    console.log('[diary-addon] disabled — hourly sweep stood down');
+    return result;
+  }
+
+  const due = await listDueSubscribers(supabase, hour, now, deps.maxRecipients ?? 5000);
+  result.candidates = due.length;
+  if (due.length === 0) return result;
+
+  // LINE ids for the whole batch in one query — the push needs line_user_id and
+  // diary_addon_subscriptions only carries the internal users.id.
+  const { data: users, error: uErr } = await supabase
+    .from('users')
+    .select('id, line_user_id')
+    .in(
+      'id',
+      due.map((s) => s.user_id),
+    );
+  if (uErr) throw uErr;
+  const lineIdOf = new Map(
+    ((users as { id: string; line_user_id: string | null }[] | null) ?? []).map((u) => [
+      u.id,
+      u.line_user_id,
+    ]),
+  );
+
+  const card = buildDiaryAddonReminderCard(deps.webUrl);
+
+  for (const sub of due) {
+    try {
+      // 1. Already wrote today → nothing to nudge about. Logged as a skip so
+      //    "หนูเก็บไม่ทักเลย" is answerable from data.
+      if (await alreadyWrittenToday(supabase, sub.user_id, today)) {
+        const { deduped } = await logSkipped(supabase, sub.user_id, today, 'already_wrote', now);
+        if (deduped) result.skippedAlreadyLogged += 1;
+        else result.skippedWroteToday += 1;
+        continue;
+      }
+
+      // 2. Re-check the subscription per user. listDueSubscribers already
+      //    filtered on status/expiry, but a subscription can lapse or be
+      //    cancelled between that query and this push, and this is the last
+      //    point before money-backed access is used.
+      if (!(await isActiveSubscriber(supabase, sub.user_id, now))) {
+        const { deduped } = await logSkipped(supabase, sub.user_id, today, 'expired', now);
+        if (deduped) result.skippedAlreadyLogged += 1;
+        else result.skippedExpired += 1;
+        continue;
+      }
+
+      const lineUserId = lineIdOf.get(sub.user_id);
+      if (!lineUserId) {
+        // No LINE id = nothing to push to. Not a failure worth retrying every
+        // hour, but not a skip reason the user chose either — just counted.
+        result.failed += 1;
+        continue;
+      }
+
+      // 3. Claim the day BEFORE pushing. The (user_id, date) unique row is the
+      //    idempotency key: if a retry or an overlapping run gets here second,
+      //    it sees `deduped` and does not push a second time. The cost is that
+      //    a push failing after the claim loses that day's nudge — the cheaper
+      //    error than double-messaging a paying user.
+      const { deduped } = await logSent(supabase, sub.user_id, today, now);
+      if (deduped) {
+        result.skippedAlreadyLogged += 1;
+        continue;
+      }
+
+      await deps.push(lineUserId, [card]);
+      result.sent += 1;
+    } catch (err) {
+      result.failed += 1;
+      console.error(`[diary-addon] reminder failed for ${sub.user_id}:`, err);
+    }
+  }
+
+  console.log(
+    `[diary-addon] hour=${hour} candidates=${result.candidates} sent=${result.sent} ` +
+      `wroteToday=${result.skippedWroteToday} expired=${result.skippedExpired} ` +
+      `alreadyLogged=${result.skippedAlreadyLogged} failed=${result.failed}`,
   );
   return result;
 }

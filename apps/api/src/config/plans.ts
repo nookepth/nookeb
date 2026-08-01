@@ -298,6 +298,50 @@ export function hasFeature(plan: Plan, feature: PlanFeature): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// หนูเก็บความทรงจำ — the diary-reminder ADD-ON (migration 052)
+//
+// An add-on, NOT a plan: any tier (free included) may hold it, and holding it
+// changes nothing about `users.plan`. It is therefore absent from PLAN_PRICING,
+// PLAN_FEATURES and planSummary() by design — putting it in any of those maps
+// would make it look like something a tier grants.
+//
+// Distinct from the plan-based §17 `diary_reminders` quota above, which is a
+// per-plan monthly allowance sent by the 20:00 sweep. The add-on is a paid,
+// per-user, daily push at a time the user picks, and it has its own master
+// switch (DIARY_ADDON_ENABLED) so it can ship while §17 stays off.
+// ---------------------------------------------------------------------------
+
+/**
+ * Master switch for the add-on. Off unless DIARY_ADDON_ENABLED === 'true' on
+ * BOTH Railway services (env is per-service — the worker does not inherit the
+ * API's). While false the hourly sweep stands down and registers no schedule.
+ *
+ * DELIBERATE DEVIATION from this module's env-free rule (see the file header):
+ * this is the one `process.env` read here, kept because every other plan/price
+ * constant lives in this file and splitting the add-on's price away from its
+ * flag would be worse. It is safe for the unit tests — an unset variable simply
+ * resolves to `false`, so no .env is required to import this module.
+ */
+export const DIARY_ADDON_ENABLED = process.env.DIARY_ADDON_ENABLED === 'true';
+
+/**
+ * THB, whole Baht. Yearly ≈ 30.4 ฿/month — about 38 % off the monthly rate.
+ * The ONLY place these numbers are written: the API serves them to the web,
+ * which must never hard-code a price in a component.
+ */
+export const DIARY_ADDON_PRICE = {
+  monthly: 49,
+  yearly: 365,
+} as const;
+
+/** ชื่อที่แสดงกับผู้ใช้ — no emoji, same brand rule as PLAN_DISPLAY_NAME. */
+export const DIARY_ADDON_DISPLAY_NAME = 'หนูเก็บความทรงจำ';
+
+export function diaryAddonPrice(cycle: BillingCycle): number {
+  return cycle === 'monthly' ? DIARY_ADDON_PRICE.monthly : DIARY_ADDON_PRICE.yearly;
+}
+
+// ---------------------------------------------------------------------------
 // Retention + support (§12, §18)
 // ---------------------------------------------------------------------------
 

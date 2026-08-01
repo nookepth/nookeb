@@ -15,7 +15,7 @@ import {
 } from '@nookeb/shared';
 import { ApiError, createLegacyBox, hasSession } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
-import { messageForCode } from '@/lib/quota-errors';
+import { QuotaExceededModal } from '@/components/UpgradeModal';
 import { CheckBadgeIcon, OCCASION_ICONS } from './OccasionIcons';
 import { ShareActions } from './ShareActions';
 import { VoiceRecorder } from './VoiceRecorder';
@@ -93,6 +93,13 @@ export default function NewLegacyBoxPage() {
   // Two-line error copy: `title` is what went wrong, `subtitle` is the advice
   // (only quota/plan rejections have any — see lib/quota-errors.ts).
   const [error, setError] = useState<ErrorCopy | null>(null);
+  /**
+   * The monthly gift-box quota (429). Held separately from `error` because it
+   * is not a form problem: nothing on any of the four steps can be corrected to
+   * make it succeed, so it gets the shared quota card rather than the inline
+   * error line that the validation messages share.
+   */
+  const [quotaGate, setQuotaGate] = useState<{ feature: string; resetAt?: string } | null>(null);
   const [created, setCreated] = useState<{ shareUrl: string } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -229,6 +236,7 @@ export default function NewLegacyBoxPage() {
     setSubmitting(true);
     setProgress(0);
     setError(null);
+    setQuotaGate(null);
     try {
       const res = await createLegacyBox(
         {
@@ -250,13 +258,13 @@ export default function NewLegacyBoxPage() {
       //   409 → personal storage bytes — waiting will never help.
       // Telling a user out of disk space to "wait for the 1st" would be wrong.
       if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED' && err.status === 429) {
-        // messageForCode owns the wording for every quota/plan code, so the bot
-        // and the web never describe the same limit two different ways.
-        setError(
-          messageForCode(err.code, { feature: err.details?.feature ?? 'gift_boxes' }) ?? {
-            title: 'สร้างกล่องไม่สำเร็จ ลองใหม่อีกทีน้า',
-          },
-        );
+        // The submit button was pressed, so this gets the shared quota CARD, not
+        // a red line at the bottom of a four-step form the user has to scroll to
+        // find. It also carries the reset date and what a bigger plan allows.
+        setQuotaGate({
+          feature: err.details?.feature ?? 'gift_boxes',
+          resetAt: err.details?.resetAt,
+        });
       } else if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
         setError({
           title: 'พื้นที่ไม่พอแล้วน้า',
@@ -740,6 +748,14 @@ export default function NewLegacyBoxPage() {
       </div>
 
       {toast && <div className={styles.toast}>{toast}</div>}
+
+      {/* §11 monthly gift-box quota — the same card every other quota wall uses */}
+      <QuotaExceededModal
+        open={quotaGate !== null}
+        onClose={() => setQuotaGate(null)}
+        feature={quotaGate?.feature ?? 'gift_boxes'}
+        resetAt={quotaGate?.resetAt}
+      />
     </main>
   );
 }

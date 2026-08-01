@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import { ApiError, createPersonalTask } from '@/lib/api';
-import { flatten, getPlanGateMessage, getQuotaMessage } from '@/lib/quota-errors';
 import { URGENCY_OPTIONS, type TaskUrgency } from '@/lib/taskDraft';
 import styles from './tasks.module.css';
 
@@ -12,10 +11,21 @@ export default function CreatePersonalTaskModal({
   onClose,
   onCreated,
   onUnauthorized,
+  onQuotaExceeded,
+  onPlanGate,
 }: {
   onClose: () => void;
   onCreated: () => void;
   onUnauthorized: () => void;
+  /**
+   * §5 — the monthly task quota (7/25/100) rejected the create. Handed UP
+   * rather than shown here: an inline red line under a form invites the user to
+   * fix their input and press again, and no input can make this succeed until
+   * the 1st. The parent closes this form and shows the quota card instead.
+   */
+  onQuotaExceeded: (feature: string, resetAt?: string) => void;
+  /** 403 PLAN_UPGRADE_REQUIRED — same reasoning, different card. */
+  onPlanGate: (requiredPlan?: string) => void;
 }) {
   const [title, setTitle] = useState('');
   const [deadline, setDeadline] = useState('');
@@ -51,13 +61,10 @@ export default function CreatePersonalTaskModal({
       onCreated();
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onUnauthorized();
-      // §5 — the monthly task quota (7/25/100). Without this the user was told
-      // "สร้างงานไม่สำเร็จ ลองใหม่อีกทีน้า", which invites them to retry a
-      // request that cannot succeed again until the 1st.
       else if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
-        setError(flatten(getQuotaMessage(err.details?.feature ?? 'tasks')));
+        onQuotaExceeded(err.details?.feature ?? 'tasks', err.details?.resetAt);
       } else if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
-        setError(flatten(getPlanGateMessage(err.details?.requiredPlan)));
+        onPlanGate(err.details?.requiredPlan);
       } else setError('สร้างงานไม่สำเร็จ ลองใหม่อีกทีน้า');
     } finally {
       setSubmitting(false);

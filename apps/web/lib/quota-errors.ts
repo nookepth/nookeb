@@ -122,3 +122,97 @@ export function messageForCode(
 export function flatten(message: QuotaMessage): string {
   return `${message.title} — ${message.subtitle}`;
 }
+
+/* ---------------------------------------------------------------------------
+   Reset timing — "รีเซตอีก 9 วัน"
+   --------------------------------------------------------------------------- */
+
+/**
+ * Days from now until the monthly counters roll over.
+ *
+ * Prefers the server's `reset_at` (GET /plans/me/quotas, and the body of every
+ * 429) because that instant is computed in ICT by billing-period.ts and is the
+ * one the counter actually obeys. The fallback — the 1st of the browser's next
+ * month — is only for call sites that have the code but no payload; it can be
+ * off by a few hours for a user in a distant timezone, which is acceptable for
+ * a "อีก N วัน" hint but is why it is not the primary source.
+ *
+ * Always at least 1: "รีเซตอีก 0 วัน" reads as "already reset", and a user who
+ * acts on that gets rejected again.
+ */
+export function daysUntilReset(resetAt?: string | null, now: Date = new Date()): number {
+  let target: Date;
+  if (resetAt) {
+    const parsed = new Date(resetAt);
+    target = Number.isNaN(parsed.getTime()) ? nextMonthStart(now) : parsed;
+  } else {
+    target = nextMonthStart(now);
+  }
+  const days = Math.ceil((target.getTime() - now.getTime()) / 86_400_000);
+  return Math.max(1, days);
+}
+
+function nextMonthStart(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth() + 1, 1, 0, 0, 0, 0);
+}
+
+/* ---------------------------------------------------------------------------
+   "What upgrading buys you" lines
+   --------------------------------------------------------------------------- */
+
+/** The counting noun for a feature's unit — "10 กล่อง/เดือน" vs "10 ครั้ง/เดือน". */
+const FEATURE_UNIT: Record<string, string> = {
+  scans: 'ครั้ง',
+  pdf_merges: 'ครั้ง',
+  word_conversion_pages: 'หน้า',
+  tasks: 'ชิ้น',
+  task_notifications: 'ครั้ง',
+  gift_boxes: 'กล่อง',
+  group_files: 'ไฟล์',
+  diary_reminders: 'ครั้ง',
+  vault_files: 'ไฟล์',
+  group_boosts: 'กลุ่ม',
+};
+
+/** The minimal shape `quotaUpgradeLines` needs — a subset of PlanSummaryDto. */
+export interface PlanLimitSource {
+  plan: string;
+  displayName: string;
+  monthly: Record<string, number>;
+  capacity: Record<string, number>;
+}
+
+/**
+ * "สร้างงานได้ 25 ชิ้น/เดือน (หนูเก็บโตแย้ว) หรือ 100 ชิ้น/เดือน (หนูเก็บแปลงร่าง)"
+ *
+ * Built from GET /plans, never from literals: the limits and the plan names
+ * both live in apps/api/src/config/plans.ts, and a number typed into a
+ * component is a promise the server never agreed to. Returns [] when the price
+ * list has not arrived — showing no line is strictly better than showing a
+ * guessed one.
+ */
+export function quotaUpgradeLines(
+  feature: string,
+  plans: readonly PlanLimitSource[] | null | undefined,
+): string[] {
+  if (!plans?.length) return [];
+  const label = FEATURE_LABEL[feature];
+  const unit = FEATURE_UNIT[feature] ?? 'ครั้ง';
+  const monthly = feature in (plans[0]?.monthly ?? {});
+  const paid = plans.filter((p) => p.plan === 'pro' || p.plan === 'premium');
+  if (paid.length === 0) return [];
+
+  const parts = paid
+    .map((p) => {
+      const limit = (monthly ? p.monthly : p.capacity)?.[feature];
+      if (typeof limit !== 'number') return null;
+      // -1 = UNLIMITED (config/plans.ts). Never render it as a number.
+      const amount = limit < 0 ? 'ไม่จำกัด' : `${limit} ${unit}${monthly ? '/เดือน' : ''}`;
+      return `${amount} (${p.displayName})`;
+    })
+    .filter((s): s is string => s !== null);
+  if (parts.length === 0) return [];
+
+  const verb = label ? `${label}ได้` : 'ใช้ได้';
+  return [`${verb} ${parts.join(' หรือ ')}`];
+}

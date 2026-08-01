@@ -15,6 +15,7 @@ import { startLineLogin } from '@/lib/auth';
 import { formatBytes } from '@/lib/format';
 import { typeBadge } from '@/lib/filetype';
 import { RestoreIcon, TrashIcon } from '@/components/icons';
+import { UpgradeModal } from '@/components/UpgradeModal';
 
 /** Matches GET /trash's default `limit`. */
 const PAGE_SIZE = 40;
@@ -88,7 +89,14 @@ export default function TrashPage() {
       } else if (err instanceof ApiError && err.status === 401) {
         setNeedsLogin(true);
       } else {
-        showToast(err instanceof ApiError ? err.message : 'กู้คืนไม่สำเร็จ ลองใหม่อีกครั้งน้า');
+        // `message` is deliberately EMPTY when the API sent a bare machine code
+        // (parseApiError) — so it can never be a raw "QUOTA_EXCEEDED" here, but
+        // it does need the fallback or the toast would be blank.
+        showToast(
+          err instanceof ApiError && err.message
+            ? err.message
+            : 'กู้คืนไม่สำเร็จ ลองใหม่อีกครั้งน้า',
+        );
         await load();
       }
     } finally {
@@ -274,8 +282,9 @@ export default function TrashPage() {
         </>
       )}
 
-      {/* ---------- confirmation / quota modals ---------- */}
-      {confirm && (
+      {/* ---------- confirmation modals ---------- */}
+      {/* 'quota' has its own card below — this frame is for the two confirms. */}
+      {confirm && confirm.kind !== 'quota' && (
         <div className="modal-overlay" onClick={() => setConfirm(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             {confirm.kind === 'permanent' && (
@@ -308,20 +317,20 @@ export default function TrashPage() {
                 </div>
               </>
             )}
-            {confirm.kind === 'quota' && (
-              <>
-                <h2>พื้นที่ไม่พอ</h2>
-                <p>พื้นที่ไม่พอ โปรดลบไฟล์อื่นก่อน แล้วลองกู้คืนใหม่อีกครั้งน้า</p>
-                <div className="modal-actions">
-                  <button className="btn" onClick={() => setConfirm(null)}>
-                    เข้าใจแล้ว
-                  </button>
-                </div>
-              </>
-            )}
           </div>
         </div>
       )}
+
+      {/* Restore re-charges the same storage ledger the file was deleted from,
+          so it can fail on locker BYTES. Not a monthly quota — deleting frees
+          space immediately — hence the plan card, not the reset card. */}
+      <UpgradeModal
+        open={confirm?.kind === 'quota'}
+        onClose={() => setConfirm(null)}
+        title="พื้นที่ในล็อคเกอร์ไม่พอน้า"
+        subtitle="ลบไฟล์อื่นออกก่อนแล้วกู้คืนใหม่ได้เลย หรืออัปเกรดแพลนเพื่อเพิ่มพื้นที่น้า"
+        dismissLabel="เข้าใจแล้ว"
+      />
 
       {toast && (
         <div className="trash-toast" role="status">

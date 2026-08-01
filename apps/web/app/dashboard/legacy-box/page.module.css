@@ -53,6 +53,16 @@
   font-size: 14px;
   opacity: 0.75;
 }
+/* Quota spent. The page background is a themed gradient, so a bare colour
+   change would not survive every theme — the counter gets its own chip. */
+.statsFull {
+  opacity: 1;
+  font-weight: 700;
+  background: #fdf3e2;
+  color: #8a5b12;
+  border-radius: 999px;
+  padding: 4px 12px;
+}
 
 .createBtn {
   border: none;

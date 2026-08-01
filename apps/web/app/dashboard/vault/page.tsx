@@ -22,7 +22,7 @@ import {
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
 import { formatBytes } from '@/lib/format';
-import { getQuotaMessage } from '@/lib/quota-errors';
+import { CapacityFullModal } from '@/components/UpgradeModal';
 import { VaultPinPad } from '@/components/VaultPinPad';
 
 /**
@@ -85,6 +85,13 @@ export default function VaultPage() {
   const [deleting, setDeleting] = useState<VaultFileDto | null>(null);
   const [uploadState, setUploadState] = useState<{ label: string; percent: number } | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  /**
+   * §10 — the vault is full (403 VAULT_FULL). A CEILING on live files, not a
+   * monthly quota, so it gets the capacity card: deleting frees a slot now, and
+   * waiting for the 1st would do nothing. Both the upload and the trash-restore
+   * paths can hit it, so the state lives here rather than in either handler.
+   */
+  const [capacityGate, setCapacityGate] = useState<{ limit?: number } | null>(null);
   const [dragOver, setDragOver] = useState(false);
   // ถังขยะห้องนิรภัย — lives here, behind the unlock session, and never in the
   // general /dashboard/trash page (a vault filename is sensitive content).
@@ -180,7 +187,7 @@ export default function VaultPage() {
       await Promise.all([loadFiles(1, false), loadTrash()]);
     } catch (err) {
       if (err instanceof ApiError && err.code === 'VAULT_FULL') {
-        setTrashError(getQuotaMessage('vault_files').title);
+        setCapacityGate({ limit: err.details?.limit });
       } else {
         setTrashError('กู้คืนไม่สำเร็จ ลองใหม่อีกทีน้า');
       }
@@ -340,7 +347,25 @@ export default function VaultPage() {
           setUploadState(null);
           return;
         }
-        setUploadError(err instanceof ApiError ? err.message : 'อัปโหลดไม่สำเร็จ');
+        // §10 — the file-count ceiling. This used to fall through to the line
+        // below, which renders `err.message`; parseApiError blanks that field
+        // whenever the body carried a bare machine code, so a full vault could
+        // report an EMPTY error. Stop uploading the rest of the batch too —
+        // every remaining file would hit the same wall.
+        if (err instanceof ApiError && err.code === 'VAULT_FULL') {
+          setCapacityGate({ limit: err.details?.limit });
+          setUploadState(null);
+          break;
+        }
+        if (err instanceof ApiError && err.code === 'QUOTA_EXCEEDED') {
+          // Personal storage BYTES, not the file count — different advice.
+          setUploadError('พื้นที่เก็บไฟล์ไม่พอแล้วน้า ลบไฟล์เก่าหรืออัปเกรดแพลนก่อนน้า');
+          setUploadState(null);
+          break;
+        }
+        setUploadError(
+          err instanceof ApiError && err.message ? err.message : 'อัปโหลดไม่สำเร็จ',
+        );
       }
     }
     setUploadState(null);
@@ -641,6 +666,15 @@ export default function VaultPage() {
           </div>
         </div>
       )}
+
+      {/* §10 — the vault's live-file ceiling (upload or restore) */}
+      <CapacityFullModal
+        open={capacityGate !== null}
+        onClose={() => setCapacityGate(null)}
+        feature="vault_files"
+        limit={capacityGate?.limit}
+        title="ห้องนิรภัยเต็มแล้วน้า"
+      />
     </main>
   );
 }

@@ -47,7 +47,8 @@ export default function FilterSortBar({
   onExport?: () => void;
   exporting?: boolean;
   /** Free tier — the button stays tappable and explains the gate (see
-   *  ExportUpgradeModal); it is never hidden, so the feature is discoverable. */
+   *  components/UpgradeModal); it is never hidden, so the feature is
+   *  discoverable. */
   exportLocked?: boolean;
 }) {
   return (

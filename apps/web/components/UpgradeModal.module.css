@@ -1,0 +1,144 @@
+/* ---- Shared plan-gate / quota modal ----
+   Extracted verbatim from tasks.module.css (.modalOverlay/.modal/.upgrade*),
+   which was the Export Excel gate's private copy. Every plan gate and quota
+   wall in the dashboard now renders through this one frame, so a user meets
+   the same card whichever door they walked into.
+
+   `--um-accent` is the only thing a variant changes: the plan gate keeps brand
+   red, the quota wall uses amber because a full quota is not a locked feature
+   — it comes back on the 1st, and painting it in the "you can't have this"
+   colour tells the user the wrong thing. */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  z-index: 100;
+}
+.modal {
+  --um-accent: #b53a32;
+  --um-accent-hover: #9c3029;
+  --um-accent-soft: #fdeceb;
+  background: #fff;
+  border-radius: 16px;
+  padding: 26px 22px 20px;
+  width: 100%;
+  max-width: 380px;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  text-align: center;
+}
+/* quota wall — see the note above */
+.quota {
+  --um-accent: #b8791b;
+  --um-accent-hover: #9a6416;
+  --um-accent-soft: #fdf3e2;
+}
+.icon {
+  width: 76px;
+  height: 76px;
+  margin: 0 auto 14px;
+  color: var(--um-accent);
+}
+.tag {
+  display: inline-block;
+  background: var(--um-accent-soft);
+  color: var(--um-accent);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+.title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #111;
+  margin: 12px 0 6px;
+  line-height: 1.4;
+}
+.text {
+  font-size: 13px;
+  color: #6b6b6b;
+  line-height: 1.65;
+  margin: 0;
+}
+/* "รีเซตอีก 9 วัน" — the concrete fact that makes waiting an option */
+.note {
+  display: inline-block;
+  margin: 12px 0 0;
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: var(--um-accent-soft);
+  color: var(--um-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+.perks {
+  list-style: none;
+  margin: 18px 0 0;
+  padding: 14px;
+  background: #faf7f6;
+  border-radius: 12px;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.perk {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  font-size: 13px;
+  color: #444;
+  line-height: 1.55;
+}
+.perkIcon {
+  flex: 0 0 auto;
+  width: 19px;
+  height: 19px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--um-accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+}
+.primary,
+.secondary {
+  border-radius: 999px;
+  padding: 12px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.primary {
+  background: var(--um-accent);
+  color: #fff;
+}
+.primary:hover {
+  background: var(--um-accent-hover);
+}
+.secondary {
+  background: none;
+  color: #8c8c8c;
+}
+.secondary:hover {
+  color: #555;
+}

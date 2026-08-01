@@ -14,6 +14,7 @@ import { Queue, type ConnectionOptions } from 'bullmq';
 import { createRedis } from '../plugins/redis';
 import { BANGKOK_TZ, MONTHLY_RESET_CRON } from '../config/billing-period';
 import { DIARY_REMINDER_ENABLED } from './diaryReminder.job';
+import { DIARY_ADDON_ENABLED } from '../config/plans';
 
 export const MEMBERSHIP_QUEUE = 'nookeb-membership';
 
@@ -24,10 +25,19 @@ export const MEMBERSHIP_QUEUE = 'nookeb-membership';
  */
 const DIARY_REMINDER_CRON = '0 20 * * *';
 
+/**
+ * หนูเก็บความทรงจำ runs at the top of EVERY hour, because each subscriber picks
+ * their own notify_time and the sweep serves whoever falls in the current
+ * Bangkok hour. Declared once for the same reason as DIARY_REMINDER_CRON: the
+ * add and the remove must match to the character or the remove silently misses.
+ */
+const DIARY_ADDON_CRON = '0 * * * *';
+
 export type MembershipJob =
   | { type: 'quota_period_cleanup' }
   | { type: 'boost_expiry' }
-  | { type: 'diary_reminder_sweep' };
+  | { type: 'diary_reminder_sweep' }
+  | { type: 'diary_addon_sweep' };
 
 let queue: Queue<MembershipJob> | null = null;
 
@@ -111,6 +121,24 @@ export async function scheduleMembershipJobs(): Promise<void> {
       'diary_reminder_sweep',
       { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ },
       'membership-diary-reminder',
+    );
+  }
+
+  // Hourly — หนูเก็บความทรงจำ (the paid add-on, migration 052). Independent of
+  // DIARY_REMINDER_ENABLED above: this one ships on. Same active-removal shape,
+  // and for the same reason — a repeatable registered by an earlier boot lives
+  // in Redis and keeps firing no matter what this process decides.
+  if (DIARY_ADDON_ENABLED) {
+    await q.add(
+      'diary_addon_sweep',
+      { type: 'diary_addon_sweep' },
+      { repeat: { pattern: DIARY_ADDON_CRON, tz: BANGKOK_TZ }, jobId: 'membership-diary-addon' },
+    );
+  } else {
+    await q.removeRepeatable(
+      'diary_addon_sweep',
+      { pattern: DIARY_ADDON_CRON, tz: BANGKOK_TZ },
+      'membership-diary-addon',
     );
   }
 }

@@ -1,0 +1,41 @@
+/* ---- Inline quota banner ----
+   The list-page counterpart of QuotaExceededModal: no button was pressed, so
+   there is nothing to interrupt. It sits under the counter it explains.
+
+   Two levels, two colours on purpose. "เต็มแล้ว" is amber, not red: the monthly
+   allowance returns on the 1st, and red would read as an error the user caused.
+   "ใกล้เต็ม" is muted — a heads-up must not look like a failure. */
+.banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.full {
+  background: #fdf3e2;
+  color: #8a5b12;
+  border: 1px solid #f0dcb4;
+}
+.near {
+  background: #f6f6f6;
+  color: #6b6b6b;
+  border: 1px solid #e8e8e8;
+}
+.sep {
+  opacity: 0.5;
+}
+.cta {
+  font-weight: 700;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.cta:hover {
+  opacity: 0.75;
+}

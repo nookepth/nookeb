@@ -27,6 +27,19 @@ function roleLabel(role: string): string {
   return 'สมาชิก';
 }
 
+/**
+ * "ผูกกลุ่มไม่สำเร็จน้า: <เหตุผล>" — with the colon only when there IS a reason.
+ *
+ * `ApiError.message` is deliberately EMPTY when the API answered with a bare
+ * machine code (see parseApiError), which is what keeps a raw "QUOTA_EXCEEDED"
+ * off the screen. These toasts appended it unconditionally, so a coded
+ * rejection showed a message ending in a naked colon.
+ */
+function failReason(err: unknown, prefix: string): string {
+  const reason = err instanceof ApiError ? err.message.trim() : '';
+  return reason ? `${prefix}: ${reason}` : `${prefix} ลองใหม่อีกทีน้า`;
+}
+
 /** Full, shareable invite URL — same shape the /join page reads. */
 function buildInviteUrl(token: string): string {
   const origin = typeof window !== 'undefined' ? window.location.origin : '';
@@ -142,7 +155,7 @@ export default function TeamDetailPage() {
       if (copied) flash('คัดลอกลิงก์แล้วน้า ส่งให้เพื่อนได้เลย ✓');
       await load();
     } catch (err) {
-      flash(err instanceof ApiError ? `เชิญไม่สำเร็จน้า: ${err.message}` : 'เชิญไม่สำเร็จน้า ลองใหม่อีกทีน้า');
+      flash(failReason(err, 'เชิญไม่สำเร็จน้า'));
     } finally {
       setInviteBusy(false);
     }
@@ -164,7 +177,7 @@ export default function TeamDetailPage() {
     } catch (err) {
       setConfirmLeave(false);
       setLeaveBusy(false);
-      flash(err instanceof ApiError ? `ออกจากทีมไม่สำเร็จน้า: ${err.message}` : 'ออกจากทีมไม่สำเร็จน้า');
+      flash(failReason(err, 'ออกจากทีมไม่สำเร็จน้า'));
     }
   }
 
@@ -176,7 +189,7 @@ export default function TeamDetailPage() {
       flash('เอาสมาชิกออกจากทีมแล้วน้า');
       await load();
     } catch (err) {
-      flash(err instanceof ApiError ? `ลบไม่สำเร็จน้า: ${err.message}` : 'ลบไม่สำเร็จน้า');
+      flash(failReason(err, 'ลบไม่สำเร็จน้า'));
     } finally {
       setRemovingUserId(null);
     }
@@ -190,7 +203,7 @@ export default function TeamDetailPage() {
       flash('อนุมัติเข้าทีมแล้วน้า');
       await load();
     } catch (err) {
-      flash(err instanceof ApiError ? `อนุมัติไม่สำเร็จน้า: ${err.message}` : 'อนุมัติไม่สำเร็จน้า');
+      flash(failReason(err, 'อนุมัติไม่สำเร็จน้า'));
     } finally {
       setReviewingId(null);
     }
@@ -204,7 +217,7 @@ export default function TeamDetailPage() {
       flash('ปฏิเสธคำขอแล้วน้า');
       await load();
     } catch (err) {
-      flash(err instanceof ApiError ? `ปฏิเสธไม่สำเร็จน้า: ${err.message}` : 'ปฏิเสธไม่สำเร็จน้า');
+      flash(failReason(err, 'ปฏิเสธไม่สำเร็จน้า'));
     } finally {
       setReviewingId(null);
     }
@@ -220,7 +233,7 @@ export default function TeamDetailPage() {
       flash('ผูกกลุ่ม LINE กับทีมแล้วน้า ไฟล์จากกลุ่มนี้จะเข้าพื้นที่ทีมเลย');
       await load();
     } catch (err) {
-      flash(err instanceof ApiError ? `ผูกกลุ่มไม่สำเร็จน้า: ${err.message}` : 'ผูกกลุ่มไม่สำเร็จน้า');
+      flash(failReason(err, 'ผูกกลุ่มไม่สำเร็จน้า'));
     } finally {
       setBindBusy(false);
     }
@@ -233,7 +246,7 @@ export default function TeamDetailPage() {
       flash('ยกเลิกการผูกกลุ่มแล้วน้า');
       await load();
     } catch (err) {
-      flash(err instanceof ApiError ? `ยกเลิกไม่สำเร็จน้า: ${err.message}` : 'ยกเลิกไม่สำเร็จน้า');
+      flash(failReason(err, 'ยกเลิกไม่สำเร็จน้า'));
     }
   }
 
@@ -246,7 +259,7 @@ export default function TeamDetailPage() {
     } catch (err) {
       setConfirmDelete(false);
       setDeleteBusy(false);
-      flash(err instanceof ApiError ? `ลบทีมไม่สำเร็จน้า: ${err.message}` : 'ลบทีมไม่สำเร็จน้า');
+      flash(failReason(err, 'ลบทีมไม่สำเร็จน้า'));
     }
   }
 

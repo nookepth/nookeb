@@ -13,8 +13,8 @@ import {
   type GoogleIntegrationStatus,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
-import { flatten, getPlanGateMessage } from '@/lib/quota-errors';
-import { ProLockModal } from '@/components/ProLockModal';
+import { PLAN_DISPLAY_NAME } from '@/lib/quota-errors';
+import { UpgradeModal } from '@/components/UpgradeModal';
 
 /**
  * การเชื่อมต่อ — third-party integrations. Currently just Google Sheets
@@ -32,6 +32,13 @@ const CALLBACK_MESSAGE: Record<string, string> = {
   exchange_failed: 'แลกรหัสกับ Google ไม่สำเร็จ ลองใหม่อีกทีน้า',
   bad_request: 'คำขอไม่ถูกต้อง ลองใหม่อีกทีน้า',
 };
+
+/** What connecting Sheets actually gives you — the upgrade card's checklist. */
+const SHEETS_PERKS = [
+  'ซิงค์งานทั้งหมดไป Google Sheet อัตโนมัติ',
+  'อัปเดตสถานะงานแบบ real-time',
+  'แชร์ข้อมูลทีมผ่าน Google Drive ได้ทันที',
+];
 
 function formatWhen(iso: string): string {
   const then = new Date(iso).getTime();
@@ -59,11 +66,12 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [notice, setNotice] = useState<{ msg: string; ok: boolean } | null>(null);
-  // Google Sheets sync is a Pro feature — free users see the fake-door upsell
-  // (same <ProLockModal> pattern as the task Pro features). null while loading.
+  // §15 — Google Sheets sync is PREMIUM-only (FEATURE_ACCESS.google_sheets in
+  // apps/api/src/config/plans.ts: free false, pro false, premium true). This
+  // used to gate on `plan !== 'free'`, which showed a Pro user a working
+  // connect button that the server then refused. null while loading.
   const [plan, setPlan] = useState<string | null>(null);
-  const [proLockOpen, setProLockOpen] = useState(false);
-  const [proNotified, setProNotified] = useState(false);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!hasSession()) {
@@ -141,15 +149,22 @@ export default function SettingsPage() {
   }, [load, syncHistorical]);
 
   const connect = async () => {
+    // Locked tiers never start the OAuth trip: they get the upgrade card here.
+    // The server gate (planGuard) is still the real boundary — see the catch.
+    if (locked) {
+      setUpgradeOpen(true);
+      return;
+    }
     setBusy(true);
     try {
       await startGoogleConnect(); // navigates away
     } catch (err) {
       // §15 — Google Sheets is Premium-only, so /integrations/google/auth
       // answers 403 PLAN_UPGRADE_REQUIRED. That is not a connection failure and
-      // must not be reported as one: retrying will never work on this plan.
+      // must not be reported as one: retrying will never work on this plan. The
+      // card says so; an inline red line would not.
       if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
-        setNotice({ msg: flatten(getPlanGateMessage(err.details?.requiredPlan ?? 'premium')), ok: false });
+        setUpgradeOpen(true);
       } else {
         setNotice({ msg: 'เปิดหน้ายืนยันของ Google ไม่สำเร็จน้า', ok: false });
       }
@@ -173,8 +188,15 @@ export default function SettingsPage() {
     }
   };
 
-  // null = plan not loaded yet (avoids flashing the wrong state).
-  const isPro = plan === null ? null : plan !== 'free';
+  /**
+   * Is Sheets behind the plan gate for this viewer? Mirrors
+   * FEATURE_ACCESS.google_sheets — expressed as "everything below premium is
+   * locked", with legacy 'team' rows normalised the way config/plans.ts does.
+   * null = plan not loaded yet (avoids flashing the wrong state); it reads as
+   * unlocked so a paying user is never blocked by a slow profile fetch.
+   */
+  const locked = plan === null ? false : plan !== 'premium' && plan !== 'team';
+  const showLocked = plan !== null && locked;
 
   if (needsLogin) {
     return (
@@ -212,7 +234,9 @@ export default function SettingsPage() {
           <div>
             <h2 className="settings-card-title">
               Google Sheets
-              {isPro === false && <span className="settings-pro-badge">Pro</span>}
+              {showLocked && (
+                <span className="settings-pro-badge">{PLAN_DISPLAY_NAME.premium}</span>
+              )}
             </h2>
             <p className="settings-card-sub">
               ทุกครั้งที่สร้างหรืออัปเดตงาน หนูจะ sync ลง Sheet ของพี่เองให้อัตโนมัติ
@@ -259,27 +283,23 @@ export default function SettingsPage() {
               ดึงงานที่สร้างไว้ก่อนเชื่อมต่อเข้ามาทีเดียว งานที่อยู่ใน Sheet แล้วหนูจะไม่เพิ่มซ้ำน้า
             </p>
           </>
-        ) : isPro === false ? (
-          <>
-            <p className="settings-card-state">
-              ต่อ Sheet อัตโนมัติเป็นฟีเจอร์ของแผน Pro น้า — เร็ว ๆ นี้
-            </p>
-            <div className="settings-card-actions">
-              <button className="btn small" onClick={() => setProLockOpen(true)}>
-                ดูรายละเอียด Pro →
-              </button>
-            </div>
-            <p className="settings-card-note">
-              หนูขอสิทธิ์แค่ Sheet ที่หนูสร้างเองเท่านั้น (drive.file) — ไฟล์อื่นใน Google Drive
-              ของพี่ หนูมองไม่เห็นน้า
-            </p>
-          </>
         ) : (
           <>
-            <p className="settings-card-state">ยังไม่ได้เชื่อมต่อ</p>
+            {/* The card stays fully visible on a locked plan — the feature has
+                to be discoverable — but the button explains the gate instead of
+                starting an OAuth trip the server will refuse. */}
+            <p className="settings-card-state">
+              {showLocked
+                ? `ต่อ Sheet อัตโนมัติอยู่ในแพลน ${PLAN_DISPLAY_NAME.premium} น้า`
+                : 'ยังไม่ได้เชื่อมต่อ'}
+            </p>
             <div className="settings-card-actions">
               <button className="btn small" onClick={() => void connect()} disabled={busy}>
-                {busy ? 'กำลังเปิด Google...' : 'เชื่อมต่อ Google Account →'}
+                {showLocked
+                  ? 'ดูรายละเอียดแพลน →'
+                  : busy
+                    ? 'กำลังเปิด Google...'
+                    : 'เชื่อมต่อ Google Account →'}
               </button>
             </div>
             <p className="settings-card-note">
@@ -290,16 +310,15 @@ export default function SettingsPage() {
         )}
       </section>
 
-      <ProLockModal
-        open={proLockOpen}
-        accent="var(--color-primary)"
-        title="Google Sheets sync อยู่ในแผน Pro"
-        subtitle="เร็ว ๆ นี้น้า — กดไว้ เดี๋ยวหนูมาบอกพี่เป็นคนแรกเลย"
-        ctaLabel="แจ้งเตือนฉัน"
-        notified={proNotified}
-        notifiedLabel="เดี๋ยวหนูรีบมาบอกพี่เลยน้า"
-        onNotify={() => setProNotified(true)}
-        onDismiss={() => setProLockOpen(false)}
+      {/* §15 plan gate. Not ProLockModal any more: that one is a fake door, and
+          Sheets sync is built and purchasable — so the CTA is a real link. */}
+      <UpgradeModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        badgeText={`ต้องใช้แพลน ${PLAN_DISPLAY_NAME.premium} ขึ้นไป`}
+        title="Google Sheets Sync ต้องการแพลน Premium น้า"
+        subtitle="ซิงค์งานทุกชิ้นไปยัง Google Sheet แบบอัตโนมัติ — อัปเกรดแล้วเชื่อมได้เลย"
+        features={SHEETS_PERKS}
       />
     </main>
   );

@@ -16,6 +16,8 @@ import {
 import { startLineLogin } from '@/lib/auth';
 import { formatBytes } from '@/lib/format';
 import { planDisplayName } from '@/lib/quota-errors';
+import { quotaLevel } from '@/components/QuotaBanner';
+import DiaryAddonSection from './DiaryAddonSection';
 import styles from './page.module.css';
 
 /**
@@ -171,10 +173,21 @@ export default function PlansPage() {
                   const pct = q.unlimited
                     ? 0
                     : Math.min(100, q.limit > 0 ? Math.round((q.used / q.limit) * 100) : 100);
+                  // Same thresholds as the inline banner, so a counter here and
+                  // a counter on a feature page never disagree about "full".
+                  const level = quotaLevel(q);
                   return (
                     <li key={row.feature} className={styles.usageItem}>
                       <span className={styles.usageName}>{row.label}</span>
-                      <span className={styles.usageNum}>
+                      <span
+                        className={`${styles.usageNum} ${
+                          level === 'full'
+                            ? styles.usageNumFull
+                            : level === 'near'
+                              ? styles.usageNear
+                              : ''
+                        }`}
+                      >
                         {q.unlimited ? `${q.used} (ไม่จำกัด)` : `${q.used}/${q.limit}`}
                       </span>
                       {!q.unlimited && (
@@ -304,6 +317,12 @@ export default function PlansPage() {
           );
         })}
       </div>
+
+      {/* ---- add-ons ----
+          Below the tiers and visually separated, because หนูเก็บความทรงจำ is
+          NOT a fourth plan: any tier can hold it and buying it does not change
+          the user's plan. It follows the billing-cycle toggle above. */}
+      <DiaryAddonSection cycle={cycle} />
 
       <p className={styles.footnote}>
         โควต้ารายเดือนรีเซตทุกวันที่ 1 เวลา 00:00 น. (เวลาไทย) — อัปเกรดกลางเดือนได้เลย

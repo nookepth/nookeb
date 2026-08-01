@@ -13,12 +13,13 @@ import {
   updateTask,
 } from '@/lib/api';
 import { startLineLogin } from '@/lib/auth';
+import { PLAN_DISPLAY_NAME } from '@/lib/quota-errors';
 import { CloseIcon, ListIcon, SearchIcon, UserIcon } from '@/components/icons';
 import TaskStatsCard from './TaskStatsCard';
 import TaskActivitySummary from './TaskActivitySummary';
 import TaskListItem, { type TaskQuickActions } from './TaskListItem';
 import CreatePersonalTaskModal from './CreatePersonalTaskModal';
-import ExportUpgradeModal from './ExportUpgradeModal';
+import { QuotaExceededModal, UpgradeModal } from '@/components/UpgradeModal';
 import UserPlanBadge from './UserPlanBadge';
 import ProgressRing from './ProgressRing';
 import FilterSortBar from './FilterSortBar';
@@ -52,6 +53,17 @@ import styles from './tasks.module.css';
 type Tab = 'active' | 'overdue' | 'done' | 'cancelled';
 
 const TAB_ORDER: Tab[] = ['active', 'overdue', 'done', 'cancelled'];
+
+/**
+ * What Export Excel actually buys — concrete, not "unlock premium features".
+ * Lives here rather than in the shared modal: the checklist is about THIS
+ * feature, and the component is meant to stay feature-agnostic.
+ */
+const EXPORT_PERKS = [
+  'ดาวน์โหลดงานทั้งหมดเป็นไฟล์ .xlsx แถวละรายการ',
+  'มีวันครบกำหนด ผู้รับผิดชอบ และสถานะครบทุกคอลัมน์',
+  'เชื่อม Google Sheets ให้อัปเดตเองอัตโนมัติ',
+];
 
 /* ---- small inline icons (brand rule: no emoji) ---- */
 
@@ -244,6 +256,8 @@ export default function TasksPage() {
   const [toast, setToast] = useState<{ msg: string; ok?: boolean } | null>(null);
   const [exporting, setExporting] = useState(false);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
+  /** Set when POST /tasks answers 429 — carries the server's own reset instant. */
+  const [quotaGate, setQuotaGate] = useState<{ feature: string; resetAt?: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
@@ -882,11 +896,37 @@ export default function TasksPage() {
             setCreateOpen(false);
             setNeedsLogin(true);
           }}
+          /* §5 — the monthly task quota is not a form error: nothing the user
+             can retype makes the create succeed. The form closes and the quota
+             card takes over, rather than nesting a modal inside a modal. */
+          onQuotaExceeded={(feature, resetAt) => {
+            setCreateOpen(false);
+            setQuotaGate({ feature, resetAt });
+          }}
+          onPlanGate={() => {
+            setCreateOpen(false);
+            setUpgradeOpen(true);
+          }}
         />
       )}
 
       {/* H2. Export Excel plan gate — shown instead of the 403 JSON page */}
-      {upgradeOpen && <ExportUpgradeModal onClose={() => setUpgradeOpen(false)} />}
+      <UpgradeModal
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        badgeText={`ต้องใช้แพลน ${PLAN_DISPLAY_NAME.pro} ขึ้นไป`}
+        title="ฟีเจอร์นี้ต้องการแพลน Pro ขึ้นไปน้า"
+        subtitle="หนูสรุปงานทุกกลุ่มเป็นไฟล์ Excel ให้ได้เลย — อัปเกรดแล้วกดปุ่มเดียวจบน้า"
+        features={EXPORT_PERKS}
+      />
+
+      {/* H3. Monthly task quota — a 429 from POST /tasks */}
+      <QuotaExceededModal
+        open={quotaGate !== null}
+        onClose={() => setQuotaGate(null)}
+        feature={quotaGate?.feature ?? 'tasks'}
+        resetAt={quotaGate?.resetAt}
+      />
 
       {/* I. postpone-deadline modal (quick action) */}
       {postponeTask && (

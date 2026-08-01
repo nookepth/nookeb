@@ -14,7 +14,7 @@ import { pushMessage } from '../services/line.service';
 import { MEMBERSHIP_QUEUE, type MembershipJob } from './membership.queue';
 import { runQuotaPeriodCleanup } from './quotaReset.job';
 import { runBoostExpiry } from './boostExpiry.job';
-import { runDiaryReminderSweep } from './diaryReminder.job';
+import { runDiaryAddonSweep, runDiaryReminderSweep } from './diaryReminder.job';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -36,6 +36,17 @@ export function createMembershipWorker(): Worker<MembershipJob> {
             push: async (to, text) => {
               await pushMessage(to, [{ type: 'text', text }]);
             },
+          });
+          break;
+        case 'diary_addon_sweep':
+          // หนูเก็บความทรงจำ (migration 052). WEB_URL is supplied here rather
+          // than read inside the job so the job module stays env-free and
+          // unit-testable.
+          await runDiaryAddonSweep(supabase, {
+            push: async (to, messages) => {
+              await pushMessage(to, messages);
+            },
+            webUrl: config.WEB_URL,
           });
           break;
         default: {
