@@ -67,9 +67,33 @@ export function middleware(request: NextRequest) {
     // extension scripts (liff/edge/2/sdk.js, l2m-extensions) from this CDN at
     // runtime on /liff/tasks/*. Without it the SDK logs "[LIFF Init] failed to
     // load legacy extensions" and runs degraded.
+    // TODO: restore nonce-based CSP — temporarily disabled for emergency.
+    //
+    // WHY THE NONCE CAME OUT (2026-08-02, production outage):
+    // The header comment above claims "every route matched below is now
+    // dynamically rendered". That is FALSE. Middleware does not opt a route out
+    // of static generation — only the page itself does, by reading headers() or
+    // cookies(). `/` is dynamic because app/page.tsx calls headers(); every
+    // OTHER route (all of /dashboard/*, /admin, /join, /auth/callback,
+    // /liff/tasks*) stayed prerendered at BUILD time, when no nonce exists.
+    // Their inline `self.__next_f.push(...)` bootstrap scripts therefore carry
+    // no nonce attribute — verified: 18 script tags on /dashboard, 0 nonced —
+    // so a nonce-only script-src blocked every one of them. The SSR shell
+    // painted and React never hydrated: blank page / infinite spinner.
+    //
+    // DO NOT "fix" this by adding the nonce back next to 'unsafe-inline'.
+    // Per CSP spec, a policy carrying ANY nonce or hash source makes the
+    // browser IGNORE 'unsafe-inline' entirely — the two do not stack, and the
+    // outage returns unchanged.
+    //
+    // The real fix is to make the nonce and the render mode agree, either by
+    // forcing the matched routes dynamic or by scoping the nonce to routes that
+    // are actually rendered per-request. That is a deliberate perf decision
+    // (it gives up static caching for the whole dashboard), not a hotfix.
+    // Everything else FIX 12 hardened is untouched.
     'script-src': [
       "'self'",
-      `'nonce-${nonce}'`,
+      "'unsafe-inline'",
       'https://static.line-scdn.net',
       ...(isDev ? ["'unsafe-eval'"] : []),
     ],
