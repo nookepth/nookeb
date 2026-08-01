@@ -186,11 +186,14 @@
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
-  align-items: start;
+  /* stretch, not start — every card in a row matches the tallest one, so the
+     free card is never shorter than Pro/Premium. */
+  align-items: stretch;
 }
 
 .card {
   position: relative;
+  height: 100%;
   display: flex;
   flex-direction: column;
   padding: 22px 20px 20px;

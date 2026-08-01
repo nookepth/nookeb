@@ -269,6 +269,12 @@ export default function PlansPage() {
           // Pro is the recommended tier — it is the first paid step and covers
           // the limits most groups actually hit.
           const recommended = plan.plan === 'pro';
+          // The free tier has no compare-at anchor and no "other cycle" line,
+          // so its price block would be one line tall against the paid cards'
+          // three. Render the same two tags anyway with placeholder text and
+          // visibility:hidden — they hold the height without being seen or read.
+          const compareAt = compareAtText(plan, cycle);
+          const subLabel = priceSubLabel(plan, cycle);
           return (
             <section
               key={plan.plan}
@@ -282,15 +288,23 @@ export default function PlansPage() {
               {/* No emoji on tier names — brand rule. Name comes from the API. */}
               <h2 className={styles.cardName}>{plan.displayName}</h2>
 
-              {compareAtText(plan, cycle) && (
-                <div className={styles.priceCompare}>{compareAtText(plan, cycle)}</div>
-              )}
+              <div
+                className={styles.priceCompare}
+                style={compareAt ? undefined : { visibility: 'hidden' }}
+                aria-hidden={compareAt ? undefined : true}
+              >
+                {compareAt ?? '— บาท'}
+              </div>
               <div className={styles.priceRow}>
                 <span className={styles.price}>{priceText(plan, cycle)}</span>
               </div>
-              {priceSubLabel(plan, cycle) && (
-                <div className={styles.priceNote}>{priceSubLabel(plan, cycle)}</div>
-              )}
+              <div
+                className={styles.priceNote}
+                style={subLabel ? undefined : { visibility: 'hidden' }}
+                aria-hidden={subLabel ? undefined : true}
+              >
+                {subLabel ?? '— บาท/ปี'}
+              </div>
 
               <div className={styles.storage}>
                 พื้นที่ {formatBytes(plan.lockerBytes)}

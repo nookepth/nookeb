@@ -1097,6 +1097,14 @@
   color: #8c8c8c;
   text-align: center;
 }
+/* footnote under งานที่สร้าง — the one metric here that includes cancelled */
+.metricNote {
+  font-size: 9px;
+  font-weight: 500;
+  color: #a3a3a3;
+  text-align: center;
+  line-height: 1.2;
+}
 
 /* D. list additions: overdue card, scope badges, alert tab */
 .cardOverdue {

@@ -584,6 +584,8 @@ export default function TasksPage() {
   }
 
   const streak = computeStreak(all, viewerUid);
+  // ring denominator = active + overdue + finished (ยกเลิก is excluded — see
+  // overallProgress; the four stat cards below still show every status)
   const ring = overallProgress(all);
   const focus = focusTasks(all);
 

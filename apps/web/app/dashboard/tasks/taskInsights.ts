@@ -205,24 +205,37 @@ export function computeStreak(tasks: TaskDto[], viewerUid: string): number {
 }
 
 /**
- * Completion ratio for the ring, over the SAME set the four stat cards
- * partition: every task /tasks/mine returns (created by OR assigned to the
- * viewer, `deleted_at IS NULL`). done = status 'done'; total = all of them,
- * cancelled included — so the ring can never contradict the tab counts.
+ * Completion ratio for the ring, over the tasks /tasks/mine returns (created by
+ * OR assigned to the viewer, `deleted_at IS NULL`).
  *
- * This was month-scoped, and that is what made it read "5/10" while the cards
- * said 6 เสร็จสิ้น out of 15. It dropped three things silently: a done task
- * whose assignees carry no `doneAt` (completionTime returns null, so it counted
- * in NEITHER half), a live task with no deadline at all, and every cancelled
- * task. Nothing in the visible card said "เดือนนี้" — only the aria-label did —
- * so the gap had no explanation on screen.
+ * RULE: cancelled tasks are NEVER counted in progress or completion rate. They
+ * are displayed separately for visibility (their own stat card + tab) but are
+ * excluded from all percentage calculations. A cancelled task is work that was
+ * called off, not work left to do — leaving it in the denominator caps the ring
+ * below 100% forever and makes 6 เสร็จสิ้น out of 12 live tasks read as 40%.
+ *
+ * done  = status 'done'
+ * total = กำลังทำ + เลยกำหนด + เสร็จสิ้น  (i.e. every task except cancelled)
+ *
+ * This matches the stat cards exactly: `isOverdue` already returns false for
+ * done/cancelled tasks, so the four cards are a strict partition of the list and
+ * total is precisely (all − ยกเลิก).
+ *
+ * It was previously month-scoped, which made it read "5/10" while the cards said
+ * 6 เสร็จสิ้น out of 15: it dropped a done task whose assignees carry no
+ * `doneAt` (completionTime returns null, so it counted in NEITHER half) and a
+ * live task with no deadline at all. Nothing visible said "เดือนนี้" — only the
+ * aria-label did — so the gap had no explanation on screen.
  */
 export function overallProgress(tasks: TaskDto[]): { done: number; total: number } {
   let done = 0;
+  let total = 0;
   for (const t of tasks) {
+    if (t.status === 'cancelled') continue; // excluded from the denominator
+    total += 1;
     if (t.status === 'done') done += 1;
   }
-  return { done, total: tasks.length };
+  return { done, total };
 }
 
 /* ---- activity feed ---- */
