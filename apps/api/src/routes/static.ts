@@ -7,6 +7,19 @@ import { getObjectStream } from '../services/r2.service';
 // This is NOT a user-file download (engineering rule 5), just a fixed app asset.
 const GREETING_KEY = 'static/welcome.jpg';
 
+// The mascot avatar drawn in every Flex card header (flex.service.ts →
+// cardHeader). Same reasoning as welcome.jpg — LINE fetches the `image` url
+// itself, so it must be permanent, public and unauthenticated. PNG, not JPEG:
+// the art is transparent outside the mascot so the header gradient shows
+// through, which a JPEG would flatten to a white square. Uploaded by
+// scripts/upload-logo-image.ts.
+//
+// DEPLOY ORDER MATTERS: LINE caches an image URL's response — including a 404 —
+// so any card sent while this route is still undeployed poisons the cache for
+// every client that received it. Deploy the API before the first card goes out,
+// or bump the `?v=` on MASCOT_URL in flex.service.ts to mint a fresh URL.
+const LOGO_KEY = 'static/logo.png';
+
 // Numbered static feature images. 1 → 8 are the onboarding carousel (sent on the
 // `follow` and `join` events); 9 is a feature-preview card used only by the
 // "หนูเก็บเพิ่มเติม" carousel. Same public-asset pattern as welcome.jpg: LINE fetches
@@ -21,6 +34,14 @@ const staticRoutes: FastifyPluginAsync = async (app) => {
     const body = await getObjectStream(app.r2, GREETING_KEY);
     return reply
       .header('Content-Type', 'image/jpeg')
+      .header('Cache-Control', 'public, max-age=86400')
+      .send(body);
+  });
+
+  app.get('/static/logo.png', async (_request, reply) => {
+    const body = await getObjectStream(app.r2, LOGO_KEY);
+    return reply
+      .header('Content-Type', 'image/png')
       .header('Cache-Control', 'public, max-age=86400')
       .send(body);
   });

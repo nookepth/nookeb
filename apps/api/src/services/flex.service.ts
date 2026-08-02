@@ -7,7 +7,10 @@
  * So the status "icons" below are native Flex colored-box components (green =
  * success, red = failure): no emoji, no external hosting, renders everywhere.
  * To use real image icons instead, host PNGs and swap `statusDot` for an
- * `{ type: 'image', url: '<https-png>' }` component.
+ * `{ type: 'image', url: '<https-png>' }` component — which is exactly what the
+ * header avatar does (see `headerAvatar`): a hosted PNG off /static/logo.png.
+ * That route is the only reason an image is viable here; it is public,
+ * permanent and HTTPS, which is all LINE will fetch.
  */
 
 import type { SessionKind } from '@nookeb/shared';
@@ -186,10 +189,60 @@ function statusBlock(color: string, title: string, hint?: string): Record<string
 }
 
 /**
- * Header glyph — 1–3 stacked white bars in a translucent rounded tile. Flex
- * `image`/`icon` render HTTPS JPEG/PNG only (see the note at the top of this
- * file), and emoji are banned by the brand rule, so an icon has to be BUILT out
- * of boxes. The bar count differs per theme, which is what makes the card types
+ * The mascot avatar served off the API (routes/static.ts → /static/logo.png,
+ * uploaded by scripts/upload-logo-image.ts). APP_URL-derived so it resolves to
+ * whichever API is deployed; LINE fetches this URL itself, so it has to be
+ * public, permanent and HTTPS.
+ *
+ * `?v=1`: LINE caches hero/image URLs — INCLUDING failed fetches — so a future
+ * change to the artwork needs the query bumped or clients keep the old bytes.
+ * (The onboarding carousel learned this the hard way; see `?v=3` below.)
+ */
+const MASCOT_URL = `${config.APP_URL}/static/logo.png?v=1`;
+
+/**
+ * Header avatar — the หนูเก็บ mascot in a circular translucent tile.
+ *
+ * Two Flex constraints shape this, and both are load-bearing:
+ *
+ * 1. The circle is the WRAPPER BOX's, drawn as `cornerRadius: '15px'` — half of
+ *    the 30px tile. Neither half of that is cosmetic: `cornerRadius` is not a
+ *    property of the `image` component at all, and `'full'` is not one of the
+ *    values it accepts on a `box` either (it takes the keywords none…xxl or a
+ *    pixel value — 'full' is a CSS-ism). Either mistake is the `letterSpacing`
+ *    class of failure the note at the top of this file describes: LINE 400s the
+ *    WHOLE message and no card is delivered. Both were caught by the validate
+ *    endpoint documented up there; run it before changing this shape.
+ * 2. `image.url` must be HTTPS. A dev/staging APP_URL over plain http would
+ *    otherwise 400 every card in this file at once, so a non-https APP_URL
+ *    falls back to {@link headerGlyph} — the box-drawn glyph this replaced.
+ *
+ * The tile keeps the old `#FFFFFF29` fill: the mascot is near-white, so on the
+ * lighter end of a header gradient it needs a disc behind it to stay legible.
+ */
+function headerAvatar(theme: CardTheme): Record<string, unknown> {
+  if (!MASCOT_URL.startsWith('https://')) return headerGlyph(theme);
+  return {
+    type: 'box',
+    layout: 'vertical',
+    width: '30px',
+    height: '30px',
+    cornerRadius: '15px',
+    backgroundColor: '#FFFFFF29',
+    contents: [
+      // `size:'full'` (not the 40px `xxs` keyword) is what pins the image to the
+      // 30px tile — a keyword size would overflow the circle it is cropped by.
+      { type: 'image', url: MASCOT_URL, size: 'full', aspectMode: 'cover', aspectRatio: '1:1' },
+    ],
+  };
+}
+
+/**
+ * Fallback header glyph — 1–3 stacked white bars in a translucent rounded tile,
+ * built out of boxes because Flex has no vector primitive and emoji are banned
+ * by the brand rule. Superseded by {@link headerAvatar} wherever the mascot URL
+ * is reachable; still the only thing that renders over a non-https APP_URL.
+ * The bar count differs per theme, which is what made the card types
  * distinguishable to anyone who cannot separate the hues.
  */
 function headerGlyph(theme: CardTheme): Record<string, unknown> {
@@ -243,7 +296,7 @@ function cardHeader(theme: CardTheme, title: string, subtitle?: string): Record<
         layout: 'horizontal',
         spacing: 'md',
         contents: [
-          headerGlyph(theme),
+          headerAvatar(theme),
           { type: 'box', layout: 'vertical', flex: 1, contents: text },
         ],
       },
@@ -251,44 +304,14 @@ function cardHeader(theme: CardTheme, title: string, subtitle?: string): Record<
   };
 }
 
-/**
- * Step rail — the honest substitute for the "spinner / progress bar" the brief
- * asks for on the in-flight cards. Flex cannot animate anything, and a fake
- * percentage would be a lie (the worker reports no progress fraction), so this
- * shows WHICH STAGE the job is at instead: filled segments behind, tinted
- * segments ahead, and the current stage named underneath.
- */
-function stepRail(theme: CardTheme, labels: readonly string[], activeIndex: number): Record<string, unknown> {
-  return {
-    type: 'box',
-    layout: 'vertical',
-    spacing: 'sm',
-    margin: 'md',
-    contents: [
-      {
-        type: 'box',
-        layout: 'horizontal',
-        spacing: 'xs',
-        contents: labels.map((_, i) => ({
-          type: 'box',
-          layout: 'vertical',
-          height: '4px',
-          flex: 1,
-          cornerRadius: '2px',
-          backgroundColor: i <= activeIndex ? theme.accent : `${theme.accent}24`,
-          contents: [],
-        })),
-      },
-      {
-        type: 'text',
-        text: `ขั้นที่ ${activeIndex + 1}/${labels.length} · ${labels[activeIndex] ?? ''}`,
-        size: 'xxs',
-        color: MUTED,
-        wrap: true,
-      },
-    ],
-  };
-}
+// NOTE: there used to be a `stepRail()` primitive here — a segmented bar plus a
+// "ขั้นที่ 2/3 · อัปโหลด" caption on the in-flight cards. It was REMOVED, and must
+// not come back in any form: LINE never re-renders a delivered message, so the
+// step it showed froze at whatever was true the moment the card was sent. Users
+// read a finished job as still running because the card still said "ขั้นที่ 1/3".
+// A stage indicator inside an immutable message is false state, not progress.
+// The live view is the progress page behind the card's button; that is the only
+// place a fraction can be honest.
 
 /**
  * Bullet list with a real hanging indent. Flex has no list component and no
@@ -430,7 +453,6 @@ export function buildProgressFlexMessage(params: {
           // the completed state everywhere else, so it was claiming a finished
           // upload while the batch was still streaming to R2.
           statusBlock(WORKING_AMBER, 'กำลังอัปโหลดเข้าล็อคเกอร์', 'แป๊บนึงน้าพี่ กดปุ่มด้านล่างดูความคืบหน้าแบบสดๆ ได้เลย'),
-          stepRail(theme, ['รับไฟล์', 'อัปโหลด', 'เข้าล็อคเกอร์'], 1),
         ],
       },
       footer: {
@@ -571,7 +593,6 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
                 },
               ],
             },
-            stepRail(theme, ['เก็บหน้าเอกสาร', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
             noticeBox(theme, 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
           ],
         },
@@ -595,7 +616,6 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
         paddingAll: '18px',
         contents: [
           statusBlock(theme.accent, 'เปิดโหมดสแกนแล้วน้า', 'ส่งรูปเอกสารมาทีละหน้าได้เลย หนูจะแต่งให้คมแล้วรวมเป็น PDF ให้'),
-          stepRail(theme, ['เก็บหน้าเอกสาร', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
           noticeBox(theme, 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
         ],
       },
@@ -666,7 +686,6 @@ export function buildPdfMergeFlexMessage(
                 },
               ],
             },
-            stepRail(theme, ['เก็บไฟล์', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
             noticeBox(theme, 'ครบทุกไฟล์แล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
           ],
         },
@@ -690,7 +709,6 @@ export function buildPdfMergeFlexMessage(
         paddingAll: '18px',
         contents: [
           statusBlock(theme.accent, 'เปิดโหมดรวมไฟล์แล้วน้า', 'รองรับทั้งรูปภาพและ PDF ส่งมาทีละอันได้เลย หนูจะรวมตามลำดับที่ส่ง'),
-          stepRail(theme, ['เก็บไฟล์', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
           noticeBox(theme, 'ครบทุกไฟล์แล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
         ],
       },
@@ -726,10 +744,6 @@ export function buildFinalizingFlexMessage(params: {
     kind === 'scan'
       ? `หนูกำลังสแกน ${count} หน้าเป็น PDF ให้น้า`
       : `หนูกำลังรวม ${count} ไฟล์เป็น PDF ให้น้า`;
-  const railLabels =
-    kind === 'scan'
-      ? (['เก็บหน้าเอกสาร', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'] as const)
-      : (['เก็บไฟล์', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'] as const);
 
   return {
     type: 'flex',
@@ -747,7 +761,6 @@ export function buildFinalizingFlexMessage(params: {
           // Amber, not green — the PDF does not exist yet at this point. The old
           // card put a green (= done) dot next to "หนูกำลังสแกน…".
           statusBlock(WORKING_AMBER, statusLine, 'แป๊บนึงน้าพี่ เดี๋ยวเก็บเข้าล็อคเกอร์ให้เลยน้า'),
-          stepRail(theme, railLabels, 1),
         ],
       },
       footer: {
