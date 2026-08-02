@@ -30,14 +30,20 @@ import { VaultPinPad } from '@/components/VaultPinPad';
 /**
  * ห้องนิรภัย (Vault) — PIN-protected, view-only file store.
  * Page states (from GET /vault/session-status):
- *   needsLogin → notConfigured → setup (no PIN yet — setup also grants the
- *   manual premium flag, so it comes BEFORE the premium CTA) → premium CTA
- *   (hasPin but plan revoked; placeholder until billing) → PIN entry → grid.
+ *   needsLogin → notConfigured → setup (no PIN yet) → PIN entry → grid.
+ *
+ * There is NO premium gate: every plan may use the vault. A plan changes only
+ * the file-count CEILING (free 10 / pro 30 / premium 100), which arrives on the
+ * status payload as vaultFileLimit / vaultFileCount / vaultSlotsRemaining and
+ * is shown above the dropzone.
+ *
  * All view URLs stream through the API per request — nothing here ever holds
  * a shareable file URL.
  */
 
 const PAGE_SIZE = 20;
+/** ≤ this many slots left → the amber warning. */
+const LOW_SLOTS_AT = 3;
 const MAX_UPLOAD_MB = 100; // UX-only mirror of VAULT_MAX_FILE_SIZE_MB — server re-validates
 const ALLOWED_MIME = new Set([
   'image/jpeg',
@@ -54,6 +60,16 @@ function formatCountdown(seconds: number): string {
   const m = Math.floor(seconds / 60);
   const s = seconds % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/**
+ * The file-count ceiling answers with TWO names for the same 403 — the original
+ * `code: 'VAULT_FULL'` and the newer `errorCode: 'VAULT_FILE_LIMIT_REACHED'`
+ * (routes/vault.ts). Match both so neither spelling falls through to the generic
+ * error box, which would render an empty message.
+ */
+function isVaultFullError(err: ApiError): boolean {
+  return err.code === 'VAULT_FULL' || err.code === 'VAULT_FILE_LIMIT_REACHED';
 }
 
 function fileKind(mime: string): 'image' | 'video' | 'pdf' {
@@ -194,7 +210,7 @@ export default function VaultPage() {
       await restoreVaultFile(fileId);
       await Promise.all([loadFiles(1, false), loadTrash()]);
     } catch (err) {
-      if (err instanceof ApiError && err.code === 'VAULT_FULL') {
+      if (err instanceof ApiError && isVaultFullError(err)) {
         setCapacityGate({ limit: err.details?.limit });
       } else {
         setTrashError('กู้คืนไม่สำเร็จ ลองใหม่อีกทีน้า');
@@ -234,6 +250,17 @@ export default function VaultPage() {
 
   const remainingSeconds =
     expiresAt !== null ? Math.max(0, Math.round((expiresAt - now) / 1000)) : null;
+
+  /**
+   * §10 capacity — the ONLY thing a plan changes about the vault. -1 is the
+   * UNLIMITED sentinel from config/plans.ts and must never be rendered as a
+   * number, so it is folded into a boolean here rather than at each use.
+   */
+  const fileLimit = status?.vaultFileLimit ?? 0;
+  const fileCount = status?.vaultFileCount ?? 0;
+  const unlimitedSlots = fileLimit < 0;
+  const slotsRemaining = Math.max(0, status?.vaultSlotsRemaining ?? 0);
+  const vaultFull = !unlimitedSlots && slotsRemaining === 0;
 
   // Auto-lock when the countdown hits zero.
   useEffect(() => {
@@ -306,9 +333,7 @@ export default function VaultPage() {
       const res = await unlockVault(pin);
       clearPinFeedback();
       setSetupFirstPin(null);
-      setStatus((s) =>
-        s ? { ...s, hasPin: true, isPremium: true, isUnlocked: true } : s,
-      );
+      setStatus((s) => (s ? { ...s, hasPin: true, isUnlocked: true } : s));
       setExpiresAt(Date.now() + res.expiresIn * 1000);
     } catch (err) {
       setSetupFirstPin(null);
@@ -362,6 +387,12 @@ export default function VaultPage() {
   }
 
   async function handleFiles(list: FileList | File[]): Promise<void> {
+    // Already at the ceiling — say so without spending a round trip on a 403 we
+    // can predict. The server still enforces it (this is UX only).
+    if (vaultFull) {
+      setCapacityGate({ limit: fileLimit });
+      return;
+    }
     setUploadError(null);
     const items = Array.from(list);
     for (const [i, file] of items.entries()) {
@@ -389,7 +420,7 @@ export default function VaultPage() {
         // whenever the body carried a bare machine code, so a full vault could
         // report an EMPTY error. Stop uploading the rest of the batch too —
         // every remaining file would hit the same wall.
-        if (err instanceof ApiError && err.code === 'VAULT_FULL') {
+        if (err instanceof ApiError && isVaultFullError(err)) {
           setCapacityGate({ limit: err.details?.limit });
           setUploadState(null);
           break;
@@ -446,8 +477,7 @@ export default function VaultPage() {
     );
   }
 
-  // State: no PIN yet → setup (this also activates the manual premium flag,
-  // so it must come before the premium CTA — otherwise nobody could ever start).
+  // State: no PIN yet → setup. Open to every plan — setting a PIN buys no tier.
   if (!status.hasPin) {
     return (
       <main className="container vault-container">
@@ -466,19 +496,6 @@ export default function VaultPage() {
             error={pinError}
             lockRemaining={lockRemaining}
           />
-        </div>
-      </main>
-    );
-  }
-
-  // State: PIN exists but plan is not premium (billing will own this later).
-  if (!status.isPremium) {
-    return (
-      <main className="container vault-container">
-        <VaultHeader />
-        <div className="vault-state-card vault-premium-cta">
-          <h2>ห้องนิรภัยเป็นฟีเจอร์พรีเมียม</h2>
-          <p>แพ็กเกจพรีเมียมกำลังจะเปิดตัวเร็ว ๆ นี้ — ไฟล์เดิมของคุณยังถูกเก็บไว้อย่างปลอดภัยน้า</p>
         </div>
       </main>
     );
@@ -527,9 +544,31 @@ export default function VaultPage() {
 
       {pageError && <div className="vault-error">{pageError}</div>}
 
+      {/* §10 — slots used / left. Shown on every plan: the vault itself is free,
+          only the ceiling differs, so this is the one number a user needs. */}
       <div
-        className={`vault-dropzone${dragOver ? ' over' : ''}`}
+        className={`vault-capacity${
+          vaultFull ? ' is-full' : !unlimitedSlots && slotsRemaining <= LOW_SLOTS_AT ? ' is-low' : ''
+        }`}
+      >
+        <span className="vault-capacity-count">
+          {unlimitedSlots
+            ? `ใช้ไปแล้ว ${fileCount} ไฟล์`
+            : `ใช้ไปแล้ว ${fileCount} / ${fileLimit} ไฟล์`}
+        </span>
+        <span className="vault-capacity-note">
+          {unlimitedSlots
+            ? 'เก็บได้ไม่จำกัด'
+            : vaultFull
+              ? 'ครบจำนวนแล้ว — อัปเกรดเพื่อเพิ่มพื้นที่'
+              : `เหลืออีก ${slotsRemaining} ช่อง`}
+        </span>
+      </div>
+
+      <div
+        className={`vault-dropzone${dragOver ? ' over' : ''}${vaultFull ? ' is-disabled' : ''}`}
         onDragOver={(e) => {
+          if (vaultFull) return;
           e.preventDefault();
           setDragOver(true);
         }}
@@ -537,6 +576,7 @@ export default function VaultPage() {
         onDrop={(e) => {
           e.preventDefault();
           setDragOver(false);
+          if (vaultFull) return;
           if (e.dataTransfer.files.length > 0) void handleFiles(e.dataTransfer.files);
         }}
       >
@@ -551,11 +591,19 @@ export default function VaultPage() {
           </div>
         ) : (
           <>
-            <p>ลากไฟล์มาวาง หรือ</p>
-            <button className="btn" onClick={() => fileInputRef.current?.click()}>
+            <p>{vaultFull ? 'ห้องนิรภัยเต็มแล้วน้า' : 'ลากไฟล์มาวาง หรือ'}</p>
+            <button
+              className="btn"
+              disabled={vaultFull}
+              onClick={() => fileInputRef.current?.click()}
+            >
               เลือกไฟล์
             </button>
-            <p className="vault-dropzone-hint">รูป / วิดีโอ / PDF ไม่เกิน {MAX_UPLOAD_MB} MB — ดูได้อย่างเดียว ดาวน์โหลดหรือแชร์ต่อไม่ได้</p>
+            <p className="vault-dropzone-hint">
+              {vaultFull
+                ? `แพลนนี้เก็บได้ ${fileLimit} ไฟล์ — ลบไฟล์เก่าออก หรืออัปเกรดแพลนเพื่อเพิ่มพื้นที่น้า`
+                : `รูป / วิดีโอ / PDF ไม่เกิน ${MAX_UPLOAD_MB} MB — ดูได้อย่างเดียว ดาวน์โหลดหรือแชร์ต่อไม่ได้`}
+            </p>
           </>
         )}
         <input
@@ -563,6 +611,7 @@ export default function VaultPage() {
           type="file"
           hidden
           multiple
+          disabled={vaultFull}
           accept={[...ALLOWED_MIME].join(',')}
           onChange={(e) => {
             if (e.target.files?.length) void handleFiles(e.target.files);
@@ -760,12 +809,14 @@ export default function VaultPage() {
         </div>
       )}
 
-      {/* §10 — the vault's live-file ceiling (upload or restore) */}
+      {/* §10 — the vault's live-file ceiling (upload or restore). The 403 body
+          carries `limit`; the status payload knows it too, so the card can still
+          name the ceiling if an older API omitted it. */}
       <CapacityFullModal
         open={capacityGate !== null}
         onClose={() => setCapacityGate(null)}
         feature="vault_files"
-        limit={capacityGate?.limit}
+        limit={capacityGate?.limit ?? (unlimitedSlots ? undefined : fileLimit)}
         title="ห้องนิรภัยเต็มแล้วน้า"
       />
     </main>

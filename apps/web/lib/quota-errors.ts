@@ -109,7 +109,10 @@ export function messageForCode(
       return getQuotaMessage(opts.feature);
     case 'PLAN_UPGRADE_REQUIRED':
       return getPlanGateMessage(opts.requiredPlan);
+    // Two names for the same 403: the API sends `code: 'VAULT_FULL'` and
+    // `errorCode: 'VAULT_FILE_LIMIT_REACHED'`. Both must land on the same copy.
     case 'VAULT_FULL':
+    case 'VAULT_FILE_LIMIT_REACHED':
       return getCapacityMessage(opts.feature ?? 'vault_files', opts.limit);
     case 'BOOST_LIMIT_REACHED':
       return getCapacityMessage('group_boosts', opts.limit);

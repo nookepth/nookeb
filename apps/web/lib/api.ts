@@ -1461,18 +1461,28 @@ export function setDiaryPushEnabled(enabled: boolean): Promise<{ notificationEna
 
 /* ============================================================
    ห้องนิรภัย (Vault) — routes/vault.ts, migration 031.
-   Lock states arrive as 403 + code ('VAULT_LOCKED' /
-   'VAULT_PREMIUM_REQUIRED'), NOT 401 — 401 from the vault means the whole
-   LINE session is gone. A wrong PIN is 401 + code 'VAULT_PIN_INCORRECT'
-   (must NOT clear the session hint), so vaultFetch parses the body before
-   deciding what a 401 means.
+   Lock states arrive as 403 + code ('VAULT_LOCKED'), NOT 401 — 401 from the
+   vault means the whole LINE session is gone. A wrong PIN is 401 + code
+   'VAULT_PIN_INCORRECT' (must NOT clear the session hint), so vaultFetch
+   parses the body before deciding what a 401 means.
+
+   The vault is available on EVERY plan — there is no premium gate. A plan only
+   changes the file-count CEILING (free 10 / pro 30 / premium 100), reported by
+   GET /vault/session-status as the three vaultFile* fields below. The server
+   still sends a legacy `isPremium: true` for older clients; nothing here reads
+   it.
    ============================================================ */
 
 export interface VaultStatus {
   hasPin: boolean;
-  isPremium: boolean;
   isUnlocked: boolean;
   expiresIn: number | null;
+  /** The plan's live-file ceiling. -1 = UNLIMITED (never render as a number). */
+  vaultFileLimit: number;
+  /** Live (non-trashed) files the user is holding right now. */
+  vaultFileCount: number;
+  /** limit - count, or -1 when the limit is UNLIMITED. */
+  vaultSlotsRemaining: number;
 }
 
 export interface VaultFileDto {
@@ -1521,7 +1531,15 @@ async function vaultFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (res.ok) return body as T;
 
-  const code = typeof body?.code === 'string' ? body.code : undefined;
+  // The capacity 403 carries BOTH names: `code: 'VAULT_FULL'` (what
+  // lib/quota-errors.ts switches on) and `errorCode: 'VAULT_FILE_LIMIT_REACHED'`
+  // (the newer name). Fall back to `errorCode` so neither spelling is dropped.
+  const code =
+    typeof body?.code === 'string'
+      ? body.code
+      : typeof body?.errorCode === 'string'
+        ? body.errorCode
+        : undefined;
   const message = typeof body?.error === 'string' ? body.error : `API error ${res.status}`;
 
   if (code === 'VAULT_PIN_INCORRECT' || code === 'VAULT_PIN_LOCKED_OUT') {
@@ -1538,7 +1556,13 @@ async function vaultFetch<T>(path: string, init?: RequestInit): Promise<T> {
     clearSession();
     throw new ApiError(401, 'Unauthorized');
   }
-  throw new ApiError(res.status, message, code);
+  // Capacity/quota context (feature, limit, used) when the API sent it, so the
+  // caller can name the ceiling it hit instead of showing a bare code.
+  throw new ApiError(res.status, message, code, {
+    feature: typeof body?.feature === 'string' ? body.feature : undefined,
+    limit: typeof body?.limit === 'number' ? body.limit : undefined,
+    used: typeof body?.used === 'number' ? body.used : undefined,
+  });
 }
 
 export function getVaultStatus(): Promise<VaultStatus> {
@@ -1660,7 +1684,18 @@ export function uploadVaultFile(
         new ApiError(
           xhr.status,
           typeof body?.error === 'string' ? body.error : `API error ${xhr.status}`,
-          typeof body?.code === 'string' ? body.code : undefined,
+          // Same two-name capacity code as vaultFetch — VAULT_FULL / the newer
+          // VAULT_FILE_LIMIT_REACHED.
+          typeof body?.code === 'string'
+            ? body.code
+            : typeof body?.errorCode === 'string'
+              ? body.errorCode
+              : undefined,
+          {
+            feature: typeof body?.feature === 'string' ? body.feature : undefined,
+            limit: typeof body?.limit === 'number' ? body.limit : undefined,
+            used: typeof body?.used === 'number' ? body.used : undefined,
+          },
         ),
       );
     };

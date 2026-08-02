@@ -4515,8 +4515,59 @@ a.stat-chip {
   cursor: pointer;
 }
 
-.vault-premium-cta {
-  padding: 48px 24px;
+/* §10 capacity strip — "ใช้ไปแล้ว 8 / 10 ไฟล์ · เหลืออีก 2 ช่อง".
+   Neutral by default; amber at ≤3 slots; error tint when full. */
+.vault-capacity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 14px;
+  padding: 10px 16px;
+  margin-bottom: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-2);
+  font-size: var(--font-size-sm);
+}
+
+.vault-capacity-count {
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.vault-capacity-note {
+  color: var(--color-text-secondary);
+}
+
+.vault-capacity.is-low {
+  background: var(--color-warning-soft);
+  border-color: transparent;
+}
+
+.vault-capacity.is-low .vault-capacity-count,
+.vault-capacity.is-low .vault-capacity-note {
+  color: var(--color-warning-text);
+}
+
+.vault-capacity.is-full {
+  background: var(--color-error-soft);
+  border-color: transparent;
+}
+
+.vault-capacity.is-full .vault-capacity-count,
+.vault-capacity.is-full .vault-capacity-note {
+  color: var(--color-error);
+}
+
+/* Full vault — the dropzone stays visible (it explains why) but stops inviting. */
+.vault-dropzone.is-disabled {
+  opacity: 0.6;
+  border-style: solid;
+}
+
+.vault-dropzone.is-disabled .btn:disabled {
+  cursor: not-allowed;
 }
 
 @media (max-width: 640px) {
