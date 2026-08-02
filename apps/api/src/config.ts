@@ -10,6 +10,14 @@ const envSchema = z.object({
   // bind conflict. On Railway, point the worker service's healthcheck at this
   // port (set WORKER_HEALTH_PORT to the worker's exposed PORT, or reference it).
   WORKER_HEALTH_PORT: z.coerce.number().int().positive().default(3002),
+  // Where the API can REACH that worker health endpoint, for the /admin/system
+  // page's worker card. Separate from WORKER_HEALTH_PORT because the two
+  // services are separate Railway deployments: the port is what the worker
+  // BINDS locally, this is the URL the API DIALS (e.g. the worker service's
+  // private/internal origin + /health). Optional on purpose — unset renders the
+  // card as "not configured", which is honest; an unset env var says nothing
+  // about whether the worker is alive, so it must never render as "down".
+  WORKER_HEALTH_URL: z.string().url().optional(),
   APP_URL: z.string().url().default('http://localhost:3001'),
   WEB_URL: z.string().url().default('http://localhost:3000'),
   // Extra CORS origins allowed IN ADDITION to WEB_URL (comma-separated), e.g.

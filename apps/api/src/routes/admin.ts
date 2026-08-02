@@ -1,16 +1,13 @@
-import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from 'fastify';
+import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import type { SpaceRecord, UserRecord } from '@nookeb/shared';
 import { isAdminLineUser } from '../config';
+import { registerAdminGuard } from '../middleware/adminGuard';
+import { MONTHLY_FEATURES, normalizePlan, type Plan } from '../config/plans';
+import { listMonthlyQuotas } from '../services/quota.service';
 
 const adminRoutes: FastifyPluginAsync = async (app) => {
-  app.addHook('preHandler', app.authenticate);
-  // Gate: only configured admin LINE user ids
-  app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    if (!isAdminLineUser(request.authUser!.lineUserId)) {
-      await reply.code(403).send({ error: 'Admin access required' });
-    }
-  });
+  registerAdminGuard(app);
 
   // GET /admin/users — all users with storage + file counts
   app.get('/admin/users', async () => {
@@ -548,6 +545,182 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
         referralCode: r.referral_code,
         referralCount: Number(r.referral_count),
       })),
+    };
+  });
+
+  // GET /admin/users/:id — the per-user drawer behind a row click in the users
+  // table. Everything membership-shaped about one account in a single round
+  // trip: plan + storage, this month's quota counters, billing state, live
+  // group boosts, the Google Sheets link, and the two content counts that are
+  // not derivable from `users` (vault items, locker files/bytes).
+  //
+  // NEVER selects google_integrations.encrypted_token. That column holds a live
+  // third-party credential; an admin needs to know the link EXISTS and whether
+  // it is erroring, which `google_email` + `last_error` answer completely.
+  // Selecting it explicitly by column list (rather than '*') is what keeps a
+  // future column addition from leaking into this payload by default.
+  //
+  // Fails soft per-section, matching the analytics endpoints above: an
+  // unapplied migration 051/046 leaves that card empty instead of 500-ing the
+  // whole drawer.
+  app.get<{ Params: { id: string } }>('/admin/users/:id', async (request, reply) => {
+    const userId = request.params.id;
+
+    const { data: user, error } = await app.supabase
+      .from('users')
+      .select('*')
+      .eq('id', userId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!user) return reply.code(404).send({ error: 'User not found' });
+
+    const u = user as UserRecord;
+    const plan: Plan = normalizePlan(u.plan as string | null);
+
+    const [quotasRes, subsRes, boostsRes, googleRes, vaultRes, filesRes] = await Promise.allSettled([
+      listMonthlyQuotas(app.supabase, { userId, plan, features: MONTHLY_FEATURES }),
+      app.supabase
+        .from('subscriptions')
+        .select('id, plan, billing_cycle, price_thb, status, started_at, current_period_end, cancelled_at')
+        .eq('user_id', userId)
+        .eq('status', 'active')
+        .order('current_period_end', { ascending: false }),
+      // Live = not released AND not expired, evaluated at read time (the boost
+      // service's own definition — never trust released_at alone, the expiry
+      // job may not have swept yet).
+      app.supabase
+        .from('user_group_boosts')
+        .select('id, group_id, activated_at, expires_at')
+        .eq('user_id', userId)
+        .is('released_at', null)
+        .gt('expires_at', new Date().toISOString())
+        .order('expires_at', { ascending: true }),
+      app.supabase
+        .from('google_integrations')
+        .select('google_email, sheet_id, sheet_url, last_synced_at, last_error, created_at')
+        .eq('user_id', userId)
+        .maybeSingle(),
+      app.supabase
+        .from('vault_files')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', userId)
+        .is('deleted_at', null),
+      app.supabase
+        .from('files')
+        .select('file_size')
+        .eq('uploaded_by', userId)
+        .is('deleted_at', null)
+        .is('purged_at', null),
+    ]);
+
+    const quotas =
+      quotasRes.status === 'fulfilled'
+        ? quotasRes.value.map((q) => ({
+            feature: q.feature,
+            used: q.used,
+            limit: q.limit,
+            // `remaining` is Infinity for unlimited, which JSON.stringify turns
+            // into null. Send the boolean and let the client render the dash.
+            unlimited: q.unlimited,
+            resetAt: q.resetAt,
+          }))
+        : [];
+
+    const subscriptions =
+      subsRes.status === 'fulfilled'
+        ? ((subsRes.value.data as
+            | {
+                id: string;
+                plan: string;
+                billing_cycle: string;
+                price_thb: number;
+                status: string;
+                started_at: string;
+                current_period_end: string;
+                cancelled_at: string | null;
+              }[]
+            | null) ?? []
+          ).map((s) => ({
+            id: s.id,
+            plan: s.plan,
+            billingCycle: s.billing_cycle,
+            priceThb: Number(s.price_thb),
+            status: s.status,
+            startedAt: s.started_at,
+            currentPeriodEnd: s.current_period_end,
+            cancelledAt: s.cancelled_at,
+          }))
+        : [];
+
+    const boosts =
+      boostsRes.status === 'fulfilled'
+        ? ((boostsRes.value.data as
+            | { id: string; group_id: string; activated_at: string; expires_at: string }[]
+            | null) ?? []
+          ).map((b) => ({
+            id: b.id,
+            groupId: b.group_id,
+            activatedAt: b.activated_at,
+            expiresAt: b.expires_at,
+          }))
+        : [];
+
+    const gRow =
+      googleRes.status === 'fulfilled'
+        ? (googleRes.value.data as {
+            google_email: string | null;
+            sheet_id: string | null;
+            sheet_url: string | null;
+            last_synced_at: string | null;
+            last_error: string | null;
+            created_at: string;
+          } | null)
+        : null;
+    const google = gRow
+      ? {
+          connected: true,
+          googleEmail: gRow.google_email,
+          sheetId: gRow.sheet_id,
+          sheetUrl: gRow.sheet_url,
+          lastSyncedAt: gRow.last_synced_at,
+          lastError: gRow.last_error,
+          connectedAt: gRow.created_at,
+        }
+      : { connected: false as const };
+
+    const vaultFileCount =
+      vaultRes.status === 'fulfilled' ? Number(vaultRes.value.count ?? 0) : 0;
+
+    const fileRows =
+      filesRes.status === 'fulfilled'
+        ? ((filesRes.value.data as { file_size: number }[] | null) ?? [])
+        : [];
+    const fileBytes = fileRows.reduce((sum, f) => sum + Number(f.file_size ?? 0), 0);
+
+    return {
+      user: {
+        id: u.id,
+        lineUserId: u.line_user_id,
+        displayName: u.display_name,
+        plan: u.plan,
+        normalizedPlan: plan,
+        storageUsed: Number(u.storage_used),
+        storageLimit: Number(u.storage_limit),
+        createdAt: u.created_at,
+        isAdmin: isAdminLineUser(u.line_user_id),
+      },
+      quotas,
+      subscriptions,
+      boosts,
+      google,
+      content: {
+        // Capped at PostgREST's 1000-row page: this is the drawer's "roughly
+        // how much has this one person put in" line, not the ledger. The
+        // authoritative account total is users.storage_used, shown above it.
+        fileCount: fileRows.length,
+        fileBytes,
+        vaultFileCount,
+      },
     };
   });
 

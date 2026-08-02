@@ -692,6 +692,358 @@ export function getAdminReferral(days = 30): Promise<AdminReferral> {
   return apiFetch(`/admin/referral?days=${days}`);
 }
 
+/* ==========================================================================
+   Admin OPS — the /admin/system page (routes/admin-ops.ts, migration 058)
+
+   Everything above answers "how is the product doing". These answer "is the
+   machine running". The API fails soft on every one of them (a dead Redis or
+   an unapplied 058 degrades to empty/zero with a 200), so these fetchers only
+   ever throw on auth (401/403) or a transport failure — the panels themselves
+   are always renderable.
+   ========================================================================== */
+
+export type AdminQueueKey = 'file' | 'task' | 'sheets' | 'membership';
+
+export interface AdminQueueStat {
+  key: AdminQueueKey;
+  name: string;
+  waiting: number;
+  active: number;
+  completed: number;
+  failed: number;
+  delayed: number;
+  paused: number;
+  /** false when the counts could not be read (Redis down, queue not built). */
+  ok: boolean;
+  error: string | null;
+}
+
+export interface AdminFailedJob {
+  id: string;
+  name: string;
+  jobType: string | null;
+  attemptsMade: number;
+  reason: string | null;
+  failedAt: string | null;
+  timestamp: string | null;
+}
+
+export interface AdminQueues {
+  queues: AdminQueueStat[];
+  /** null unless the request asked for `failed=1`. */
+  failed: Record<AdminQueueKey, AdminFailedJob[]> | null;
+  backlog: number;
+  failedTotal: number;
+  checkedAt: string;
+}
+
+export function getAdminQueues(withFailed = false): Promise<AdminQueues> {
+  return apiFetch(`/admin/system/queues${withFailed ? '?failed=1' : ''}`);
+}
+
+export interface AdminHealth {
+  api: {
+    healthy: boolean;
+    checks: { redis: 'ok' | 'error'; db: 'ok' | 'error' };
+    commit: string;
+  };
+  worker: {
+    /** false = WORKER_HEALTH_URL unset. NOT the same as "down". */
+    configured: boolean;
+    reachable: boolean;
+    healthy: boolean;
+    status: string;
+    commit: string | null;
+    checks: Record<string, string> | null;
+  };
+  checkedAt: string;
+}
+
+export function getAdminHealth(): Promise<AdminHealth> {
+  return apiFetch(`/admin/system/health`);
+}
+
+export interface AdminReminderDay {
+  day: string;
+  scheduled: number;
+  sent: number;
+  failed: number;
+  cancelled: number;
+  pending: number;
+}
+
+export interface AdminDiaryAddonDay {
+  day: string;
+  sent: number;
+  skipped: number;
+  skippedWrote: number;
+  skippedLapsed: number;
+}
+
+export interface AdminPushFailure {
+  id: string;
+  taskId: string | null;
+  taskTitle: string | null;
+  taskStatus: string | null;
+  remindType: string;
+  remindAt: string;
+  failedAt: string;
+}
+
+export interface AdminAllowanceRow {
+  userId: string;
+  displayName: string | null;
+  plan: string | null;
+  used: number;
+  limit: number;
+  unlimited: boolean;
+  /** null when unlimited — a % of infinity is not a number. */
+  pctUsed: number | null;
+}
+
+export interface AdminNotifications {
+  days: number;
+  period: string;
+  resetAt: string;
+  totals: { scheduled: number; sent: number; failed: number; cancelled: number; pending: number };
+  /** sent / (sent + failed), %. null when nothing was attempted. */
+  deliveryRate: number | null;
+  daily: AdminReminderDay[];
+  diaryDaily: AdminDiaryAddonDay[];
+  failures: AdminPushFailure[];
+  allowance: AdminAllowanceRow[];
+}
+
+export function getAdminNotifications(days = 30): Promise<AdminNotifications> {
+  return apiFetch(`/admin/notifications?days=${days}`);
+}
+
+export interface AdminQuotaFeatureRow {
+  feature: string;
+  rows: number;
+  totalUsed: number;
+  /** >=80% and <100% — disjoint from atLimit. */
+  nearLimit: number;
+  atLimit: number;
+}
+
+export interface AdminQuotaPressureRow {
+  userId: string;
+  displayName: string | null;
+  plan: string | null;
+  feature: string;
+  scopeId: string;
+  used: number;
+  limit: number;
+  pctUsed: number;
+}
+
+export interface AdminQuotas {
+  period: string;
+  resetAt: string;
+  /** true when the paged read hit its cap and the roll-up is a floor. */
+  truncated: boolean;
+  byFeature: AdminQuotaFeatureRow[];
+  pressure: AdminQuotaPressureRow[];
+}
+
+export function getAdminQuotas(): Promise<AdminQuotas> {
+  return apiFetch(`/admin/quotas`);
+}
+
+export interface AdminPlanMixRow {
+  plan: string;
+  count: number;
+  pct: number;
+}
+
+export interface AdminSubscriptionRow {
+  id: string;
+  userId: string;
+  displayName: string | null;
+  plan: string;
+  billingCycle: string;
+  priceThb: number;
+  status: string;
+  currentPeriodEnd: string;
+  cancelledAt: string | null;
+}
+
+export interface AdminBoostRow {
+  id: string;
+  userId: string;
+  displayName: string | null;
+  groupId: string;
+  activatedAt: string;
+  expiresAt: string;
+}
+
+export interface AdminMembership {
+  totalUsers: number;
+  planMix: AdminPlanMixRow[];
+  /** Raw users.plan values, so a legacy 'team' row stays visible. */
+  rawPlanCounts: { raw: string; count: number }[];
+  renewals: {
+    activeSubscriptions: number;
+    dueIn7Days: number;
+    dueIn30Days: number;
+    mrrThb: number;
+    /** true when the MRR figure was computed over a capped page. */
+    mrrIsBounded: boolean;
+  };
+  subscriptions: AdminSubscriptionRow[];
+  boosts: AdminBoostRow[];
+  diaryAddonActive: number;
+  monthlyQuotas: Record<string, Record<string, number>>;
+}
+
+export function getAdminMembership(): Promise<AdminMembership> {
+  return apiFetch(`/admin/membership`);
+}
+
+export interface AdminSupportTicket {
+  id: string;
+  userId: string;
+  displayName: string | null;
+  subject: string;
+  planAtCreation: string;
+  slaHours: number;
+  dueAt: string;
+  onboardingCall: boolean;
+  status: string;
+  firstResponseAt: string | null;
+  createdAt: string;
+  breached: boolean;
+  hoursRemaining: number;
+}
+
+export interface AdminSupportTickets {
+  status: string;
+  tickets: AdminSupportTicket[];
+  breachedCount: number;
+}
+
+export function getAdminSupportTickets(status = 'open'): Promise<AdminSupportTickets> {
+  return apiFetch(`/admin/support/tickets?status=${encodeURIComponent(status)}`);
+}
+
+export interface AdminStorageLedger {
+  liveFiles: number;
+  liveBytes: number;
+  trashedFiles: number;
+  trashedBytes: number;
+  purgedFiles: number;
+  processingFiles: number;
+  errorFiles: number;
+  vaultLiveFiles: number;
+  vaultLiveBytes: number;
+  usersTotal: number;
+  usersOver80: number;
+  usersOverLimit: number;
+  storageUsedSum: number;
+  storageLimitSum: number;
+  /** false = migration 058 not applied; render "—", not a confident zero. */
+  available: boolean;
+}
+
+export interface AdminStuckFile {
+  id: string;
+  name: string;
+  status: string;
+  bytes: number;
+  spaceId: string | null;
+  uploadedBy: string | null;
+  lineSource: string | null;
+  createdAt: string;
+  stuckMinutes: number;
+}
+
+export interface AdminErroredFile {
+  id: string;
+  name: string;
+  status: string;
+  bytes: number;
+  uploadedBy: string | null;
+  createdAt: string;
+}
+
+export interface AdminStuckFiles {
+  thresholdMinutes: number;
+  ledger: AdminStorageLedger;
+  stuck: AdminStuckFile[];
+  errored: AdminErroredFile[];
+}
+
+export function getAdminStuckFiles(): Promise<AdminStuckFiles> {
+  return apiFetch(`/admin/system/stuck-files`);
+}
+
+/* ---- Admin user detail drawer (GET /admin/users/:id) ---- */
+
+export interface AdminUserQuota {
+  feature: string;
+  used: number;
+  limit: number;
+  unlimited: boolean;
+  resetAt: string | null;
+}
+
+export interface AdminUserSubscription {
+  id: string;
+  plan: string;
+  billingCycle: string;
+  priceThb: number;
+  status: string;
+  startedAt: string;
+  currentPeriodEnd: string;
+  cancelledAt: string | null;
+}
+
+export interface AdminUserBoost {
+  id: string;
+  groupId: string;
+  activatedAt: string;
+  expiresAt: string;
+}
+
+/**
+ * Google Sheets link state. Deliberately carries NO token field — the API
+ * never selects `encrypted_token`, and this type is the client-side statement
+ * of that contract.
+ */
+export interface AdminUserGoogle {
+  connected: boolean;
+  googleEmail?: string | null;
+  sheetId?: string | null;
+  sheetUrl?: string | null;
+  lastSyncedAt?: string | null;
+  lastError?: string | null;
+  connectedAt?: string;
+}
+
+export interface AdminUserDetail {
+  user: {
+    id: string;
+    lineUserId: string;
+    displayName: string | null;
+    plan: string;
+    normalizedPlan: string;
+    storageUsed: number;
+    storageLimit: number;
+    createdAt: string;
+    isAdmin: boolean;
+  };
+  quotas: AdminUserQuota[];
+  subscriptions: AdminUserSubscription[];
+  boosts: AdminUserBoost[];
+  google: AdminUserGoogle;
+  content: { fileCount: number; fileBytes: number; vaultFileCount: number };
+}
+
+export function getAdminUserDetail(id: string): Promise<AdminUserDetail> {
+  return apiFetch(`/admin/users/${id}`);
+}
+
 export function getMe(): Promise<UserDto & { defaultSpaceId: string | null; isAdmin: boolean }> {
   return apiFetch(`/auth/me`);
 }

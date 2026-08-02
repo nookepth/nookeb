@@ -13,6 +13,7 @@ import {
   getAdminStorage,
   getAdminTasks,
   getAdminTimeseries,
+  getAdminUserDetail,
   hasSession,
   listAdminSpaces,
   listAdminUsers,
@@ -31,10 +32,14 @@ import {
   type AdminSpace,
   type AdminTimeseriesPoint,
   type AdminUser,
+  type AdminUserDetail,
   type FeatureModule,
   type FunnelStage,
 } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
+// Dependency-free stacked bar chart over a daily series. Shared with
+// /admin/system so the two pages cannot drift.
+import { StackedBars } from './StackedBars';
 
 // Friendly Thai labels for the fixed event vocabulary (events.service.ts).
 const EVENT_LABELS: Record<string, string> = {
@@ -83,6 +88,10 @@ export default function AdminPage() {
   const [users, setUsers] = useState<AdminUser[] | null>(null);
   const [spaces, setSpaces] = useState<AdminSpace[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Which user's detail drawer is open. The drawer fetches on OPEN, never on
+  // mount — /admin/users/:id is 6 queries per user and nobody needs them for
+  // every row in the table.
+  const [drawerUserId, setDrawerUserId] = useState<string | null>(null);
 
   async function loadAnalytics(range: Range): Promise<void> {
     const [ov, ts, ft, pu, pi, tk, fn, ad, sg, rf] = await Promise.all([
@@ -164,9 +173,14 @@ export default function AdminPage() {
     <>
       <header className="topbar">
         <h1>หนูเก็บ — ผู้ดูแล</h1>
-        <a className="btn secondary" href="/dashboard">
-          กลับคลังไฟล์
-        </a>
+        <div className="topbar-actions">
+          <a className="btn secondary" href="/admin/system">
+            ระบบและปฏิบัติการ
+          </a>
+          <a className="btn secondary" href="/dashboard">
+            กลับคลังไฟล์
+          </a>
+        </div>
       </header>
       <main className="container" style={{ paddingBottom: 64 }}>
         {error && <p className="empty-state">{error}</p>}
@@ -341,7 +355,11 @@ export default function AdminPage() {
                 </thead>
                 <tbody>
                   {(users ?? []).map((u) => (
-                    <tr key={u.id}>
+                    <tr
+                      key={u.id}
+                      onClick={() => setDrawerUserId(u.id)}
+                      style={{ cursor: 'pointer' }}
+                    >
                       <td>
                         {u.displayName ?? '—'} {u.isAdmin && <span className="tag-chip">admin</span>}
                       </td>
@@ -350,7 +368,14 @@ export default function AdminPage() {
                       <td>{formatBytes(u.storageUsed)}</td>
                       <td>{formatBytes(u.storageLimit)}</td>
                       <td>
-                        <button className="btn secondary" onClick={() => void editQuota(u)}>
+                        <button
+                          className="btn secondary"
+                          onClick={(e) => {
+                            // The row opens the drawer; this button must not.
+                            e.stopPropagation();
+                            void editQuota(u);
+                          }}
+                        >
                           แก้โควตา
                         </button>
                       </td>
@@ -389,7 +414,166 @@ export default function AdminPage() {
           </>
         )}
       </main>
+
+      <UserDetailDrawer userId={drawerUserId} onClose={() => setDrawerUserId(null)} />
     </>
+  );
+}
+
+/**
+ * Per-user detail drawer, opened by a row click in the users table.
+ *
+ * Fetches on OPEN (userId transitions to non-null), never on mount — the
+ * endpoint runs six queries per user and the table can hold hundreds of rows.
+ *
+ * NEVER renders a token. The API does not select google_integrations
+ * .encrypted_token and AdminUserGoogle has no field for it, so there is nothing
+ * here to leak even by accident; the Google card shows the linked account, the
+ * sheet, and the last sync error, which is everything an admin needs to
+ * diagnose "why did their mirror stop".
+ */
+function UserDetailDrawer({
+  userId,
+  onClose,
+}: {
+  userId: string | null;
+  onClose: () => void;
+}) {
+  const [detail, setDetail] = useState<AdminUserDetail | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!userId) {
+      setDetail(null);
+      setFailed(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setFailed(false);
+    void (async () => {
+      try {
+        const d = await getAdminUserDetail(userId);
+        if (!cancelled) setDetail(d);
+      } catch {
+        if (!cancelled) setFailed(true);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  if (!userId) return null;
+
+  const u = detail?.user;
+  const storagePct =
+    u && u.storageLimit > 0 ? Math.min(100, Math.round((u.storageUsed / u.storageLimit) * 100)) : 0;
+
+  return (
+    <div style={D.overlay} onClick={onClose} role="presentation">
+      {/* Stop the click from reaching the overlay's close handler. */}
+      <aside style={D.panel} onClick={(e) => e.stopPropagation()}>
+        <div style={D.head}>
+          <div>
+            <div style={D.title}>{u?.displayName ?? 'ผู้ใช้'}</div>
+            {u && <div style={D.subtle}>สมัครเมื่อ {new Date(u.createdAt).toLocaleDateString('th-TH')}</div>}
+          </div>
+          <button className="btn secondary" type="button" onClick={onClose}>
+            ปิด
+          </button>
+        </div>
+
+        {loading && <p style={D.subtle}>กำลังโหลด…</p>}
+        {failed && <p style={D.subtle}>โหลดข้อมูลผู้ใช้ไม่สำเร็จ</p>}
+
+        {detail && u && (
+          <>
+            <div style={D.badgeRow}>
+              <span style={D.planBadge}>{u.normalizedPlan}</span>
+              {u.plan !== u.normalizedPlan && <span style={D.rawBadge}>ค่าดิบ: {u.plan}</span>}
+              {u.isAdmin && <span className="tag-chip">admin</span>}
+            </div>
+
+            <h3 style={D.h3}>พื้นที่จัดเก็บ</h3>
+            <DrawerBar pct={storagePct} />
+            <p style={D.subtle}>
+              {formatBytes(u.storageUsed)} / {formatBytes(u.storageLimit)} ({storagePct}%)
+            </p>
+            <p style={D.subtle}>
+              ไฟล์ {detail.content.fileCount} · {formatBytes(detail.content.fileBytes)} · ห้องนิรภัย{' '}
+              {detail.content.vaultFileCount}
+            </p>
+
+            <h3 style={D.h3}>โควตาเดือนนี้</h3>
+            {detail.quotas.length === 0 && <p style={D.subtle}>ยังไม่มีข้อมูลโควตา</p>}
+            {detail.quotas.map((q) => {
+              const pct = q.unlimited || q.limit <= 0 ? 0 : Math.min(100, Math.round((q.used / q.limit) * 100));
+              return (
+                <div key={q.feature} style={{ marginBottom: 10 }}>
+                  <div style={D.quotaRow}>
+                    <span>{q.feature}</span>
+                    <span style={D.subtle}>
+                      {q.used} / {q.unlimited ? 'ไม่จำกัด' : q.limit}
+                    </span>
+                  </div>
+                  {!q.unlimited && q.limit > 0 && <DrawerBar pct={pct} />}
+                </div>
+              );
+            })}
+
+            <h3 style={D.h3}>สมาชิก</h3>
+            {detail.subscriptions.length === 0 && <p style={D.subtle}>ไม่มีสมาชิกแบบชำระเงิน</p>}
+            {detail.subscriptions.map((s) => (
+              <p key={s.id} style={D.subtle}>
+                {s.plan} · {s.billingCycle === 'yearly' ? 'รายปี' : 'รายเดือน'} · ฿{s.priceThb} ·{' '}
+                {s.status} · หมด {new Date(s.currentPeriodEnd).toLocaleDateString('th-TH')}
+                {s.cancelledAt ? ' · ยกเลิกแล้ว' : ''}
+              </p>
+            ))}
+
+            <h3 style={D.h3}>บูธที่ใช้งานอยู่ ({detail.boosts.length})</h3>
+            {detail.boosts.length === 0 && <p style={D.subtle}>ไม่มี</p>}
+            {detail.boosts.map((b) => (
+              <p key={b.id} style={D.subtle}>
+                กลุ่ม …{b.groupId.slice(-6)} · หมดอายุ{' '}
+                {new Date(b.expiresAt).toLocaleDateString('th-TH')}
+              </p>
+            ))}
+
+            <h3 style={D.h3}>Google Sheets</h3>
+            {!detail.google.connected && <p style={D.subtle}>ยังไม่ได้เชื่อมต่อ</p>}
+            {detail.google.connected && (
+              <>
+                <p style={D.subtle}>เชื่อมกับ {detail.google.googleEmail ?? '—'}</p>
+                {detail.google.lastSyncedAt && (
+                  <p style={D.subtle}>
+                    sync ล่าสุด {new Date(detail.google.lastSyncedAt).toLocaleString('th-TH')}
+                  </p>
+                )}
+                {detail.google.lastError ? (
+                  <p style={D.errorText}>ผิดพลาด: {detail.google.lastError}</p>
+                ) : (
+                  <p style={D.subtle}>ไม่มีข้อผิดพลาดค้างอยู่</p>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </aside>
+    </div>
+  );
+}
+
+function DrawerBar({ pct }: { pct: number }) {
+  const color = pct >= 100 ? '#dc2626' : pct >= 80 ? '#b45309' : 'var(--color-primary)';
+  return (
+    <div style={S.funnelBarTrack}>
+      <div style={{ ...S.funnelBarFill, width: `${Math.max(0, Math.min(100, pct))}%`, background: color }} />
+    </div>
   );
 }
 
@@ -938,78 +1122,6 @@ function StatusBar({ segments }: { segments: { label: string; value: number; col
   );
 }
 
-/** Dependency-free stacked bar chart over a daily series (each row summed). */
-function StackedBars<T extends { day: string }>({
-  data,
-  series,
-}: {
-  data: T[];
-  series: { key: keyof T; color: string }[];
-}) {
-  if (data.length === 0) {
-    return <p style={{ ...S.emptyCell, padding: 16 }}>ยังไม่มีข้อมูล</p>;
-  }
-  const W = 720;
-  const H = 180;
-  const padL = 28;
-  const padB = 20;
-  const padT = 10;
-  const total = (d: T): number => series.reduce((a, s) => a + Number(d[s.key] ?? 0), 0);
-  const max = Math.max(1, ...data.map(total));
-  const innerW = W - padL - 8;
-  const innerH = H - padB - padT;
-  const barW = innerW / data.length;
-  const x = (i: number): number => padL + i * barW;
-  const labelEvery = Math.ceil(data.length / 8);
-
-  return (
-    <div style={{ overflowX: 'auto' }}>
-      <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ minWidth: 420, display: 'block' }}>
-        <line x1={padL} y1={padT} x2={W - 8} y2={padT} stroke="var(--color-border)" strokeDasharray="3 3" />
-        <text x={padL - 4} y={padT + 3} fontSize={9} textAnchor="end" fill="var(--color-text-muted)">
-          {max}
-        </text>
-        {data.map((d, i) => {
-          let yCursor = padT + innerH;
-          return (
-            <g key={i}>
-              {series.map((s) => {
-                const v = Number(d[s.key] ?? 0);
-                const h = (v / max) * innerH;
-                yCursor -= h;
-                return h > 0 ? (
-                  <rect
-                    key={String(s.key)}
-                    x={x(i) + barW * 0.15}
-                    y={yCursor}
-                    width={barW * 0.7}
-                    height={h}
-                    fill={s.color}
-                  />
-                ) : null;
-              })}
-            </g>
-          );
-        })}
-        {data.map((d, i) =>
-          i % labelEvery === 0 ? (
-            <text
-              key={`t${i}`}
-              x={x(i) + barW / 2}
-              y={H - 5}
-              fontSize={9}
-              textAnchor="middle"
-              fill="var(--color-text-muted)"
-            >
-              {d.day.slice(5)}
-            </text>
-          ) : null,
-        )}
-      </svg>
-    </div>
-  );
-}
-
 /**
  * Pro-interest demand test — the gift-box fake door. Its source table is
  * anonymous, so this is tap counts only: no views, no dedup, no conversion %.
@@ -1273,5 +1385,65 @@ const S: Record<string, React.CSSProperties> = {
     padding: '2px 8px',
     fontSize: 'var(--font-size-xs)',
     fontWeight: 600,
+  },
+};
+
+/* ---------- UserDetailDrawer tokens ----------
+   A right-side drawer has no equivalent in globals.css (.modal-overlay is a
+   centred dialog with its own backdrop treatment), so these are local rather
+   than a reuse of an existing class. */
+
+const D: Record<string, React.CSSProperties> = {
+  overlay: {
+    position: 'fixed',
+    inset: 0,
+    background: 'rgba(0, 0, 0, 0.35)',
+    display: 'flex',
+    justifyContent: 'flex-end',
+    zIndex: 60,
+  },
+  panel: {
+    width: 'min(440px, 100%)',
+    height: '100%',
+    overflowY: 'auto',
+    background: 'var(--color-surface)',
+    borderLeft: '1px solid var(--color-border)',
+    padding: 20,
+    boxShadow: 'var(--shadow-lg, 0 0 24px rgba(0,0,0,0.2))',
+  },
+  head: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 12,
+  },
+  title: { fontSize: 'var(--font-size-lg)', fontWeight: 700 },
+  h3: { fontSize: 'var(--font-size-sm)', fontWeight: 700, margin: '18px 0 8px' },
+  subtle: { fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', margin: '2px 0' },
+  errorText: { fontSize: 'var(--font-size-xs)', color: '#dc2626', margin: '2px 0' },
+  badgeRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 4 },
+  planBadge: {
+    background: 'var(--color-primary)',
+    color: '#fff',
+    borderRadius: 'var(--radius-full)',
+    padding: '2px 12px',
+    fontSize: 'var(--font-size-xs)',
+    fontWeight: 700,
+  },
+  rawBadge: {
+    background: 'var(--color-surface-3)',
+    color: 'var(--color-text-secondary)',
+    borderRadius: 'var(--radius-full)',
+    padding: '2px 10px',
+    fontSize: 'var(--font-size-xs)',
+  },
+  quotaRow: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    fontSize: 'var(--font-size-xs)',
+    marginBottom: 4,
   },
 };

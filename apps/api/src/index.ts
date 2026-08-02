@@ -23,6 +23,7 @@ import teamRoutes from './routes/team.router';
 import analyticsRoutes from './routes/analytics';
 import referralRoutes from './routes/referral';
 import adminRoutes from './routes/admin';
+import adminOpsRoutes from './routes/admin-ops';
 import progressRoutes from './routes/progress';
 import diaryRoutes from './routes/diary';
 import vaultRoutes from './routes/vault';
@@ -217,6 +218,10 @@ async function main(): Promise<void> {
   await app.register(analyticsRoutes);
   await app.register(referralRoutes);
   await app.register(adminRoutes);
+  // /admin/system — the ops half (queues, worker liveness, delivery, quota
+  // pressure, SLA queue). Own plugin scope; shares adminRoutes' gate via
+  // registerAdminGuard, so the two can never drift on who counts as an admin.
+  await app.register(adminOpsRoutes);
   await app.register(progressRoutes);
   await app.register(diaryRoutes);
   await app.register(vaultRoutes);
