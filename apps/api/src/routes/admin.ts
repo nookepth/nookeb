@@ -737,6 +737,15 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
         storageLimitOverride: overrideOf(user),
         createdAt: u.created_at,
         isAdmin: isAdminLineUser(u.line_user_id),
+        // migration 060. `undefined` (column not yet added) and SQL NULL both
+        // mean "active" — the same collapse-to-null the storage override does
+        // above, so the drawer renders an honest state on a pre-060 API.
+        suspendedAt: (user as Record<string, unknown>).suspended_at
+          ? String((user as Record<string, unknown>).suspended_at)
+          : null,
+        suspendedReason: (user as Record<string, unknown>).suspended_reason
+          ? String((user as Record<string, unknown>).suspended_reason)
+          : null,
       },
       quotas,
       subscriptions,
@@ -1156,6 +1165,190 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       app.log.warn({ err, userId }, 'session_version cache bust failed (TTL will expire it)');
     }
   }
+
+  // ==========================================================================
+  // TIER 3 — account suspension (migration 060).
+  //
+  // The verb TIER 2 was missing. An admin could already zero a quota, pin a
+  // locker ceiling to 0 bytes and revoke every session — but none of those
+  // STOPS an account: the user logs back in a second later with a fresh JWT.
+  // Suspension is enforced in middleware/auth.ts, which every authenticated
+  // request passes through, and it answers 403 ACCOUNT_SUSPENDED rather than
+  // 401 so the web app does not loop the user through LINE Login forever.
+  //
+  // SUSPENDING ALSO BUMPS session_version. The column check alone stops the
+  // NEXT login; the bump kills the tokens already in the user's browser without
+  // waiting for the auth middleware's 60 s cache to expire. Both are needed —
+  // one closes the door, the other empties the room.
+  //
+  // SCOPE, stated once: this stops the WEB and LIFF surfaces only. The LINE
+  // webhook is signature-authenticated and never reaches the auth middleware,
+  // so a suspended user can still message the OA and still have files stored.
+  // See the column comment in migration 060 — cutting the chat path would
+  // silently swallow uploads a user believes were saved, and is a separate,
+  // louder decision.
+  // ==========================================================================
+
+  /** Free text, but bounded — this lands on a user row and in an audit payload. */
+  const SUSPEND_REASON_MAX = 500;
+
+  app.post<{ Params: { id: string } }>('/admin/users/:id/suspend', async (request, reply) => {
+    const parsed = z
+      .object({
+        // Required, and non-empty after trimming. A suspension with no recorded
+        // reason is one nobody can justify a week later, and an empty string
+        // would satisfy a plain `z.string()` while recording nothing.
+        reason: z.string().trim().min(1).max(SUSPEND_REASON_MAX),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const userId = request.params.id;
+    const reason = parsed.data.reason;
+
+    const { data: current, error: readErr } = await app.supabase
+      .from('users')
+      .select('id, suspended_at, suspended_reason, session_version')
+      .eq('id', userId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!current) return reply.code(404).send({ error: 'User not found' });
+
+    // 409 rather than a silent re-suspend: overwriting would move suspended_at
+    // forward and replace the ORIGINAL reason, losing when and why the account
+    // was actually stopped. An admin who wants to amend the reason unsuspends
+    // and suspends again, which leaves both events in the audit log.
+    if (current.suspended_at) {
+      return reply.code(409).send({
+        error: 'User is already suspended',
+        code: 'ALREADY_SUSPENDED',
+        suspendedAt: current.suspended_at as string,
+      });
+    }
+
+    const beforeVersion = Number((current.session_version as number | null) ?? 1);
+    const nextVersion = beforeVersion + 1;
+    const suspendedAt = new Date().toISOString();
+
+    // Both writes in ONE statement, guarded on the session_version we read —
+    // the same lost-update guard POST /revoke-sessions uses. Two admins acting
+    // at once cannot both write version+1 and lose one revocation.
+    const { data: updated, error: updErr } = await app.supabase
+      .from('users')
+      .update({
+        suspended_at: suspendedAt,
+        suspended_reason: reason,
+        session_version: nextVersion,
+        updated_at: suspendedAt,
+      })
+      .eq('id', userId)
+      .eq('session_version', beforeVersion)
+      .select('id')
+      .maybeSingle();
+    if (updErr) throw updErr;
+    if (!updated) {
+      return reply
+        .code(409)
+        .send({ error: 'Session version changed concurrently — retry', code: 'CONCURRENT_REVOKE' });
+    }
+
+    await bustSessionCache(userId);
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'user_suspend',
+        targetType: 'user',
+        targetId: userId,
+        before: { suspendedAt: null, sessionVersion: beforeVersion },
+        after: { suspendedAt, reason, sessionVersion: nextVersion },
+      });
+    } catch (err) {
+      await rollback('user_suspend', () =>
+        app.supabase
+          .from('users')
+          .update({
+            suspended_at: null,
+            suspended_reason: null,
+            session_version: beforeVersion,
+          })
+          .eq('id', userId)
+          .eq('session_version', nextVersion),
+      );
+      // Bust again: the revert changed the value the first bust re-populated.
+      await bustSessionCache(userId);
+      throw err;
+    }
+
+    return { id: userId, suspendedAt, suspendedReason: reason, sessionVersion: nextVersion };
+  });
+
+  // --------------------------------------------------------------------------
+  // POST /admin/users/:id/unsuspend
+  //
+  // Does NOT bump session_version, unlike its counterpart. The tokens that
+  // suspending killed are gone for good and the user signs in fresh; bumping
+  // again would revoke the sessions of a user who has none, and would be one
+  // more thing to revert if the audit write failed. The cache IS busted, so the
+  // 403 stops within the same request rather than up to 60 s later.
+  // --------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>('/admin/users/:id/unsuspend', async (request, reply) => {
+    const userId = request.params.id;
+
+    const { data: current, error: readErr } = await app.supabase
+      .from('users')
+      .select('id, suspended_at, suspended_reason')
+      .eq('id', userId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!current) return reply.code(404).send({ error: 'User not found' });
+
+    if (!current.suspended_at) {
+      return reply
+        .code(409)
+        .send({ error: 'User is not suspended', code: 'NOT_SUSPENDED' });
+    }
+
+    const beforeAt = current.suspended_at as string;
+    const beforeReason = (current.suspended_reason as string | null) ?? null;
+
+    const { error: updErr } = await app.supabase
+      .from('users')
+      .update({
+        suspended_at: null,
+        suspended_reason: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', userId);
+    if (updErr) throw updErr;
+
+    await bustSessionCache(userId);
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'user_unsuspend',
+        targetType: 'user',
+        targetId: userId,
+        before: { suspendedAt: beforeAt, reason: beforeReason },
+        after: { suspendedAt: null },
+      });
+    } catch (err) {
+      await rollback('user_unsuspend', () =>
+        app.supabase
+          .from('users')
+          .update({ suspended_at: beforeAt, suspended_reason: beforeReason })
+          .eq('id', userId),
+      );
+      await bustSessionCache(userId);
+      throw err;
+    }
+
+    return { id: userId, suspendedAt: null, suspendedReason: null };
+  });
 
   // --------------------------------------------------------------------------
   // POST /admin/tasks/:taskId/cancel-reminders — stop a task's pending pushes.

@@ -5,7 +5,7 @@ import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 import { config } from './config';
-import { DIARY_ADDON_ENABLED } from './config/plans';
+import { getFlag } from './services/feature-flags.service';
 import supabasePlugin from './plugins/supabase';
 import r2Plugin from './plugins/r2';
 import redisPlugin from './plugins/redis';
@@ -284,10 +284,36 @@ async function main(): Promise<void> {
   // worker half-enables its feature, and this line is what makes that visible
   // without shelling into the container.
   //
-  // DIARY_ADDON_ENABLED is read from config/plans.ts — the constant the routes
-  // and the sweep actually branch on — not from `config`, so the log can never
-  // disagree with behaviour. See the note on config.ts's schema entry.
-  app.log.info({ DIARY_ADDON_ENABLED }, 'feature flag: diary add-on');
+  // The DB-backed flags (059 + 061) are printed as RESOLVED AT BOOT, which is a
+  // weaker claim than it used to be and is labelled as such: they can now be
+  // flipped at runtime from /admin/system, so this line is a starting position,
+  // not the current truth. /admin/flags is the current truth. It is still worth
+  // logging — a service that boots with an unexpected value (because 061 was
+  // never applied, or because someone flipped a switch and forgot) is exactly
+  // the thing that is invisible otherwise.
+  //
+  // Failure is swallowed: getFlag already falls back, and a boot log line must
+  // never be able to take down a process that has just started listening.
+  void Promise.all([
+    getFlag('diary_addon_enabled', true),
+    getFlag('diary_reminder_enabled', false),
+    getFlag('scan_enhance_enabled', true),
+    getFlag('scan_ocr_enabled', true),
+    getFlag('virus_scan_enabled', true),
+  ])
+    .then(([diaryAddon, diaryReminder, scanEnhance, scanOcr, virusScan]) => {
+      app.log.info(
+        {
+          diary_addon_enabled: diaryAddon,
+          diary_reminder_enabled: diaryReminder,
+          scan_enhance_enabled: scanEnhance,
+          scan_ocr_enabled: scanOcr,
+          virus_scan_enabled: virusScan,
+        },
+        'feature flags (DB-backed) as resolved at boot — runtime value may differ',
+      );
+    })
+    .catch((err) => app.log.warn({ err }, 'could not read DB-backed feature flags at boot'));
   app.log.info({ TASK_NOTIFICATIONS_ENABLED }, 'feature flag: task notifications');
 
   // Flush any in-memory upload batches still inside the 1.5s debounce window

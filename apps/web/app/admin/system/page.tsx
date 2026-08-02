@@ -5,25 +5,37 @@ import {
   adminGetSettings,
   adminRemoveJob,
   adminRetryJob,
+  adminSetFlag,
   adminSetPushEnabled,
+  adminStartR2Reconcile,
   adminUpdateTicket,
   ApiError,
+  getAdminFlags,
   getAdminHealth,
+  getAdminJobThroughput,
+  getAdminLineQuota,
   getAdminMembership,
   getAdminNotifications,
+  getAdminPushLog,
   getAdminQueues,
   getAdminQuotas,
+  getAdminR2ReconcileStatus,
   getAdminStuckFiles,
   getAdminSupportTickets,
   hasSession,
   type AdminAllowanceRow,
   type AdminFailedJob,
+  type AdminFlagKey,
   type AdminHealth,
+  type AdminJobThroughput,
+  type AdminLineQuota,
   type AdminMembership,
   type AdminNotifications,
+  type AdminPushLog,
   type AdminQueueKey,
   type AdminQueues,
   type AdminQuotas,
+  type AdminR2ReconcileStatus,
   type AdminStuckFiles,
   type AdminSupportTicket,
   type AdminSupportTickets,
@@ -101,11 +113,14 @@ export default function AdminSystemPage() {
 
   // Range-driven
   const [notifications, setNotifications] = useState<AdminNotifications | null>(null);
+  const [pushLog, setPushLog] = useState<AdminPushLog | null>(null);
+  const [throughput, setThroughput] = useState<AdminJobThroughput | null>(null);
 
   // Loaded once
   const [quotas, setQuotas] = useState<AdminQuotas | null>(null);
   const [membership, setMembership] = useState<AdminMembership | null>(null);
   const [stuck, setStuck] = useState<AdminStuckFiles | null>(null);
+  const [lineQuota, setLineQuota] = useState<AdminLineQuota | null>(null);
 
   // Independently refreshed
   const [ticketStatus, setTicketStatus] = useState<string>('open');
@@ -154,14 +169,26 @@ export default function AdminSystemPage() {
     };
   }, [report]);
 
-  // --- Range-driven: notification + diary delivery. -------------------------
+  // --- Range-driven: notification + diary delivery, push log, throughput. ---
   useEffect(() => {
     if (!hasSession()) return;
     let cancelled = false;
     void (async () => {
       try {
-        const n = await getAdminNotifications(days);
-        if (!cancelled) setNotifications(n);
+        // Independently settled: the three TIER 3 panels below are newer than
+        // the notification block and their tables may not exist yet on an
+        // environment where migration 060 has not been applied. One unapplied
+        // migration must not blank a panel that predates it.
+        const [n, p, t] = await Promise.allSettled([
+          getAdminNotifications(days),
+          getAdminPushLog(days),
+          getAdminJobThroughput(Math.min(days, 90)),
+        ]);
+        if (cancelled) return;
+        if (n.status === 'fulfilled') setNotifications(n.value);
+        else report(n.reason);
+        if (p.status === 'fulfilled') setPushLog(p.value);
+        if (t.status === 'fulfilled') setThroughput(t.value);
       } catch (err) {
         if (!cancelled) report(err);
       }
@@ -171,21 +198,23 @@ export default function AdminSystemPage() {
     };
   }, [days, report]);
 
-  // --- Once on mount: quota pressure, membership, storage + stuck files. ----
+  // --- Once on mount: quota pressure, membership, storage, LINE allowance. --
   useEffect(() => {
     if (!hasSession()) return;
     let cancelled = false;
     void (async () => {
       try {
-        const [qt, mb, st] = await Promise.all([
+        const [qt, mb, st, lq] = await Promise.all([
           getAdminQuotas(),
           getAdminMembership(),
           getAdminStuckFiles(),
+          getAdminLineQuota(),
         ]);
         if (cancelled) return;
         setQuotas(qt);
         setMembership(mb);
         setStuck(st);
+        setLineQuota(lq);
       } catch (err) {
         if (!cancelled) report(err);
       }
@@ -276,6 +305,13 @@ export default function AdminSystemPage() {
                 below a fold or behind an expander. */}
             <PushToggle onError={report} />
 
+            {/* Directly under the kill switch, because they answer the same
+                question from the other side: the switch is why WE stopped
+                sending, this card is why LINE would. */}
+            <LineQuotaCard data={lineQuota} />
+
+            <FeatureFlagsPanel onError={report} />
+
             <ServiceStatusStrip health={health} />
 
             <h2 className="admin-h2">คิวงาน (อัปเดตทุก 10 วินาที)</h2>
@@ -309,6 +345,9 @@ export default function AdminSystemPage() {
             <FailedPushTable data={notifications} />
             <AllowanceBurndown data={notifications} />
 
+            <PushLogSection data={pushLog} days={days} />
+            <JobThroughputSection data={throughput} days={days} />
+
             <QuotaPressureTable data={quotas} />
             <MembershipSection data={membership} />
 
@@ -321,6 +360,8 @@ export default function AdminSystemPage() {
 
             <StorageLedgerCards data={stuck} />
             <StuckFilesTable data={stuck} />
+
+            <R2ReconcilePanel onError={report} />
           </>
         )}
       </main>
@@ -445,6 +486,661 @@ function PushToggle({ onError }: { onError: (err: unknown) => void }) {
         <span style={{ ...P.knob, transform: on ? 'translateX(24px)' : 'translateX(0)' }} />
       </button>
     </div>
+  );
+}
+
+/**
+ * Feature 28 — LINE's OWN monthly push allowance.
+ *
+ * Every other quota surface on this page is the product's own accounting. This
+ * is the one number that belongs to LINE, and it is the one that decides
+ * whether messaging silently stops mid-month: the allowance fails SILENTLY when
+ * spent, so nothing in the product notices until users report missing reminders.
+ *
+ * THREE STATES, and the third is not an error to hide. 'none' means we could
+ * not find out, and it renders as "—" with a plain explanation rather than as a
+ * zero. A card that says "0 remaining" because the token was rejected is the
+ * most alarming thing this panel could display, from the one condition where it
+ * knows nothing at all.
+ */
+function LineQuotaCard({ data }: { data: AdminLineQuota | null }) {
+  if (!data) return <p style={S.loading}>กำลังอ่านโควตา push ของ LINE…</p>;
+
+  const known = data.type === 'limited';
+  const pct = known && data.limit && data.limit > 0
+    ? Math.min(100, Math.round((data.consumed / data.limit) * 100))
+    : null;
+
+  return (
+    <div style={{ ...S.card, marginBottom: 16 }}>
+      <div style={S.panelHead}>
+        <div style={S.kpiLabel}>โควตา push ของ LINE (เดือนนี้)</div>
+        <span style={S.subtle}>อ่านเมื่อ {fmtDateTime(data.fetchedAt)} · แคช 5 นาที</span>
+      </div>
+
+      {data.type === 'none' && (
+        <>
+          <div style={{ ...S.kpiValue, color: 'var(--color-text-muted)' }}>—</div>
+          <p style={S.kpiHint}>
+            อ่านค่าจาก LINE ไม่สำเร็จ (เครือข่าย หรือ token ไม่ผ่าน) — ไม่ได้แปลว่าโควตาหมด
+          </p>
+        </>
+      )}
+
+      {data.type === 'unlimited' && (
+        <>
+          <div style={{ ...S.kpiValue, color: TONE_COLOR.good }}>ไม่จำกัด</div>
+          <p style={S.kpiHint}>ส่งไปแล้ว {data.consumed.toLocaleString('th-TH')} ข้อความเดือนนี้</p>
+        </>
+      )}
+
+      {known && (
+        <>
+          <div style={S.kpiValue}>
+            {data.consumed.toLocaleString('th-TH')} / {(data.limit ?? 0).toLocaleString('th-TH')}
+          </div>
+          {pct !== null && <Meter pct={pct} />}
+          <p style={S.kpiHint}>
+            เหลือ {(data.remaining ?? 0).toLocaleString('th-TH')} ข้อความ ·
+            โควตาหมดแล้ว push จะล้มเหลวเงียบ ๆ (LINE ตอบ 429) — ระบบจะบันทึกเป็น
+            blocked_quota ในบันทึก push ด้านล่าง
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Feature 29 — the runtime switches (migrations 059 + 061).
+ *
+ * DELIBERATELY EXCLUDES push_enabled, which has its own control at the top of
+ * the page. The endpoint returns it and this panel could render it, but the
+ * kill switch earns a full-width card with a confirm dialog and a red wash —
+ * demoting it into a row of six identical toggles would make the product's most
+ * consequential control look like a preference.
+ *
+ * OPTIMISTIC WITH ROLLBACK, per row, same as the push toggle: an inert switch
+ * during an incident invites a second click. `pending` blocks that click
+ * regardless, per key, so one slow request does not freeze the others.
+ *
+ * `stale` keys are marked: a switch showing its fallback because the row could
+ * not be read must not silently claim to be the server's position.
+ */
+const FLAG_LABELS: Record<string, { title: string; hint: string }> = {
+  diary_reminder_enabled: {
+    title: 'เตือนไดอารี่ (§17)',
+    hint: 'push เตือนเขียนไดอารี่ตามแผน · เปิด/ปิดจะลงทะเบียนตารางงานรายชั่วโมงใหม่ทันที',
+  },
+  diary_addon_enabled: {
+    title: 'หนูเก็บความทรงจำ (แอดออน)',
+    hint: 'sweep รายชั่วโมงของแอดออนแบบเสียเงิน · ปิดแล้วตารางงานจะถูกถอดออก',
+  },
+  scan_enhance_enabled: {
+    title: 'ปรับภาพสแกน',
+    hint: 'ตัดขอบ + แก้เพอร์สเปกทีฟ + ปรับแสง · ปิดแล้วหน้าสแกนจะถูกเก็บเป็นรูปดิบ',
+  },
+  scan_ocr_enabled: {
+    title: 'ชั้นข้อความ OCR ใน PDF',
+    hint: 'ทำให้ PDF ที่สแกนค้นหาข้อความได้ · กิน CPU ของ worker ทุกหน้า',
+  },
+  virus_scan_enabled: {
+    title: 'สแกนไวรัสไฟล์อัปโหลด',
+    hint: 'ต้องมี VIRUSTOTAL_API_KEY ด้วย — เปิดสวิตช์อย่างเดียวไม่พอ',
+  },
+};
+
+const PANEL_FLAG_KEYS: AdminFlagKey[] = [
+  'diary_reminder_enabled',
+  'diary_addon_enabled',
+  'scan_enhance_enabled',
+  'scan_ocr_enabled',
+  'virus_scan_enabled',
+];
+
+function FeatureFlagsPanel({ onError }: { onError: (err: unknown) => void }) {
+  const [flags, setFlags] = useState<Record<string, boolean> | null>(null);
+  const [stale, setStale] = useState<string[]>([]);
+  const [pending, setPending] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!hasSession()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await getAdminFlags();
+        if (cancelled) return;
+        setFlags(res.flags);
+        setStale(res.stale);
+        setFailed(false);
+      } catch (err) {
+        if (cancelled) return;
+        setFailed(true);
+        if (err instanceof ApiError && (err.status === 401 || err.status === 403)) onError(err);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onError]);
+
+  async function toggle(key: AdminFlagKey): Promise<void> {
+    if (!flags || pending) return;
+    const previous = flags[key] ?? false;
+    const next = !previous;
+
+    setFlags({ ...flags, [key]: next });
+    setPending(key);
+    setNote(null);
+    try {
+      const res = await adminSetFlag(key, next);
+      setFlags((prev) => (prev ? { ...prev, [key]: res.enabled } : prev));
+      // A key that has just been written is no longer showing a fallback.
+      setStale((prev) => prev.filter((k) => k !== key));
+      // The one half-applied outcome the API can report. Surfaced rather than
+      // swallowed: the flag is saved, the schedule is not, and only a worker
+      // restart closes the gap.
+      if (res.scheduleUpdated === false) {
+        setNote(
+          'บันทึกสวิตช์แล้ว แต่ยังอัปเดตตารางงานใน Redis ไม่สำเร็จ — จะตรงกันอีกครั้งเมื่อ worker รีสตาร์ต',
+        );
+      }
+      setFailed(false);
+    } catch (err) {
+      setFlags((prev) => (prev ? { ...prev, [key]: previous } : prev));
+      setFailed(true);
+      onError(err);
+    } finally {
+      setPending(null);
+    }
+  }
+
+  return (
+    <>
+      <h2 className="admin-h2">สวิตช์ระบบ (มีผลทั้ง API และ worker ภายใน 60 วินาที)</h2>
+      <p style={S.note}>
+        เก็บใน <code>system_settings</code> ไม่ใช่ env — เปลี่ยนแล้วมีผลทันทีโดยไม่ต้อง deploy ใหม่ ·
+        ทุกครั้งที่กดจะถูกบันทึกใน <code>admin_audit_log</code>
+      </p>
+
+      {failed && flags === null && <p style={S.loading}>อ่านสถานะสวิตช์ไม่สำเร็จ</p>}
+      {!failed && flags === null && <p style={S.loading}>กำลังอ่านสถานะสวิตช์…</p>}
+      {note && <p style={{ ...S.note, ...S.warnText }}>{note}</p>}
+
+      {flags && (
+        <div style={S.stripGrid}>
+          {PANEL_FLAG_KEYS.map((key) => {
+            const on = flags[key] === true;
+            const busy = pending === key;
+            const isStale = stale.includes(key);
+            const meta = FLAG_LABELS[key];
+            return (
+              <div key={key} style={{ ...S.card, ...F.flagCard }}>
+                <div style={F.flagHead}>
+                  <div>
+                    <div style={S.kpiLabel}>{meta?.title ?? key}</div>
+                    <div style={{ ...S.statusText, color: on ? TONE_COLOR.good : TONE_COLOR.bad }}>
+                      <span
+                        style={{ ...S.dot, background: on ? TONE_COLOR.good : TONE_COLOR.bad }}
+                      />
+                      {on ? 'เปิด' : 'ปิด'}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={on}
+                    aria-label={`${meta?.title ?? key}: ${on ? 'เปิด' : 'ปิด'}`}
+                    disabled={busy}
+                    onClick={() => void toggle(key)}
+                    style={{
+                      ...P.track,
+                      background: on ? '#16a34a' : '#dc2626',
+                      opacity: busy ? 0.6 : 1,
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                    }}
+                  >
+                    <span
+                      style={{ ...P.knob, transform: on ? 'translateX(24px)' : 'translateX(0)' }}
+                    />
+                  </button>
+                </div>
+                <p style={S.kpiHint}>{meta?.hint ?? ''}</p>
+                {isStale && (
+                  <p style={{ ...S.kpiHint, ...S.warnText }}>
+                    อ่านค่าจริงไม่ได้ — กำลังแสดงค่าเริ่มต้น
+                  </p>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * Feature 27 — the push log (migration 060).
+ *
+ * The three columns that matter are the STATUSES, and the two "blocked" ones
+ * are the reason the table exists: a push suppressed by the kill switch returns
+ * normally by design, and a push refused because LINE's allowance is spent
+ * looks like an ordinary 429. Neither left any trace before this.
+ *
+ * They are shown as separate figures from `failed`, never folded in — a
+ * deliberate silence is not an outage, and the delivery rate would collapse and
+ * read as one.
+ */
+const PUSH_CONTEXT_LABELS: Record<string, string> = {
+  task_reminder: 'เตือนงาน (ตั้งเวลา)',
+  task_notify: 'แจ้งเตือนงาน (ประกาศ/ตีกลับ/รับงาน)',
+  diary_sweep: 'เตือนไดอารี่ (§17)',
+  diary_addon: 'หนูเก็บความทรงจำ',
+  admin_alert: 'แจ้งเตือนผู้ดูแล',
+};
+
+const PUSH_STATUS_LABELS: Record<string, { label: string; tone: Tone }> = {
+  sent: { label: 'ส่งแล้ว', tone: 'good' },
+  failed: { label: 'ล้มเหลว', tone: 'bad' },
+  blocked_quota: { label: 'โควตาหมด', tone: 'bad' },
+  blocked_flag: { label: 'ถูกปิดสวิตช์', tone: 'warn' },
+};
+
+function PushLogSection({ data, days }: { data: AdminPushLog | null; days: number }) {
+  if (!data) {
+    return (
+      <>
+        <h2 className="admin-h2">บันทึกการส่ง push</h2>
+        <p style={S.loading}>ยังไม่มีข้อมูล (ต้อง apply migration 060 ก่อน)</p>
+      </>
+    );
+  }
+
+  const t = data.totals;
+  return (
+    <>
+      <h2 className="admin-h2">บันทึกการส่ง push ({days} วัน)</h2>
+      <p style={S.note}>
+        ทุก push ที่ระบบพยายามส่ง รวมถึงที่ถูกปิดสวิตช์และที่โควตา LINE หมด —
+        สองอย่างหลังไม่นับเป็น &quot;ล้มเหลว&quot; เพราะไม่ได้พัง
+        {data.truncated && ' · แสดงเฉพาะ 200 รายการล่าสุด'}
+      </p>
+
+      <div style={S.stripGrid}>
+        <MiniStat label="ส่งสำเร็จ" value={t.sent} tone="good" />
+        <MiniStat label="ล้มเหลว" value={t.failed} tone={t.failed > 0 ? 'bad' : 'muted'} />
+        <MiniStat
+          label="โควตา LINE หมด"
+          value={t.blocked_quota}
+          tone={t.blocked_quota > 0 ? 'bad' : 'muted'}
+        />
+        <MiniStat
+          label="ถูกปิดสวิตช์"
+          value={t.blocked_flag}
+          tone={t.blocked_flag > 0 ? 'warn' : 'muted'}
+        />
+        <MiniStat
+          label="อัตราส่งถึง"
+          value={data.deliveryRate === null ? '—' : `${data.deliveryRate}%`}
+          tone={data.deliveryRate !== null && data.deliveryRate < 90 ? 'warn' : 'muted'}
+        />
+      </div>
+
+      <div className="admin-table-wrap">
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>เวลา</th>
+              <th>ปลายทาง</th>
+              <th>ที่มา</th>
+              <th>สถานะ</th>
+              <th style={{ textAlign: 'right' }}>ข้อความ</th>
+              <th>รายละเอียด</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.entries.length === 0 && (
+              <tr>
+                <td colSpan={6} style={S.emptyCell}>
+                  ยังไม่มี push ในช่วงนี้
+                </td>
+              </tr>
+            )}
+            {data.entries.map((e) => {
+              const meta = PUSH_STATUS_LABELS[e.status] ?? { label: e.status, tone: 'muted' as Tone };
+              return (
+                <tr key={e.id} style={meta.tone === 'bad' ? S.rowBad : undefined}>
+                  <td>{fmtDateTime(e.createdAt)}</td>
+                  <td>
+                    {/* Kind, then a short id. The full LINE id is not shown:
+                        it identifies a person or a group and the last few
+                        characters are enough to correlate with a report. */}
+                    {e.toKind} · …{e.toId.slice(-6)}
+                  </td>
+                  <td>{PUSH_CONTEXT_LABELS[e.context] ?? e.context}</td>
+                  <td style={{ color: TONE_COLOR[meta.tone], fontWeight: 600 }}>{meta.label}</td>
+                  <td style={{ textAlign: 'right' }}>{e.messageCount}</td>
+                  <td style={S.reasonCell}>
+                    {e.httpStatus !== null && `HTTP ${e.httpStatus}`}
+                    {e.error && ` — ${e.error.slice(0, 160)}`}
+                    {e.httpStatus === null && !e.error && '—'}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Feature 31 — queue throughput (migration 060).
+ *
+ * Reads job_log, which exists because BullMQ's own `completed` counter measures
+ * the eviction policy rather than the work: every queue here removes settled
+ * jobs, and sheets_sync MUST (a lingering settled job with a stable id swallows
+ * the next sync for that task).
+ *
+ * The bar is a hand-rolled CSS split — no chart library in this app (CLAUDE.md
+ * §2), and this shape is a two-segment ratio, which does not need one.
+ */
+function JobThroughputSection({ data, days }: { data: AdminJobThroughput | null; days: number }) {
+  if (!data) {
+    return (
+      <>
+        <h2 className="admin-h2">ปริมาณงานในคิว</h2>
+        <p style={S.loading}>ยังไม่มีข้อมูล (ต้อง apply migration 060 ก่อน)</p>
+      </>
+    );
+  }
+
+  // Fold the completed/failed pairs into one row per (queue, job) so a job's
+  // success rate is readable on one line instead of two rows apart.
+  const byJob = new Map<
+    string,
+    { queue: string; jobName: string; completed: number; failed: number; avgMs: number | null }
+  >();
+  for (const g of data.groups) {
+    const id = `${g.queue}/${g.jobName}`;
+    const row = byJob.get(id) ?? {
+      queue: g.queue,
+      jobName: g.jobName,
+      completed: 0,
+      failed: 0,
+      avgMs: null,
+    };
+    if (g.status === 'completed') row.completed += g.count;
+    else row.failed += g.count;
+    // The completed bucket's average is the meaningful one — a failed job's
+    // duration is how long it took to break, which is a different measurement.
+    if (g.status === 'completed' && g.avgDurationMs !== null) row.avgMs = g.avgDurationMs;
+    byJob.set(id, row);
+  }
+  const rows = [...byJob.values()].sort(
+    (a, b) => b.completed + b.failed - (a.completed + a.failed),
+  );
+  const maxTotal = Math.max(1, ...rows.map((r) => r.completed + r.failed));
+
+  return (
+    <>
+      <h2 className="admin-h2">ปริมาณงานในคิว ({days} วัน)</h2>
+      <p style={S.note}>
+        นับจาก <code>job_log</code> ไม่ใช่ตัวนับของ BullMQ — ตัวนับนั้นวัดนโยบายลบงานที่เสร็จแล้ว
+        ไม่ใช่ปริมาณงานจริง
+        {data.truncated && ' · เกินขีดจำกัดการอ่าน ตัวเลขเป็นค่าต่ำสุด'}
+      </p>
+
+      <div style={S.stripGrid}>
+        <MiniStat label="สำเร็จ" value={data.totals.completed} tone="good" />
+        <MiniStat
+          label="ล้มเหลว (นับทุกครั้งที่ retry)"
+          value={data.totals.failed}
+          tone={data.totals.failed > 0 ? 'warn' : 'muted'}
+        />
+        <MiniStat
+          label="อัตราสำเร็จ"
+          value={data.totals.successRate === null ? '—' : `${data.totals.successRate}%`}
+          tone={
+            data.totals.successRate !== null && data.totals.successRate < 95 ? 'warn' : 'muted'
+          }
+        />
+      </div>
+
+      <div className="admin-table-wrap">
+        <table className="admin-table">
+          <thead>
+            <tr>
+              <th>คิว</th>
+              <th>ชนิดงาน</th>
+              <th style={{ width: '30%' }}>สัดส่วน</th>
+              <th style={{ textAlign: 'right' }}>สำเร็จ</th>
+              <th style={{ textAlign: 'right' }}>ล้มเหลว</th>
+              <th style={{ textAlign: 'right' }}>เวลาเฉลี่ย</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={6} style={S.emptyCell}>
+                  ยังไม่มีงานที่จบในช่วงนี้
+                </td>
+              </tr>
+            )}
+            {rows.map((r) => {
+              const total = r.completed + r.failed;
+              return (
+                <tr key={`${r.queue}/${r.jobName}`}>
+                  <td>{QUEUE_LABELS[r.queue as AdminQueueKey] ?? r.queue}</td>
+                  <td>
+                    <code>{r.jobName}</code>
+                  </td>
+                  <td>
+                    <div style={{ ...S.meterTrack, width: `${(total / maxTotal) * 100}%` }}>
+                      <div style={F.barSplit}>
+                        <span
+                          style={{
+                            ...F.barSeg,
+                            width: `${(r.completed / total) * 100}%`,
+                            background: TONE_COLOR.good,
+                          }}
+                        />
+                        <span
+                          style={{
+                            ...F.barSeg,
+                            width: `${(r.failed / total) * 100}%`,
+                            background: TONE_COLOR.bad,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  </td>
+                  <td style={{ textAlign: 'right' }}>{r.completed.toLocaleString('th-TH')}</td>
+                  <td
+                    style={{
+                      textAlign: 'right',
+                      ...(r.failed > 0 ? S.badText : {}),
+                    }}
+                  >
+                    {r.failed.toLocaleString('th-TH')}
+                  </td>
+                  {/* "—", never 0: a blank means "not measured", and a
+                      fabricated zero would claim an instantaneous job. */}
+                  <td style={{ textAlign: 'right' }}>
+                    {r.avgMs === null ? '—' : `${(r.avgMs / 1000).toFixed(1)} วิ`}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </>
+  );
+}
+
+/**
+ * Feature 30 — R2 ↔ Postgres drift audit.
+ *
+ * Two independent stores hold every file and nothing keeps them in step
+ * transactionally, so drift accumulates in both directions: objects nobody
+ * claims (paid-for storage) and rows whose object is gone (a download button
+ * that 404s).
+ *
+ * NOTHING IS EVER DELETED FROM R2 by this. The copy says so plainly, because an
+ * admin who believes this button frees space will press it expecting that, and
+ * the orphan list is a report they must act on themselves. The reasoning — an
+ * orphan set is computed by SUBTRACTION, so a query returning too few rows
+ * produces a confident list of live user files — is in the job's own header.
+ *
+ * The status is polled while a run is live and then left alone. A full-bucket
+ * walk takes as long as it takes; a fixed poll after it settles is pure waste.
+ */
+function R2ReconcilePanel({ onError }: { onError: (err: unknown) => void }) {
+  const [status, setStatus] = useState<AdminR2ReconcileStatus | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  const running = status?.status === 'active' || status?.status === 'waiting' || status?.status === 'delayed';
+
+  const refresh = useCallback(async (): Promise<void> => {
+    try {
+      setStatus(await getAdminR2ReconcileStatus());
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) onError(err);
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    if (!hasSession()) return;
+    void refresh();
+  }, [refresh]);
+
+  // Poll ONLY while a run is live. The dependency on `running` means the
+  // interval is torn down the moment the job settles, rather than polling a
+  // finished result forever.
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => void refresh(), 5000);
+    return () => clearInterval(id);
+  }, [running, refresh]);
+
+  async function start(): Promise<void> {
+    if (starting || running) return;
+    if (
+      !window.confirm(
+        'เริ่มตรวจสอบความตรงกันของ R2 กับฐานข้อมูล?\n\n' +
+          'จะไล่อ่านทุกไฟล์ในบักเก็ต (ใช้เวลานาน) และจะไม่ลบไฟล์ใน R2 เลย — ' +
+          'ไฟล์กำพร้าจะถูก "รายงาน" เท่านั้น ส่วนแถวที่ไม่มีไฟล์จริงจะถูกตั้งสถานะเป็น error',
+      )
+    ) {
+      return;
+    }
+    setStarting(true);
+    setRowError(null);
+    try {
+      await adminStartR2Reconcile();
+      await refresh();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setRowError('มีการตรวจสอบกำลังทำงานอยู่แล้ว');
+        await refresh();
+      } else {
+        setRowError('เริ่มการตรวจสอบไม่สำเร็จ');
+        onError(err);
+      }
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  const result = status?.result ?? null;
+
+  return (
+    <>
+      <h2 className="admin-h2">ตรวจสอบความตรงกัน R2 ↔ ฐานข้อมูล</h2>
+      <div style={S.card}>
+        <div style={S.panelHead}>
+          <div>
+            <div style={{ ...S.statusText }}>
+              <span
+                style={{
+                  ...S.dot,
+                  background: running
+                    ? '#b45309'
+                    : status?.status === 'failed'
+                      ? TONE_COLOR.bad
+                      : status?.status === 'completed'
+                        ? TONE_COLOR.good
+                        : 'var(--color-text-muted)',
+                }}
+              />
+              {running
+                ? 'กำลังตรวจสอบ…'
+                : status?.status === 'completed'
+                  ? 'ตรวจสอบเสร็จแล้ว'
+                  : status?.status === 'failed'
+                    ? 'ตรวจสอบล้มเหลว'
+                    : 'ยังไม่เคยตรวจสอบในรอบนี้'}
+            </div>
+            <p style={S.kpiHint}>
+              ไม่ลบไฟล์ใน R2 เด็ดขาด — ไฟล์กำพร้าจะรายงานเฉย ๆ ส่วนแถวที่ไฟล์หายจะถูกตั้ง
+              status=error เพื่อไม่ให้หน้าเว็บเสนอปุ่มดาวน์โหลดที่กดแล้วพัง
+            </p>
+          </div>
+          <button
+            type="button"
+            className="btn secondary"
+            style={P.smallBtn}
+            disabled={starting || running}
+            onClick={() => void start()}
+          >
+            {running ? 'กำลังทำงาน…' : 'เริ่มตรวจสอบ'}
+          </button>
+        </div>
+
+        {rowError && <p style={{ ...S.note, ...S.badText }}>{rowError}</p>}
+        {status?.failedReason && <p style={{ ...S.note, ...S.badText }}>{status.failedReason}</p>}
+
+        {status?.finishedAt && (
+          <p style={S.subtle}>เสร็จเมื่อ {fmtDateTime(status.finishedAt)}</p>
+        )}
+
+        {result && (
+          <>
+            <p style={{ ...S.note, marginTop: 12 }}>{result.summary}</p>
+            <div style={S.stripGrid}>
+              <MiniStat
+                label="ไฟล์กำพร้าใน R2 (รายงานเท่านั้น)"
+                value={result.orphans.length}
+                tone={result.orphans.length > 0 ? 'warn' : 'good'}
+              />
+              <MiniStat
+                label="แถวที่ไฟล์หาย (ตั้ง error แล้ว)"
+                value={result.missing.length}
+                tone={result.missing.length > 0 ? 'bad' : 'good'}
+              />
+            </div>
+            {result.orphans.length > 0 && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={S.subtle}>ดูรายการไฟล์กำพร้า (สูงสุด 500)</summary>
+                <pre style={F.keyList}>{result.orphans.join('\n')}</pre>
+              </details>
+            )}
+            {result.missing.length > 0 && (
+              <details style={{ marginTop: 8 }}>
+                <summary style={S.subtle}>ดูรายการไฟล์ที่หาย (สูงสุด 500)</summary>
+                <pre style={F.keyList}>{result.missing.join('\n')}</pre>
+              </details>
+            )}
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
@@ -1667,5 +2363,34 @@ const P: Record<string, React.CSSProperties> = {
     border: '1px solid var(--color-border)',
     background: 'var(--color-surface)',
     color: 'var(--color-text)',
+  },
+};
+
+/* ---------- TIER 3 tokens ----------
+   Flag cards, the two-segment throughput bar and the R2 key dumps. Kept apart
+   from S and P for the same reason those two are apart from each other: the
+   source should say which tier a control belongs to without cross-referencing. */
+
+const F: Record<string, React.CSSProperties> = {
+  flagCard: { display: 'flex', flexDirection: 'column', gap: 4 },
+  flagHead: {
+    display: 'flex',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  barSplit: { display: 'flex', height: '100%', width: '100%' },
+  barSeg: { display: 'block', height: '100%' },
+  // R2 keys are long and must not force the page body to scroll sideways —
+  // the block gets its own overflow, per the app's wide-content rule.
+  keyList: {
+    maxHeight: 240,
+    overflow: 'auto',
+    fontSize: 'var(--font-size-xs)',
+    background: 'var(--color-surface-3)',
+    borderRadius: 'var(--radius-sm)',
+    padding: 8,
+    margin: '8px 0 0',
+    whiteSpace: 'pre',
   },
 };

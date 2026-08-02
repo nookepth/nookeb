@@ -1038,6 +1038,13 @@ export interface AdminUserDetail {
     storageLimitOverride?: number | null;
     createdAt: string;
     isAdmin: boolean;
+    /**
+     * Account suspension (migration 060). null = active. Optional so a response
+     * from an API that predates 060 still typechecks — and `undefined` must
+     * render exactly like null, never like "unknown state".
+     */
+    suspendedAt?: string | null;
+    suspendedReason?: string | null;
   };
   quotas: AdminUserQuota[];
   subscriptions: AdminUserSubscription[];
@@ -1192,6 +1199,178 @@ export function adminUpdateTicket(id: string, body: AdminTicketUpdate): Promise<
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+/* ==========================================================================
+   Admin TIER 3 — runtime flags, LINE allowance, push + job history,
+   R2 reconciliation, account suspension.
+
+   The reads below follow the same fail-soft contract as every other
+   /admin/system fetcher: the server degrades to an empty payload rather than
+   erroring, so a panel renders "—" instead of taking the page down. The
+   WRITES follow the TIER 2 contract — they genuinely 4xx/5xx, they are audited
+   server-side, and every caller must surface the failure.
+   ========================================================================== */
+
+/** Every runtime switch, as the admin page knows them. */
+export type AdminFlagKey =
+  | 'push_enabled'
+  | 'diary_reminder_enabled'
+  | 'diary_addon_enabled'
+  | 'scan_enhance_enabled'
+  | 'scan_ocr_enabled'
+  | 'virus_scan_enabled';
+
+export interface AdminFlags {
+  flags: Record<string, boolean>;
+  /**
+   * Keys whose value could NOT be read and are showing their documented
+   * fallback instead. The page marks these — a switch rendered from a default
+   * is a switch that may not reflect the server.
+   */
+  stale: string[];
+  fallbacks: Record<string, boolean>;
+}
+
+export function getAdminFlags(): Promise<AdminFlags> {
+  return apiFetch(`/admin/flags`);
+}
+
+export interface AdminFlagUpdateResult {
+  key: AdminFlagKey;
+  enabled: boolean;
+  /**
+   * diary_reminder_enabled only: whether the BullMQ repeatable was re-registered
+   * in the same request. `false` means the flag saved but the schedule will not
+   * agree with it until the next worker boot.
+   */
+  scheduleUpdated?: boolean;
+}
+
+/** Flips one runtime switch. Affects the API and the worker within 60 s. */
+export function adminSetFlag(key: AdminFlagKey, enabled: boolean): Promise<AdminFlagUpdateResult> {
+  return apiFetch(`/admin/flags/${key}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export interface AdminLineQuota {
+  /** 'limited' = a real ceiling · 'unlimited' = no cap · 'none' = we could not find out. */
+  type: 'none' | 'limited' | 'unlimited';
+  /** null for BOTH 'unlimited' and 'none' — neither has a number. */
+  limit: number | null;
+  consumed: number;
+  remaining: number | null;
+  fetchedAt: string;
+}
+
+/** LINE's OWN monthly push allowance — the one quota figure that is not ours. */
+export function getAdminLineQuota(): Promise<AdminLineQuota> {
+  return apiFetch(`/admin/line-quota`);
+}
+
+export type AdminPushLogStatus = 'sent' | 'failed' | 'blocked_quota' | 'blocked_flag';
+
+export interface AdminPushLogEntry {
+  id: string;
+  toId: string;
+  toKind: string;
+  context: string;
+  refId: string | null;
+  messageCount: number;
+  status: string;
+  httpStatus: number | null;
+  error: string | null;
+  createdAt: string;
+}
+
+export interface AdminPushLog {
+  days: number;
+  context: string | null;
+  status: string | null;
+  truncated: boolean;
+  totals: {
+    sent: number;
+    failed: number;
+    blocked_quota: number;
+    blocked_flag: number;
+    messages: number;
+  };
+  /** Over attempted pushes; blocked_flag is excluded (a deliberate silence). */
+  deliveryRate: number | null;
+  entries: AdminPushLogEntry[];
+}
+
+export function getAdminPushLog(
+  days: number,
+  opts?: { context?: string; status?: string },
+): Promise<AdminPushLog> {
+  const qs = new URLSearchParams({ days: String(days) });
+  if (opts?.context) qs.set('context', opts.context);
+  if (opts?.status) qs.set('status', opts.status);
+  return apiFetch(`/admin/push-log?${qs.toString()}`);
+}
+
+export interface AdminJobThroughputGroup {
+  queue: string;
+  jobName: string;
+  status: 'completed' | 'failed';
+  count: number;
+  /** null when no job in the bucket carried a measured duration. Never 0. */
+  avgDurationMs: number | null;
+}
+
+export interface AdminJobThroughput {
+  days: number;
+  queue: string;
+  truncated: boolean;
+  totals: { completed: number; failed: number; successRate: number | null };
+  groups: AdminJobThroughputGroup[];
+}
+
+export function getAdminJobThroughput(days: number, queue = 'all'): Promise<AdminJobThroughput> {
+  return apiFetch(`/admin/system/job-throughput?days=${days}&queue=${queue}`);
+}
+
+export interface AdminR2ReconcileStatus {
+  status: string;
+  progress?: number;
+  result?: { orphans: string[]; missing: string[]; summary: string } | null;
+  failedReason?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+}
+
+export function getAdminR2ReconcileStatus(): Promise<AdminR2ReconcileStatus> {
+  return apiFetch(`/admin/system/r2-reconcile/status`);
+}
+
+/** Starts the drift audit. 409 when one is already waiting or running. */
+export function adminStartR2Reconcile(): Promise<{ jobId: string; queued: true }> {
+  return apiFetch(`/admin/system/r2-reconcile`, { method: 'POST' });
+}
+
+export interface AdminSuspendResult {
+  id: string;
+  suspendedAt: string | null;
+  suspendedReason: string | null;
+  sessionVersion?: number;
+}
+
+/** Blocks every authenticated request AND kills existing tokens. 409 if already suspended. */
+export function adminSuspendUser(id: string, reason: string): Promise<AdminSuspendResult> {
+  return apiFetch(`/admin/users/${id}/suspend`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reason }),
+  });
+}
+
+/** 409 when the user is not suspended. Does not restore the killed sessions. */
+export function adminUnsuspendUser(id: string): Promise<AdminSuspendResult> {
+  return apiFetch(`/admin/users/${id}/unsuspend`, { method: 'POST' });
 }
 
 export function getMe(): Promise<UserDto & { defaultSpaceId: string | null; isAdmin: boolean }> {

@@ -166,7 +166,14 @@ supabase/migrations/    001–047 (see §5) · supabase/backfills/ (3 idempotent
 `vault` + `vault-crypto` + `vault-session`, `legacy-box`, `events`,
 `task.service`, `taskScheduler`, `task-recurrence`, `task-command`, `task-nl`,
 `task-confirm`, `google-sheets`, `sheets-workspace`, `sheetsQueue`, `ocr`,
+`admin-audit`, `push-flag`, `queue-stats`, `queue-actions`,
+`push-log` + `job-log` (TIER 3 history writers — **both NEVER throw**, see §5/060),
+`feature-flags` (DB-backed runtime switches), `line-quota`,
 `group-settings` (**orphaned — see §15**).
+
+**Jobs** (`apps/api/src/jobs/`) — `membership.queue` + `membership.worker`,
+`quotaReset`, `boostExpiry`, `trashCleanup`, `diaryReminder`, `r2Reconcile`
+(the R2 ↔ Postgres drift audit — **never deletes an R2 object**, see §12).
 
 ---
 
@@ -246,6 +253,8 @@ land **before** the API deploy are flagged in-file.
 | 057 | `057_retire_task_pro_fake_doors.sql` | Retires the two ระบบตามงาน Pro **fake doors** (`task_auto_reminder` / `task_voice_command`, migration 040) — neither ever had a scheduler or a microphone behind it, and this is UNRELATED to the live reminder system (047/051/055/056) and to the gift-box voice notes. Closes `pro_interest.feature_id` with `CHECK (false) NOT VALID` (the allowed set is empty and a CHECK cannot spell `IN ()`; `NOT VALID` is what preserves the existing rows), DROPs `admin_pro_interest_tasks`, and DROP+CREATEs `admin_pro_interest_daily` without its now-always-zero `task_clicks` column. **No row is deleted** — `pro_interest` and its `pro_interest_*` usage_events rows stay as history. The gift-box half (`pro_interest_log`, `POST /api/pro-interest`, `admin_pro_interest_giftbox`) is untouched. Order-independent vs the deploy: the code that wrote these values is removed in the same change |
 | 058 | `058_admin_ops_rpcs.sql` | TIER 1 of the ops dashboard — three read-only `CREATE OR REPLACE` aggregates for `/admin/system` (`admin_storage_totals`, `admin_reminder_outcomes_daily`, `admin_diary_addon_daily`). Nothing is created, altered or dropped, so it is **order-independent vs the deploy** and safe to re-run; every endpoint that reads them fails soft to empty/zero, so deploying first only means those cards stay blank. Bangkok day buckets, matching 029/042 |
 | 059 | `059_admin_audit_and_settings.sql` | **TIER 2 — the admin WRITE surface.** `admin_audit_log` (append-only; `admin_line_id` is the LINE id from the session, NOT a users.id, because admin membership is the `ADMIN_LINE_USER_IDS` env allowlist and has no DB column, and it is deliberately not an FK so the trail outlives a deleted user; `before`/`after` JSONB carry only the fields the action touched, never whole rows). `system_settings` (JSONB key/value, seeded `push_enabled = true`) — a TABLE rather than an env var because the kill switch must take effect in BOTH processes within 60 s without a redeploy, which a per-service env var cannot do. `users.storage_limit_override` BIGINT NULL, folded in by `syncStorageLimit()` as `COALESCE(override, lockerLimitBytes(plan, referral_count))` so an admin-raised ceiling survives the next plan change / referral redemption / subscription lapse — the same class of bug 024's `GREATEST()` guard fixed on the referral path. **Apply BEFORE the API/worker deploy.** The two halves fail in opposite directions on purpose: CLOSED on the writes (every TIER 2 endpoint 500s without `admin_audit_log`, because an unaudited privileged write is worse than a failed one) and OPEN on the messaging (`getPushEnabled` returns true on a missing table, because an outage must never be able to mute the product). `syncStorageLimit`'s column read carries an explicit pre-059 fallback, so the reverse order degrades rather than breaking every plan change. Safe to re-run |
+| 060 | `060_push_log_job_log_suspension.sql` | **TIER 3 — the HISTORY tables.** Everything 058/059 can see is CURRENT STATE (a queue's depth now, a reminder row's terminal stamp); none of it answers "how many pushes went out last Tuesday and why did the failures fail" or "is the file queue getting slower", because the live rows are overwritten and BullMQ's `removeOnComplete` evicts a job the moment it settles. `push_log` (one row per push ATTEMPT from inside `pushMessage`; four statuses, and the two `blocked_*` ones are the point — a push suppressed by the kill switch returns normally BY DESIGN and a quota-exhausted push looks like an ordinary 429, so neither left any trace). `job_log` (one row per settled job, all four queues). `users.suspended_at` + `suspended_reason`. **Apply BEFORE the API/worker deploy.** All three fail OPEN: both writers never throw (a throw after a delivered push would fail the BullMQ job and the retry would send the message TWICE; a throw inside a BullMQ listener is an unhandledRejection, and `workers/index.ts` exits(1) on those), and the auth middleware's `suspended_at` read carries an explicit pre-060 fallback. Safe to re-run |
+| 061 | `061_feature_flag_seeds.sql` | **TIER 3 — five env flags become `system_settings` rows** so they are INCIDENT-time switches rather than deploy-time ones: `diary_reminder_enabled` / `diary_addon_enabled` / `scan_enhance_enabled` / `scan_ocr_enabled` / `virus_scan_enabled`. Pure seed data, no DDL, so it is **order-independent vs the deploy** and safe to re-run (`ON CONFLICT DO NOTHING` — it can never reset a switch an admin has since flipped, and therefore cannot be used to CHANGE one). **⚠ TWO SEEDS CHANGE BEHAVIOUR**: `scan_ocr_enabled` and `diary_addon_enabled` are seeded `true` while their env vars default to FALSE, and once a row exists it WINS over the env var (which survives only as `getFlag`'s fallback). The first turns the searchable-text layer on for every `finalize_scan` — tesseract over every page, a real ongoing worker CPU cost; the second registers the hourly add-on sweep, inert today only because `POST /diary-addon/subscribe` is 503-disabled. Seed `false` instead, or flip them at `/admin/system`, if that is not wanted. The other three match today's resolved values exactly |
 
 Key invariants:
 - Every content table carries `space_id` (or a per-feature owner key: diary/vault =
@@ -701,6 +710,29 @@ failure (→ 500); the two IRREVERSIBLE BullMQ ops audit FIRST and act second.
 `subscriptions` and never calls `changePlan()`, so the billing seam stays
 single-caller (see "Temporarily Disabled Endpoints").
 
+**Admin TIER 3 reads** (fail-soft) — `GET /admin/line-quota` (LINE's OWN monthly
+push allowance; the one quota figure that is not the product's own accounting,
+and the one that decides whether messaging silently stops mid-month) ·
+`GET /admin/flags` (every runtime switch, read UNCACHED per key; a key that
+cannot be read degrades to its documented fallback and is listed in `stale`
+rather than failing the payload) · `GET /admin/push-log?days=&context=&status=` ·
+`GET /admin/system/job-throughput?days=&queue=` (aggregated in process — there
+is no RPC for this shape and PostgREST cannot GROUP BY, same pattern as
+`/admin/quotas`) · `GET /admin/system/r2-reconcile/status`.
+
+**Admin TIER 3 writes** — same audited, never-fail-soft contract as TIER 2.
+`PUT /admin/flags/:key` (allowlisted keys only, 400 otherwise — `system_settings`
+is a generic table and an open endpoint would let a typo create a switch that
+looks real and controls nothing. THREE mechanisms behind one endpoint:
+`push_enabled` DELEGATES to `setPushEnabled` so the product's most important
+switch keeps exactly one writer and one cache key; `diary_reminder_enabled`
+calls `setFlag` and THEN `toggleDiaryReminderSchedule`; everything else is plain
+`setFlag`) · `POST /admin/system/r2-reconcile` (singleton by a fixed jobId;
+409 while one is waiting/active, and a SETTLED singleton is removed first —
+the `sheets_sync` lesson, where a lingering settled job with a stable id
+swallows every later run. Audits FIRST, then enqueues) ·
+`POST /admin/users/:id/{suspend,unsuspend}` (see §16).
+
 **Misc** — `GET /health` (returns `RAILWAY_GIT_COMMIT_SHA`) ·
 `GET /progress/:batchId[/view]` (limiter-exempt) · `GET /referral/status` 🔒 ·
 `POST /referral/redeem` 🔒 · `GET /static/welcome.jpg`, `/static/onboarding/:n.jpg`
@@ -725,7 +757,8 @@ cross-site cookie). `apps/web/lib/api.ts` holds ~101 client functions + DTO type
 | `/dashboard/tasks` | งานของฉัน: tabs (active/overdue/done/cancelled), filter+sort bar with Export, calendar, progress ring, stats, activity feed, today-focus banner, pins/collapse/view-mode persisted in localStorage, personal-task create modal, plan badge | `/tasks/mine`, `/tasks/:id…` |
 | `/dashboard/tasks/[taskId]` | task detail: items, assignees, links, attachments, done/accept/note, creator's รับงาน/ตีกลับ, edit assignees (hidden for personal) | `/tasks/:id*`, `/groups/:id/members` |
 | `/dashboard/settings` | การเชื่อมต่อ — Google Sheets connect/disconnect (the OAuth callback's redirect target) | `/integrations/google*` |
-| `/admin` | one scrollable analytics page, hand-rolled SVG/CSS charts, shared 7/30/90-day range | `/admin/*` |
+| `/admin` | one scrollable analytics page, hand-rolled SVG/CSS charts, shared 7/30/90-day range; the user drawer carries the TIER 2/3 write controls (plan, storage override, quota reset, session revoke, **suspend/unsuspend**) | `/admin/*` |
+| `/admin/system` | the OPS page: push kill switch, **LINE allowance card**, **runtime flag toggles**, service health, queue depth + failed-job triage, notification delivery, **push log**, **queue throughput**, quota pressure, membership, support SLA queue, storage ledger + stuck files, **R2 reconciliation**. Queue/health blocks live-poll every 10 s and are range-independent; the historical blocks follow the 7/30/90 selector | `/admin/system/*`, `/admin/flags`, `/admin/line-quota`, `/admin/push-log` |
 | `/join` | team invite acceptance | `/api/teams/invite/:token/accept` |
 | `/auth/callback` | LINE Login code exchange | `/auth/line` |
 | `/share/[token]` | public shared file view/download | `/share/:token*` |
@@ -791,7 +824,7 @@ Keep them separate — merging re-couples the failure domains they were split to
 
 | Queue | Worker | Jobs |
 |---|---|---|
-| `nookeb-file-processing` | `upload.worker.ts` | `upload_batch`, `generate_thumbnail`, `ocr_image`, `add_scan_page`, `finalize_scan`, `convert_to_docx`, `create_diary_entry`, `purge_deleted` (daily repeatable) |
+| `nookeb-file-processing` | `upload.worker.ts` | `upload_batch`, `generate_thumbnail`, `ocr_image`, `add_scan_page`, `finalize_scan`, `convert_to_docx`, `create_diary_entry`, `purge_deleted` (daily repeatable), `r2_reconcile` (**one-off, never repeatable** — admin-triggered singleton, jobId `r2_reconcile_singleton`, `attempts: 1`) |
 | `nookeb-task-reminders` | `taskReminderWorker.ts` | `task_reminder`, `task_recur_next`, `task_recur_sweep`, `task_notify` (every immediate task push — announce / cancel / review loop). Worker `limiter: 10/sec` governs ALL task pushes. |
 | `nookeb-sheets-sync` | `sheetsWorker.ts` (constructed ONLY when Google is configured) | `sheets_sync` (`upsert` \| `delete`), `sheets_historical` (backfill; jobId `sheets-historical-{userId}`, removed on settle so a later press can re-queue) |
 
@@ -801,6 +834,46 @@ Retry policy: `add_scan_page` / `finalize_scan` / `convert_to_docx` /
 `attempts: 1` and retries each file internally (3×, 1→2→4 s) and never throws;
 task jobs get 3 attempts × exponential 10 s; sheets jobs 3 attempts × 5-min backoff
 with `jobId = sheets-{taskId}-{action}` collapsing edit bursts.
+
+**Throughput history.** `workers/index.ts` attaches a `completed`/`failed`
+listener to all four workers and writes one `job_log` row per settled job
+(migration 060). Attached at the entry point, not inside each factory, so the
+queues cannot drift on what is recorded and the existing per-worker listeners
+(the upload worker's exhausted-retries admin alert) stay orthogonal. Every
+failed ATTEMPT is logged, not just the exhausted one — a job that succeeds on
+its third try is a different health signal from one that succeeds first time.
+
+### `r2_reconcile` — the drift audit
+
+`jobs/r2Reconcile.job.ts`. Two independent stores hold every file and nothing
+keeps them in step transactionally (`uploadStream` puts the object, a separate
+statement writes the row), so drift accumulates in both directions.
+
+**It NEVER deletes an R2 object, and that is not timidity.** The orphan set is
+computed by SUBTRACTING every key the database knows about from every key in the
+bucket, so a query that silently returns too few rows does not produce a small
+error — it produces a large, confident list of live user files. A report cannot
+destroy anything when it is wrong. `purge_deleted` already deletes objects and
+does so by walking ROWS, which is the safe direction. The one write is
+`files.status = 'error'` for a row whose object is gone.
+
+Two rules the orphan half rests on:
+
+1. **The known-key universe is bigger than `files.r2_key`.** `KEY_SOURCES` unions
+   every key-bearing column in the schema — `files.{r2_key,thumbnail_key}`,
+   `scan_pages.r2_key`, `diary_entries.{image_key,thumbnail_key}`,
+   `vault_files.r2_key`, `legacy_box_photos.r2_key`, `legacy_boxes.audio_key`.
+   Subtracting only the first would report every thumbnail, diary photo, vault
+   blob and gift-box voice clip as an orphan. **Adding a new R2-backed feature
+   means adding its column here.**
+2. **A DEGRADED run reports NO orphans at all.** Any key source that could not be
+   read in full (missing table, page cap, error) sets `degraded`, and the orphan
+   list is suppressed entirely — the `missing` correction still runs, because a
+   failed vault read says nothing about whether a `files` row's object exists.
+
+`missing` is scoped to `files` only (the sole table with an `error` status to
+write) and EXCLUDES rows in `pending`/`processing`: those legitimately have a row
+before they have an object — that is the normal upload sequence, not drift.
 
 `purge_deleted` sweeps, in one job: files past the plan-aware retention
 (`purgeDeletedFiles` → `purgeFileRows`), stale `processing` files, diary entry
@@ -907,7 +980,9 @@ when the directory is empty. See that directory's README.
 |---|---|---|
 | `TASK_NOTIFICATIONS_ENABLED` (env, **default true**; only `"false"` disables) | EVERY task push: scheduled reminders (rows, jobs, delivery), the create announcement, the cancel notice, the review-loop notices, and the LIFF copy promising them. Set on BOTH Railway services. | `packages/shared/src/task-notifications.ts`; `taskScheduler.scheduleReminders` + `enqueueTaskNotify`, `taskReminderWorker` (`processTaskReminder`, `processTaskNotify`), `routes/tasks.ts` `notifyTaskChat`, LIFF create pages, `task-command-handlers` success copy |
 | `system_settings.push_enabled` (DB row, migration 059, **default true**) | EVERY LINE push, gated at the last possible moment inside `pushMessage()` — so a flip takes effect on jobs already queued and in flight, unlike `TASK_NOTIFICATIONS_ENABLED` which gates SCHEDULING. The two COMPOSE; neither replaces the other. Flipped from the toggle at the top of `/admin/system`. Cached in Redis 60 s (`settings:push_enabled`), invalidated by DELETE on write, and **fails OPEN** on any error — an outage must never mute the product, only a human may. A blocked push returns normally, never throws: throwing would burn the reminder worker's 3 attempts and stamp `failed_at` on a row nothing was wrong with | `services/push-flag.service.ts`; `pushMessage` in `line.service.ts`; `GET|PUT /admin/settings[/push_enabled]` |
-| `DIARY_REMINDER_ENABLED` (constant, **false**) | the §17 plan-based diary nudge (hourly sweep + its repeatable schedule) | `apps/api/src/jobs/diaryReminder.job.ts`; `scheduleMembershipJobs` |
+| `system_settings.diary_reminder_enabled` (DB row, 061, **seeded false**) | the §17 plan-based diary nudge. Was a hard-coded `export const DIARY_REMINDER_ENABLED = false`; that constant is **gone**. The resolved value reaches the sweep through `DiaryReminderDeps.enabled`, supplied by `membership.worker.ts` — `diaryReminder.job.ts` stays env-free (§3.14), and an OMITTED `enabled` means OFF, the one flag that fails closed because the failure mode is "LINE-message the whole opted-in userbase" and a push cannot be taken back. **Flipping the row is not enough on its own**: the sweep runs because a REPEATABLE EXISTS IN REDIS, so `setFlag` must also call `toggleDiaryReminderSchedule` (see below) | `services/feature-flags.service.ts`; `jobs/membership.queue.ts`; `jobs/diaryReminder.job.ts` |
+| `system_settings.{diary_addon,scan_enhance,scan_ocr,virus_scan}_enabled` (DB rows, 061) | the add-on sweep, the สแกน enhancement pipeline, the searchable-text OCR layer, VirusTotal scanning. Read through `getFlag(key, fallback)`, cached 60 s under `flag:{key}`, **failing open to the CALLER'S fallback** — the safe direction differs per flag (a missing `scan_enhance_enabled` should read TRUE, a missing `diary_reminder_enabled` FALSE), so each site names its own, and it is the value its env var used to resolve to. Only the JSON literals `true`/`false` are honoured: `Boolean("false")` is true, so coercing is how a malformed write flips a switch the wrong way. `virus_scan_enabled` is still ANDed with `VIRUSTOTAL_API_KEY` — **a flag may only turn a CONFIGURED feature off, never turn an unconfigured one on**. The scan flags are read PER PAGE / PER PDF, not per boot: this is the switch someone reaches for while bad scans are actively shipping | `services/feature-flags.service.ts`; `workers/upload.worker.ts`, `routes/diaryAddon.ts`, `jobs/membership.*` |
+| `toggleDiaryReminderSchedule(enabled)` (`jobs/membership.queue.ts`) | remove-then-add of the hourly `diary_reminder_sweep` repeatable, so Redis agrees with the row in the same request. Runs in the **API** process, which is fine — a repeatable is a Redis sorted-set entry, not worker state, and the API already holds the queue handle for `/admin/system/queues`. Without it, OFF→ON changes nothing at all until the next worker restart silently turns it on, and ON→OFF leaves the sweep firing hourly and standing itself down at the `deps.enabled` guard | `routes/admin-ops.ts` `PUT /admin/flags/:key` |
 | `REMINDER_POLICY[plan].maxSelectable` (free 1 / pro 2 / premium 4) | how many of the **15** §4b lead times may be ticked (13 since 055, +5 นาที and ถึงกำหนดพอดี since 056). Every plan sees the same menu — a plan caps the COUNT, never which ones. Enforced in `resolveReminderConfig` (403 `REMINDER_INTERVAL_LIMIT`); the picker's own cap is a courtesy | `config/plans.ts`, `middleware/planGuard.ts`, `components/ReminderPicker.tsx` + `ReminderSheet.tsx` |
 | `users.plan` ∈ {pro, team} | the `เตือน N ครั้ง` custom reminder count (migration 047) | `resolvePlanIsPro` in `task-command-handlers.ts`; effective count baked into the confirm card |
 | `users.plan` | plan-aware trash retention (5 vs 30 days) | `purgeDeletedFiles` |
@@ -915,8 +990,8 @@ when the directory is empty. See that directory's README.
 | `MISTRAL_API_KEY` | แปลงไฟล์ — the command replies "not available" without it | `isMistralOcrConfigured()` |
 | `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `VAULT_MASTER_KEY` | Google Sheets sync (routes 503, worker not constructed, jobs no-op) | `isGoogleSheetsConfigured()` |
 | `VAULT_MASTER_KEY` | vault routes + the encrypted Google refresh token | `config.ts`, `vault-crypto` |
-| `SCAN_ENHANCE_ENABLED` / `SCAN_OCR_ENABLED` / `SCAN_DEFAULT_MODE` | scan pipeline behaviour (printed once at worker boot so the deployed state is auditable) | `config.ts`, `upload.worker.ts` |
-| `ENABLE_VIRUS_SCAN` + `VIRUSTOTAL_API_KEY` | optional upload scanning | `virusTotal.service` |
+| `SCAN_DEFAULT_MODE` | default colour mode for new scan sessions. Still env — a VALUE, not a switch. (`SCAN_ENHANCE_ENABLED`/`SCAN_OCR_ENABLED` are now the DB rows above; the env vars survive only as `getFlag` fallbacks. The worker's boot line prints the DB-resolved values and labels them a starting position, because they can change at runtime) | `config.ts`, `upload.worker.ts` |
+| `ENABLE_VIRUS_SCAN` + `VIRUSTOTAL_API_KEY` | optional upload scanning — now ANDed with `system_settings.virus_scan_enabled` | `virusTotal.service` |
 | `ADMIN_LINE_USER_IDS` | `/admin/*` access (no DB column) | `routes/admin.ts` |
 | `LINE_LIFF_ID` / `NEXT_PUBLIC_LIFF_ID` | LIFF deep links vs plain WEB_URL fallback | `lineMessage.ts`, web `lib/liff.ts` |
 | Pro **fake door** (no feature behind it) | gift-box `audio`/`video` only (anonymous, migration 034). The two TASK fake doors `task_auto_reminder` / `task_voice_command` (migration 040) were **removed 2026-08-02** — UI, routes and admin panel all gone, historical rows kept, `pro_interest` closed by migration 057. Neither ever had scheduling or a microphone behind it; do not confuse `task_auto_reminder` with the live reminder system (047/051/055/056) | `routes/pro-interest.ts` |
@@ -1019,6 +1094,9 @@ Rules for whoever picks this up:
 - Teams, invites, join requests, LINE group ↔ team binding
 - Referral ladder 1 / 2.5 / 4 GB
 - Admin analytics dashboard (`usage_events` + aggregate RPCs)
+- Admin ops dashboard `/admin/system` — TIER 1 (reads) + TIER 2 (audited writes)
+  + TIER 3 (push log, LINE allowance, DB-backed runtime flags, R2 reconciliation,
+  queue throughput history, account suspension)
 - Public landing page + OG/robots/sitemap
 - ระบบตามงาน: LIFF create, personal tasks, in-chat command with confirm-first,
   natural-language detection, attachments, review loop, ห้องทีม, .xlsx export,
@@ -1053,6 +1131,40 @@ audit's only fix is Next 16. Compensating control: the `/api-proxy` rewrite is a
 single fixed-target passthrough with no user-controlled destination. Migration plan
 in `ROADMAP.md`; the pin note also lives in the `"//next"` key of
 `apps/web/package.json`.
+
+---
+
+## 15b. Account Suspension (migration 060)
+
+`users.suspended_at` + `suspended_reason`, enforced in `middleware/auth.ts`.
+The verb TIER 2 was missing: quota resets, storage ceilings and session
+revocation all leave the account WORKING, and a revoked user simply logs in
+again a second later.
+
+- **403 `ACCOUNT_SUSPENDED`, never 401**, and the distinction is load-bearing on
+  the client: the web app treats 401 as "log in again", which for a suspended
+  user is an infinite loop through LINE Login. Same shape as the vault's lock
+  states (`VAULT_LOCKED` / `VAULT_PREMIUM_REQUIRED`) — a state that
+  re-authenticating cannot fix. Checked AFTER the session-version check, so a
+  forged token learns nothing about the account it claims.
+- **The check rides the EXISTING `sv:{userId}` cache entry and query**, not a
+  second Redis GET and a second SELECT on the hottest path in the API. Format is
+  `"{version}:{0|1}"` and the parse is backward compatible with the bare
+  `"{version}"` the key used to hold, so the deploy window degrades to "not
+  suspended" — which is what every user was when those entries were written.
+- **Suspending also bumps `session_version`.** The column check alone only stops
+  the NEXT login; the bump kills the tokens already in the browser without
+  waiting for the 60 s cache. Guarded on the version just read
+  (`.eq('session_version', before)`), so two admins cannot both write `+1`.
+  Unsuspend deliberately does NOT bump — those tokens are already gone.
+- **409 on a double-suspend**, so a re-submit cannot overwrite the ORIGINAL
+  `suspended_at` and reason. Amending means unsuspend + suspend, which leaves
+  both events in `admin_audit_log`.
+- **SCOPE: this stops the WEB and LIFF surfaces only.** The LINE webhook is
+  signature-authenticated and never reaches the auth middleware, so a suspended
+  user can still message the OA and still have files stored. Deliberate, stated
+  in the migration and in the drawer's own copy — cutting the chat path would
+  silently swallow uploads a user believes were saved, and needs its own design.
 
 ---
 

@@ -463,6 +463,150 @@ describe('admin write bodies are zod-validated before any DB call', { skip }, ()
   });
 });
 
+// ---------------------------------------------------------------------------
+// TIER 3 — account suspension (migration 060).
+//
+// The verb TIER 2 was missing. Quota resets, storage ceilings and session
+// revocation all leave the account WORKING; this is the one that stops it, and
+// it is the one whose failure modes are worth pinning:
+//
+//   * 409 on a double-suspend, so a re-submit cannot overwrite the ORIGINAL
+//     suspended_at and reason — losing when and why the account was stopped;
+//   * the reason is genuinely required (an empty or whitespace string is a 400,
+//     not an accepted empty audit trail);
+//   * suspending bumps session_version, because the column check alone only
+//     stops the NEXT login and leaves the tokens already in the browser alive
+//     until the auth middleware's 60 s cache expires.
+// ---------------------------------------------------------------------------
+
+describe('POST /admin/users/:id/suspend', { skip }, () => {
+  let app: FastifyInstance;
+  after(async () => {
+    await app?.close();
+  });
+
+  it('409s when the user is already suspended', async () => {
+    const db = fakeSupabase({
+      users: [
+        {
+          id: USER_ID,
+          suspended_at: '2026-08-01T10:00:00.000Z',
+          suspended_reason: 'สแปม',
+          session_version: 3,
+        },
+      ],
+    });
+    app = await buildApp(db);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/admin/users/${USER_ID}/suspend`,
+      payload: { reason: 'อีกเหตุผลหนึ่ง' },
+    });
+
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.json().code, 'ALREADY_SUSPENDED');
+    // Nothing was written — the original stamp and reason survive intact.
+    assert.deepEqual(db.updates('users'), []);
+    assert.deepEqual(db.inserts('admin_audit_log'), []);
+    await app.close();
+  });
+
+  it('suspends, stamps the reason and bumps session_version', async () => {
+    const db = fakeSupabase({
+      users: [{ id: USER_ID, suspended_at: null, suspended_reason: null, session_version: 4 }],
+    });
+    app = await buildApp(db);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/admin/users/${USER_ID}/suspend`,
+      payload: { reason: 'อัปโหลดเนื้อหาละเมิดซ้ำ' },
+    });
+
+    assert.equal(res.statusCode, 200);
+    const write = db.updates('users')[0]!;
+    assert.equal(write.suspended_reason, 'อัปโหลดเนื้อหาละเมิดซ้ำ');
+    assert.ok(write.suspended_at, 'suspended_at must be stamped');
+    // The bump is what kills tokens already issued; the column check alone only
+    // stops the next login.
+    assert.equal(write.session_version, 5);
+
+    const audit = db.inserts('admin_audit_log')[0]!;
+    assert.equal(audit.action, 'user_suspend');
+    assert.equal(audit.target_id, USER_ID);
+    await app.close();
+  });
+
+  it('rejects an empty or whitespace-only reason', async () => {
+    const db = fakeSupabase({
+      users: [{ id: USER_ID, suspended_at: null, session_version: 1 }],
+    });
+    app = await buildApp(db);
+
+    for (const reason of ['', '   ', undefined]) {
+      const res = await app.inject({
+        method: 'POST',
+        url: `/admin/users/${USER_ID}/suspend`,
+        payload: reason === undefined ? {} : { reason },
+      });
+      assert.equal(res.statusCode, 400, `reason=${JSON.stringify(reason)} should be rejected`);
+    }
+    assert.deepEqual(db.updates('users'), []);
+    await app.close();
+  });
+});
+
+describe('POST /admin/users/:id/unsuspend', { skip }, () => {
+  let app: FastifyInstance;
+  after(async () => {
+    await app?.close();
+  });
+
+  it('409s when the user is not suspended', async () => {
+    const db = fakeSupabase({
+      users: [{ id: USER_ID, suspended_at: null, suspended_reason: null }],
+    });
+    app = await buildApp(db);
+
+    const res = await app.inject({ method: 'POST', url: `/admin/users/${USER_ID}/unsuspend` });
+
+    assert.equal(res.statusCode, 409);
+    assert.equal(res.json().code, 'NOT_SUSPENDED');
+    assert.deepEqual(db.updates('users'), []);
+    await app.close();
+  });
+
+  it('clears both columns and audits the previous reason', async () => {
+    const db = fakeSupabase({
+      users: [
+        {
+          id: USER_ID,
+          suspended_at: '2026-08-01T10:00:00.000Z',
+          suspended_reason: 'สแปม',
+          session_version: 6,
+        },
+      ],
+    });
+    app = await buildApp(db);
+
+    const res = await app.inject({ method: 'POST', url: `/admin/users/${USER_ID}/unsuspend` });
+
+    assert.equal(res.statusCode, 200);
+    const write = db.updates('users')[0]!;
+    assert.equal(write.suspended_at, null);
+    assert.equal(write.suspended_reason, null);
+    // Deliberately NOT bumped: the tokens suspension killed are already gone,
+    // and bumping again would revoke sessions a suspended user cannot have.
+    assert.equal(write.session_version, undefined);
+
+    const audit = db.inserts('admin_audit_log')[0]!;
+    assert.equal(audit.action, 'user_unsuspend');
+    assert.deepEqual(audit.before, { suspendedAt: '2026-08-01T10:00:00.000Z', reason: 'สแปม' });
+    await app.close();
+  });
+});
+
 before(() => {
   if (skip) console.warn(`[admin-writes.test] skipped: ${skip}`);
 });

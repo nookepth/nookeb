@@ -241,7 +241,9 @@ async function processTaskReminder(job: Job<TaskReminderJob>): Promise<void> {
   }
 
   try {
-    await pushMessage(target, messages);
+    // refId = the task, so a "why did nobody get reminded about this?" question
+    // is one indexed lookup in push_log rather than a scan by chat id.
+    await pushMessage(target, messages, supabase, 'task_reminder', task.id);
   } catch (err) {
     // The message did NOT go out, so the unit reserved above must go back
     // BEFORE we decide whether to retry. Without this, every failed attempt
@@ -313,7 +315,7 @@ async function processTaskNotify(job: Job<TaskNotifyJob>): Promise<void> {
   // never be deliverable to this target, and failing the job would only leave a
   // permanently-red entry that ops cannot action.
   try {
-    await pushMessage(to, messages as LineMessage[]);
+    await pushMessage(to, messages as LineMessage[], supabase, 'task_notify', taskId);
   } catch (err) {
     if (isPermanentPushError(err)) {
       const status = err instanceof LinePushError ? err.status : 0;

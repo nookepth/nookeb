@@ -1,7 +1,9 @@
 import { Readable } from 'node:stream';
+import type { SupabaseClient } from '@supabase/supabase-js';
 import { config } from '../config';
 import type { FlexMessage } from './flex.service';
 import { getPushEnabled } from './push-flag.service';
+import { writePushLog, type PushContext } from './push-log.service';
 
 const LINE_API = 'https://api.line.me/v2/bot';
 const LINE_DATA_API = 'https://api-data.line.me/v2/bot';
@@ -142,14 +144,42 @@ export class LinePushError extends Error {
  *
  * getPushEnabled() fails OPEN, so a Redis or Supabase outage can never mute the
  * product here — see the fail-open note in push-flag.service.ts.
+ *
+ * ── EVERY OUTCOME IS LOGGED (migration 060) ────────────────────────────────
+ *
+ * All four terminal outcomes write one push_log row before this function
+ * returns or throws, so the table is a complete record of what pushMessage was
+ * asked to do and what happened — including the two SILENT outcomes, which are
+ * the whole reason the table exists. A blocked push returns normally and a
+ * quota-exhausted push looks like an ordinary 429; neither left a trace before.
+ *
+ * writePushLog NEVER THROWS (see its header). That is load-bearing here rather
+ * than merely tidy: a rejection after a DELIVERED push would fail the BullMQ
+ * job, and the retry would send the message a second time. The logbook must
+ * never be able to duplicate a message.
+ *
+ * `supabase` and `context` are optional so every existing caller keeps
+ * compiling; all five real call sites pass both. An omitted client falls back
+ * to push-log.service's own lazy singleton rather than skipping the row — a
+ * silent gap is exactly what this table exists to end.
+ *
+ * @param supabase service-role client for the log write; omit to use the lazy one
+ * @param context  which push path this is, for the log's `context` column
+ * @param refId    task id where there is one — NULL for the diary sweeps/alerts
  */
-export async function pushMessage(to: string, messages: LineMessage[]): Promise<void> {
+export async function pushMessage(
+  to: string,
+  messages: LineMessage[],
+  supabase?: SupabaseClient | null,
+  context: PushContext = 'task_notify',
+  refId?: string,
+): Promise<void> {
+  const logBase = { supabase, toId: to, context, refId, messageCount: messages.length };
+
   const enabled = await getPushEnabled();
   if (!enabled) {
-    // Console only — there is no push_log table yet (TIER 3). The task worker's
-    // own logs plus admin_audit_log's setting_push_enabled row are how a
-    // "why did nothing send?" investigation lands here.
     console.warn('[push] blocked by push_enabled=false', { to });
+    await writePushLog({ ...logBase, status: 'blocked_flag' });
     return;
   }
 
@@ -163,15 +193,65 @@ export async function pushMessage(to: string, messages: LineMessage[]): Promise<
     });
   } catch (err) {
     if (isTimeoutError(err)) {
+      // Status 0 is LinePushError's timeout sentinel, and it is written to the
+      // log as NULL rather than 0: there was no HTTP response, and a 0 in an
+      // http_status column would read as one.
+      await writePushLog({
+        ...logBase,
+        status: 'failed',
+        error: `timeout after ${LINE_MESSAGING_TIMEOUT_MS}ms`,
+      });
       throw new LinePushError(0, `LINE push timed out after ${LINE_MESSAGING_TIMEOUT_MS}ms`);
     }
+    await writePushLog({
+      ...logBase,
+      status: 'failed',
+      error: err instanceof Error ? err.message : String(err),
+    });
     throw err;
   }
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
     console.error(`[LINE-PUSH] failed status=${res.status} detail=${detail.slice(0, 300)}`);
+    await writePushLog({
+      ...logBase,
+      // The allowance is spent, which is not the same event as LINE rejecting
+      // the message — see isMonthlyLimitRejection.
+      status: isMonthlyLimitRejection(res.status, detail) ? 'blocked_quota' : 'failed',
+      httpStatus: res.status,
+      error: detail,
+    });
     throw new LinePushError(res.status, `LINE push failed: ${res.status}`);
   }
+
+  await writePushLog({ ...logBase, status: 'sent', httpStatus: res.status });
+}
+
+/**
+ * Did LINE reject this push because the MONTHLY PUSH ALLOWANCE is spent, rather
+ * than because anything is wrong with it?
+ *
+ * LINE answers both with 429 — the rate limit and the exhausted allowance share
+ * a status code — and only the response body distinguishes them ("You have
+ * reached your monthly limit."). The distinction matters enough to parse for:
+ * a rate limit is transient and clears by itself, while an exhausted allowance
+ * will reject every push for the rest of the billing month. Folding the second
+ * into `failed` would make the admin page's delivery rate collapse and read as
+ * an outage when the honest answer is "we ran out of budget on the 22nd".
+ *
+ * The match is deliberately loose (substring, case-insensitive) because the
+ * exact wording is LINE's to change. A miss costs one row the wrong label; it
+ * cannot affect delivery, since the thrown LinePushError is identical either
+ * way and the retry decision belongs to the caller's isPermanentPushError.
+ *
+ * NOTE: this covers LINE's allowance only. The product's OWN per-user §4a
+ * notification quota is consumed in taskReminderWorker BEFORE pushMessage is
+ * called, so a user blocked by that never reaches this function — that path is
+ * already visible in /admin/notifications' allowance burndown, and stamps
+ * cancelled_at on the reminder row.
+ */
+function isMonthlyLimitRejection(status: number, detail: string): boolean {
+  return status === 429 && /monthly limit/i.test(detail);
 }
 
 export async function getProfile(lineUserId: string): Promise<{

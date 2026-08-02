@@ -15,11 +15,11 @@
 import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import {
-  DIARY_ADDON_ENABLED,
   DIARY_ADDON_PRICE,
   DIARY_ADDON_DISPLAY_NAME,
   DIARY_ADDON_GIFT_BOX_QUOTA,
 } from '../config/plans';
+import { getFlag } from '../services/feature-flags.service';
 import {
   InvalidNotifyTimeError,
   cancelSubscription,
@@ -73,7 +73,10 @@ const diaryAddonRoutes: FastifyPluginAsync = async (app) => {
     );
     return {
       name: DIARY_ADDON_DISPLAY_NAME,
-      enabled: DIARY_ADDON_ENABLED,
+      // `diary_addon_enabled` (059 + 061) rather than the old env constant, so
+      // this reports what the sweep will actually do rather than what this
+      // service was deployed believing. Cached 60 s, fails open to true.
+      enabled: await getFlag('diary_addon_enabled', true),
       pricing: DIARY_ADDON_PRICE,
       currency: 'THB',
       // The perk the add-on bundles, so the plans page renders the number the

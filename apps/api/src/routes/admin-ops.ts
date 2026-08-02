@@ -20,6 +20,18 @@ import {
   readPushEnabledUncached,
   setPushEnabled,
 } from '../services/push-flag.service';
+import {
+  FEATURE_FLAG_FALLBACKS,
+  FEATURE_FLAG_KEYS,
+  invalidateFlagCache,
+  isFeatureFlagKey,
+  readFlagUncached,
+  setFlag,
+  type FeatureFlagKey,
+} from '../services/feature-flags.service';
+import { toggleDiaryReminderSchedule } from '../jobs/membership.queue';
+import { getLineQuotaSummary, type LineQuotaSummary } from '../services/line-quota.service';
+import { R2_RECONCILE_JOB_ID, type FileJob } from '@nookeb/shared';
 
 /**
  * /admin/system — the OPERATIONS half of the admin surface.
@@ -910,6 +922,306 @@ const adminOpsRoutes: FastifyPluginAsync = async (app) => {
   });
 
   // ==========================================================================
+  // TIER 3 READS — same fail-soft contract as everything above.
+  // ==========================================================================
+
+  // --------------------------------------------------------------------------
+  // GET /admin/line-quota — the LINE push allowance.
+  //
+  // The one number in this whole page that is NOT ours. Every other quota
+  // surface (user_quotas, the allowance burndown above) is the product's own
+  // accounting; this is what LINE thinks, and it is the figure that decides
+  // whether messaging silently stops on the 22nd. LINE's allowance fails
+  // SILENTLY when spent — a 429 whose body is the only thing distinguishing it
+  // from an ordinary rate limit — so nothing else in the product can see it.
+  //
+  // getLineQuotaSummary never throws and caches 300 s; `soft` wraps it anyway,
+  // because "never throws" is a property of that module today and the fail-soft
+  // rule is a property of this file.
+  // --------------------------------------------------------------------------
+  app.get('/admin/line-quota', async () =>
+    soft<LineQuotaSummary>(
+      'line-quota',
+      () => getLineQuotaSummary(config.LINE_CHANNEL_ACCESS_TOKEN),
+      {
+        type: 'none',
+        limit: null,
+        consumed: 0,
+        remaining: null,
+        fetchedAt: new Date().toISOString(),
+      },
+    ),
+  );
+
+  // --------------------------------------------------------------------------
+  // GET /admin/flags — every runtime switch and its current value.
+  //
+  // Reads UNCACHED, per key, for the same reason GET /admin/settings does: the
+  // 60 s cache exists to keep the hot paths cheap, and showing an admin a value
+  // that may be a minute stale — on the page whose job is to say what the
+  // setting IS — makes a flip look like it did not take.
+  //
+  // A key that cannot be read degrades to its documented FALLBACK rather than
+  // failing the whole payload, so one missing row cannot blank the panel. That
+  // is a real difference from GET /admin/settings, which 500s: that endpoint
+  // renders ONE switch and a lie about it is the whole error, whereas here a
+  // single unreadable key among six should not hide the other five. `stale`
+  // marks any key whose value is the fallback rather than a real read.
+  // --------------------------------------------------------------------------
+  app.get('/admin/flags', async () => {
+    const entries = await Promise.all(
+      FEATURE_FLAG_KEYS.map(async (key) => {
+        const value = await soft<boolean | null>(
+          `flags:${key}`,
+          async () =>
+            key === 'push_enabled'
+              ? await readPushEnabledUncached(app.supabase)
+              : await readFlagUncached(app.supabase, key),
+          null,
+        );
+        return [key, value] as const;
+      }),
+    );
+
+    const flags: Record<string, boolean> = {};
+    const stale: string[] = [];
+    for (const [key, value] of entries) {
+      if (value === null) stale.push(key);
+      flags[key] = value ?? FEATURE_FLAG_FALLBACKS[key];
+    }
+    return { flags, stale, fallbacks: FEATURE_FLAG_FALLBACKS };
+  });
+
+  // --------------------------------------------------------------------------
+  // GET /admin/system/job-throughput?days=7&queue=all — how much work settled.
+  //
+  // Reads job_log (migration 060), the append-only record the queues' own
+  // counters cannot be: every queue here evicts settled jobs, so
+  // getJobCounts().completed measures the eviction policy, not the work.
+  //
+  // Aggregated IN PROCESS, not in SQL, and deliberately: there is no RPC for
+  // this shape (058 defines three, none of them job-shaped) and PostgREST
+  // cannot GROUP BY. So rows are pulled in bounded pages and folded here — the
+  // same pattern GET /admin/quotas already uses for the same reason, with the
+  // same honest `truncated` flag when the cap is hit.
+  //
+  // A 7-day window on a busy day is thousands of rows, so the cap is generous
+  // (5 pages of 1000) and `truncated` tells the page when the numbers are a
+  // floor rather than a total. It never silently undercounts.
+  // --------------------------------------------------------------------------
+  const JOB_LOG_PAGE = 1000;
+  const JOB_LOG_MAX_PAGES = 5;
+
+  interface JobLogRow {
+    queue: string;
+    job_name: string;
+    status: 'completed' | 'failed';
+    duration_ms: number | null;
+  }
+
+  app.get<{ Querystring: { days?: string; queue?: string } }>(
+    '/admin/system/job-throughput',
+    async (request) => {
+      const days = Math.min(Math.max(Number(request.query.days) || 7, 1), 90);
+      const requestedQueue = request.query.queue ?? 'all';
+      const queueFilter = (QUEUE_KEYS as readonly string[]).includes(requestedQueue)
+        ? requestedQueue
+        : 'all';
+      const since = new Date(Date.now() - days * 86_400_000).toISOString();
+
+      const all = await soft<JobLogRow[]>(
+        'job-throughput',
+        async () => {
+          const collected: JobLogRow[] = [];
+          for (let page = 0; page < JOB_LOG_MAX_PAGES; page += 1) {
+            const batch = await rows<JobLogRow>((db) => {
+              const q = db
+                .from('job_log')
+                .select('queue, job_name, status, duration_ms')
+                .gte('created_at', since)
+                .order('created_at', { ascending: false })
+                .range(page * JOB_LOG_PAGE, page * JOB_LOG_PAGE + JOB_LOG_PAGE - 1);
+              return queueFilter === 'all' ? q : q.eq('queue', queueFilter);
+            });
+            collected.push(...batch);
+            if (batch.length < JOB_LOG_PAGE) break;
+          }
+          return collected;
+        },
+        [],
+      );
+
+      const truncated = all.length >= JOB_LOG_PAGE * JOB_LOG_MAX_PAGES;
+
+      // One bucket per (queue, job_name, status) — the GROUP BY the SQL cannot
+      // express. The average is over rows that HAVE a duration: a job logged
+      // without one was never measured, and folding it in as 0 would drag the
+      // average toward a value nothing took (the same rule the Sheets
+      // performance layer's blank cells follow).
+      const buckets = new Map<
+        string,
+        {
+          queue: string;
+          jobName: string;
+          status: 'completed' | 'failed';
+          count: number;
+          durationSum: number;
+          durationCount: number;
+        }
+      >();
+
+      for (const r of all) {
+        const id = `${r.queue} ${r.job_name} ${r.status}`;
+        const b =
+          buckets.get(id) ??
+          {
+            queue: r.queue,
+            jobName: r.job_name,
+            status: r.status,
+            count: 0,
+            durationSum: 0,
+            durationCount: 0,
+          };
+        b.count += 1;
+        const d = r.duration_ms;
+        if (typeof d === 'number' && Number.isFinite(d)) {
+          b.durationSum += d;
+          b.durationCount += 1;
+        }
+        buckets.set(id, b);
+      }
+
+      const groups = [...buckets.values()]
+        .map((b) => ({
+          queue: b.queue,
+          jobName: b.jobName,
+          status: b.status,
+          count: b.count,
+          // null, not 0, when nothing was measured — "no evidence" must never
+          // render as "instantaneous".
+          avgDurationMs: b.durationCount > 0 ? Math.round(b.durationSum / b.durationCount) : null,
+        }))
+        .sort((a, b) => a.queue.localeCompare(b.queue) || a.jobName.localeCompare(b.jobName));
+
+      const completed = groups.reduce((n, g) => (g.status === 'completed' ? n + g.count : n), 0);
+      const failed = groups.reduce((n, g) => (g.status === 'failed' ? n + g.count : n), 0);
+
+      return {
+        days,
+        queue: queueFilter,
+        truncated,
+        totals: {
+          completed,
+          failed,
+          // Over SETTLED jobs only, which is everything this table holds.
+          successRate:
+            completed + failed > 0 ? Math.round((completed / (completed + failed)) * 100) : null,
+        },
+        groups,
+      };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // GET /admin/push-log?days=7&context=&status= — what actually got sent.
+  //
+  // The read side of migration 060's push_log. It answers the three questions
+  // nothing else could: what the metered LINE allowance was spent on, what the
+  // push_enabled kill switch silently suppressed (blocked_flag — a blocked push
+  // returns normally BY DESIGN, so it left no trace before), and whether the
+  // announcements / cancel notices / review-loop notices went out at all, none
+  // of which have a task_reminders row.
+  //
+  // Totals are computed from the same bounded page as the rows, so `truncated`
+  // is the honest caveat rather than a silent undercount.
+  // --------------------------------------------------------------------------
+  const PUSH_LOG_LIMIT = 200;
+
+  interface PushLogRow {
+    id: number;
+    to_id: string;
+    to_kind: string;
+    context: string;
+    ref_id: string | null;
+    message_count: number;
+    status: string;
+    http_status: number | null;
+    error: string | null;
+    created_at: string;
+  }
+
+  app.get<{ Querystring: { days?: string; context?: string; status?: string } }>(
+    '/admin/push-log',
+    async (request) => {
+      const days = clampDays(request.query.days);
+      const since = new Date(Date.now() - days * 86_400_000).toISOString();
+      const contextFilter = request.query.context?.trim() || null;
+      const statusFilter = ['sent', 'failed', 'blocked_quota', 'blocked_flag'].includes(
+        request.query.status ?? '',
+      )
+        ? request.query.status!
+        : null;
+
+      const entries = await soft<PushLogRow[]>(
+        'push-log',
+        () =>
+          rows<PushLogRow>((db) => {
+            let q = db
+              .from('push_log')
+              .select(
+                'id, to_id, to_kind, context, ref_id, message_count, status, http_status, error, created_at',
+              )
+              .gte('created_at', since)
+              .order('created_at', { ascending: false })
+              .limit(PUSH_LOG_LIMIT);
+            if (contextFilter) q = q.eq('context', contextFilter);
+            if (statusFilter) q = q.eq('status', statusFilter);
+            return q;
+          }),
+        [],
+      );
+
+      const totals = { sent: 0, failed: 0, blocked_quota: 0, blocked_flag: 0, messages: 0 };
+      for (const e of entries) {
+        if (e.status in totals) totals[e.status as keyof typeof totals] += 1;
+        totals.messages += Number(e.message_count ?? 0);
+      }
+
+      return {
+        days,
+        context: contextFilter,
+        status: statusFilter,
+        truncated: entries.length >= PUSH_LOG_LIMIT,
+        totals,
+        // Delivery rate over ATTEMPTED pushes only. blocked_flag is excluded
+        // because a deliberate silence is not a delivery failure — counting it
+        // would make an admin's own kill switch read as an outage, the same
+        // mistake /admin/notifications avoids by excluding cancelled shots.
+        // blocked_quota IS counted as a miss: the message was meant to go and
+        // did not.
+        deliveryRate:
+          totals.sent + totals.failed + totals.blocked_quota > 0
+            ? Math.round(
+                (totals.sent / (totals.sent + totals.failed + totals.blocked_quota)) * 100,
+              )
+            : null,
+        entries: entries.map((e) => ({
+          id: String(e.id),
+          toId: e.to_id,
+          toKind: e.to_kind,
+          context: e.context,
+          refId: e.ref_id,
+          messageCount: Number(e.message_count ?? 0),
+          status: e.status,
+          httpStatus: e.http_status,
+          error: e.error,
+          createdAt: e.created_at,
+        })),
+      };
+    },
+  );
+
+  // ==========================================================================
   // TIER 2 — the OPS write actions. Read the fail-soft caveat in the file
   // header first: none of the four below may be wrapped in `soft()`.
   // ==========================================================================
@@ -1092,6 +1404,222 @@ const adminOpsRoutes: FastifyPluginAsync = async (app) => {
       }
       return { ok: true };
     },
+  );
+
+  // ==========================================================================
+  // TIER 3 WRITES — same INVERSE contract as TIER 2: zod-validated, audited
+  // through requireAdminAction, never wrapped in `soft()`, 4xx/5xx rather than
+  // a degraded 200.
+  // ==========================================================================
+
+  // --------------------------------------------------------------------------
+  // PUT /admin/flags/:key — flip one runtime switch.
+  //
+  // Three different behaviours behind one endpoint, because they are one
+  // CONCEPT to an admin ("turn this off") and three mechanisms underneath:
+  //
+  //   push_enabled            DELEGATES to setPushEnabled. It keeps its own
+  //                           module, cache key and compensating revert (059),
+  //                           and routing it through the generic setFlag would
+  //                           give the product's most important switch two
+  //                           writers with two cache keys — the exact drift
+  //                           that ends with a kill switch that does not kill.
+  //   diary_reminder_enabled  setFlag, THEN toggleDiaryReminderSchedule. The
+  //                           sweep runs because a repeatable exists in Redis,
+  //                           not because anything reads the row — see the long
+  //                           note on that function. Flipping the row alone
+  //                           would do nothing at all in the OFF→ON direction.
+  //   everything else         plain setFlag.
+  //
+  // An unknown key is a 400, never a new row: system_settings is a generic
+  // key/value table, and an endpoint that accepted anything would let a typo
+  // create a switch that looks real on the page and controls nothing.
+  //
+  // Idempotent, and the no-op is audited — same reasoning as the push toggle:
+  // "an admin asserted scan enhancement should be off at 02:14" is exactly what
+  // an incident timeline needs, and suppressing it would lose that.
+  // --------------------------------------------------------------------------
+  app.put<{ Params: { key: string } }>('/admin/flags/:key', async (request, reply) => {
+    const key = request.params.key;
+    if (!isFeatureFlagKey(key)) {
+      return reply.code(400).send({
+        error: 'Unknown flag',
+        code: 'UNKNOWN_FLAG',
+        key,
+        allowed: FEATURE_FLAG_KEYS,
+      });
+    }
+
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const next = parsed.data.enabled;
+    const flagKey: FeatureFlagKey = key;
+
+    if (flagKey === 'push_enabled') {
+      // Byte-for-byte the PUT /admin/settings/push_enabled path, including its
+      // revert. Not extracted into a shared helper: the two routes are one
+      // implementation today and the older path is the one 059's tests pin, so
+      // a shared helper would move the tested code out from under them for no
+      // gain. If a third caller ever appears, extract then.
+      const before = await readPushEnabledUncached(app.supabase);
+      try {
+        await setPushEnabled(next, app.supabase, actor(request));
+      } catch (err) {
+        const { error: revertErr } = await app.supabase
+          .from('system_settings')
+          .upsert(
+            { key: 'push_enabled', value: before, updated_at: new Date().toISOString() },
+            { onConflict: 'key' },
+          );
+        if (revertErr) {
+          app.log.error(
+            { err: revertErr, before, attempted: next },
+            'push_enabled revert FAILED — the switch is applied but unaudited',
+          );
+        }
+        await invalidatePushEnabledCache();
+        throw err;
+      }
+      return { key: flagKey, enabled: next };
+    }
+
+    const before = await readFlagUncached(app.supabase, flagKey);
+
+    try {
+      // Writes the row, invalidates the cache, then audits — throwing
+      // AdminAuditError when the audit insert fails.
+      await setFlag(flagKey, next, app.supabase, actor(request));
+    } catch (err) {
+      const { error: revertErr } = await app.supabase
+        .from('system_settings')
+        .upsert(
+          { key: flagKey, value: before, updated_at: new Date().toISOString() },
+          { onConflict: 'key' },
+        );
+      if (revertErr) {
+        app.log.error(
+          { err: revertErr, key: flagKey, before, attempted: next },
+          'flag revert FAILED — the switch is applied but unaudited',
+        );
+      }
+      await invalidateFlagCache(flagKey);
+      throw err;
+    }
+
+    // AFTER the audit, never before. The repeatable is the side effect of a
+    // flag that is now committed and recorded; doing it first would leave a
+    // schedule registered for a change that then failed and was reverted.
+    //
+    // Failure here does NOT fail the request, and does not revert the flag:
+    // the row is the source of truth and `scheduleMembershipJobs` re-derives
+    // the schedule from it on the next worker boot, so the worst case is a
+    // delay rather than a wrong state. Logged at error level because until that
+    // boot the switch is half-applied — the sweep would still fire and stand
+    // itself down at the `deps.enabled` guard (harmless) or would not fire at
+    // all despite the flag being on (visible, and the reason this is loud).
+    if (flagKey === 'diary_reminder_enabled') {
+      try {
+        await toggleDiaryReminderSchedule(next);
+      } catch (err) {
+        app.log.error(
+          { err, enabled: next },
+          'diary reminder flag saved but the BullMQ repeatable could not be updated — ' +
+            'it will re-derive on the next worker boot',
+        );
+        return { key: flagKey, enabled: next, scheduleUpdated: false };
+      }
+      return { key: flagKey, enabled: next, scheduleUpdated: true };
+    }
+
+    return { key: flagKey, enabled: next };
+  });
+
+  // --------------------------------------------------------------------------
+  // POST /admin/system/r2-reconcile — start the drift audit.
+  // GET  /admin/system/r2-reconcile/status — where it got to.
+  //
+  // Enqueues ONE job on the file queue under a fixed jobId, which is what makes
+  // it a singleton: BullMQ refuses a duplicate id while the job is live, so two
+  // admins pressing the button cannot start two full-bucket walks. The 409 is
+  // explicit rather than relying on that refusal, so the second admin is told
+  // why instead of watching a silent no-op.
+  //
+  // A SETTLED job keeps its id (the file queue's removeOnComplete keeps a
+  // window), so a completed run would block the next one forever — the
+  // sheets_sync lesson. Hence: a settled singleton is REMOVED before the new
+  // one is added. Only a waiting/active one 409s.
+  //
+  // Audited FIRST, then enqueued — the same inverted order the queue
+  // retry/remove endpoints use, for the same reason: this starts work that
+  // writes to the database (files.status) and cannot be recalled once picked
+  // up, so a failed audit must mean nothing happened at all. The WORKER writes
+  // a second audit row with the RESULT when it finishes.
+  // --------------------------------------------------------------------------
+  app.post('/admin/system/r2-reconcile', async (request, reply) => {
+    const existing = await app.fileQueue.getJob(R2_RECONCILE_JOB_ID);
+    if (existing) {
+      const state = await existing.getState();
+      if (state === 'waiting' || state === 'active' || state === 'delayed') {
+        return reply.code(409).send({
+          error: 'reconciliation already running',
+          code: 'RECONCILE_IN_PROGRESS',
+          state,
+        });
+      }
+      // Settled (completed/failed) — clear the id so it can be re-queued.
+      await existing.remove();
+    }
+
+    await requireAdminAction({
+      supabase: app.supabase,
+      adminLineId: actor(request),
+      action: 'r2_reconcile_requested',
+      targetType: 'system',
+      targetId: 'r2',
+      before: null,
+      after: { queued: true },
+    });
+
+    const job: FileJob = { type: 'r2_reconcile', requestedByLineId: actor(request) };
+    await app.fileQueue.add('r2_reconcile', job, {
+      jobId: R2_RECONCILE_JOB_ID,
+      // ONE attempt. A full-bucket walk that failed halfway should be looked at
+      // and re-triggered by a human, not retried automatically three times —
+      // each retry is another O(objects) listing, and the failure is almost
+      // certainly the same on the second pass.
+      attempts: 1,
+      // Kept on settle so the status endpoint below has something to report.
+      // The next POST removes it explicitly.
+      removeOnComplete: false,
+      removeOnFail: false,
+    });
+
+    return { jobId: R2_RECONCILE_JOB_ID, queued: true };
+  });
+
+  app.get('/admin/system/r2-reconcile/status', async () =>
+    soft<Record<string, unknown>>(
+      'r2-reconcile:status',
+      async () => {
+        const job = await app.fileQueue.getJob(R2_RECONCILE_JOB_ID);
+        // No job is not an error — it is the resting state, and it is also what
+        // an admin sees before ever pressing the button.
+        if (!job) return { status: 'idle' };
+        const state = await job.getState();
+        return {
+          status: state,
+          progress: typeof job.progress === 'number' ? job.progress : 0,
+          // Present only on a completed run. `returnvalue` is BullMQ's spelling.
+          result: (job.returnvalue as unknown) ?? null,
+          failedReason: job.failedReason ? job.failedReason.split('\n')[0]?.slice(0, 300) : null,
+          startedAt: job.processedOn ? new Date(job.processedOn).toISOString() : null,
+          finishedAt: job.finishedOn ? new Date(job.finishedOn).toISOString() : null,
+        };
+      },
+      { status: 'idle' },
+    ),
   );
 
   // --------------------------------------------------------------------------

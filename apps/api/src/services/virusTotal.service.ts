@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { config } from '../config';
+import { getFlag } from './feature-flags.service';
 
 /**
  * VirusTotal Public API v3 client. All calls in the codebase go through here —
@@ -53,11 +54,26 @@ export type ScanVerdict =
   | { outcome: 'scan_failed'; reason: string };
 
 /**
- * Scanning is opt-in and requires BOTH switches: the `ENABLE_VIRUS_SCAN=true`
- * flag AND a configured API key. Either one missing skips scanning entirely.
+ * Scanning is opt-in and requires THREE things now: the runtime flag
+ * `system_settings.virus_scan_enabled` (migrations 059 + 061), the
+ * `ENABLE_VIRUS_SCAN=true` env var, AND a configured API key. Any one missing
+ * skips scanning entirely.
+ *
+ * THE FLAG MAY ONLY TURN THIS OFF, NEVER ON. It is ANDed with the two existing
+ * conditions rather than replacing them, because a key is not something a flag
+ * can conjure: a `true` row on a deployment with no VIRUSTOTAL_API_KEY would
+ * otherwise render as "scanning is on" on the admin page while nothing scanned.
+ * The env var stays as `getFlag`'s fallback, so a total DB/Redis outage puts
+ * this back exactly where it was rather than somewhere new.
+ *
+ * Async because the flag is a 60 s-cached Redis read. Its one caller
+ * (upload.worker's per-file scan gate) already awaits everything around it, and
+ * reading per file rather than per boot is the point — this is a switch someone
+ * flips while a scan backlog is actively costing money.
  */
-export function isVirusScanEnabled(): boolean {
-  return config.ENABLE_VIRUS_SCAN && Boolean(config.VIRUSTOTAL_API_KEY);
+export async function isVirusScanEnabled(): Promise<boolean> {
+  if (!config.VIRUSTOTAL_API_KEY) return false;
+  return (await getFlag('virus_scan_enabled', config.ENABLE_VIRUS_SCAN)) && config.ENABLE_VIRUS_SCAN;
 }
 
 const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));

@@ -18,6 +18,7 @@ import {
   type OcrImageJob,
   type FileScanStatus,
   type PurgeDeletedJob,
+  type R2ReconcileJob,
   type SpaceRecord,
   type TeamRecord,
   type UploadBatchJob,
@@ -38,6 +39,9 @@ import {
 } from '../services/r2.service';
 import { getMessageContent, getProfile, replyMessage, pushMessage, type LineMessage } from '../services/line.service';
 import { addPendingNotify, closePendingNotify } from '../services/pending-notify.service';
+import { getFlag } from '../services/feature-flags.service';
+import { recordAdminAction } from '../services/admin-audit.service';
+import { runR2Reconciliation } from '../jobs/r2Reconcile.job';
 import {
   ensureUserAndSpace,
   createFileRecord,
@@ -394,7 +398,7 @@ async function storeUpload(
   const r2Key = buildFileKey(space.id, fileId, sanitizeR2Name(item.originalName));
   let record: FileRecord;
   try {
-    if (isVirusScanEnabled()) {
+    if (await isVirusScanEnabled()) {
       if (content.contentLength !== null && content.contentLength <= config.VIRUSTOTAL_MAX_SCAN_SIZE_BYTES) {
         const buffer = await readAll(content.stream);
         const verdict = await scanBuffer(buffer, item.originalName);
@@ -930,7 +934,14 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
   const mode = session.scan_mode ?? config.SCAN_DEFAULT_MODE;
   let jpeg: Buffer;
   let warnings: string[] = [];
-  if (kind === 'scan' && config.SCAN_ENHANCE_ENABLED) {
+  // `scan_enhance_enabled` (059 + 061), not config.SCAN_ENHANCE_ENABLED. The
+  // env var is now only the FALLBACK direction getFlag returns when the row and
+  // the cache are both unreachable — see feature-flags.service.ts. Read per
+  // page rather than per boot on purpose: this is the kill switch someone
+  // reaches for while bad scans are actively shipping, and a value frozen at
+  // process start would mean a redeploy. It is a 60 s-cached Redis GET.
+  const scanEnhanceEnabled = await getFlag('scan_enhance_enabled', true);
+  if (kind === 'scan' && scanEnhanceEnabled) {
     const result = await processScanPage(
       original,
       mode,
@@ -959,7 +970,7 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
     if (kind === 'scan') {
       console.warn(
         `[upload.worker] add_scan_page session=${session.id} SCAN page stored WITHOUT enhancement ` +
-          `(SCAN_ENHANCE_ENABLED=false kill switch)`,
+          `(scan_enhance_enabled=false kill switch — system_settings, flip it at /admin/system)`,
       );
     }
     jpeg = await plainNormalize(original);
@@ -1100,11 +1111,17 @@ async function processFinalizeScan(job: FinalizeScanJob, isLastAttempt: boolean)
       pdfBytes = await mergeMixedToPdf(sources);
       log('pdf-merged', `bytes=${pdfBytes.length} sources=${sources.length}`);
     } else {
+      // `scan_ocr_enabled` (059 + 061) — see the note on scan_enhance_enabled in
+      // processAddScanPage. Resolved INSIDE the try so a flag read that somehow
+      // throws lands on the same retry path as any other assembly failure
+      // rather than escaping the handler's error contract; getFlag does not
+      // throw, but the guarantee is worth not depending on from here.
+      const ocrEnabled = await getFlag('scan_ocr_enabled', true);
       pdfBytes = await buildScanPdf(sources, {
-        ocrEnabled: config.SCAN_OCR_ENABLED,
+        ocrEnabled,
         logTag: `session=${session.id}`,
       });
-      log('pdf-built', `bytes=${pdfBytes.length} ocr=${config.SCAN_OCR_ENABLED}`);
+      log('pdf-built', `bytes=${pdfBytes.length} ocr=${ocrEnabled}`);
     }
   } catch (err) {
     console.error(`[upload.worker] finalize_scan PDF assembly failed (${session.id}):`, err);
@@ -1853,6 +1870,44 @@ async function processCreateDiaryEntry(job: CreateDiaryEntryJob, isLastAttempt: 
  * purge_deleted job (repeatable, daily): remove R2 objects of files soft-deleted
  * past the retention window. DB rows are kept as tombstones.
  */
+/**
+ * R2 ↔ Postgres drift audit (migration 060). All the reasoning — including why
+ * orphans are reported and never deleted — lives in jobs/r2Reconcile.job.ts.
+ *
+ * It runs HERE, on the file queue, rather than on the membership queue where
+ * the other maintenance sweeps live, because this is the queue that owns R2:
+ * `purge_deleted` is its sibling and the two must never run concurrently
+ * against the same objects. The file worker's concurrency is 5, so they still
+ * can — but purge only ever deletes objects it found from a ROW, and this job
+ * only ever writes a status column, so the worst interleaving costs one row a
+ * spurious 'error' that the next run corrects. Sharing a queue at least keeps
+ * them behind the same failure domain and the same backpressure.
+ *
+ * The audit row is written here, in the worker, rather than at the enqueue
+ * site: the endpoint audits the REQUEST, this audits the RESULT, and the result
+ * is what an operator actually needs to see. recordAdminAction (never-throws)
+ * rather than requireAdminAction, because by this point the reconciliation has
+ * already run and already written — failing the job would re-run a full-bucket
+ * walk to fix a logging problem, and BullMQ would retry it three times.
+ */
+async function processR2Reconcile(job: R2ReconcileJob): Promise<void> {
+  const result = await runR2Reconciliation(supabase, r2);
+
+  await recordAdminAction({
+    supabase,
+    adminLineId: job.requestedByLineId,
+    action: 'r2_reconcile',
+    targetType: 'system',
+    targetId: 'r2',
+    before: null,
+    after: {
+      orphans: result.orphans.length,
+      missing: result.missing.length,
+      summary: result.summary,
+    },
+  });
+}
+
 async function processPurgeDeleted(_job: PurgeDeletedJob): Promise<void> {
   const result = await purgeDeletedFiles(supabase, r2, {
     retentionDays: config.PURGE_RETENTION_DAYS,
@@ -2120,6 +2175,9 @@ export function createUploadWorker(): Worker<FileJob> {
         case 'purge_deleted':
           await processPurgeDeleted(job.data);
           break;
+        case 'r2_reconcile':
+          await processR2Reconcile(job.data);
+          break;
         default:
           throw new Error(`Unknown job type: ${(job.data as { type: string }).type}`);
       }
@@ -2182,16 +2240,25 @@ export function createUploadWorker(): Worker<FileJob> {
     // unset; never allowed to throw into the event loop.
     const adminLineUserId = config.ADMIN_LINE_USER_ID;
     if (adminLineUserId) {
-      void pushMessage(adminLineUserId, [
-        {
-          type: 'text',
-          text:
-            `🚨 [nookeb] Job Failed Permanently\n` +
-            `Job: ${jobName}\n` +
-            `ID: ${job?.id}\n` +
-            `Error: ${err.message}`,
-        },
-      ]).catch((pushErr) => {
+      void pushMessage(
+        adminLineUserId,
+        [
+          {
+            type: 'text',
+            text:
+              `🚨 [nookeb] Job Failed Permanently\n` +
+              `Job: ${jobName}\n` +
+              `ID: ${job?.id}\n` +
+              `Error: ${err.message}`,
+          },
+        ],
+        supabase,
+        'admin_alert',
+        // No refId: push_log.ref_id is a UUID column and a BullMQ job id is not
+        // one (they are prefixed strings like `reminder-…`). The job id is in
+        // the CRITICAL log line above, which is where a permanently-failed job
+        // is investigated from anyway.
+      ).catch((pushErr) => {
         console.error('[upload.worker] failed to push admin job-failure alert', pushErr);
       });
     }

@@ -4,6 +4,8 @@ import { useEffect, useState } from 'react';
 import {
   adminResetQuota,
   adminRevokeSession,
+  adminSuspendUser,
+  adminUnsuspendUser,
   adminSetStorageOverride,
   adminSetUserPlan,
   ApiError,
@@ -501,7 +503,23 @@ function UserDetailDrawer({
               <span style={D.planBadge}>{u.normalizedPlan}</span>
               {u.plan !== u.normalizedPlan && <span style={D.rawBadge}>ค่าดิบ: {u.plan}</span>}
               {u.isAdmin && <span className="tag-chip">admin</span>}
+              {u.suspendedAt && <span style={D.suspendedBadge}>ระงับการใช้งาน</span>}
             </div>
+
+            {/* Placed FIRST among the controls, above the plan selector: when an
+                account is suspended, that is the single most important fact
+                about it, and every control below is a change to an account that
+                currently cannot be used. */}
+            <SuspensionControl
+              userId={u.id}
+              suspendedAt={u.suspendedAt ?? null}
+              suspendedReason={u.suspendedReason ?? null}
+              onChanged={(suspendedAt, suspendedReason) =>
+                setDetail((prev) =>
+                  prev ? { ...prev, user: { ...prev.user, suspendedAt, suspendedReason } } : prev,
+                )
+              }
+            />
 
             <PlanControl
               userId={u.id}
@@ -919,6 +937,186 @@ function RevokeSessionsControl({ userId }: { userId: string }) {
       {done && <span style={D.okText}>เซสชันถูกยกเลิกแล้ว</span>}
       {err && <div style={D.errorText}>{err}</div>}
       <p style={D.subtle}>โทเคนที่ออกไปแล้วทั้งหมดจะใช้ไม่ได้ทันที (แคช 60 วินาทีถูกล้างให้ด้วย)</p>
+    </div>
+  );
+}
+
+/**
+ * Feature 32 — account suspension (migration 060).
+ *
+ * The verb the drawer was missing. Quota resets, storage ceilings and session
+ * revocation all leave the account WORKING; this is the one that stops it.
+ *
+ * THE REASON IS REQUIRED, and the button stays disabled until one is typed —
+ * not merely validated server-side. A suspension with no recorded reason is one
+ * nobody can justify a week later, and the cheapest place to enforce that is
+ * before the request leaves.
+ *
+ * SUSPEND is the destructive direction and is confirmed; UNSUSPEND restores
+ * normal service and is not. Same rule as the push kill switch: asking "are you
+ * sure you want things to work?" trains people to click through the dialog that
+ * matters.
+ *
+ * The copy states the LIMIT of what this does, because an admin who believes it
+ * silences the bot will not understand why the user is still uploading files.
+ */
+function SuspensionControl({
+  userId,
+  suspendedAt,
+  suspendedReason,
+  onChanged,
+}: {
+  userId: string;
+  suspendedAt: string | null;
+  suspendedReason: string | null;
+  onChanged: (suspendedAt: string | null, suspendedReason: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Reset when the drawer switches user — a half-typed reason must never carry
+  // over to a different account.
+  useEffect(() => {
+    setOpen(false);
+    setReason('');
+    setErr(null);
+  }, [userId]);
+
+  const suspended = suspendedAt !== null;
+
+  async function suspend(): Promise<void> {
+    const trimmed = reason.trim();
+    if (saving || trimmed.length === 0) return;
+    if (
+      !window.confirm(
+        'ระงับการใช้งานบัญชีนี้?\n\n' +
+          'ผู้ใช้จะถูกดีดออกจากทุกเซสชันทันที และเข้าเว็บ/LIFF ไม่ได้อีก\n' +
+          'แต่ยังทักแชท LINE และส่งไฟล์เข้ามาได้อยู่ (คนละทางเข้า)',
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await adminSuspendUser(userId, trimmed);
+      onChanged(res.suspendedAt, res.suspendedReason);
+      setOpen(false);
+      setReason('');
+    } catch (e) {
+      setErr(
+        e instanceof ApiError && e.status === 409
+          ? 'บัญชีนี้ถูกระงับอยู่แล้ว หรือมีผู้ดูแลคนอื่นทำรายการพร้อมกัน'
+          : e instanceof ApiError && e.status === 404
+            ? 'ไม่พบผู้ใช้นี้'
+            : 'ระงับการใช้งานไม่สำเร็จ',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function unsuspend(): Promise<void> {
+    if (saving) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await adminUnsuspendUser(userId);
+      onChanged(res.suspendedAt, res.suspendedReason);
+    } catch (e) {
+      setErr(
+        e instanceof ApiError && e.status === 409
+          ? 'บัญชีนี้ไม่ได้ถูกระงับอยู่'
+          : 'ยกเลิกการระงับไม่สำเร็จ',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={D.control}>
+      {suspended ? (
+        <>
+          <button
+            type="button"
+            className="btn secondary"
+            style={D.smallBtn}
+            disabled={saving}
+            onClick={() => void unsuspend()}
+          >
+            {saving ? 'กำลังยกเลิก…' : 'ยกเลิกการระงับ'}
+          </button>
+          <p style={{ ...D.subtle, marginTop: 6 }}>
+            ระงับเมื่อ {new Date(suspendedAt).toLocaleString('th-TH')}
+          </p>
+          {suspendedReason && <p style={D.subtle}>เหตุผล: {suspendedReason}</p>}
+          <p style={D.subtle}>
+            ยกเลิกแล้วผู้ใช้เข้าสู่ระบบใหม่ได้ทันที (เซสชันเดิมที่ถูกตัดไปแล้วไม่กลับมา)
+          </p>
+        </>
+      ) : (
+        <>
+          {!open && (
+            <button
+              type="button"
+              className="btn secondary"
+              style={{ ...D.smallBtn, ...D.dangerBtn }}
+              onClick={() => setOpen(true)}
+            >
+              ระงับการใช้งาน
+            </button>
+          )}
+
+          {open && (
+            <div style={D.stack}>
+              <label style={D.subtle} htmlFor={`suspend-reason-${userId}`}>
+                เหตุผล (บันทึกไว้ในบัญชีและใน audit log · ไม่เกิน 500 ตัวอักษร)
+              </label>
+              <textarea
+                id={`suspend-reason-${userId}`}
+                value={reason}
+                onChange={(e) => setReason(e.target.value.slice(0, 500))}
+                rows={3}
+                style={D.textarea}
+                placeholder="เช่น อัปโหลดเนื้อหาละเมิดซ้ำหลังตักเตือน"
+              />
+              <div style={D.btnRow}>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  style={{ ...D.smallBtn, ...D.dangerBtn }}
+                  disabled={saving || reason.trim().length === 0}
+                  onClick={() => void suspend()}
+                >
+                  {saving ? 'กำลังระงับ…' : 'ยืนยันระงับ'}
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  style={D.smallBtn}
+                  disabled={saving}
+                  onClick={() => {
+                    setOpen(false);
+                    setReason('');
+                    setErr(null);
+                  }}
+                >
+                  ยกเลิก
+                </button>
+              </div>
+            </div>
+          )}
+
+          <p style={D.subtle}>
+            ปิดทางเข้าเว็บและ LIFF ทั้งหมด (403) และตัดทุกเซสชันทันที ·
+            <strong> ไม่ปิดทางแชท LINE</strong> — ผู้ใช้ยังทักบอทและส่งไฟล์ได้
+          </p>
+        </>
+      )}
+      {err && <div style={D.errorText}>{err}</div>}
     </div>
   );
 }
@@ -1838,5 +2036,30 @@ const D: Record<string, React.CSSProperties> = {
     border: '1px solid var(--color-border)',
     background: 'var(--color-surface)',
     color: 'var(--color-text)',
+  },
+
+  /* ---------- TIER 3: suspension ----------
+     A solid red badge, not the muted `rawBadge` treatment: a suspended account
+     must be unmistakable at a glance in the header, above every other control. */
+  suspendedBadge: {
+    background: 'var(--color-danger, #dc2626)',
+    color: '#fff',
+    borderRadius: 'var(--radius-full)',
+    padding: '2px 12px',
+    fontSize: 'var(--font-size-xs)',
+    fontWeight: 700,
+  },
+  stack: { display: 'flex', flexDirection: 'column', gap: 6 },
+  btnRow: { display: 'flex', gap: 6, flexWrap: 'wrap' },
+  textarea: {
+    width: '100%',
+    fontFamily: 'inherit',
+    fontSize: 'var(--font-size-sm)',
+    padding: 8,
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
+    resize: 'vertical',
   },
 };

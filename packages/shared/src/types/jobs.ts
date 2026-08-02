@@ -61,6 +61,29 @@ export interface PurgeDeletedJob {
 }
 
 /**
+ * Job: walk the whole R2 bucket against every key-bearing DB column, report
+ * drift, and flip files rows whose object is gone to status='error'.
+ *
+ * ONE-OFF, NEVER REPEATABLE. An admin triggers it from
+ * POST /admin/system/r2-reconcile; there is no schedule, deliberately —
+ * listing the entire bucket is O(objects) network round trips, and a standing
+ * delayed job on the file queue also pins the idle worker's blocking poll to
+ * 10s (the reason scheduleRepeatableJobs uses a plain setInterval).
+ *
+ * De-duplicated by the fixed jobId 'r2_reconcile_singleton' so two admins
+ * pressing the button cannot start two full-bucket walks. It carries no fields:
+ * the whole bucket is the only scope it has.
+ *
+ * NEVER DELETES AN R2 OBJECT — see the header of jobs/r2Reconcile.job.ts for
+ * why the orphan direction is report-only.
+ */
+export interface R2ReconcileJob {
+  type: 'r2_reconcile';
+  /** LINE id of the admin who triggered it — recorded in admin_audit_log. */
+  requestedByLineId: string;
+}
+
+/**
  * Job: download an image/PDF from LINE CDN → OCR (Mistral, markdown out) →
  * rebuild as an editable .docx → store as a file → REPLY a result card.
  * Retried via BullMQ attempts (LINE CDN ~1h TTL); the handler dedups by a
@@ -148,5 +171,10 @@ export type FileJob =
   | AddScanPageJob
   | FinalizeScanJob
   | PurgeDeletedJob
+  | R2ReconcileJob
   | ConvertToDocxJob
   | CreateDiaryEntryJob;
+
+/** The fixed jobId that makes r2_reconcile a singleton. Shared so the enqueuer
+ *  (routes/admin-ops.ts) and the status reader cannot drift. */
+export const R2_RECONCILE_JOB_ID = 'r2_reconcile_singleton';

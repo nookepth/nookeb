@@ -22,7 +22,7 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { DIARY_ADDON_ENABLED, normalizePlan } from '../config/plans';
+import { normalizePlan } from '../config/plans';
 import { consumeQuota } from '../services/quota.service';
 import {
   alreadyWrittenToday,
@@ -36,23 +36,31 @@ import type { FlexMessage } from '../services/flex.service';
 import { listPushOptedInUserIds } from '../services/diary.service';
 
 /**
- * Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
+ * The §17 master switch NO LONGER LIVES HERE.
  *
- * Master switch for the diary nudge, mirroring TASK_NOTIFICATIONS_ENABLED in
- * packages/shared/src/task-notifications.ts. While false:
+ * It used to be `export const DIARY_REMINDER_ENABLED = false` — a hard-coded
+ * constant, changeable only by editing this file and redeploying both Railway
+ * services. TIER 3 moved it into `system_settings` as `diary_reminder_enabled`
+ * (migrations 059 + 061), so an admin can flip it from /admin/system and it
+ * takes effect in both processes within 60 s.
  *
- *   - `scheduleMembershipJobs` registers no repeatable sweep, so nothing is
- *     queued in the first place;
- *   - `runDiaryReminderSweep` returns an empty result immediately, standing
- *     down any job that was queued before the flag flipped (belt-and-braces,
- *     the same shape as `processTaskReminder`).
+ * The RESOLVED value arrives through `DiaryReminderDeps.enabled`, supplied by
+ * jobs/membership.worker.ts. It is NOT read here, for the reason stated
+ * alongside `webUrl` below and in CLAUDE.md §3.14: this module is pure and
+ * unit-tested, and importing feature-flags.service would drag `config` (and
+ * therefore a mandatory .env) plus a Redis client into a test that has neither.
  *
- * NOTHING ELSE IS TOUCHED: `diary_notification_settings` rows, the
- * `diary_reminders` quota feature and every already-consumed unit are left
- * exactly as they are. Flip this back to `true` and the sweep re-enables with
- * no other code change.
+ * The flag is honoured in two places, and both are still needed:
+ *   - `scheduleMembershipJobs` / `toggleDiaryReminderSchedule` register or
+ *     remove the repeatable, so nothing is queued while it is off;
+ *   - `runDiaryReminderSweep` stands down below, catching any job that was
+ *     already queued when the flag flipped (the same belt-and-braces shape as
+ *     `processTaskReminder`).
+ *
+ * NOTHING ELSE IS TOUCHED while it is off: `diary_notification_settings` rows,
+ * the `diary_reminders` quota feature and every already-consumed unit are left
+ * exactly as they are.
  */
-export const DIARY_REMINDER_ENABLED = false;
 
 /** Bangkok calendar date (YYYY-MM-DD) for an instant — same trick as billing-period. */
 function bangkokDate(at: Date): string {
@@ -149,6 +157,17 @@ export interface DiaryReminderDeps {
   now?: Date;
   /** Safety cap per run — a runaway sweep must not drain the push quota. */
   maxRecipients?: number;
+  /**
+   * The resolved `diary_reminder_enabled` flag (migrations 059 + 061), supplied
+   * by the worker — see the note where DIARY_REMINDER_ENABLED used to be.
+   *
+   * OMITTED MEANS OFF. That is the deliberately paranoid direction for this one
+   * flag: everything else in TIER 3 fails open, but the failure mode here is
+   * "start LINE-messaging the whole opted-in userbase because a caller forgot a
+   * field", and there is no undoing a push. A caller that means to run the
+   * sweep says so.
+   */
+  enabled?: boolean;
 }
 
 const REMINDER_TEXT =
@@ -172,7 +191,7 @@ export async function runDiaryReminderSweep(
 
   // Stand down before touching the database or consuming a single quota unit.
   // This runs even for jobs enqueued while the flag was still true.
-  if (!DIARY_REMINDER_ENABLED) {
+  if (!(deps.enabled ?? false)) {
     console.log('[membership] diary reminders are disabled — sweep stood down');
     return result;
   }
@@ -369,10 +388,15 @@ export interface DiaryAddonSweepDeps {
   /** Safety cap per run — a runaway sweep must not drain the push quota. */
   maxRecipients?: number;
   /**
-   * Master-switch override. Defaults to DIARY_ADDON_ENABLED, which is a
-   * module-level env read and therefore fixed for the lifetime of the process —
-   * this exists so the unit tests can exercise BOTH sides of the flag without
-   * re-importing the module. Production callers must never pass it.
+   * The resolved `diary_addon_enabled` flag (migrations 059 + 061), supplied by
+   * jobs/membership.worker.ts. It used to default to the module-level
+   * DIARY_ADDON_ENABLED env read; TIER 3 moved the decision into
+   * `system_settings` so it can be flipped without a redeploy, and this module
+   * stays env-free (CLAUDE.md §3.14) by taking the answer rather than reading it.
+   *
+   * OMITTED MEANS OFF, matching the §17 sweep above and for the same reason:
+   * the failure mode of a forgotten field is an unwanted push, which cannot be
+   * taken back.
    */
   enabled?: boolean;
 }
@@ -490,7 +514,7 @@ export async function runDiaryAddonSweep(
 
   // Stand down before touching the database. This runs even for jobs enqueued
   // while the flag was still true (same belt-and-braces as the §17 sweep).
-  if (!(deps.enabled ?? DIARY_ADDON_ENABLED)) {
+  if (!(deps.enabled ?? false)) {
     console.log('[diary-addon] disabled — hourly sweep stood down');
     return result;
   }

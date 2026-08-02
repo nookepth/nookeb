@@ -11,6 +11,7 @@ import { createClient } from '@supabase/supabase-js';
 import { config } from '../config';
 import { createRedis } from '../plugins/redis';
 import { pushMessage } from '../services/line.service';
+import { getFlag } from '../services/feature-flags.service';
 import { MEMBERSHIP_QUEUE, type MembershipJob } from './membership.queue';
 import { runQuotaPeriodCleanup } from './quotaReset.job';
 import { runBoostExpiry } from './boostExpiry.job';
@@ -33,8 +34,13 @@ export function createMembershipWorker(): Worker<MembershipJob> {
           break;
         case 'diary_reminder_sweep':
           await runDiaryReminderSweep(supabase, {
+            // The flag is resolved HERE, not inside the job, for the same
+            // reason webUrl is (see the next case): diaryReminder.job.ts stays
+            // env-free and unit-testable, and its tests keep constructing deps
+            // without touching Redis or Supabase.
+            enabled: await getFlag('diary_reminder_enabled', false),
             push: async (to, text) => {
-              await pushMessage(to, [{ type: 'text', text }]);
+              await pushMessage(to, [{ type: 'text', text }], supabase, 'diary_sweep');
             },
           });
           break;
@@ -43,8 +49,9 @@ export function createMembershipWorker(): Worker<MembershipJob> {
           // than read inside the job so the job module stays env-free and
           // unit-testable.
           await runDiaryAddonSweep(supabase, {
+            enabled: await getFlag('diary_addon_enabled', true),
             push: async (to, messages) => {
-              await pushMessage(to, messages);
+              await pushMessage(to, messages, supabase, 'diary_addon');
             },
             webUrl: config.WEB_URL,
           });

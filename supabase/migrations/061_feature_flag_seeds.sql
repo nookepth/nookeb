@@ -1,0 +1,90 @@
+-- 061_feature_flag_seeds.sql
+-- TIER 3 — move five deploy-time env flags into system_settings so they become
+-- INCIDENT-time switches.
+--
+-- SEPARATE FROM 060 ON PURPOSE. 060 is DDL that must land before the deploy;
+-- this file is pure seed data with no schema change at all, so it is
+-- ORDER-INDEPENDENT vs the deploy and safe to re-run. Keeping the two apart
+-- means a failed seed cannot block the tables the code hard-depends on, and an
+-- operator can re-run this one freely.
+--
+-- ── Why these five, and why a row rather than an env var ────────────────────
+--
+-- 059 already made this argument for push_enabled: an env var is per-Railway-
+-- service (CLAUDE.md §13), has to be set twice, and only takes effect on
+-- restart. Every flag below has the same shape — something an admin needs to
+-- turn off in the middle of an incident, in both processes, without a
+-- redeploy:
+--
+--   diary_reminder_enabled  the §17 plan-based diary nudge. Seeded FALSE, which
+--                           is exactly where the hard-coded constant in
+--                           jobs/diaryReminder.job.ts stood — this migration
+--                           changes nothing about the product's behaviour, it
+--                           only moves the decision somewhere a human can reach.
+--                           Flipping it also re-registers the BullMQ repeatable
+--                           (toggleDiaryReminderSchedule in membership.queue.ts),
+--                           because a schedule that lives in Redis does not
+--                           notice a row changing.
+--   diary_addon_enabled     หนูเก็บความทรงจำ, the paid add-on sweep.
+--   scan_enhance_enabled    the สแกน pipeline's emergency kill switch. This is
+--                           the one with a real incident history: a flipped
+--                           SCAN_ENHANCE_ENABLED on the worker service silently
+--                           shipped unprocessed scans, and finding out took a
+--                           forensic look at JPEG encoding. A DB row is
+--                           readable from the admin page.
+--   scan_ocr_enabled        the searchable-text layer in the merged PDF.
+--   virus_scan_enabled      optional VirusTotal upload scanning. Seeded TRUE
+--                           here as the spec asks; note that the FEATURE still
+--                           needs VIRUSTOTAL_API_KEY, and a key is not something
+--                           a flag can conjure — isVirusScanEnabled() ANDs the
+--                           two, so a true row with no key is still off. That is
+--                           the correct shape: a flag may only ever turn a
+--                           configured feature OFF, never turn an unconfigured
+--                           one on.
+--
+-- ── ⚠ TWO OF THESE SEEDS CHANGE BEHAVIOUR — read before applying ───────────
+--
+-- Once a row exists it WINS over the env var; the env value survives only as
+-- the fallback getFlag() returns when the row and the Redis cache are both
+-- unreachable. Three of the five seeds match what the env var resolves to when
+-- unset, so they are no-ops. Two do NOT:
+--
+--   scan_ocr_enabled   → TRUE here, but SCAN_OCR_ENABLED defaults to FALSE
+--                        (`v === 'true'` in config.ts). Applying this turns the
+--                        searchable-text layer ON for every finalize_scan,
+--                        which means tesseract over every page of every merged
+--                        PDF — a real, ongoing CPU cost in a worker that
+--                        already holds three heavy runtimes. If that is not
+--                        wanted, seed 'false'::jsonb instead, or flip it from
+--                        /admin/system immediately after applying.
+--
+--   diary_addon_enabled → TRUE here, but DIARY_ADDON_ENABLED defaults to FALSE.
+--                        Applying this registers the hourly หนูเก็บความทรงจำ
+--                        sweep. In practice that is inert today — the sweep
+--                        only messages ACTIVE add-on subscribers, and
+--                        POST /diary-addon/subscribe is 503-disabled pending
+--                        billing, so the subscriber set is empty. It stops
+--                        being inert the moment billing lands.
+--
+-- The remaining three (diary_reminder_enabled FALSE, scan_enhance_enabled TRUE,
+-- virus_scan_enabled TRUE) match today's resolved values exactly.
+--
+-- Check your Railway variables before applying if you have overridden any: an
+-- env var deliberately set to a NON-default value is silently superseded here.
+--
+-- ── ON CONFLICT DO NOTHING is load-bearing ─────────────────────────────────
+--
+-- Re-running must never stomp a value an admin has since changed. It also means
+-- this file cannot be used to CHANGE a flag — that is the admin page's job, and
+-- a migration that silently reset a kill switch someone deliberately flipped
+-- would be its own incident.
+--
+-- Depends on system_settings, created and seeded with push_enabled by 059.
+
+INSERT INTO system_settings (key, value) VALUES
+  ('diary_reminder_enabled', 'false'::jsonb),
+  ('diary_addon_enabled',    'true'::jsonb),
+  ('scan_enhance_enabled',   'true'::jsonb),
+  ('scan_ocr_enabled',       'true'::jsonb),
+  ('virus_scan_enabled',     'true'::jsonb)
+ON CONFLICT (key) DO NOTHING;

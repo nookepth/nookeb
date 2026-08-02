@@ -1,4 +1,9 @@
-import { S3Client, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import {
+  S3Client,
+  GetObjectCommand,
+  DeleteObjectCommand,
+  ListObjectsV2Command,
+} from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { PassThrough, type Readable } from 'node:stream';
@@ -151,4 +156,70 @@ export async function presignedGetUrl(
 
 export async function deleteObject(r2: S3Client, key: string): Promise<void> {
   await r2.send(new DeleteObjectCommand({ Bucket: config.R2_BUCKET_NAME, Key: key }));
+}
+
+/**
+ * Hard cap on how many pages of 1000 keys one listing will walk.
+ *
+ * 1000 pages = one million objects. Not a truth the reconciliation can exceed
+ * quietly: `listR2Keys` logs when it stops early, and runR2Reconciliation
+ * refuses to report ORPHANS from a truncated listing (see its header) —
+ * an incomplete key set makes every unseen object look like a missing DB row
+ * and every unlisted prefix look like an orphan, which is the one way this
+ * feature could do damage.
+ */
+const LIST_MAX_PAGES = 1000;
+
+/**
+ * Every object key in the bucket, or under `prefix`.
+ *
+ * NEVER CALL THIS IN A REQUEST PATH. It is O(objects) network round trips —
+ * ListObjectsV2 returns at most 1000 keys per call and this walks every
+ * continuation token. Its only caller is the `r2_reconcile` BullMQ job, which
+ * an admin triggers explicitly and which runs on the worker.
+ *
+ * Takes the S3Client like every other function in this module rather than
+ * constructing its own: the worker and the API each hold exactly one client
+ * (plugins/r2.ts decorates the API's), and a function that quietly builds a
+ * second one would open a second connection pool for a job whose whole purpose
+ * is to be run rarely and deliberately.
+ *
+ * Returns keys in S3's lexicographic listing order. Callers that need
+ * membership tests should build a Set — the reconciliation does.
+ */
+export async function listR2Keys(r2: S3Client, prefix?: string): Promise<string[]> {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+  let pages = 0;
+
+  do {
+    const res = await r2.send(
+      new ListObjectsV2Command({
+        Bucket: config.R2_BUCKET_NAME,
+        Prefix: prefix,
+        ContinuationToken: continuationToken,
+      }),
+    );
+    for (const obj of res.Contents ?? []) {
+      if (obj.Key) keys.push(obj.Key);
+    }
+    // IsTruncated is the authority on "there is more"; NextContinuationToken is
+    // absent on the last page. Reading only the token would loop forever on an
+    // implementation that returns an empty string.
+    continuationToken = res.IsTruncated ? res.NextContinuationToken : undefined;
+    pages += 1;
+    if (pages >= LIST_MAX_PAGES && continuationToken) {
+      console.warn(
+        `[r2] listR2Keys stopped at ${LIST_MAX_PAGES} pages (${keys.length} keys) — listing is INCOMPLETE`,
+      );
+      break;
+    }
+  } while (continuationToken);
+
+  return keys;
+}
+
+/** True when a listing hit the page cap, i.e. the key set is not the whole bucket. */
+export function listingWasTruncated(keyCount: number): boolean {
+  return keyCount >= LIST_MAX_PAGES * 1000;
 }

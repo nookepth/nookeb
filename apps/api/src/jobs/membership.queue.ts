@@ -13,8 +13,7 @@
 import { Queue, type ConnectionOptions } from 'bullmq';
 import { createRedis } from '../plugins/redis';
 import { BANGKOK_TZ, MONTHLY_RESET_CRON } from '../config/billing-period';
-import { DIARY_REMINDER_ENABLED } from './diaryReminder.job';
-import { DIARY_ADDON_ENABLED } from '../config/plans';
+import { getFlag } from '../services/feature-flags.service';
 
 export const MEMBERSHIP_QUEUE = 'nookeb-membership';
 
@@ -133,32 +132,17 @@ export async function scheduleMembershipJobs(): Promise<void> {
     'membership-diary-reminder',
   );
 
-  // Notifications disabled — reminder interval picker UI not shipped yet (gap #9)
-  //
-  // Skipping the `add` is NOT sufficient on a live deploy: a repeatable
-  // registered by a previous boot lives in Redis and keeps firing regardless of
-  // what this process does. So when the flag is off we actively REMOVE the
-  // schedule. `removeRepeatable` is a no-op when nothing is registered, which
-  // makes a first-ever boot with the flag off safe too.
-  if (DIARY_REMINDER_ENABLED) {
-    await q.add(
-      'diary_reminder_sweep',
-      { type: 'diary_reminder_sweep' },
-      { repeat: { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ }, jobId: 'membership-diary-reminder' },
-    );
-  } else {
-    await q.removeRepeatable(
-      'diary_reminder_sweep',
-      { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ },
-      'membership-diary-reminder',
-    );
-  }
+  // The §17 nudge, gated by the `diary_reminder_enabled` flag (059 + 061). The
+  // flag used to be a hard-coded constant read at import; it is now a DB row, so
+  // this boot-time registration is only ever the STARTING position —
+  // toggleDiaryReminderSchedule below is what keeps Redis in step afterwards.
+  await toggleDiaryReminderSchedule(await getFlag('diary_reminder_enabled', false));
 
   // Hourly — หนูเก็บความทรงจำ (the paid add-on, migration 052). Independent of
-  // DIARY_REMINDER_ENABLED above: this one ships on. Same active-removal shape,
-  // and for the same reason — a repeatable registered by an earlier boot lives
-  // in Redis and keeps firing no matter what this process decides.
-  if (DIARY_ADDON_ENABLED) {
+  // the §17 nudge above. Same active-removal shape, and for the same reason —
+  // a repeatable registered by an earlier boot lives in Redis and keeps firing
+  // no matter what this process decides.
+  if (await getFlag('diary_addon_enabled', true)) {
     await q.add(
       'diary_addon_sweep',
       { type: 'diary_addon_sweep' },
@@ -169,6 +153,66 @@ export async function scheduleMembershipJobs(): Promise<void> {
       'diary_addon_sweep',
       { pattern: DIARY_ADDON_CRON, tz: BANGKOK_TZ },
       'membership-diary-addon',
+    );
+  }
+}
+
+/**
+ * Register or remove the §17 diary-reminder repeatable to match the flag.
+ *
+ * ── Why a DB flag alone is NOT enough ──────────────────────────────────────
+ *
+ * Every other TIER 3 flag is read at the moment it matters, so flipping the row
+ * is the whole change. This one is different: the sweep does not run because
+ * something checks a flag, it runs because a REPEATABLE JOB EXISTS IN REDIS.
+ * That job was registered at worker boot and it keeps firing on its cron
+ * forever, entirely indifferent to what `system_settings` now says. Flipping the
+ * row alone would therefore:
+ *
+ *   OFF → ON   change nothing at all. No schedule exists, so nothing fires, and
+ *              the admin's switch appears simply not to work — until the next
+ *              worker restart, hours or days later, silently turns it on.
+ *   ON → OFF   half-work. The sweep would still fire hourly and would still hit
+ *              the database on every run; it would only stand down at the
+ *              `deps.enabled` guard inside runDiaryReminderSweep. Correct
+ *              behaviour, wasted work, and a queue depth that lies.
+ *
+ * So setFlag('diary_reminder_enabled') calls this, and Redis is brought into
+ * agreement with the row in the same request.
+ *
+ * ── This runs in the API process, and that is fine ────────────────────────
+ *
+ * The admin endpoint lives in the API; the sweep runs in the worker. A
+ * repeatable is not worker state — it is a sorted-set entry in Redis, which
+ * both processes reach through the same queue handle. The API already holds one
+ * (queue-stats.service constructs it for /admin/system/queues). The worker
+ * notices on its next poll; nothing needs restarting.
+ *
+ * ── Remove-then-add, unconditionally ──────────────────────────────────────
+ *
+ * The remove runs on BOTH paths rather than only the disable path, so this is
+ * idempotent in both directions and self-healing: calling it with `true` when a
+ * schedule already exists re-registers the identical repeat key, and BullMQ
+ * de-duplicates. `removeRepeatable` is a no-op when nothing is registered.
+ *
+ * It matches on pattern + timezone + jobId together, which is exactly why
+ * DIARY_REMINDER_CRON is a single declared constant — an add and a remove that
+ * disagreed by one character would leave an orphan schedule firing forever.
+ */
+export async function toggleDiaryReminderSchedule(enabled: boolean): Promise<void> {
+  const q = getMembershipQueue();
+
+  await q.removeRepeatable(
+    'diary_reminder_sweep',
+    { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ },
+    'membership-diary-reminder',
+  );
+
+  if (enabled) {
+    await q.add(
+      'diary_reminder_sweep',
+      { type: 'diary_reminder_sweep' },
+      { repeat: { pattern: DIARY_REMINDER_CRON, tz: BANGKOK_TZ }, jobId: 'membership-diary-reminder' },
     );
   }
 }
