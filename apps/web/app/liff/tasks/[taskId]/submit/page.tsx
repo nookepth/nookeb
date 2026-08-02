@@ -143,6 +143,12 @@ export default function SubmitTaskPage({ params }: { params: { taskId: string } 
       }
 
       // 2) optional reference link (reuses the task-level links endpoint).
+      //
+      // The fold-into-note fallback below MUST work on a local variable: a
+      // setNote() here would not be visible to the submit call on the next line
+      // (the closure still holds the pre-render value), so the link silently
+      // never reached the server.
+      let finalNote = note;
       const url = linkUrl.trim();
       if (url) {
         const linkRes = await apiFetch(api('/links'), {
@@ -153,7 +159,10 @@ export default function SubmitTaskPage({ params }: { params: { taskId: string } 
         if (!linkRes.ok) {
           // Only the creator may attach task-level links, so an assignee's link
           // is best-effort: fold it into the note rather than blocking the submit.
-          setNote((n) => (n.includes(url) ? n : `${n ? `${n}\n` : ''}ลิงก์งาน: ${url}`));
+          const separator = finalNote ? '\n' : '';
+          finalNote = finalNote.includes(url)
+            ? finalNote
+            : `${finalNote}${separator}ลิงก์งาน: ${url}`;
         }
         setLinkUrl('');
       }
@@ -162,7 +171,7 @@ export default function SubmitTaskPage({ params }: { params: { taskId: string } 
       const res = await apiFetch(api(`/items/${itemId}/submit`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(note.trim() ? { note: note.trim() } : {}),
+        body: JSON.stringify(finalNote.trim() ? { note: finalNote.trim() } : {}),
       });
       if (res.status === 401) return setState('unauth');
       if (!res.ok) {
