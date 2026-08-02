@@ -9,6 +9,7 @@
 import { Worker, type ConnectionOptions, type Job } from 'bullmq';
 import { createClient } from '@supabase/supabase-js';
 import { config } from '../config';
+import type { Redis } from 'ioredis';
 import { createRedis } from '../plugins/redis';
 import { pushMessage } from '../services/line.service';
 import { getFlag } from '../services/feature-flags.service';
@@ -24,6 +25,21 @@ const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_
   auth: { persistSession: false },
 });
 
+/**
+ * A command client for the ONE cache this worker invalidates: the vault premium
+ * gate's `vault_plan:{userId}` key, dropped when a lapsed subscription
+ * downgrades a user (see boostExpiry.job.ts).
+ *
+ * Deliberately NOT the client handed to BullMQ below: a Worker holds its
+ * connection on blocking reads, so issuing ordinary commands on it is unsafe.
+ * Lazy, so a process that never expires a subscription never opens it.
+ */
+let vaultPlanRedis: Redis | null = null;
+function vaultPlanCache(): Redis {
+  if (!vaultPlanRedis) vaultPlanRedis = createRedis();
+  return vaultPlanRedis;
+}
+
 export function createMembershipWorker(): Worker<MembershipJob> {
   const worker = new Worker<MembershipJob>(
     MEMBERSHIP_QUEUE,
@@ -33,7 +49,7 @@ export function createMembershipWorker(): Worker<MembershipJob> {
           await runQuotaPeriodCleanup(supabase);
           break;
         case 'boost_expiry':
-          await runBoostExpiry(supabase);
+          await runBoostExpiry(supabase, new Date(), { redis: vaultPlanCache() });
           break;
         case 'diary_reminder_sweep':
           await runDiaryReminderSweep(supabase, {
