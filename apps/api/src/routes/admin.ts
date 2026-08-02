@@ -6,12 +6,7 @@ import { registerAdminGuard } from '../middleware/adminGuard';
 import { currentPeriodStart } from '../config/billing-period';
 import { MONTHLY_FEATURES, normalizePlan, type MonthlyFeature, type Plan } from '../config/plans';
 import { listMonthlyQuotas } from '../services/quota.service';
-import {
-  reconcileBoostsForPlan,
-  syncStorageLimit,
-  syncVaultPlan,
-  vaultPlanCacheKey,
-} from '../services/membership.service';
+import { reconcileBoostsForPlan, syncStorageLimit } from '../services/membership.service';
 import { requireAdminAction } from '../services/admin-audit.service';
 
 /**
@@ -889,12 +884,6 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       referralCount,
       overrideBytes: override,
     });
-    // vault_plan is the ห้องนิรภัย gate and is derived from the plan alone. It
-    // is only ever written at PIN setup otherwise, so without this an
-    // admin-granted premium leaves the user locked out of the vault they were
-    // just given (403 VAULT_PREMIUM_REQUIRED), and an admin downgrade leaves
-    // vault access in place for good.
-    await syncVaultPlan(app.supabase, userId, nextPlan, app.redis);
     await reconcileBoostsForPlan(app.supabase, userId, nextPlan);
 
     try {
@@ -914,16 +903,9 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       await rollback('user_plan_change', () =>
         app.supabase
           .from('users')
-          .update({
-            plan: previousRaw,
-            storage_limit: previousLimit,
-            // Reverted with the plan it is derived from — leaving it on the new
-            // value would hand back vault access the reverted plan does not buy.
-            vault_plan: normalizePlan(previousRaw),
-          })
+          .update({ plan: previousRaw, storage_limit: previousLimit })
           .eq('id', userId),
       );
-      await bustVaultPlanCache(userId);
       throw err;
     }
 
@@ -1181,19 +1163,6 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
       await app.redis.del(`sv:${userId}`);
     } catch (err) {
       app.log.warn({ err, userId }, 'session_version cache bust failed (TTL will expire it)');
-    }
-  }
-
-  /**
-   * Same, for the vault premium gate's 60 s cache (routes/vault.ts). Only
-   * needed on the plan-change ROLLBACK path — the forward write goes through
-   * syncVaultPlan(), which busts it itself.
-   */
-  async function bustVaultPlanCache(userId: string): Promise<void> {
-    try {
-      await app.redis.del(vaultPlanCacheKey(userId));
-    } catch (err) {
-      app.log.warn({ err, userId }, 'vault_plan cache bust failed (TTL will expire it)');
     }
   }
 

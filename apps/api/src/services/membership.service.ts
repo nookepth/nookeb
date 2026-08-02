@@ -133,62 +133,6 @@ export async function syncStorageLimit(
 }
 
 /**
- * The minimum a cache client must do for `syncVaultPlan` to invalidate a key.
- *
- * Injected rather than imported so this module stays free of `config` and of a
- * Redis connection of its own — the same reason `runDiaryReminderSweep` takes
- * its `push` as a dep. A caller with no cache client simply omits it and pays
- * the 60 s TTL.
- */
-export interface VaultPlanCache {
-  del(key: string): Promise<unknown>;
-}
-
-/** The key routes/vault.ts caches `users.vault_plan` under. */
-export const vaultPlanCacheKey = (userId: string): string => `vault_plan:${userId}`;
-
-/**
- * Mirror the user's plan into `users.vault_plan`, the ห้องนิรภัย access gate.
- *
- * `vault_plan` used to be written in exactly ONE place — POST /vault/setup-pin,
- * at first-time activation — and never again. So a user who upgraded after
- * setting a PIN stayed locked out of a vault they now pay for (403
- * VAULT_PREMIUM_REQUIRED), and a user who downgraded kept vault access for
- * good. Same class of drift as `users.storage_limit` before syncStorageLimit():
- * a derived column with no resync path.
- *
- * It is a separate function from syncStorageLimit rather than a field folded
- * into its UPDATE because the two derive differently — the locker limit is
- * plan + referrals + admin override, the vault gate is the plan alone — and
- * only this one has a cache to bust.
- *
- * The cache DEL is best-effort and NEVER throws: the row is the source of
- * truth, the key carries a 60 s TTL, and a Redis blip must not fail a plan
- * change that has already been written.
- */
-export async function syncVaultPlan(
-  supabase: SupabaseClient,
-  userId: string,
-  plan: Plan,
-  redis?: VaultPlanCache,
-): Promise<Plan> {
-  const { error } = await supabase.from('users').update({ vault_plan: plan }).eq('id', userId);
-  if (error) throw error;
-
-  if (redis) {
-    try {
-      await redis.del(vaultPlanCacheKey(userId));
-    } catch (err) {
-      console.warn(
-        `[membership] vault_plan cache bust failed for ${userId} (TTL will expire it):`,
-        err,
-      );
-    }
-  }
-  return plan;
-}
-
-/**
  * The three columns syncStorageLimit computes from, read tolerantly.
  *
  * `storage_limit_override` only exists once migration 059 is applied. This
@@ -257,8 +201,8 @@ export interface ChangePlanResult {
  *  - DOWNGRADE: the new (lower) limit applies immediately; a user already over
  *    it is blocked from new usage but keeps their data. Same mechanism.
  *
- * So this function changes exactly four things: users.plan, the subscription
- * row, and the two derived columns storage_limit and vault_plan.
+ * So this function changes exactly three things: users.plan, the subscription
+ * row, and the derived storage_limit.
  *
  * `periodEnd` is when paid access lapses; for a free downgrade it is ignored.
  * There is NO payment capture here — see the gap report.
@@ -267,7 +211,7 @@ export async function changePlan(
   supabase: SupabaseClient,
   userId: string,
   target: Plan,
-  opts: { cycle?: BillingCycle; periodEnd?: Date; redis?: VaultPlanCache } = {},
+  opts: { cycle?: BillingCycle; periodEnd?: Date } = {},
 ): Promise<ChangePlanResult> {
   const { data: before, error: readErr } = await supabase
     .from('users')
@@ -328,7 +272,6 @@ export async function changePlan(
   if (planErr) throw planErr;
 
   const limit = await syncStorageLimit(supabase, userId, { plan: target, referralCount });
-  await syncVaultPlan(supabase, userId, target, opts.redis);
 
   // Downgrading out of boost entitlement releases the slots the user no longer
   // owns. Done here rather than in a nightly job so the change is immediate and
@@ -379,7 +322,6 @@ export async function reconcileBoostsForPlan(
 export async function expireLapsedSubscriptions(
   supabase: SupabaseClient,
   now: Date = new Date(),
-  opts: { redis?: VaultPlanCache } = {},
 ): Promise<{ expired: number; userIds: string[] }> {
   const { data, error } = await supabase
     .from('subscriptions')
@@ -406,7 +348,6 @@ export async function expireLapsedSubscriptions(
     if (planErr) throw planErr;
 
     await syncStorageLimit(supabase, row.user_id, { plan: 'free' });
-    await syncVaultPlan(supabase, row.user_id, 'free', opts.redis);
     await reconcileBoostsForPlan(supabase, row.user_id, 'free');
     userIds.push(row.user_id);
   }

@@ -17,25 +17,18 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { sweepExpiredBoosts } from '../services/boost.service';
-import { expireLapsedSubscriptions, type VaultPlanCache } from '../services/membership.service';
+import { expireLapsedSubscriptions } from '../services/membership.service';
 
 export interface BoostExpiryResult {
   subscriptionsExpired: number;
   boostsReleased: number;
 }
 
-/**
- * `redis` is injected (rather than created here) so this module stays env-free
- * and unit-testable — same shape as the diary sweeps' deps. It only busts the
- * vault premium gate's 60 s cache after a downgrade; omitting it costs at most
- * a minute of stale vault access, it does not skip the DB write.
- */
 export async function runBoostExpiry(
   supabase: SupabaseClient,
   now: Date = new Date(),
-  opts: { redis?: VaultPlanCache } = {},
 ): Promise<BoostExpiryResult> {
-  const { expired } = await expireLapsedSubscriptions(supabase, now, { redis: opts.redis });
+  const { expired } = await expireLapsedSubscriptions(supabase, now);
   const boostsReleased = await sweepExpiredBoosts(supabase, now);
 
   if (expired > 0 || boostsReleased > 0) {
