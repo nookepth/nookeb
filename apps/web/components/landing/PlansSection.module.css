@@ -1,0 +1,100 @@
+/* ============================================================
+   PlansSection — the pricing block embedded on the landing page.
+
+   The CARD design is NOT defined here. It is imported wholesale from
+   app/dashboard/plans/page.module.css so the landing and the account page
+   can never show two different pricing tables. This file only holds what is
+   specific to sitting on the landing page: centring, the toggle row, the
+   CTA under the grid and the loading skeleton.
+   ============================================================ */
+
+.toggleRow {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 28px;
+}
+
+/* The account page's grid is `auto-fit, minmax(260px, 1fr)`, which at tablet
+   width lands three tiers as 2 + 1 — an orphan card next to a gap. On a landing
+   page the tiers are being COMPARED, so they are either all side by side or all
+   stacked, never two-and-a-bit. Doubled selector so this wins over the imported
+   rule regardless of which module the bundler emits first. */
+.cards.cards {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+@media (max-width: 900px) {
+  .cards.cards {
+    grid-template-columns: minmax(0, 1fr);
+    max-width: 420px;
+    margin-inline: auto;
+  }
+}
+
+.cta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 36px;
+  text-align: center;
+}
+
+.ctaBtn {
+  composes: btnPrimary from '../../app/page.module.css';
+}
+
+.note {
+  max-width: 46em;
+  font-size: var(--font-size-sm);
+  line-height: 1.75;
+  color: var(--color-text-muted);
+}
+
+.note a {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+/* ---------- loading / failure ---------- */
+
+.skeletonGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.skeleton {
+  height: 420px;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .skeleton {
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
+}
+
+.failed {
+  text-align: center;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.8;
+}
+
+.failed a {
+  color: var(--color-primary);
+  font-weight: 600;
+}

@@ -20,7 +20,9 @@ import s from './ChatDemo.module.css';
  * - NO emoji — the landing page is emoji-free by house rule even though the
  *   in-chat bot voice allows up to two.
  * - Nothing here may claim a feature the system does not have (ตาราง 2.3):
- *   no auto reminders, no Google Sheets, no PIN reset.
+ *   no Google Sheets, no PIN reset. (Scheduled task reminders ARE real since
+ *   2026-08-01 and the page claims them once, in <TaskShowcase />; this demo
+ *   still does not, because none of its six scenes is a reminder.)
  */
 
 interface Scene {
@@ -60,7 +62,7 @@ const SCENES: [Scene, ...Scene[]] = [
       'เปิดโหมดสแกนให้แล้วน้า',
       'ส่งรูปเอกสารมาทีละหน้าได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็น PDF ไฟล์เดียวให้น้า',
     ],
-    note: 'ใช้ในแชทส่วนตัวกับหนูเก็บ · เลือกได้ทั้ง "หนูเก็บสแกนสี" และ "หนูเก็บสแกนขาวดำ"',
+    note: 'เลือกได้ทั้ง "หนูเก็บสแกนสี" และ "หนูเก็บสแกนขาวดำ"',
   },
   {
     cmd: 'หนูเก็บแปลงไฟล์',
@@ -69,7 +71,7 @@ const SCENES: [Scene, ...Scene[]] = [
       'ส่งรูปหรือไฟล์ PDF มา 1 ไฟล์ได้เลยน้า ไม่เกิน 10 MB',
       'เดี๋ยวหนูอ่านให้ แล้วทำเป็นไฟล์ Word ที่พี่เอาไปแก้ต่อได้เลยน้า',
     ],
-    note: 'ใช้ในแชทส่วนตัวกับหนูเก็บ · เอกสารตัวพิมพ์ชัด ๆ ได้ผลดีที่สุดน้า',
+    note: 'เอกสารตัวพิมพ์ชัด ๆ ได้ผลดีที่สุดน้า',
   },
   {
     cmd: 'หนูเก็บรวมไฟล์',
@@ -78,7 +80,7 @@ const SCENES: [Scene, ...Scene[]] = [
       'เปิดโหมดรวมไฟล์ให้แล้วน้า',
       'ส่งไฟล์ PDF มาทีละไฟล์ได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็นไฟล์เดียวให้น้า',
     ],
-    note: 'ใช้ในแชทส่วนตัวกับหนูเก็บ · รับเฉพาะไฟล์ .pdf ไฟล์ละไม่เกิน 20 MB สูงสุด 20 ไฟล์ เรียงตามลำดับที่ส่ง',
+    note: 'รับเฉพาะไฟล์ .pdf ไฟล์ละไม่เกิน 20 MB สูงสุด 20 ไฟล์ เรียงตามลำดับที่ส่ง',
   },
   {
     cmd: 'หนูเก็บไดอารี่',
@@ -87,7 +89,7 @@ const SCENES: [Scene, ...Scene[]] = [
       'วันนี้พี่อยากบันทึกอะไรน้า พิมพ์แคปชั่นก่อนก็ได้',
       'แล้วส่งรูปมา 1 รูป หนูจะเก็บเป็นไดอารี่ของวันนี้ให้น้า',
     ],
-    note: 'ใช้ในแชทส่วนตัวกับหนูเก็บ · วันละ 1 รูป เปิดดูตาราง 365 ช่องและ streak ได้บนเว็บ',
+    note: 'วันละ 1 รูป เปิดดูตาราง 365 ช่องและ streak ได้บนเว็บ',
   },
   {
     cmd: 'หนูเก็บเตือนงาน',

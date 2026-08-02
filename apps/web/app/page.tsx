@@ -5,7 +5,9 @@ import Link from 'next/link';
 import { Itim } from 'next/font/google';
 
 import ChatDemo from '@/components/landing/ChatDemo';
+import PlansSection from '@/components/landing/PlansSection';
 import Reveal from '@/components/landing/Reveal';
+import TaskShowcase from '@/components/landing/TaskShowcase';
 import { INSTAGRAM_URL, LINE_ADD_FRIEND_URL, LINE_ID, SITE_URL, TIKTOK_URL } from '@/lib/site';
 import styles from './page.module.css';
 
@@ -21,26 +23,28 @@ const itim = Itim({
    V2 — "ฝากไว้กับหนูเก็บ"
 
    The v1 page sold ONE feature (a file locker). Playbook v2 ส่วนที่ 1 retires
-   that position: หนูเก็บ is now "ที่ฝากของใจกลางไลน์" and the brand leads with
+   that position: หนูเก็บ is a place to LEAVE things, and the brand leads with
    the umbrella verb ฝาก, with a variant per feature family. This page is built
    around that system — the "ฝากอะไรได้บ้าง" locker wall is the spine, and every
-   other section either proves it (demo, steps) or removes a reason to leave
-   (free space, trust, FAQ).
+   other section either proves it (ตามงาน, demo, steps) or removes a reason to
+   leave (free space, trust, แพลน, FAQ).
 
    Every claim below is checked against the playbook's ตาราง 2.2 (เคลมได้) and
-   2.3 (ห้ามเคลม). The three that bite hardest, because the live v1 page broke
-   two of them:
-   - NO auto-reminder claim for ตามงาน. The reason CHANGED on 2026-08-01:
-     reminders are now live (TASK_NOTIFICATIONS_ENABLED is a default-ON kill
-     switch), so this is no longer "the code ships disabled" — it is a playbook
-     ตาราง 2.3 claim rule. Adding the claim is a marketing decision, not a code
-     one. Unrelated to the retired เตือนงานอัตโนมัติ Pro fake door (migration
-     057), which never had any scheduling behind it at all.
+   2.3 (ห้ามเคลม). The ones that bite hardest:
+   - The ตามงาน reminder claim IS now made, deliberately, as of 2026-08-02.
+     Reminders went live on 2026-08-01 (TASK_NOTIFICATIONS_ENABLED is a
+     default-ON kill switch, not a hard-coded false), so this was only ever a
+     marketing decision, and it has been taken — see <TaskShowcase />. It stays
+     the ONE forward claim on the page. Unrelated to the retired
+     เตือนงานอัตโนมัติ Pro fake door (migration 057), which never had any
+     scheduling behind it at all.
    - NO group notify toggle — "หนูเก็บปิดแจ้งเตือน" was retired; groups now
      store silently, always. (v1's FAQ still taught the dead command.)
    - NO unconditional "เก็บถาวรตลอดไป" — say "ไม่หมดอายุเหมือนไฟล์ในแชท" and
      be upfront about ถังขยะ.
-   Also absent on purpose: Google Sheets sync (Pro-locked, not on sale).
+   - The แพลน block prices what exists but sells nothing: payment is not live
+     (POST /plans/change is 503'd), so its only CTA is the free one. Every
+     number in it is read from GET /plans, never written here.
    ============================================================ */
 
 const TITLE = 'หนูเก็บ (Nookeb) — ฝากไฟล์ งาน และความทรงจำไว้ในไลน์ ฟรี 1 GB';
@@ -113,8 +117,8 @@ interface Deposit {
   kicker: string;
   title: string;
   bullets: string[];
+  /** The command to type, and nothing else — no "where it works" caveat. */
   chip: string;
-  fine?: string;
 }
 
 const DEPOSITS: Deposit[] = [
@@ -147,7 +151,6 @@ const DEPOSITS: Deposit[] = [
       'ถ่ายรูปเอกสารมา หนูแปลงเป็นไฟล์ Word ให้เอาไปแก้ต่อได้เลย',
     ],
     chip: '"หนูเก็บฟีเจอร์เอกสาร"',
-    fine: 'ใช้ในแชทส่วนตัวกับหนูเก็บ',
   },
   {
     // IMAGE: used as-is, caption rewritten to avoid notification claims
@@ -164,7 +167,6 @@ const DEPOSITS: Deposit[] = [
       'ไฟล์ที่แนบกับงานอยู่รวมกันเป็นประวัติของทีม ไม่ต้องไล่ขอไฟล์เดิมซ้ำอีก',
     ],
     chip: '"หนูเก็บเตือนงาน"',
-    fine: 'อยู่คนเดียวก็ใช้ได้ — พิมพ์ในแชทส่วนตัวจะได้งานส่วนตัวที่มีแค่พี่คนเดียว',
   },
   {
     img: {
@@ -180,7 +182,6 @@ const DEPOSITS: Deposit[] = [
       'เปิดย้อนดูได้ว่า "วันนี้เมื่อ 100 วันก่อน" พี่ทำอะไรอยู่',
     ],
     chip: '"หนูเก็บไดอารี่"',
-    fine: 'ใช้ในแชทส่วนตัวกับหนูเก็บ',
   },
   {
     img: {
@@ -262,7 +263,7 @@ const TRUST: { icon: React.ReactNode; title: string; desc: string }[] = [
 const FAQS: { q: string; a: string }[] = [
   {
     q: 'หนูเก็บฟรีจริงไหม? มีเก็บเงินทีหลังหรือเปล่า?',
-    a: 'ตอนนี้ทุกฟีเจอร์ใช้ฟรี เริ่มต้นได้ 1 GB โดยไม่ต้องผูกบัตรหรือกรอกข้อมูลจ่ายเงินใด ๆ ยังไม่มีระบบชำระเงินในหนูเก็บเลยน้า อยากได้พื้นที่เพิ่มก็ชวนเพื่อนมาใช้ด้วยกัน — ชวนครบ 5 คนได้ 4 GB ถาวร',
+    a: 'แพลนฟรีใช้ได้จริงทุกวัน เริ่มต้น 1 GB ไม่ต้องผูกบัตร ไม่ต้องกรอกข้อมูลจ่ายเงินใด ๆ · แพลนแบบเสียเงินมีไว้สำหรับคนที่ใช้หนักขึ้น (พื้นที่มากขึ้น โควต้าสูงขึ้น) และยังไม่เปิดให้ชำระเงินน้า พี่จะไม่ถูกเรียกเก็บเงินโดยไม่รู้ตัวแน่นอน · อยากได้พื้นที่เพิ่มแบบไม่เสียเงิน ชวนเพื่อนมาใช้ด้วยกัน — ชวนครบ 5 คนได้ 4 GB ถาวร',
   },
   {
     q: 'ต้องโหลดแอปเพิ่มไหม?',
@@ -286,7 +287,7 @@ const FAQS: { q: string; a: string }[] = [
   },
   {
     q: 'ใช้ในกลุ่มไลน์ได้ไหม? หนูเก็บจะกวนแชทหรือเปล่า?',
-    a: 'ใช้ได้น้า เชิญหนูเก็บเข้ากลุ่ม แล้วไฟล์ที่สมาชิกส่งหลังจากนั้นจะถูกเก็บเข้าพื้นที่กลางของกลุ่มอัตโนมัติ — และในกลุ่มหนูเก็บให้เงียบ ๆ เสมอ ไม่ตอบอะไรกลับเลย ไม่ต้องตั้งค่าอะไรทั้งนั้น ยกเว้นตอนมีคนสร้างงานในระบบตามงาน หนูถึงจะโพสต์การ์ดประกาศงานให้ทั้งกลุ่มเห็น (ส่วนสแกน รวมรูป รวมไฟล์ แปลงไฟล์ และไดอารี่ ใช้ในแชทส่วนตัวกับหนูเก็บน้า)',
+    a: 'ใช้ได้น้า เชิญหนูเก็บเข้ากลุ่ม แล้วไฟล์ที่สมาชิกส่งหลังจากนั้นจะถูกเก็บเข้าพื้นที่กลางของกลุ่มอัตโนมัติ — และในกลุ่มหนูเก็บให้เงียบ ๆ เสมอ ไม่ตอบอะไรกลับเลย ไม่ต้องตั้งค่าอะไรทั้งนั้น ยกเว้นตอนมีคนสร้างงานในระบบตามงาน หนูถึงจะโพสต์การ์ดประกาศงานและการ์ดเตือนให้ทั้งกลุ่มเห็น (ส่วนสแกน รวมไฟล์ แปลงไฟล์ และไดอารี่ ทักหนูตรง ๆ ในแชทได้เลยน้า)',
   },
   {
     q: 'ทำไมถึงชื่อ "หนูเก็บ"?',
@@ -375,13 +376,16 @@ export default function Home() {
           <Link href="/" className={styles.brand} aria-label="หนูเก็บ — หน้าแรก">
             <Image src="/logo.png" alt="" width={34} height={34} className={styles.brandLogo} priority />
             <span className={styles.brandName}>หนูเก็บ</span>
-            <span className={styles.beta}>beta</span>
           </Link>
+          {/* Five links, not seven. Two sections were added below (ตามงาน,
+              แพลน) and the nav has a fixed budget before it crowds the CTAs —
+              ลองเล่น and พื้นที่ฟรี sit between links that scroll past them
+              anyway, and both keep their entry in the footer menu. */}
           <nav className={styles.navLinks} aria-label="เมนูหลัก">
             <a href="#deposit" className={styles.navLink}>ฝากอะไรได้บ้าง</a>
-            <a href="#try" className={styles.navLink}>ลองเล่น</a>
+            <a href="#tasks" className={styles.navLink}>ตามงาน</a>
             <a href="#how" className={styles.navLink}>วิธีใช้</a>
-            <a href="#free" className={styles.navLink}>พื้นที่ฟรี</a>
+            <a href="#plans" className={styles.navLink}>แพลน</a>
             <a href="#faq" className={styles.navLink}>คำถามพบบ่อย</a>
           </nav>
           <div className={styles.navCtas}>
@@ -401,10 +405,9 @@ export default function Home() {
         <section className={styles.hero}>
           <div className={`${styles.wrap} ${styles.heroInner}`}>
             <div>
-              <p className={styles.heroBadge}>
-                <IcoStarFill size={15} />
-                ที่ฝากของใจกลางไลน์ — ฟรี ไม่ต้องโหลดแอป
-              </p>
+              {/* No eyebrow badge above the H1 on purpose. It carried the same
+                  three proofs as the chips below the CTAs, so it delayed the
+                  headline to repeat something the reader meets 200px later. */}
               <h1 className={styles.heroTitle}>
                 <span className={styles.noWrap}>ฝากไว้กับหนูเก็บ</span>
                 <span className={`${styles.heroTitleAccent} ${styles.hand}`}>
@@ -581,12 +584,25 @@ export default function Home() {
                         <IcoChat size={13} />
                         {d.chip}
                       </span>
-                      {d.fine ? <span className={styles.finePrint}>{d.fine}</span> : null}
                     </div>
                   </article>
                 </Reveal>
               ))}
             </div>
+          </div>
+        </section>
+
+        {/* ============ ตามงาน — flagship feature block ============
+            Sits directly under the locker wall because it is the one feature
+            the grid cannot sell in three bullets: the value is the LOOP (สั่ง →
+            รับทราบ → เตือน → ส่ง), and a loop has to be shown, not listed.
+            Cream band rather than .sectionAlt so it reads as a feature spread
+            between two ordinary sections. */}
+        <section id="tasks" className={`${styles.section} ${styles.sectionCream}`} aria-labelledby="tasks-title">
+          <div className={styles.wrap}>
+            <Reveal className={styles.reveal}>
+              <TaskShowcase />
+            </Reveal>
           </div>
         </section>
 
@@ -688,7 +704,7 @@ export default function Home() {
                     1 <span>GB</span>
                   </p>
                   <p className={styles.freeDesc}>
-                    ไม่ต้องผูกบัตร ไม่มีค่ารายเดือน ตอนนี้ทุกฟีเจอร์ใช้ฟรีทั้งหมด
+                    ไม่ต้องผูกบัตร ไม่มีค่ารายเดือน แพลนฟรีใช้ฟีเจอร์หลักได้ครบ
                     อยากได้พื้นที่เพิ่ม แค่ชวนเพื่อนมาใช้ด้วยกัน — ได้พื้นที่เพิ่มทั้งคู่เลยน้า
                   </p>
                   <div className={styles.ladder}>
@@ -782,6 +798,30 @@ export default function Home() {
           </div>
         </section>
 
+        {/* ============ Plans ============
+            Last section before the closing CTA: the reader has seen what the
+            product does and what it costs to keep using it, and the next thing
+            they meet is the free way in. */}
+        <section id="plans" className={`${styles.section} ${styles.sectionCream}`} aria-labelledby="plans-title">
+          <div className={styles.wrap}>
+            <Reveal className={styles.reveal}>
+              <div className={styles.sectionHead}>
+                <p className={`${styles.kicker} ${styles.hand}`}>
+                  <IcoSparkle size={18} />
+                  แพลนและราคา
+                </p>
+                <h2 id="plans-title" className={styles.sectionTitle}>เลือกแพลนที่ใช่สำหรับคุณ</h2>
+                <p className={styles.sectionSub}>
+                  เริ่มที่แพลนฟรีได้เลย ไม่ต้องผูกบัตร — โควต้ารายเดือนรีเซตใหม่ทุกวันที่ 1
+                </p>
+              </div>
+            </Reveal>
+            <Reveal className={styles.reveal} delay={100}>
+              <PlansSection />
+            </Reveal>
+          </div>
+        </section>
+
         {/* ============ Final CTA ============ */}
         <section className={styles.section} aria-labelledby="cta-title">
           <div className={styles.wrap}>
@@ -835,10 +875,9 @@ export default function Home() {
               <div className={styles.footBrandRow}>
                 <Image src="/logo.png" alt="" width={32} height={32} />
                 <span className={styles.brandName}>หนูเก็บ</span>
-                <span className={styles.beta}>beta</span>
               </div>
               <p className={styles.footTagline}>
-                ที่ฝากของของคนไทย — อยู่ในแอปที่พี่เปิดทุกวันอยู่แล้ว
+                ส่งเข้าแชท แล้วหาเจอตลอดไป
               </p>
               <p className={`${styles.footHandwrite} ${styles.hand}`}>ฝากไว้กับหนูเก็บ เดี๋ยวหนูดูแลให้เองน้า</p>
             </div>
@@ -846,9 +885,11 @@ export default function Home() {
               <h3 className={styles.footColTitle}>เมนู</h3>
               <div className={styles.footLinks}>
                 <a href="#deposit" className={styles.footLink}>ฝากอะไรได้บ้าง</a>
+                <a href="#tasks" className={styles.footLink}>ตามงาน</a>
                 <a href="#try" className={styles.footLink}>ลองเล่น</a>
                 <a href="#how" className={styles.footLink}>วิธีใช้</a>
                 <a href="#free" className={styles.footLink}>พื้นที่ฟรี</a>
+                <a href="#plans" className={styles.footLink}>แพลนและราคา</a>
                 <a href="#faq" className={styles.footLink}>คำถามพบบ่อย</a>
                 <Link href="/dashboard" className={styles.footLink}>เปิดล็อคเกอร์</Link>
               </div>
@@ -889,7 +930,7 @@ export default function Home() {
           </div>
           <div className={styles.footBase}>
             <span>© 2026 หนูเก็บ (nookeb) — สงวนลิขสิทธิ์</span>
-            <span>หนูเก็บเป็นบริการอิสระ ไม่ใช่บริการอย่างเป็นทางการของ LINE</span>
+            <span>ฟรี 1 GB · ไม่ต้องโหลดแอป · ไม่ต้องสมัครสมาชิก</span>
           </div>
         </div>
       </footer>

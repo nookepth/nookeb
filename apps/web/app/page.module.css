@@ -170,17 +170,6 @@
   color: var(--color-primary);
 }
 
-.beta {
-  font-size: 0.6875rem;
-  font-weight: 700;
-  letter-spacing: 0.4px;
-  color: var(--color-text-secondary);
-  background: var(--color-surface-3);
-  border-radius: var(--radius-full);
-  padding: 2px 8px;
-  transform: translateY(-6px);
-}
-
 .navLinks {
   display: flex;
   align-items: center;
@@ -242,25 +231,6 @@
   grid-template-columns: 1.04fr 0.96fr;
   align-items: center;
   gap: 48px;
-}
-
-.heroBadge {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 16px;
-  border-radius: var(--radius-full);
-  background: var(--color-surface);
-  border: 1.5px dashed var(--gold);
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  margin-bottom: 20px;
-}
-
-.heroBadge svg {
-  color: var(--gold);
-  flex-shrink: 0;
 }
 
 .heroTitle {
@@ -662,6 +632,20 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+/* A THIRD surface, above .sectionAlt in the rhythm. Used by exactly two
+   sections — ตามงาน and แพลน — because both are decision points rather than
+   description, and warm paper is what the brand uses to say "read this one".
+   Alternating plain/alt around them keeps the page from banding: the order is
+   plain · cream · alt · plain · alt · plain · alt · cream · plain. */
+.sectionCream {
+  background:
+    radial-gradient(620px 340px at 12% 0%, rgba(217, 165, 63, 0.1), transparent 68%),
+    radial-gradient(560px 320px at 92% 100%, rgba(181, 58, 50, 0.06), transparent 70%),
+    var(--paper);
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
 .sectionHead {
   text-align: center;
   max-width: 660px;
@@ -990,12 +974,6 @@
 .cmdChip svg {
   color: var(--color-text-muted);
   flex-shrink: 0;
-}
-
-.finePrint {
-  font-size: 0.6875rem;
-  line-height: 1.6;
-  color: var(--color-text-muted);
 }
 
 @media (max-width: 980px) {

@@ -1,0 +1,368 @@
+/* ============================================================
+   TaskShowcase — the ระบบตามงาน feature block on the landing page.
+
+   Static by design: no 'use client', no state, no timers. The chat on the
+   right is a MOCKUP of a real thread, so every string in it must stay
+   truthful to what the bot actually sends (see the component header).
+
+   Colours are read from the ancestor .landing scope, so var(--color-primary)
+   resolves to the playbook Brand Red without redeclaring it here. The three
+   hard-coded hexes are the LINE Flex card's own palette, copied from
+   apps/api/src/services/lineMessage.ts so the mockup matches the real card.
+   ============================================================ */
+
+.grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: center;
+  gap: 56px;
+}
+
+/* ---------- left: the pitch ---------- */
+
+.copy {
+  max-width: 30em;
+}
+
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-primary);
+  font-size: 1.2rem;
+  margin-bottom: 8px;
+}
+
+.kicker svg {
+  color: var(--gold, #d9a53f);
+}
+
+.title {
+  font-size: clamp(1.6rem, 3vw, 2.15rem);
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  line-height: 1.3;
+}
+
+.lead {
+  margin-top: 14px;
+  font-size: var(--font-size-lg);
+  line-height: 1.75;
+  color: var(--color-text-secondary);
+}
+
+.lead strong {
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+
+.points {
+  list-style: none;
+  margin: 24px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.points li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: var(--font-size-base);
+  line-height: 1.7;
+  color: var(--color-text-secondary);
+}
+
+.points svg {
+  flex-shrink: 0;
+  margin-top: 6px;
+  color: var(--color-primary);
+}
+
+.ctas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 28px;
+}
+
+/* The page owns the button system. `composes` pulls the real classes in rather
+   than restating them here, so a change to .btnPrimary on the landing page
+   reaches this block too — there is exactly one button definition. */
+.btnPrimary {
+  composes: btnPrimary from '../../app/page.module.css';
+}
+
+.btnSecondary {
+  composes: btnSecondary from '../../app/page.module.css';
+}
+
+/* ---------- right: the chat mockup ---------- */
+
+.stage {
+  position: relative;
+  justify-self: center;
+  width: min(400px, 100%);
+}
+
+.phone {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 22px;
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+
+.head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--color-border);
+  background: #fffdf9;
+}
+
+.avatar {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-full);
+  background: var(--color-primary-soft);
+  object-fit: contain;
+  padding: 3px;
+}
+
+.name {
+  font-weight: 700;
+  font-size: var(--font-size-sm);
+  line-height: 1.3;
+}
+
+.sub {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  background: #06c755;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 14px 20px;
+  background: var(--color-surface-2);
+}
+
+.day {
+  align-self: center;
+  padding: 3px 12px;
+  border-radius: var(--radius-full);
+  background: var(--color-surface-3);
+  font-size: 0.6875rem;
+  color: var(--color-text-muted);
+}
+
+.out {
+  align-self: flex-end;
+  max-width: 88%;
+  background: #06c755;
+  color: #ffffff;
+  border-radius: 14px 14px 4px 14px;
+  padding: 9px 14px;
+  font-size: var(--font-size-sm);
+  line-height: 1.6;
+  font-weight: 500;
+}
+
+/* ---------- the task-created Flex card ----------
+   Mirrors buildTaskCreatedFlex(): brand-red header carrying type/title/
+   deadline, white body listing assignees, footer with ดูงาน + รับทราบ. */
+
+.flex {
+  align-self: flex-start;
+  width: 100%;
+  border-radius: 14px 14px 14px 4px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.flexHead {
+  padding: 14px 16px;
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+.flexType {
+  font-size: 0.6875rem;
+  opacity: 0.92;
+}
+
+.flexTitle {
+  margin-top: 4px;
+  font-size: var(--font-size-base);
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.flexDeadline {
+  margin-top: 3px;
+  font-size: var(--font-size-xs);
+  opacity: 0.92;
+}
+
+.flexBody {
+  padding: 14px 16px;
+}
+
+.flexLabel {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.flexItem {
+  margin-top: 9px;
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.flexMeta {
+  margin-top: 2px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+.flexFoot {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.flexBtn,
+.flexBtnPrimary {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}
+
+.flexBtn {
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+}
+
+.flexBtnPrimary {
+  background: var(--color-primary);
+  color: #ffffff;
+}
+
+/* ---------- the reminder card ----------
+   Mirrors buildReminderFlex(): the header colour IS the urgency band, and
+   #FF9800 is the real '1_day' value from URGENCY_COLOR. */
+
+.remind {
+  align-self: flex-start;
+  width: 92%;
+  border-radius: 14px 14px 14px 4px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.remindHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #ff9800;
+  color: #ffffff;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+}
+
+.remindBody {
+  padding: 11px 14px 13px;
+}
+
+.remindTitle {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.remindPending {
+  margin-top: 4px;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-muted);
+}
+
+/* ---------- stickers ---------- */
+
+.badge {
+  position: absolute;
+  top: -14px;
+  right: -10px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: var(--radius-full);
+  background: #ffffff;
+  border: 1.5px dashed var(--gold, #d9a53f);
+  box-shadow: var(--shadow-sm);
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--color-text-secondary);
+  transform: rotate(3deg);
+}
+
+/* ---------- responsive ---------- */
+
+@media (max-width: 980px) {
+  .grid {
+    grid-template-columns: 1fr;
+    gap: 40px;
+  }
+
+  .copy {
+    max-width: none;
+    text-align: center;
+    margin: 0 auto;
+  }
+
+  .points {
+    max-width: 30em;
+    margin-inline: auto;
+    text-align: left;
+  }
+
+  .ctas {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 640px) {
+  .badge {
+    right: 0;
+  }
+
+  .ctas > * {
+    flex: 1 1 auto;
+  }
+}
