@@ -441,7 +441,7 @@ export function buildProgressFlexMessage(params: {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: cardHeader(theme, 'เก็บให้เรียบร้อยแล้วน้าา', `รับของจากพี่ ${who} แล้ว ${total} ชิ้น`),
+      header: cardHeader(theme, 'เก็บให้เรียบร้อย\nแล้วน้าา', `รับของจากพี่ ${who} แล้ว ${total} ชิ้น`),
       body: {
         type: 'box',
         layout: 'vertical',
@@ -454,7 +454,7 @@ export function buildProgressFlexMessage(params: {
           // before it is true — the amber dot is the only remaining signal that
           // the batch is still streaming. Green is the completed state everywhere
           // else; do not "finish the job" by turning this one green too.
-          statusBlock(WORKING_AMBER, 'อัพโหลดเข้าล็อคเกอร์แล้วน้าา'),
+          statusBlock(WORKING_AMBER, 'อัปโหลดเข้าล็อคเกอร์\nแล้วน้าา'),
         ],
       },
       footer: {
@@ -742,18 +742,27 @@ export function buildFinalizingFlexMessage(params: {
   const theme = kind === 'scan' ? THEME.scan : kind === 'pdf' ? THEME.merge : THEME.locker;
   const title =
     kind === 'scan' ? 'ระบบสแกน' : kind === 'pdf' ? 'ระบบรวมไฟล์' : 'ระบบรวมรูป';
+  // Two strings, deliberately not one. The card's status line is `md` bold in a
+  // ~20-cell column, so it carries a hard "\n" at the Thai word boundary rather
+  // than letting LINE wrap it mid-word. altText must stay a SINGLE line — it is
+  // the notification banner — so it drops the "เรียบร้อย" and the break instead
+  // of reusing the wrapped copy.
   const statusLine =
     kind === 'scan'
-      ? `สแกน ${count} หน้าเป็น PDF เรียบร้อยแล้วน้าา`
-      : `รวม ${count} ไฟล์เป็น PDF เรียบร้อยแล้วน้าา`;
+      ? `สแกน ${count} หน้าเป็น PDF\nเรียบร้อยแล้วน้าา`
+      : `รวม ${count} ไฟล์เป็น PDF\nเรียบร้อยแล้วน้าา`;
+  const altLine =
+    kind === 'scan'
+      ? `สแกน ${count} หน้าเป็น PDF แล้วน้าา`
+      : `รวม ${count} ไฟล์เป็น PDF แล้วน้าา`;
 
   return {
     type: 'flex',
-    altText: statusLine,
+    altText: altLine,
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: cardHeader(theme, title, 'สร้างไฟล์เรียบร้อยแล้วน้าา'),
+      header: cardHeader(theme, title, 'สร้างไฟล์เรียบร้อย\nแล้วน้าา'),
       body: {
         type: 'box',
         layout: 'vertical',
