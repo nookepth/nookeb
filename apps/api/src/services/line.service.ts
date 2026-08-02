@@ -96,7 +96,7 @@ export async function replyMessage(replyToken: string, messages: LineMessage[]):
     throw err;
   }
   if (!res.ok) {
-    console.error(`LINE API error: status=${res.status} call=reply`);
+    console.error('LINE API error', { status: res.status, call: 'reply', body: await res.text() });
     throw new Error(`LINE reply failed: ${res.status}`);
   }
 }

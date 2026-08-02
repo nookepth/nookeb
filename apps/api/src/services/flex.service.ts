@@ -21,14 +21,23 @@ import { documentTypeDisplayName, formatThaiBuddhistDate, type DocumentType } fr
 // there is NO CSS here. LINE renders these JSON trees natively in its own client,
 // so there is no hover/active/focus state, no `disabled` attribute, no cursor, no
 // entrance animation, no font-family (hence no monospace / tabular-nums), no
-// box-shadow, and no control over the bubble's own corner radius. Anything in a
-// design brief that needs one of those has no equivalent and must be solved a
-// different way — the notes on each helper below say which way was taken.
+// box-shadow, no letter-spacing, and no control over the bubble's own corner
+// radius. Anything in a design brief that needs one of those has no equivalent
+// and must be solved a different way — the notes on each helper below say which
+// way was taken.
+//
+// LINE VALIDATES THIS JSON STRICTLY: an unknown property is not ignored, it
+// makes the Messaging API reject the WHOLE message with a 400 and no card is
+// delivered. `letterSpacing` is the trap here — it is a CSS property, NOT a Flex
+// one, and it took out 19 of 26 cards once. Verify any new property against
+// LINE's own validator before shipping it:
+//   POST https://api.line.me/v2/bot/message/validate/reply  { messages: [msg] }
+// (validation only — no replyToken, nothing is delivered, no quota consumed.)
 //
 // What Flex DOES give us, and what the system below is built out of: per-box
 // `background` linear gradients, `backgroundColor`, `cornerRadius`, `borderWidth`
-// /`borderColor`, `paddingAll`, text `size`/`weight`/`color`/`lineSpacing`/
-// `letterSpacing`, 8-digit #RRGGBBAA colors, and boxes nested to any depth.
+// /`borderColor`, `paddingAll`, text `size`/`weight`/`color`/`lineSpacing`,
+// 8-digit #RRGGBBAA colors, and boxes nested to any depth.
 // ─────────────────────────────────────────────────────────────────────────────
 
 // ── Neutrals ────────────────────────────────────────────────────────────────
@@ -217,7 +226,7 @@ function headerGlyph(theme: CardTheme): Record<string, unknown> {
  */
 function cardHeader(theme: CardTheme, title: string, subtitle?: string): Record<string, unknown> {
   const text: Record<string, unknown>[] = [
-    { type: 'text', text: 'หนูเก็บ', size: 'xxs', color: '#FFFFFF', weight: 'bold', letterSpacing: '2px' },
+    { type: 'text', text: 'หนูเก็บ', size: 'xxs', color: '#FFFFFF', weight: 'bold' },
     { type: 'text', text: title, weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true, margin: 'xs' },
   ];
   if (subtitle) {
@@ -492,11 +501,10 @@ function scanCancelButton(theme: CardTheme): Record<string, unknown> {
 }
 
 /**
- * Session counter — the collected page/file count as a large tabular figure over
- * its unit. Flex cannot set font-family, so true monospace/tabular-nums is off
- * the table; `letterSpacing` on an `xxl` numeral is what keeps multi-digit counts
- * from looking cramped, and the fixed-width column keeps the number's left edge
- * pinned as it grows from 1 to 20.
+ * Session counter — the collected page/file count as a large figure over its
+ * unit. Flex cannot set font-family or letter-spacing, so true monospace/
+ * tabular-nums is off the table; the fixed-width column is what keeps the
+ * number's left edge pinned as it grows from 1 to 20.
  */
 function countTile(theme: CardTheme, count: number, unit: string): Record<string, unknown> {
   return {
@@ -508,7 +516,7 @@ function countTile(theme: CardTheme, count: number, unit: string): Record<string
     paddingAll: '10px',
     justifyContent: 'center',
     contents: [
-      { type: 'text', text: String(count), size: 'xxl', weight: 'bold', color: theme.accent, align: 'center', letterSpacing: '1px' },
+      { type: 'text', text: String(count), size: 'xxl', weight: 'bold', color: theme.accent, align: 'center' },
       { type: 'text', text: unit, size: 'xxs', color: theme.accent, align: 'center' },
     ],
   };
@@ -977,7 +985,6 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
                 weight: 'bold',
                 color: TEAL_TEXT,
                 align: 'center',
-                letterSpacing: '4px',
               },
             ],
           },
