@@ -437,22 +437,24 @@ export function buildProgressFlexMessage(params: {
 
   return {
     type: 'flex',
-    altText: `หนูกำลังเก็บ ${total} ชิ้นให้อยู่น้า`,
+    altText: `เก็บ ${total} ชิ้นเข้าล็อคเกอร์แล้วน้าา`,
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: cardHeader(theme, 'กำลังเก็บให้อยู่น้า', `รับของจากพี่ ${who} แล้ว ${total} ชิ้น`),
+      header: cardHeader(theme, 'เก็บให้เรียบร้อยแล้วน้าา', `รับของจากพี่ ${who} แล้ว ${total} ชิ้น`),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
         paddingAll: '18px',
         contents: [
-          // WORKING_AMBER, not LINE_GREEN: the old card showed a green dot next to
-          // "หนูเก็บให้แล้วน้า" on a card whose own header says "รอสักครู่". Green is
-          // the completed state everywhere else, so it was claiming a finished
-          // upload while the batch was still streaming to R2.
-          statusBlock(WORKING_AMBER, 'กำลังอัปโหลดเข้าล็อคเกอร์', 'แป๊บนึงน้าพี่ กดปุ่มด้านล่างดูความคืบหน้าแบบสดๆ ได้เลย'),
+          // Dot stays amber: flush() replies this card BEFORE handing the batch to
+          // the worker, so nothing has reached R2 yet. The copy was changed to a
+          // completed framing by product decision (2026-08-02) and now says so
+          // before it is true — the amber dot is the only remaining signal that
+          // the batch is still streaming. Green is the completed state everywhere
+          // else; do not "finish the job" by turning this one green too.
+          statusBlock(WORKING_AMBER, 'อัพโหลดเข้าล็อคเกอร์แล้วน้าา'),
         ],
       },
       footer: {
@@ -568,7 +570,7 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
       contents: {
         type: 'bubble',
         size: 'kilo',
-        header: cardHeader(theme, 'ระบบสแกน', 'กำลังเก็บหน้าเอกสาร'),
+        header: cardHeader(theme, 'ระบบสแกน', 'เก็บหน้าเอกสารแล้วน้าา'),
         body: {
           type: 'box',
           layout: 'vertical',
@@ -661,7 +663,7 @@ export function buildPdfMergeFlexMessage(
       contents: {
         type: 'bubble',
         size: 'kilo',
-        header: cardHeader(theme, 'ระบบรวมไฟล์', 'กำลังเก็บไฟล์เข้าคิว'),
+        header: cardHeader(theme, 'ระบบรวมไฟล์', 'เก็บไฟล์เข้าคิวแล้วน้าา'),
         body: {
           type: 'box',
           layout: 'vertical',
@@ -725,7 +727,7 @@ export function buildPdfMergeFlexMessage(
  * locker (the button target). One compact kilo bubble, same header colors as the
  * scan (blue) / merge (red) session cards:
  *   • header  — "ระบบสแกน" / "ระบบรวมไฟล์" (legacy 'merge' sessions: "ระบบรวมรูป")
- *   • body    — green-dot status line + a soft "แป๊บนึงน้าพี่" note
+ *   • body    — a single completed-state status line (no wait note)
  *   • footer  — coral/red "ดูล็อคเกอร์ได้เลย" button → dashboard
  */
 export function buildFinalizingFlexMessage(params: {
@@ -742,8 +744,8 @@ export function buildFinalizingFlexMessage(params: {
     kind === 'scan' ? 'ระบบสแกน' : kind === 'pdf' ? 'ระบบรวมไฟล์' : 'ระบบรวมรูป';
   const statusLine =
     kind === 'scan'
-      ? `หนูกำลังสแกน ${count} หน้าเป็น PDF ให้น้า`
-      : `หนูกำลังรวม ${count} ไฟล์เป็น PDF ให้น้า`;
+      ? `สแกน ${count} หน้าเป็น PDF เรียบร้อยแล้วน้าา`
+      : `รวม ${count} ไฟล์เป็น PDF เรียบร้อยแล้วน้าา`;
 
   return {
     type: 'flex',
@@ -751,16 +753,19 @@ export function buildFinalizingFlexMessage(params: {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: cardHeader(theme, title, 'กำลังสร้างไฟล์ให้น้า'),
+      header: cardHeader(theme, title, 'สร้างไฟล์เรียบร้อยแล้วน้าา'),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
         paddingAll: '18px',
         contents: [
-          // Amber, not green — the PDF does not exist yet at this point. The old
-          // card put a green (= done) dot next to "หนูกำลังสแกน…".
-          statusBlock(WORKING_AMBER, statusLine, 'แป๊บนึงน้าพี่ เดี๋ยวเก็บเข้าล็อคเกอร์ให้เลยน้า'),
+          // Dot stays amber: this card is replied right after finalize_scan is
+          // ENQUEUED, so the PDF still does not exist here. The copy above was
+          // changed to a completed framing by product decision (2026-08-02) and
+          // now says so before it is true — the amber dot is the only remaining
+          // signal that the job is still running.
+          statusBlock(WORKING_AMBER, statusLine),
         ],
       },
       footer: {
