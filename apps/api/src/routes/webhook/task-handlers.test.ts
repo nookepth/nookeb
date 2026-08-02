@@ -131,10 +131,13 @@ describe('handleTaskPostback — every transition mirrors to the sheet', () => {
   });
 
   test('เสร็จแล้ว (task_done) enqueues an upsert for that task', async () => {
-    const { handled, synced, updates } = run('action=task_done&taskId=T1');
+    const { handled, synced, updates, replies } = run('action=task_done&taskId=T1');
     assert.equal(await handled, true);
     assert.deepEqual(synced, [['T1', 'upsert']]);
     assert.ok(updates.some((u) => u.table === 'task_assignees' && u.values.done_at));
+    // The เสร็จแล้ว confirmation reply was removed per product decision, same
+    // as รับทราบ above — the tap writes and syncs, it just says nothing back.
+    assert.equal(replies.length, 0);
   });
 
   test('a non-task postback is left alone and syncs nothing', async () => {

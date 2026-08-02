@@ -101,10 +101,10 @@ export async function handleTaskPostback(
       enqueueSync(task.id, 'upsert');
       if (taskDone) {
         await cancelReminders(app.supabase, task);
-        await replyText(`งาน "${task.title}" เสร็จครบทุกคนแล้ว เก่งมากเลยน้า`);
-      } else {
-        await replyText(`บันทึกส่วนของเราใน "${task.title}" ว่าเสร็จแล้วน้า`);
       }
+      // Removed: เสร็จแล้ว confirmation per product decision — same as
+      // task_accept above. The tap still writes, rolls up, cancels reminders
+      // and mirrors to the sheet; it just says nothing back in the chat.
       return true;
     }
 
