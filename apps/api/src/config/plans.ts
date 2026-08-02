@@ -475,6 +475,41 @@ export function effectiveMonthlyLimit(
 }
 
 // ---------------------------------------------------------------------------
+// หนูเก็บลองงาน — the Google Sheets TRIAL add-on (migration 062)
+//
+// An add-on, NOT a plan, and NOT a purchase — the same shape as
+// หนูเก็บความทรงจำ above and absent from PLAN_PRICING / PLAN_FEATURES /
+// planSummary() for the same reason: putting it in any of those maps would make
+// it look like something a tier grants.
+//
+// What it grants is exactly ONE thing: `google_sheets`, which
+// FEATURE_ACCESS otherwise restricts to premium. Every other feature stays on
+// the user's real plan — resolveSheetsAccess (services/sheets-trial.service.ts)
+// is the only place the trial is ever consulted, and it answers one question.
+//
+// There is deliberately no price here. Nothing is charged, so there is nothing
+// to record, and adding a `0` would invite a payment path that does not exist.
+// ---------------------------------------------------------------------------
+
+/** ชื่อที่แสดงกับผู้ใช้ — no emoji, same brand rule as PLAN_DISPLAY_NAME. */
+export const SHEETS_TRIAL_DISPLAY_NAME = 'หนูเก็บลองงาน';
+
+/**
+ * Trial length in days. The ONLY place this number is written — the API serves
+ * it to the web in the trial status payload rather than letting a component
+ * hard-code "14", and the expiry instant is computed from it exactly once, at
+ * activation, then stored. Changing it therefore affects only trials started
+ * AFTER the change; a running trial keeps the `expires_at` it was issued, which
+ * is the honest behaviour (nobody's countdown moves under them).
+ */
+export const SHEETS_TRIAL_DAYS = 14;
+
+/** The exact instant a trial started at `from` ends. */
+export function sheetsTrialExpiry(from: Date): Date {
+  return new Date(from.getTime() + SHEETS_TRIAL_DAYS * 24 * 60 * 60 * 1000);
+}
+
+// ---------------------------------------------------------------------------
 // Retention + support (§12, §18)
 // ---------------------------------------------------------------------------
 

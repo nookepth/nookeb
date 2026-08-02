@@ -26,7 +26,10 @@ import { toSheetRows } from '../services/sheets-row';
 import { ensureWorkspace } from '../services/sheets-workspace.service';
 import { historicalSync, needsHistoricalSync } from '../services/sheets-historical.service';
 import { enqueueHistoricalSync } from '../services/sheetsQueue';
+// planAllows still serves `performance_report` below — only the two
+// `google_sheets` checks moved to resolveSheetsAccess (migration 062).
 import { planAllows } from '../middleware/planGuard';
+import { resolveSheetsAccess } from '../services/sheets-trial.service';
 
 /**
  * Google Sheets sync worker (migration 046) — mirrors one task into its owner's
@@ -166,12 +169,25 @@ export async function processSheetsSync(job: Job<SheetsJob>): Promise<void> {
     | null;
   if (!creatorRow) return; // creator never logged into the web app
 
-  // §15 — PREMIUM only, re-checked at DELIVERY time, not just at connect time.
-  // A user who downgrades keeps their google_integrations row (their
-  // spreadsheet is theirs, and deleting the credential on downgrade would make
-  // re-upgrading a full re-consent). Without this check their sheet would keep
-  // receiving mirrored tasks on a plan that does not include the feature.
-  if (!planAllows(creatorRow.plan, 'google_sheets')) return;
+  // §15 — PREMIUM or a live หนูเก็บลองงาน trial, re-checked at DELIVERY time,
+  // not just at connect time. A user who downgrades keeps their
+  // google_integrations row (their spreadsheet is theirs, and deleting the
+  // credential on downgrade would make re-upgrading a full re-consent). Without
+  // this check their sheet would keep receiving mirrored tasks on a plan that
+  // does not include the feature.
+  //
+  // THIS IS THE CHECK THAT MAKES THE TRIAL ACTUALLY DO ANYTHING. It used to be
+  // `planAllows(creatorRow.plan, 'google_sheets')`, which sees only the plan: a
+  // trial user would complete OAuth, see "เชื่อมต่อแล้ว", and then have every
+  // single sync silently skipped here — a failure that looks exactly like
+  // success from the dashboard. A route-level guard cannot cover this path;
+  // nothing in a BullMQ job has a request to guard.
+  //
+  // It is also the trial's cutoff on the delivery side: `expires_at` is
+  // compared against the current instant per job, so a sync queued during the
+  // trial and executed after it stands down here.
+  const creatorAccess = await resolveSheetsAccess(supabase, creatorRow.id);
+  if (!creatorAccess.allowed) return;
 
   const integration = await getIntegration(supabase, creatorRow.id);
   if (!integration) return; // not connected — the overwhelmingly common case
@@ -240,13 +256,11 @@ export async function processSheetsHistorical(job: Job<SheetsJob>): Promise<void
   if (!isGoogleSheetsConfigured()) return;
 
   // §15 — same delivery-time entitlement check as processSheetsSync: a backfill
-  // queued before a downgrade must not run after it.
-  const { data: planRow } = await supabase
-    .from('users')
-    .select('plan')
-    .eq('id', userId)
-    .maybeSingle();
-  if (!planAllows(planRow?.plan as string | null, 'google_sheets')) return;
+  // queued before a downgrade (or before a trial ran out) must not run after
+  // it. The expiry sweep also drops any waiting job for the user, but that is
+  // best-effort tidying — this is the boundary.
+  const access = await resolveSheetsAccess(supabase, userId);
+  if (!access.allowed) return;
 
   const integration = await getIntegration(supabase, userId);
   if (!integration) return; // disconnected between the press and the job

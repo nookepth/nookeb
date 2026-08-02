@@ -34,6 +34,7 @@ import groupsRoutes from './routes/groups';
 import proInterestRoutes from './routes/pro-interest';
 import eventsRoutes from './routes/events';
 import integrationsRoutes from './routes/integrations';
+import sheetsTrialRoutes from './routes/sheetsTrial';
 import staticRoutes from './routes/static';
 import plansRoutes from './routes/plans';
 import boostRoutes from './routes/boosts';
@@ -234,6 +235,10 @@ async function main(): Promise<void> {
   await app.register(proInterestRoutes);
   await app.register(eventsRoutes);
   await app.register(integrationsRoutes);
+  // หนูเก็บลองงาน (migration 062) — a separate plugin scope, not extra routes
+  // inside integrationsRoutes, so the trial's own 503 gate and auth hook are
+  // declared once and cannot leak onto the cookie-less OAuth callback next door.
+  await app.register(sheetsTrialRoutes);
   await app.register(staticRoutes);
   // ระบบสมาชิก (membership) — pricing, quota status, บูธ, support SLA.
   await app.register(plansRoutes);

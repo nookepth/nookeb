@@ -21,6 +21,9 @@ import type {
   TaskDto,
   TaskFileDto,
   GroupMemberDto,
+  SheetsAccess,
+  SheetsTrial,
+  SheetsTrialStatus,
   UserDto,
 } from '@nookeb/shared';
 
@@ -2076,10 +2079,19 @@ export async function downloadTaskIcs(taskId: string, filename = 'nookeb-task.ic
 export interface GoogleIntegrationStatus {
   connected: boolean;
   email?: string | null;
+  /** The spreadsheet's title — a server-side constant, never user input. */
+  sheetName?: string | null;
+  sheetId?: string | null;
   sheetUrl?: string | null;
   lastSyncedAt?: string | null;
   /** set when the last sync failed — usually "reconnect needed" */
   lastError?: string | null;
+  /**
+   * หนูเก็บลองงาน state (migration 062), served alongside the connection so the
+   * card renders in one round trip. Absent on a pre-062 API.
+   */
+  trial?: SheetsTrial;
+  access?: SheetsAccess;
 }
 
 /** Connection status. A 503 means the feature isn't configured on this
@@ -2116,6 +2128,36 @@ export function disconnectGoogle(): Promise<{ success: boolean }> {
  */
 export function syncGoogleHistorical(): Promise<{ queued: boolean }> {
   return apiFetch('/integrations/google/sync-historical', { method: 'POST' });
+}
+
+// ---- หนูเก็บลองงาน — the 14-day Sheets trial (migration 062) ----
+
+/**
+ * Trial state. Like getGoogleIntegration, a 503 means the deployment has no
+ * Google OAuth client and is surfaced as `null` so the card can hide rather
+ * than showing an offer that cannot be taken.
+ *
+ * Every value in the response is computed server-side — the countdown included.
+ * Deriving `daysRemaining` from `expiresAt` in the browser would put the number
+ * the user reads at the mercy of their device clock while the number the server
+ * enforces stayed put.
+ */
+export async function getSheetsTrial(): Promise<SheetsTrialStatus | null> {
+  try {
+    return await apiFetch<SheetsTrialStatus>('/integrations/google/trial');
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 503) return null;
+    throw err;
+  }
+}
+
+/**
+ * Start the trial. ONE-SHOT — the server refuses a second call with 409
+ * SHEETS_TRIAL_ALREADY_USED, and 409 SHEETS_ALREADY_ENTITLED if the caller's
+ * plan already includes Sheets. Neither is retryable; both are real answers.
+ */
+export function activateSheetsTrial(): Promise<{ trial: SheetsTrial; expiresAt: string | null }> {
+  return apiFetch('/integrations/google/trial/activate', { method: 'POST' });
 }
 
 export interface TaskExportOptions {

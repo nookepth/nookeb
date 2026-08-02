@@ -52,11 +52,30 @@ const LEGACY_DIARY_REMINDER_CRON = '0 20 * * *';
  */
 const DIARY_ADDON_CRON = '0 * * * *';
 
+/**
+ * หนูเก็บลองงาน (migration 062) — every 15 minutes.
+ *
+ * NOT the cutoff. Access ends the instant `sheets_trial_expires_at` passes,
+ * because every Sheets route and both worker paths compare it at request time
+ * (see services/sheets-trial.service.ts). This schedule only governs how
+ * quickly the Google grant is revoked and the stored credential destroyed
+ * afterwards — so the cadence is a cleanup latency, never a grace period.
+ *
+ * Unconditional: there is no feature flag. The sweep's only job is to destroy
+ * credentials that have already stopped being usable, and a switch that could
+ * stop it doing that would be a switch for leaving third-party tokens alive.
+ *
+ * Same declare-once discipline as the crons above — `removeRepeatable` matches
+ * on pattern + timezone + jobId together.
+ */
+const SHEETS_TRIAL_EXPIRY_CRON = '*/15 * * * *';
+
 export type MembershipJob =
   | { type: 'quota_period_cleanup' }
   | { type: 'boost_expiry' }
   | { type: 'diary_reminder_sweep' }
-  | { type: 'diary_addon_sweep' };
+  | { type: 'diary_addon_sweep' }
+  | { type: 'sheets_trial_expiry' };
 
 let queue: Queue<MembershipJob> | null = null;
 
@@ -155,6 +174,17 @@ export async function scheduleMembershipJobs(): Promise<void> {
       'membership-diary-addon',
     );
   }
+
+  // Every 15 minutes — หนูเก็บลองงาน credential cleanup (migration 062).
+  // Unflagged and unconditional; see SHEETS_TRIAL_EXPIRY_CRON for why.
+  await q.add(
+    'sheets_trial_expiry',
+    { type: 'sheets_trial_expiry' },
+    {
+      repeat: { pattern: SHEETS_TRIAL_EXPIRY_CRON, tz: BANGKOK_TZ },
+      jobId: 'membership-sheets-trial-expiry',
+    },
+  );
 }
 
 /**

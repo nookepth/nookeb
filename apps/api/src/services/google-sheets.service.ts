@@ -329,6 +329,70 @@ export async function authorizedClient(
 }
 
 /**
+ * Revoke the stored grant at Google — หนูเก็บลองงาน's hard cutoff (migration 062).
+ *
+ * Revoking the REFRESH token invalidates every access token derived from it, so
+ * one call ends the grant outright. There is nothing else to revoke: this
+ * codebase never stores an access token (see authorizedClient).
+ *
+ * ── The return value, and why "already invalid" is success ────────────────
+ *
+ * `true`  the grant is gone — either we just revoked it, or Google says the
+ *         token is already invalid/unknown. The second case is not a failure:
+ *         the user revoked us from their Google account page, or a previous run
+ *         revoked it and died before deleting the row. Treating it as an error
+ *         would wedge that user in the sweep forever, retried every 15 minutes
+ *         against a token that will never become valid again.
+ * `false` transient — network, timeout, or a Google 5xx. The caller must leave
+ *         the credential in place and let the next sweep retry. It must NOT
+ *         delete the row: deleting it destroys the only copy of the token and
+ *         with it any chance of ever revoking that grant.
+ *
+ * Nothing is thrown, so one unreachable Google cannot abort a whole sweep.
+ *
+ * NEVER LOG THE TOKEN, or the request body that carries it. Only the response
+ * is inspected, exactly as describeGoogleError does.
+ */
+export async function revokeRefreshToken(
+  userId: string,
+  encryptedToken: string,
+): Promise<boolean> {
+  let refreshToken: string;
+  try {
+    refreshToken = decryptSecret(await deriveSecretKey(userId), encryptedToken);
+  } catch (err) {
+    // Undecryptable (VAULT_MASTER_KEY rotated, row corrupt). The token is
+    // unusable by us and unrecoverable, so there is nothing to revoke and
+    // nothing to gain from retrying — let the caller delete the dead row.
+    console.error('[sheets-trial] could not decrypt stored token for revoke:', (err as Error).message);
+    return true;
+  }
+
+  try {
+    const res = await fetch('https://oauth2.googleapis.com/revoke', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ token: refreshToken }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return true;
+
+    // 400 invalid_token = already revoked or never valid. See the doc comment.
+    if (res.status === 400) {
+      const detail = await res.text().catch(() => '');
+      if (/invalid_token/i.test(detail)) return true;
+      console.error(`[sheets-trial] google revoke rejected: 400 ${detail.slice(0, 200)}`);
+      return false;
+    }
+    console.error(`[sheets-trial] google revoke failed: status=${res.status}`);
+    return false;
+  } catch (err) {
+    console.error('[sheets-trial] google revoke request failed:', (err as Error).message);
+    return false;
+  }
+}
+
+/**
  * Safe, log-ready summary of a Google/googleapis error: HTTP status, the API/token
  * `reason`, and a human message — and NOTHING else. It reads only the error
  * *response* (status + `response.data.error`), never the request, so it can never

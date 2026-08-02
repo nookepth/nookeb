@@ -12,10 +12,13 @@ import { config } from '../config';
 import { createRedis } from '../plugins/redis';
 import { pushMessage } from '../services/line.service';
 import { getFlag } from '../services/feature-flags.service';
+import { revokeRefreshToken } from '../services/google-sheets.service';
+import { getSheetsQueue } from '../services/sheetsQueue';
 import { MEMBERSHIP_QUEUE, type MembershipJob } from './membership.queue';
 import { runQuotaPeriodCleanup } from './quotaReset.job';
 import { runBoostExpiry } from './boostExpiry.job';
 import { runDiaryAddonSweep, runDiaryReminderSweep } from './diaryReminder.job';
+import { runSheetsTrialExpiry } from './sheetsTrialExpiry.job';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -52,6 +55,25 @@ export function createMembershipWorker(): Worker<MembershipJob> {
             enabled: await getFlag('diary_addon_enabled', true),
             push: async (to, messages) => {
               await pushMessage(to, messages, supabase, 'diary_addon');
+            },
+            webUrl: config.WEB_URL,
+          });
+          break;
+        case 'sheets_trial_expiry':
+          // หนูเก็บลองงาน (migration 062). Config-dependent work is injected
+          // here for the same reason as the two cases above — the job module
+          // stays env-free and unit-testable.
+          await runSheetsTrialExpiry(supabase, {
+            revokeGrant: revokeRefreshToken,
+            push: async (to, text) => {
+              await pushMessage(to, [{ type: 'text', text }], supabase, 'sheets_trial');
+            },
+            // Best-effort tidy-up of a queued backfill. The stable jobId is the
+            // one from enqueueHistoricalSync; `remove()` on an absent or
+            // already-settled job is a no-op.
+            cancelPendingSync: async (userId) => {
+              const job = await getSheetsQueue().getJob(`sheets-historical-${userId}`);
+              await job?.remove();
             },
             webUrl: config.WEB_URL,
           });

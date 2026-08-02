@@ -3,6 +3,7 @@ import type { FastifyPluginAsync } from 'fastify';
 import { z } from 'zod';
 import { config } from '../config';
 import {
+  SHEET_TITLE,
   deleteIntegration,
   exchangeCode,
   getAuthUrl,
@@ -12,8 +13,8 @@ import {
 } from '../services/google-sheets.service';
 import { claimOAuthState, storeOAuthState } from '../services/google-oauth-state';
 import { enqueueHistoricalSync } from '../services/sheetsQueue';
-import { planGuard } from '../middleware/planGuard';
-import { hasFeature, normalizePlan } from '../config/plans';
+import { sheetsTrialGuard } from '../middleware/sheetsTrialGuard';
+import { resolveSheetsAccess } from '../services/sheets-trial.service';
 
 /**
  * Google Sheets integration (migration 046) — OAuth connect/disconnect.
@@ -69,15 +70,37 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
 
   // GET /integrations/google — connection status for the dashboard card.
   // NEVER returns encrypted_token (or anything derived from it).
+  //
+  // Not entitlement-gated: a user whose trial has ended must still be able to
+  // read this and see that they are disconnected. The `trial` block rides along
+  // so the card renders in one round trip instead of two.
   app.get('/integrations/google', { preHandler: app.authenticate }, async (request) => {
-    const row = await getIntegration(app.supabase, request.authUser!.userId);
-    if (!row) return { connected: false };
+    const [row, access] = await Promise.all([
+      getIntegration(app.supabase, request.authUser!.userId),
+      resolveSheetsAccess(app.supabase, request.authUser!.userId),
+    ]);
+    const trialBlock = {
+      trial: access.trial,
+      access: { allowed: access.allowed, source: access.source },
+    };
+    if (!row) return { connected: false, ...trialBlock };
     return {
       connected: true,
       email: row.google_email,
+      // A constant, not user input — the spreadsheet is always created with
+      // this title (createSheet). Served so the UI never re-types it.
+      //
+      // NULL UNTIL THE SHEET ACTUALLY EXISTS. `sheet_id` is only written by the
+      // first sync, which happens on the user's next task write — so between
+      // completing OAuth and that write there is a connection but no
+      // spreadsheet. Naming a file that has not been created yet would send the
+      // user looking in their Drive for something that is not there.
+      sheetName: row.sheet_id ? SHEET_TITLE : null,
+      sheetId: row.sheet_id,
       sheetUrl: row.sheet_url,
       lastSyncedAt: row.last_synced_at,
       lastError: row.last_error,
+      ...trialBlock,
     };
   });
 
@@ -88,11 +111,17 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   // by fetch and land Google's HTML in a JSON parse. The client does the
   // top-level navigation itself.
   //
-  // §15 — PREMIUM ONLY. Gated at the point the flow STARTS, so a free user
-  // never reaches Google's consent screen and is never asked to grant access
-  // the product will then refuse to use.
+  // §15 — PREMIUM, or a live หนูเก็บลองงาน trial (migration 062). Gated at the
+  // point the flow STARTS, so an unentitled user never reaches Google's consent
+  // screen and is never asked to grant access the product will then refuse to
+  // use.
+  //
+  // sheetsTrialGuard REPLACES planGuard('google_sheets') here — it is not
+  // stacked in front of it. planGuard refuses everyone below premium, so
+  // leaving it would reject every trial user before the trial was ever
+  // considered.
   app.get('/integrations/google/auth', {
-    preHandler: [app.authenticate, planGuard('google_sheets')],
+    preHandler: [app.authenticate, sheetsTrialGuard()],
   }, async (request) => {
     const nonce = randomUUID();
     await storeOAuthState(app.redis, nonce, request.authUser!.userId);
@@ -123,19 +152,23 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
       return reply.redirect(settingsRedirect('error', 'state_mismatch'));
     }
 
-    // §15 re-check. planGuard cannot run here (no session survives Google's
+    // §15 re-check. No middleware can run here (no session survives Google's
     // redirect — see the file header), and the nonce may have been minted
     // before a downgrade, so the entitlement is verified against the bound user
     // just before the token is stored. Storing a refresh token for a user who
     // may not use the feature would be collecting a third-party credential for
     // nothing.
-    const { data: planRow } = await app.supabase
-      .from('users')
-      .select('plan')
-      .eq('id', boundUserId)
-      .maybeSingle();
-    if (!hasFeature(normalizePlan(planRow?.plan as string | null), 'google_sheets')) {
-      return reply.redirect(settingsRedirect('error', 'plan_required'));
+    //
+    // This ALSO closes the trial's own edge: a user can start the OAuth trip
+    // with minutes left on the clock and finish it after the trial has expired.
+    // resolveSheetsAccess compares `expires_at` against the current instant, so
+    // that lands here as a refusal rather than as a stored token the sweep then
+    // has to come back and destroy.
+    const access = await resolveSheetsAccess(app.supabase, boundUserId);
+    if (!access.allowed) {
+      return reply.redirect(
+        settingsRedirect('error', access.trial.isExpired ? 'trial_expired' : 'plan_required'),
+      );
     }
 
     try {
@@ -168,7 +201,8 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   app.post(
     '/integrations/google/sync-historical',
     {
-      preHandler: [app.authenticate, planGuard('google_sheets')],
+      // Trial-aware, same swap as /auth above.
+      preHandler: [app.authenticate, sheetsTrialGuard()],
       config: { rateLimit: { max: 3, timeWindow: '10 minutes' } },
     },
     async (request, reply) => {

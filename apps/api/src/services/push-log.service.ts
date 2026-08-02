@@ -59,6 +59,11 @@ export type PushContext =
   | 'task_notify'
   | 'diary_addon'
   | 'diary_sweep'
+  // หนูเก็บลองงาน expiry notice (migration 062). One plain-text push per user,
+  // once, at the end of their single lifetime trial — so this context can never
+  // produce recurring volume. Justified against rule 10 because the alternative
+  // is revoking someone's Google access in silence.
+  | 'sheets_trial'
   | 'admin_alert';
 
 export type PushLogStatus = 'sent' | 'failed' | 'blocked_quota' | 'blocked_flag';
