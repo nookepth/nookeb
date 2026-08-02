@@ -1,0 +1,64 @@
+/* ---- Google Sheets connection block, trial-aware (migration 062) ----
+
+   Only the LOCKED treatment and the connected state's label column live here.
+   Everything else reuses the global `settings-card-*` / `btn` classes the
+   settings page already uses, so the connected and disconnected states stay
+   pixel-compatible with what shipped before the trial existed — the trial
+   changed who may connect, not what connecting looks like. */
+
+/* Expired: dimmed and non-interactive, but STILL READABLE and still on the
+   page. Not `display: none` and not a redirect — the section has to stay
+   discoverable so the user can see what they had and how to get it back, and
+   nothing else on the dashboard is affected. opacity alone would leave the
+   controls clickable, hence pointer-events. */
+.locked {
+  opacity: 0.55;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* The unclaimed-trial variant of the same block is NOT as dim: it points at a
+   button the user can press right now, one block up, and 0.55 reads as
+   "unavailable" rather than "not yet". Still inert — the control it describes
+   is the activate button, not anything in here. */
+.pendingLock {
+  opacity: 0.72;
+}
+
+.lockRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: #6b6b6b;
+}
+
+.lockIcon {
+  flex: none;
+  opacity: 0.75;
+}
+
+/* ---- connected state's label column ----
+
+   Applied to spans INSIDE the global .settings-card-state paragraphs, so the
+   type scale and colour keep coming from globals.css and only the two-column
+   rhythm is local. Wraps to a single column under 380px rather than squeezing
+   the value — this page is read from LINE on a phone. */
+.rowLabel {
+  display: inline-block;
+  min-width: 78px;
+  color: var(--color-text-muted);
+}
+
+.rowValue {
+  word-break: break-word;
+}
+
+@media (max-width: 380px) {
+  .rowLabel {
+    display: block;
+    min-width: 0;
+    font-size: var(--font-size-xs);
+  }
+}

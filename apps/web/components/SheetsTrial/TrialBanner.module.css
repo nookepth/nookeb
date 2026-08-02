@@ -1,0 +1,250 @@
+/* ---- หนูเก็บลองงาน trial panel (migration 062) ----
+
+   CSS PATTERN: QuotaBanner.module.css, followed deliberately rather than
+   invented. That component is the same species of UI — a state-tinted strip
+   that lives INSIDE a card and explains a countdown the server owns — so it
+   already answers every question this one has: state tints are a hard-coded
+   (background / color / border) triplet rather than a token, body type is
+   12.5px, radius is 12px, and the amber is #fdf3e2 / #8a5b12 / #f0dcb4 down to
+   the hex. Structural values (radius, spacing) stay literal for the same reason
+   they are literal there: this block is tuned against the card it sits in, not
+   against the global scale. The media query is max-width for the same reason —
+   it is the breakpoint idiom the rest of this stylesheet set uses, and one
+   file flipping to min-width would be the inconsistency, not the fix.
+
+   NO EMOJI ANYWHERE (brand rule, CLAUDE.md §3 rule 13 / §10 landing rules) —
+   the original spec's copy carried a 🧪; every glyph here is inline SVG. */
+
+.panel {
+  margin: 14px 0 4px;
+  padding: 13px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* ---- state tints -------------------------------------------------------- */
+
+/* Never started — the offer. Brand-soft red: this is the one state that is
+   selling something, so it is the only one allowed to look like the product. */
+.offer {
+  background: #fff6f6;
+  color: #8a2929;
+  border: 1px solid #f3d9d9;
+}
+
+/* Running. Muted green — a working state, not a warning, so it must not
+   compete with the connect button underneath it. */
+.active {
+  background: #eef8f0;
+  color: #245c33;
+  border: 1px solid #cfe8d6;
+}
+
+/* Nearly over. Amber, matching QuotaBanner's "เต็มแล้ว": a deadline the user
+   can still act on, deliberately not red — nothing has gone wrong yet. */
+.ending {
+  background: #fdf3e2;
+  color: #8a5b12;
+  border: 1px solid #f0dcb4;
+}
+
+/* Over. Grey, not red. The trial ending is the advertised behaviour, not an
+   error and not the user's mistake — red would read as something broken. */
+.expired {
+  background: #f6f6f6;
+  color: #5f5f5f;
+  border: 1px solid #e6e6e6;
+}
+
+/* ---- head --------------------------------------------------------------- */
+
+.head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.headIcon {
+  display: inline-flex;
+  flex: none;
+  margin-top: 2px;
+  opacity: 0.85;
+}
+
+.headText {
+  min-width: 0;
+}
+
+/* The served name (SheetsTrialStatus.name), kept above the headline instead of
+   inside it: the headline has to be the one fact the user came for — the days
+   left, or the offer — and a product name in front of it buries that. */
+.eyebrow {
+  margin: 0;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  opacity: 0.72;
+}
+
+.title {
+  margin: 1px 0 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.sub {
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  opacity: 0.85;
+}
+
+/* ---- countdown meter ---------------------------------------------------- */
+
+/* Width is daysRemaining ÷ trialDays — BOTH served. Nothing here recomputes a
+   countdown from a device clock; the bar is a second reading of the same
+   number the sentence above it already states, for users who scan. */
+.meter {
+  margin-top: 10px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.09);
+  overflow: hidden;
+}
+
+.meterFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  /* Inherits the state tint's own foreground, so green stays green and amber
+     stays amber without a second set of variants. */
+  background: currentColor;
+  opacity: 0.5;
+  transition: width 300ms ease;
+}
+
+/* ---- perks (offer state only) ------------------------------------------- */
+
+.perks {
+  list-style: none;
+  margin: 11px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.perk {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+}
+
+.perkIcon {
+  display: inline-flex;
+  flex: none;
+  margin-top: 3px;
+  opacity: 0.7;
+}
+
+/* ---- the three-step strip ----------------------------------------------- */
+
+/* The whole point of the redesign: a first-time visitor has to be able to see
+   that activating is step 1 of 3 and connecting is step 2, without leaving the
+   page. Chips rather than a horizontal rail because this is read on a phone
+   from LINE — chips wrap, a rail has to scroll. */
+.steps {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 12px 0 0;
+  padding: 0;
+}
+
+.step {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 5px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.stepNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 17px;
+  height: 17px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.08);
+  font-size: 10.5px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/* Where the user is now — the only chip at full contrast. */
+.stepNow {
+  font-weight: 700;
+  border-color: currentColor;
+}
+
+.stepNow .stepNum {
+  background: currentColor;
+  color: #fff;
+}
+
+.stepDone {
+  opacity: 0.62;
+}
+
+.stepNext {
+  opacity: 0.5;
+}
+
+/* ---- actions and fine print --------------------------------------------- */
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.fine {
+  margin: 9px 0 0;
+  font-size: 11.5px;
+  opacity: 0.75;
+}
+
+.error {
+  margin: 8px 0 0;
+  font-size: 12.5px;
+  color: #b3261e;
+}
+
+@media (max-width: 420px) {
+  .panel {
+    font-size: 12.5px;
+  }
+
+  .title {
+    font-size: 14.5px;
+  }
+
+  /* One thumb, one target: the primary action goes full width rather than
+     sitting as a small pill next to a wrapped secondary. */
+  .actions button,
+  .actions a {
+    flex: 1 1 100%;
+  }
+
+  .step {
+    font-size: 11px;
+  }
+}

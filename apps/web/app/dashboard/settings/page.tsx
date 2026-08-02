@@ -2,11 +2,12 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Image from 'next/image';
+import type { SheetsTrialStatus } from '@nookeb/shared';
 import {
   ApiError,
   disconnectGoogle,
   getGoogleIntegration,
-  getMe,
+  getSheetsTrial,
   hasSession,
   startGoogleConnect,
   syncGoogleHistorical,
@@ -15,6 +16,9 @@ import {
 import { startLineLogin } from '@/lib/auth';
 import { PLAN_DISPLAY_NAME } from '@/lib/quota-errors';
 import { UpgradeModal } from '@/components/UpgradeModal';
+import { ConnectSheet } from '@/components/SheetsTrial/ConnectSheet';
+import { SHEETS_PERKS } from '@/components/SheetsTrial/perks';
+import { TrialBanner } from '@/components/SheetsTrial/TrialBanner';
 
 /**
  * การเชื่อมต่อ — third-party integrations. Currently just Google Sheets
@@ -31,24 +35,13 @@ const CALLBACK_MESSAGE: Record<string, string> = {
   state_mismatch: 'ลิงก์ยืนยันหมดอายุหรือไม่ตรงกัน กดเชื่อมต่อใหม่อีกทีน้า',
   exchange_failed: 'แลกรหัสกับ Google ไม่สำเร็จ ลองใหม่อีกทีน้า',
   bad_request: 'คำขอไม่ถูกต้อง ลองใหม่อีกทีน้า',
+  // The API's post-redirect entitlement re-check refused. `trial_expired` is
+  // the narrow but real case of finishing the Google consent screen after the
+  // trial ran out mid-flow — worth its own sentence, because "ลองใหม่" is
+  // exactly the wrong advice there.
+  plan_required: 'ยังไม่มีสิทธิ์เชื่อม Google Sheets น้า',
+  trial_expired: 'หนูเก็บลองงานหมดอายุระหว่างเชื่อมต่อพอดีน้า เลยยังต่อให้ไม่ได้',
 };
-
-/** What connecting Sheets actually gives you — the upgrade card's checklist. */
-const SHEETS_PERKS = [
-  'ซิงค์งานทั้งหมดไป Google Sheet อัตโนมัติ',
-  'อัปเดตสถานะงานแบบ real-time',
-  'แชร์ข้อมูลทีมผ่าน Google Drive ได้ทันที',
-];
-
-function formatWhen(iso: string): string {
-  const then = new Date(iso).getTime();
-  const mins = Math.floor((Date.now() - then) / 60_000);
-  if (mins < 1) return 'เมื่อสักครู่';
-  if (mins < 60) return `${mins} นาทีที่แล้ว`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours} ชั่วโมงที่แล้ว`;
-  return `${Math.floor(hours / 24)} วันที่แล้ว`;
-}
 
 function SheetIcon({ size = 22 }: { size?: number }) {
   return (
@@ -66,11 +59,15 @@ export default function SettingsPage() {
   const [busy, setBusy] = useState(false);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [notice, setNotice] = useState<{ msg: string; ok: boolean } | null>(null);
-  // §15 — Google Sheets sync is PREMIUM-only (FEATURE_ACCESS.google_sheets in
-  // apps/api/src/config/plans.ts: free false, pro false, premium true). This
-  // used to gate on `plan !== 'free'`, which showed a Pro user a working
-  // connect button that the server then refused. null while loading.
-  const [plan, setPlan] = useState<string | null>(null);
+  /**
+   * §15 + migration 062 — entitlement is now "premium plan OR live
+   * หนูเก็บลองงาน trial", and the SERVER computes it. This used to read
+   * `me.plan` and compare it to 'premium' in the browser; that cannot see a
+   * trial, and duplicating the rule here is how the client's idea of who may
+   * connect drifts from the server's. `access.allowed` is the same value
+   * sheetsTrialGuard enforces. null while loading.
+   */
+  const [trial, setTrial] = useState<SheetsTrialStatus | null>(null);
   const [upgradeOpen, setUpgradeOpen] = useState(false);
 
   const load = useCallback(async () => {
@@ -80,11 +77,11 @@ export default function SettingsPage() {
       return;
     }
     try {
-      const [res, me] = await Promise.all([getGoogleIntegration(), getMe()]);
+      const [res, trialRes] = await Promise.all([getGoogleIntegration(), getSheetsTrial()]);
       // null = the deployment has no Google OAuth client configured.
       setAvailable(res !== null);
       setStatus(res);
-      setPlan(me.plan);
+      setTrial(trialRes);
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
       else setNotice({ msg: 'โหลดสถานะการเชื่อมต่อไม่สำเร็จน้า', ok: false });
@@ -149,9 +146,10 @@ export default function SettingsPage() {
   }, [load, syncHistorical]);
 
   const connect = async () => {
-    // Locked tiers never start the OAuth trip: they get the upgrade card here.
-    // The server gate (planGuard) is still the real boundary — see the catch.
-    if (locked) {
+    // Unentitled viewers never start the OAuth trip: they get the upgrade card
+    // here. The server gate (sheetsTrialGuard) is still the real boundary —
+    // see the catch.
+    if (!entitled) {
       setUpgradeOpen(true);
       return;
     }
@@ -159,12 +157,17 @@ export default function SettingsPage() {
     try {
       await startGoogleConnect(); // navigates away
     } catch (err) {
-      // §15 — Google Sheets is Premium-only, so /integrations/google/auth
-      // answers 403 PLAN_UPGRADE_REQUIRED. That is not a connection failure and
-      // must not be reported as one: retrying will never work on this plan. The
-      // card says so; an inline red line would not.
-      if (err instanceof ApiError && err.code === 'PLAN_UPGRADE_REQUIRED') {
+      // §15 + 062 — /integrations/google/auth answers 403 with either
+      // PLAN_UPGRADE_REQUIRED (no trial in play) or SHEETS_TRIAL_EXPIRED.
+      // Neither is a connection failure and neither must be reported as one:
+      // retrying will never work. The card says so; an inline red line would
+      // not. Reached when entitlement lapsed between page load and the click.
+      if (
+        err instanceof ApiError &&
+        (err.code === 'PLAN_UPGRADE_REQUIRED' || err.code === 'SHEETS_TRIAL_EXPIRED')
+      ) {
         setUpgradeOpen(true);
+        void load(); // resync — the banner is showing stale state
       } else {
         setNotice({ msg: 'เปิดหน้ายืนยันของ Google ไม่สำเร็จน้า', ok: false });
       }
@@ -189,14 +192,16 @@ export default function SettingsPage() {
   };
 
   /**
-   * Is Sheets behind the plan gate for this viewer? Mirrors
-   * FEATURE_ACCESS.google_sheets — expressed as "everything below premium is
-   * locked", with legacy 'team' rows normalised the way config/plans.ts does.
-   * null = plan not loaded yet (avoids flashing the wrong state); it reads as
-   * unlocked so a paying user is never blocked by a slow profile fetch.
+   * May this viewer connect? Straight from the server (`access.allowed` =
+   * premium plan OR live trial) rather than re-derived from `users.plan` here,
+   * which is what let the pre-062 version of this page miss the trial entirely.
+   *
+   * While the trial status is still loading it reads as ENTITLED, so a paying
+   * user is never shown a lock by a slow fetch; the real gate is the request.
    */
-  const locked = plan === null ? false : plan !== 'premium' && plan !== 'team';
-  const showLocked = plan !== null && locked;
+  const entitled = trial === null ? true : trial.access.allowed;
+  /** Show the premium badge only for viewers who have neither plan nor trial. */
+  const showLocked = trial !== null && !trial.access.allowed;
 
   if (needsLogin) {
     return (
@@ -234,9 +239,16 @@ export default function SettingsPage() {
           <div>
             <h2 className="settings-card-title">
               Google Sheets
-              {showLocked && (
+              {/* A user who still holds an unclaimed trial must not be met by a
+                  premium padlock badge — it is the correct badge for someone
+                  with nothing left to claim, and exactly the wrong one for
+                  someone being offered the feature for free. Same pill, the
+                  headline fact swapped. */}
+              {trial?.canActivate ? (
+                <span className="settings-pro-badge">ทดลองฟรี {trial.trialDays} วัน</span>
+              ) : showLocked ? (
                 <span className="settings-pro-badge">{PLAN_DISPLAY_NAME.premium}</span>
-              )}
+              ) : null}
             </h2>
             <p className="settings-card-sub">
               ทุกครั้งที่สร้างหรืออัปเดตงาน หนูจะ sync ลง Sheet ของพี่เองให้อัตโนมัติ
@@ -248,64 +260,47 @@ export default function SettingsPage() {
           <p className="settings-card-state">กำลังโหลด...</p>
         ) : !available ? (
           <p className="settings-card-state">ยังไม่เปิดให้ใช้งานบนระบบนี้น้า</p>
-        ) : status?.connected ? (
-          <>
-            <p className="settings-card-state connected">
-              เชื่อมต่อแล้ว{status.email ? ` — ${status.email}` : ''}
-            </p>
-            {status.lastError ? (
-              <p className="settings-card-state bad">{status.lastError}</p>
-            ) : status.lastSyncedAt ? (
-              <p className="settings-card-state">sync ล่าสุด {formatWhen(status.lastSyncedAt)}</p>
-            ) : (
-              <p className="settings-card-state">
-                Sheet จะถูกสร้างให้อัตโนมัติตอนพี่สร้างหรือแก้งานครั้งถัดไปน้า
-              </p>
-            )}
-            <div className="settings-card-actions">
-              {status.sheetUrl && (
-                <a className="btn secondary small" href={status.sheetUrl} target="_blank" rel="noreferrer">
-                  เปิด Sheet ↗
-                </a>
-              )}
-              <button
-                className="btn secondary small"
-                onClick={() => void syncHistorical()}
-                disabled={busy}
-              >
-                🔄 sync ประวัติงาน
-              </button>
-              <button className="btn ghost small" onClick={() => void disconnect()} disabled={busy}>
-                ยกเลิกการเชื่อมต่อ
-              </button>
-            </div>
-            <p className="settings-card-note">
-              ดึงงานที่สร้างไว้ก่อนเชื่อมต่อเข้ามาทีเดียว งานที่อยู่ใน Sheet แล้วหนูจะไม่เพิ่มซ้ำน้า
-            </p>
-          </>
         ) : (
           <>
-            {/* The card stays fully visible on a locked plan — the feature has
-                to be discoverable — but the button explains the gate instead of
-                starting an OAuth trip the server will refuse. */}
-            <p className="settings-card-state">
-              {showLocked
-                ? `ต่อ Sheet อัตโนมัติอยู่ในแพลน ${PLAN_DISPLAY_NAME.premium} น้า`
-                : 'ยังไม่ได้เชื่อมต่อ'}
-            </p>
-            <div className="settings-card-actions">
-              <button className="btn small" onClick={() => void connect()} disabled={busy}>
-                {showLocked
-                  ? 'ดูรายละเอียดแพลน →'
-                  : busy
-                    ? 'กำลังเปิด Google...'
-                    : 'เชื่อมต่อ Google Account →'}
-              </button>
-            </div>
-            <p className="settings-card-note">
-              หนูขอสิทธิ์แค่ Sheet ที่หนูสร้างเองเท่านั้น (drive.file) — ไฟล์อื่นใน Google Drive
-              ของพี่ หนูมองไม่เห็นน้า
-            </p>
+            {/* หนูเก็บลองงาน (migration 062). Renders nothing for a viewer
+                entitled by PLAN — a permanent subscriber has no countdown to
+                read — and nothing once the one-shot is spent and expired copy
+                would just repeat the block below. */}
+            {trial && (
+              <TrialBanner
+                status={trial}
+                connected={status?.connected ?? false}
+                onActivated={() => void load()}
+                onUpgrade={() => setUpgradeOpen(true)}
+                disabled={busy}
+              />
+            )}
+
+            <ConnectSheet
+              status={status ?? { connected: false }}
+              entitled={entitled}
+              // An unstarted trial is a next step, not a wall — the locked copy
+              // has to say which one this is. See ConnectSheet's header.
+              lockReason={trial?.canActivate ? 'trial-available' : 'upgrade'}
+              busy={busy}
+              onConnect={() => void connect()}
+              onDisconnect={() => void disconnect()}
+              onSyncHistorical={() => void syncHistorical()}
+            />
+
+            {/* The card stays fully visible without entitlement — the feature
+                has to stay discoverable — and this is the upgrade path for a
+                viewer the trial panel gives none: no trial left to start, and
+                none that ran out. An EXPIRED trial is excluded because its own
+                panel already carries an upgrade button opening this same modal,
+                and two CTAs for one action read as two different offers. */}
+            {showLocked && !trial?.canActivate && !trial?.trial.isExpired && (
+              <div className="settings-card-actions">
+                <button className="btn small" onClick={() => setUpgradeOpen(true)} disabled={busy}>
+                  ดูรายละเอียดแพลน →
+                </button>
+              </div>
+            )}
           </>
         )}
       </section>
