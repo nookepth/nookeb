@@ -940,9 +940,16 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
     warnings = result.warnings;
     // One line per page stating which pipeline path ran — 'skipped' here means
     // the pipeline crashed and degraded to the plain image (see scan-enhance).
+    // recrops/border are the post-crop validation verdict: a border above the
+    // service's BORDER_DIRTY_RATIO after the re-crop budget is spent means the
+    // page shipped with background still in frame. There is no user-facing
+    // message for that (by design) — this line is the only signal, so it is the
+    // thing to grep when someone reports a bad crop.
     console.log(
       `[upload.worker] add_scan_page session=${session.id} kind=${kind} mode=${mode} ` +
-        `edge=${result.edgeDetection} warnings=${warnings.length}`,
+        `edge=${result.edgeDetection} recrops=${result.refinePasses} ` +
+        `border=${result.borderDirty.toFixed(3)} turn=${result.quarterTurn} ` +
+        `warnings=${warnings.length}`,
     );
   } else {
     // A SCAN page falling through here means the kill switch is on — the user
@@ -964,10 +971,16 @@ async function processAddScanPage(job: AddScanPageJob): Promise<void> {
 
   await insertPage(supabase, session.id, key, job.lineMessageId);
 
-  // Best-effort retake hints (dark / blurry / edges not found) — the page IS
-  // stored either way; notifyUser never throws, so a notification problem can
-  // never fail (and retry) the job. No token here (the page card's debounced
-  // reply spent it), so the hint rides on the user's next interaction.
+  // Best-effort retake hints (too dark / too blurry ONLY) — the page IS stored
+  // either way; notifyUser never throws, so a notification problem can never
+  // fail (and retry) the job. No token here (the page card's debounced reply
+  // spent it), so the hint rides on the user's next interaction.
+  //
+  // "Edges not detected" is deliberately NOT among these any more: the pipeline
+  // falls back to the full frame with brightness/contrast correction and ships a
+  // usable page, so there was nothing for the user to act on — and because the
+  // notice deferred through pending-notify, it arrived stapled to whatever they
+  // said next, with no photo in sight. See scan-enhance.service.ts.
   if (warnings.length > 0 && job.lineUserId) {
     await notifyUser(job.lineUserId, [{ type: 'text', text: warnings.join('\n') }]);
   }

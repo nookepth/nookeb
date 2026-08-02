@@ -30,10 +30,13 @@ export interface AddScanPageJob {
   sessionId: string;
   lineMessageId: string;
   /**
-   * Notify target for quality warnings (too dark / blurry / no edges) — the
-   * warnings go through pending-notify (reply-only messaging). Optional
-   * for back-compat with jobs enqueued before the scan-enhance release —
-   * warnings are simply skipped when absent.
+   * Notify target for quality warnings (too dark / too blurry) — the warnings
+   * go through pending-notify (reply-only messaging). Optional for back-compat
+   * with jobs enqueued before the scan-enhance release — warnings are simply
+   * skipped when absent.
+   *
+   * Edge-detection failure is NOT reported here: it falls back to the full
+   * frame and ships a usable page, so it is logged server-side only.
    */
   lineUserId?: string;
 }

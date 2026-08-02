@@ -21,6 +21,13 @@ apps/api/assets/fonts/
 # on predev/prebuild — regenerated on every build, not source)
 apps/web/public/pdf.worker.min.mjs
 
+# Real scan fixtures + their processed output. These are photographs of real
+# documents (the reported sample carries a name, an address and a bank account
+# number), so they must never enter git history. The README stays as the
+# instructions for whoever needs to reproduce a crop bug locally.
+apps/api/src/services/__fixtures__/scan/*
+!apps/api/src/services/__fixtures__/scan/README.md
+
 # Stray / unrelated local files
 CLAUDE.md.txt
 download.docx

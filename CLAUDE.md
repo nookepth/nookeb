@@ -797,6 +797,88 @@ space via `ensureGroupSpace`) → quota check → stream LINE CDN → R2
 `spaces/{space_id}/files/{file_id}/{name}` → `status='ready'` → best-effort
 thumbnail + OCR enqueue.
 
+### สแกน — the scan-enhance pipeline (`scan-enhance.service.ts`)
+
+Runs inside `add_scan_page` for `session_kind='scan'` only, and only while
+`SCAN_ENHANCE_ENABLED`. `processScanPage` NEVER throws: every stage degrades to
+`plainNormalize(input)` (`edgeDetection:'skipped'`), and detection failure
+degrades to full image bounds (`'fallback'`). Classic OpenCV throughout
+(`@techstark/opencv-js` WASM) — **there is no ML model and no ONNX dependency**;
+see the note at the end of this section before adding one.
+
+| Stage | What |
+|---|---|
+| 0 | decode: EXIF-rotate → bound to 1600 px → RGBA `Mat`; brightness + Laplacian-variance quality gates (warn only, never reject) |
+| 1 | corner detection, three passes, cheapest first: **canny** (Canny 75/200 + dilate) → **adaptive** (adaptive threshold, C<0) → **rect** (Otsu + `MORPH_CLOSE` + `minAreaRect`) |
+| 2 | `getPerspectiveTransform` → `warpPerspective` |
+| **2b** | **post-crop validation → capped re-crop** (see below) |
+| **2c** | **auto-orientation** — sideways page → quarter turn |
+| 3 | flat-field illumination divide + per-mode tone LUT + sharpen → JPEG |
+
+Four rules the detection stage rests on, each of which was a real bug:
+
+1. **Contours are found with `RETR_LIST`, never `RETR_EXTERNAL`.** External-only
+   returns just the outermost contours, so anything the clutter *encloses* is
+   invisible: a wood-grain table or a placemat whose edges close into one
+   frame-spanning ring hides the page nested inside it. The area + aspect gates
+   do the filtering that nesting used to do for free.
+2. **`MAX_QUAD_AREA_RATIO` (0.985) exists and is checked against the SIMPLIFIED
+   quad**, not the raw contour — the simplified polygon is what `warpToQuad`
+   actually uses. Without it a frame-sized contour wins on area, warps ≈ identity
+   and ships the whole desk inside the "scan". Rejecting a candidate does not end
+   the search; the loop continues to the next-largest quad, which is the page.
+3. **Detection during REFINEMENT uses the tighter `REFINE_MAX_AREA_RATIO`
+   (0.97).** A crop's own outline is still an edge in the cropped image and, being
+   the largest quad present, it wins and masks the page. A refinement is by
+   definition looking for something smaller. Kept consistent with
+   `REFINE_MIN_INSET_RATIO` — insetting one side 2.5 % costs ~2.5 % of the area.
+4. **The paper level is a HIGH PERCENTILE of the interior (0.8), not a median.**
+   Median assumes ink is a minority of the page, which is false for forms with
+   filled blocks, pasted photos or solid table headers. When it flips, "paper" is
+   measured as black and a correct crop is declared dirty.
+
+**Stage 2b** treats the first crop as a candidate, not the answer:
+`borderDirtyRatio` samples the crop's outer 6 % ring against the page's own
+background (luma **and** chroma, so cream/coloured stock reads right), and while
+that ring is >22 % non-paper, detection re-runs **on the crop** and re-warps.
+Bounded three ways — `MAX_REFINE_PASSES` = 2, the "must actually tighten" gate
+(`quadIsWorthRefining`: ≥2.5 % inset on some side AND ≥35 % of the frame kept, so
+it can never collapse onto a text block), and detection simply finding nothing
+better. A shadowed page is a known false positive: it usually spends one extra
+pass and crops a few % tighter. Harmless, and visible in the log.
+
+**Stage 2c** compares row-wise vs column-wise ink-profile variation; a *clearly
+landscape* result whose text lines run vertically gets `sharp.rotate(270)`. A
+genuinely landscape document is never touched. The 90° **direction** cannot be
+recovered from pixels — that needs Tesseract OSD, and `osd.traineddata` is NOT
+among the assets `scripts/download-tessdata.js` fetches. CCW is a pinned choice
+in `ORIENT_ROTATE_DEGREES`, not a derived one. **180° is deliberately never
+attempted** for the same reason.
+
+**There is no "ขอบเอกสาร" / corner-not-detected message, and one must not be
+re-added.** Detection failure is not a user error worth interrupting anyone for:
+the page is stored either way, the fallback still gets Stage 3's
+brightness/contrast correction, and — because `AddScanPageJob` carries no
+`replyToken` — the notice always deferred through pending-notify and arrived
+stapled to whatever the user said next, with no photo in sight. Too-dark and
+too-blurry warnings DO still go out. `scan-enhance.service.test.ts` pins the
+absence by substring, so a constant under a new name would still fail.
+The only signal for a bad crop is the worker log line — grep
+`[upload.worker] add_scan_page … edge= recrops= border=` and
+`[scan-enhance] re-crop declined`.
+
+**Before reaching for an ML detector** (DocAligner et al.): `apps/api/Dockerfile`
+is `node:20-alpine` (musl) and `onnxruntime-node` ships no musl prebuilds, so it
+needs a glibc base image plus re-validating sharp + opencv-wasm + tesseract on
+it — and ~150–250 MB RSS in a worker that already holds three heavy runtimes.
+That is an infra decision, not a dependency bump.
+
+Regression fixtures: the SVG ones live in `scan-enhance.service.test.ts`; REAL
+photographs go in `src/services/__fixtures__/scan/` (gitignored — they are
+photos of real documents, the reported sample carries a name, address and bank
+account number) and are picked up by `scan-enhance.real.test.ts`, which SKIPS
+when the directory is empty. See that directory's README.
+
 ---
 
 ## 13. Feature Flags and Pro Gates

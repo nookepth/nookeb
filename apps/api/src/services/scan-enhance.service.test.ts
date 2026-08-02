@@ -1,14 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import {
-  processScanPage,
-  plainNormalize,
-  buildScanPdf,
-  MSG_EDGE_FAILED,
-  MSG_TOO_DARK,
-} from './scan-enhance.service';
+import { processScanPage, plainNormalize, buildScanPdf, MSG_TOO_DARK } from './scan-enhance.service';
 import { extractText, terminateOcr } from './ocr.service';
+
+/**
+ * The retired "ไม่สามารถตรวจจับขอบเอกสารได้…" copy. Asserted on by SUBSTRING
+ * rather than by importing a constant, precisely because the constant is gone:
+ * this pins "no edge-detection complaint ever reaches the user", which a
+ * re-added constant under any new name would still have to satisfy.
+ */
+const EDGE_COMPLAINT = 'ตรวจจับขอบเอกสาร';
+const hasEdgeComplaint = (warnings: string[]): boolean =>
+  warnings.some((w) => w.includes(EDGE_COMPLAINT));
 
 // The tesseract singleton (Test 8) holds worker threads open — terminate it so
 // the test process can exit.
@@ -71,7 +75,10 @@ const toJpeg = (svg: Buffer): Promise<Buffer> => sharp(svg).jpeg({ quality: 90 }
 test('Test 1 — straight-on photo: corners detected, clean BW output, valid image', async () => {
   const result = await processScanPage(await toJpeg(straightOnSvg()), 'bw', 'test=straight');
   assert.equal(result.edgeDetection, 'detected');
-  assert.ok(!result.warnings.includes(MSG_EDGE_FAILED));
+  assert.ok(!hasEdgeComplaint(result.warnings));
+  // A correct first-pass crop needs no re-crop and leaves a clean border
+  assert.equal(result.refinePasses, 0);
+  assert.ok(result.borderDirty < 0.22, `expected a clean border, got ${result.borderDirty}`);
 
   const meta = await sharp(result.jpeg).metadata();
   assert.equal(meta.format, 'jpeg');
@@ -105,11 +112,12 @@ test('Test 3 — low-light photo: brightness gate warns, page still produced', a
   assert.equal(meta.format, 'jpeg'); // never dropped
 });
 
-test('Test 4 — no document: fallback to full image bounds, no throw', async () => {
+test('Test 4 — no document: fallback to full image bounds, no throw, NO user warning', async () => {
   const input = await toJpeg(noDocumentSvg());
   const result = await processScanPage(input, 'color', 'test=nodoc');
   assert.equal(result.edgeDetection, 'fallback');
-  assert.ok(result.warnings.includes(MSG_EDGE_FAILED), 'expected the edge-detection warning');
+  // ISSUE 1: detection failure must never produce a user-facing message
+  assert.ok(!hasEdgeComplaint(result.warnings), 'edge-detection failure must not warn the user');
   const meta = await sharp(result.jpeg).metadata();
   // Full-bounds fallback keeps the frame's aspect ratio
   assert.ok(Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 1000 / 750) < 0.05);
@@ -163,7 +171,7 @@ function lowContrastSvg(): Buffer {
 test('Test 6 — paper-unlike sliver quad is rejected (aspect-ratio gate → fallback)', async () => {
   const result = await processScanPage(await toJpeg(sliverSvg()), 'color', 'test=sliver');
   assert.equal(result.edgeDetection, 'fallback');
-  assert.ok(result.warnings.includes(MSG_EDGE_FAILED));
+  assert.ok(!hasEdgeComplaint(result.warnings));
   const meta = await sharp(result.jpeg).metadata();
   // Fallback keeps the full frame, not the sliver
   assert.ok(Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 1200 / 900) < 0.05);
@@ -176,6 +184,210 @@ test('Test 7 — low-contrast page: adaptive-threshold second pass detects it', 
   // Warp output ≈ the page rect (840×660), meaningfully smaller than the frame
   assert.ok((meta.width ?? 0) < 1200 && (meta.height ?? 0) < 900);
   assert.ok(Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 840 / 660) < 0.2);
+});
+
+// --- ISSUE 2 / ISSUE 3: tight crops on cluttered backgrounds ----------------
+
+/** Mean luma of a small box, as a fraction of the frame. Used to ask "is this
+ *  corner paper, or is it still the desk?" */
+async function cornerLuma(
+  jpeg: Buffer,
+  corner: 'tl' | 'tr' | 'bl' | 'br',
+  box = 0.06,
+): Promise<number> {
+  const { data, info } = await sharp(jpeg).grayscale().raw().toBuffer({ resolveWithObject: true });
+  const bw = Math.max(1, Math.round(info.width * box));
+  const bh = Math.max(1, Math.round(info.height * box));
+  const x0 = corner === 'tl' || corner === 'bl' ? 0 : info.width - bw;
+  const y0 = corner === 'tl' || corner === 'tr' ? 0 : info.height - bh;
+  let sum = 0;
+  for (let y = y0; y < y0 + bh; y++) for (let x = x0; x < x0 + bw; x++) sum += data[y * info.width + x]!;
+  return sum / (bw * bh);
+}
+
+/**
+ * A page on a WOOD-GRAIN table — the real failing case (see the reported scan).
+ * The grain gives Canny edges across the entire frame; dilated, they close into
+ * one frame-sized contour that used to win on area, warp ≈ identity, and ship
+ * the whole table inside the "scan". MAX_QUAD_AREA_RATIO rejects it so the
+ * search falls through to the page.
+ */
+function woodTableSvg(): Buffer {
+  const grain = Array.from(
+    { length: 45 },
+    (_, i) => `<rect x="0" y="${i * 20}" width="1200" height="9" fill="#5e3417"/>`,
+  ).join('');
+  const lines = Array.from(
+    { length: 12 },
+    (_, i) => `<rect x="230" y="${200 + i * 48}" width="${700 - (i % 3) * 130}" height="15" fill="#151515"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#7a4a22"/>
+      ${grain}
+      <rect x="140" y="110" width="900" height="690" fill="#fdfdfb"/>
+      ${lines}
+    </svg>`,
+  );
+}
+
+/**
+ * Page on a dark-green placemat on a desk: the placemat is the LARGEST quad, so
+ * the first pass legitimately crops to it. Only the post-crop border check can
+ * notice that the result is still not the document.
+ */
+function placematSvg(): Buffer {
+  const lines = Array.from(
+    { length: 9 },
+    (_, i) => `<rect x="290" y="${260 + i * 52}" width="${540 - (i % 3) * 90}" height="14" fill="#151515"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#d2cec6"/>
+      <rect x="100" y="70" width="1000" height="760" fill="#2e6b4f"/>
+      <rect x="250" y="180" width="700" height="540" fill="#fdfdfb"/>
+      ${lines}
+    </svg>`,
+  );
+}
+
+/** A whole sheet photographed at an angle, not filling the frame (Issue 3). */
+function rotatedPageSvg(): Buffer {
+  const lines = Array.from(
+    { length: 10 },
+    (_, i) => `<rect x="280" y="${230 + i * 46}" width="${620 - (i % 3) * 110}" height="14" fill="#151515"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#3a332c"/>
+      <g transform="rotate(8 600 450)">
+        <rect x="220" y="170" width="760" height="560" fill="#fdfdfb"/>
+        ${lines}
+      </g>
+    </svg>`,
+  );
+}
+
+/** A portrait page lying on its side: landscape frame, text lines running
+ *  VERTICALLY. Should be turned upright. */
+function sidewaysPageSvg(): Buffer {
+  const lines = Array.from(
+    { length: 12 },
+    (_, i) => `<rect x="${240 + i * 52}" width="15" y="180" height="${520 - (i % 3) * 90}" fill="#151515"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#3a332c"/>
+      <rect x="180" y="140" width="860" height="620" fill="#fdfdfb"/>
+      ${lines}
+    </svg>`,
+  );
+}
+
+/** Control for the above: a GENUINELY landscape document. Must not be turned. */
+function landscapeDocSvg(): Buffer {
+  const lines = Array.from(
+    { length: 9 },
+    (_, i) => `<rect x="240" y="${200 + i * 56}" width="${740 - (i % 3) * 120}" height="15" fill="#151515"/>`,
+  ).join('');
+  return Buffer.from(
+    `<svg width="1200" height="900" xmlns="http://www.w3.org/2000/svg">
+      <rect width="1200" height="900" fill="#3a332c"/>
+      <rect x="180" y="140" width="860" height="620" fill="#fdfdfb"/>
+      ${lines}
+    </svg>`,
+  );
+}
+
+test('Test 14 — wood-grain table: the frame-sized contour loses, the page wins', async () => {
+  const result = await processScanPage(await toJpeg(woodTableSvg()), 'color', 'test=wood');
+  assert.equal(result.edgeDetection, 'detected');
+  const meta = await sharp(result.jpeg).metadata();
+  const w = meta.width ?? 0;
+  const h = meta.height ?? 0;
+  // The page is 900x690 of a 1200x900 frame. Before MAX_QUAD_AREA_RATIO the
+  // grain's frame-sized contour won and the output kept the 1200x900 aspect.
+  assert.ok(w < 1150 && h < 870, `expected a real crop, got ${w}x${h}`);
+  assert.ok(
+    Math.abs(w / h - 900 / 690) < 0.2,
+    `expected the page's aspect (${(900 / 690).toFixed(2)}), got ${(w / h).toFixed(2)}`,
+  );
+  // ...and no table left in the corners
+  for (const corner of ['tl', 'tr', 'bl', 'br'] as const) {
+    assert.ok(
+      (await cornerLuma(result.jpeg, corner)) > 190,
+      `${corner} corner still shows the table`,
+    );
+  }
+  assert.ok(result.borderDirty < 0.22, `expected a clean border, got ${result.borderDirty}`);
+});
+
+test('Test 15 — placemat: a loose first crop is re-cropped to the document', async () => {
+  const result = await processScanPage(await toJpeg(placematSvg()), 'color', 'test=placemat');
+  assert.equal(result.edgeDetection, 'detected');
+  // The placemat (1000x760) is the largest quad, so pass 1 crops to it; only
+  // the border check can see that the result is not yet the document.
+  assert.ok(result.refinePasses >= 1, 'expected at least one post-crop refinement');
+  assert.ok(result.refinePasses <= 2, 'refinement must stay inside its budget');
+  assert.ok(result.borderDirty < 0.22, `expected the re-crop to clean the border, got ${result.borderDirty}`);
+  const meta = await sharp(result.jpeg).metadata();
+  assert.ok(
+    Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 700 / 540) < 0.2,
+    `expected the page's aspect, got ${((meta.width ?? 0) / (meta.height ?? 1)).toFixed(2)}`,
+  );
+  for (const corner of ['tl', 'tr', 'bl', 'br'] as const) {
+    assert.ok((await cornerLuma(result.jpeg, corner)) > 190, `${corner} corner still shows the placemat`);
+  }
+});
+
+test('Test 16 — sheet photographed at an angle: deskewed by the warp (Issue 3)', async () => {
+  const result = await processScanPage(await toJpeg(rotatedPageSvg()), 'color', 'test=rotated');
+  assert.equal(result.edgeDetection, 'detected');
+  const meta = await sharp(result.jpeg).metadata();
+  assert.ok(
+    Math.abs((meta.width ?? 0) / (meta.height ?? 1) - 760 / 560) < 0.2,
+    `expected the page's aspect, got ${((meta.width ?? 0) / (meta.height ?? 1)).toFixed(2)}`,
+  );
+  // A page left tilted inside an axis-aligned crop keeps DESK in its corners.
+  // Paper in all four corners is what proves the rotation was taken out.
+  for (const corner of ['tl', 'tr', 'bl', 'br'] as const) {
+    assert.ok(
+      (await cornerLuma(result.jpeg, corner)) > 190,
+      `${corner} corner still shows the desk — page not straightened`,
+    );
+  }
+});
+
+test('Test 17 — sideways page: vertical text lines trigger the quarter turn', async () => {
+  const result = await processScanPage(await toJpeg(sidewaysPageSvg()), 'color', 'test=sideways');
+  assert.equal(result.quarterTurn, true, 'expected the sideways page to be turned upright');
+  const meta = await sharp(result.jpeg).metadata();
+  assert.ok((meta.height ?? 0) > (meta.width ?? 0), 'expected a portrait result after the turn');
+});
+
+test('Test 18 — a genuinely landscape document is NOT turned', async () => {
+  const result = await processScanPage(await toJpeg(landscapeDocSvg()), 'color', 'test=landscape');
+  assert.equal(result.quarterTurn, false, 'a landscape document must be left alone');
+  const meta = await sharp(result.jpeg).metadata();
+  assert.ok((meta.width ?? 0) > (meta.height ?? 0), 'expected the landscape result to stay landscape');
+});
+
+test('Test 19 — refinement is capped and terminates (no runaway re-cropping)', async () => {
+  // Every fixture in this file, including the ones designed to be ambiguous,
+  // must settle inside the budget. This is the loop guard, asserted directly.
+  for (const [name, svg] of [
+    ['wood', woodTableSvg()],
+    ['placemat', placematSvg()],
+    ['rotated', rotatedPageSvg()],
+    ['nodoc', noDocumentSvg()],
+    ['sliver', sliverSvg()],
+  ] as const) {
+    const result = await processScanPage(await toJpeg(svg), 'bw', `test=cap-${name}`);
+    assert.ok(
+      result.refinePasses >= 0 && result.refinePasses <= 2,
+      `${name}: refinePasses out of budget (${result.refinePasses})`,
+    );
+  }
 });
 
 /**
