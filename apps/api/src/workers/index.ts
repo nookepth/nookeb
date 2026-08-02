@@ -8,6 +8,7 @@ import { isGoogleSheetsConfigured } from '../services/google-sheets.service';
 import { createMembershipWorker } from '../jobs/membership.worker';
 import { closeMembershipQueue, scheduleMembershipJobs } from '../jobs/membership.queue';
 import { createRedis } from '../plugins/redis';
+import { closePushFlag } from '../services/push-flag.service';
 import { config } from '../config';
 
 // Worker entry point — run as a separate process (npm run dev:worker / start:worker)
@@ -104,6 +105,10 @@ async function shutdown(): Promise<void> {
   await closeSheetsQueue();
   await closeMembershipQueue();
   await closeWorkerQueue();
+  // The push kill switch keeps its own lazy Redis connection (opened on the
+  // first pushMessage in this process, never at import). Left open it would
+  // hold the event loop past process.exit's intent on a graceful stop.
+  await closePushFlag().catch(() => {});
   await healthRedis.quit().catch(() => {});
   process.exit(0);
 }

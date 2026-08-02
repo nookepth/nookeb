@@ -1,7 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { Fragment, useCallback, useEffect, useState } from 'react';
 import {
+  adminGetSettings,
+  adminRemoveJob,
+  adminRetryJob,
+  adminSetPushEnabled,
+  adminUpdateTicket,
   ApiError,
   getAdminHealth,
   getAdminMembership,
@@ -20,6 +25,7 @@ import {
   type AdminQueues,
   type AdminQuotas,
   type AdminStuckFiles,
+  type AdminSupportTicket,
   type AdminSupportTickets,
 } from '@/lib/api';
 import { formatBytes } from '@/lib/format';
@@ -225,6 +231,27 @@ export default function AdminSystemPage() {
     }
   }
 
+  /**
+   * Drop one job from the local failed list after a successful retry or remove.
+   *
+   * Removing the row rather than re-fetching is deliberate: a re-fetch would
+   * re-order every other row under the admin's cursor mid-triage, and both
+   * outcomes genuinely mean "this job is no longer in the failed set".
+   */
+  function dropFailedJob(queue: AdminQueueKey, jobId: string): void {
+    setFailedJobs((prev) => {
+      if (!prev) return prev;
+      return { ...prev, [queue]: prev[queue].filter((j) => j.id !== jobId) };
+    });
+  }
+
+  /** Replace one ticket in place after a PATCH — the filter and order stay put. */
+  function patchTicket(updated: AdminSupportTicket): void {
+    setTickets((prev) =>
+      prev ? { ...prev, tickets: prev.tickets.map((t) => (t.id === updated.id ? updated : t)) } : prev,
+    );
+  }
+
   return (
     <>
       <header className="topbar">
@@ -244,6 +271,11 @@ export default function AdminSystemPage() {
 
         {!error && (
           <>
+            {/* Top of the page and always visible: during an incident this is
+                the control an admin came here to reach, and it must never be
+                below a fold or behind an expander. */}
+            <PushToggle onError={report} />
+
             <ServiceStatusStrip health={health} />
 
             <h2 className="admin-h2">คิวงาน (อัปเดตทุก 10 วินาที)</h2>
@@ -254,6 +286,7 @@ export default function AdminSystemPage() {
               loading={failedLoading}
               jobs={failedJobs}
               onToggle={() => void toggleFailed()}
+              onResolved={dropFailedJob}
             />
 
             {/* Range applies to the notification + diary blocks ONLY. The
@@ -283,6 +316,7 @@ export default function AdminSystemPage() {
               data={tickets}
               status={ticketStatus}
               onStatusChange={setTicketStatus}
+              onTicketUpdated={patchTicket}
             />
 
             <StorageLedgerCards data={stuck} />
@@ -297,6 +331,122 @@ export default function AdminSystemPage() {
 /* ========================================================================== */
 /* Blocks                                                                      */
 /* ========================================================================== */
+
+/**
+ * The global LINE push kill switch (migration 059).
+ *
+ * Reads its own state rather than taking it from the page's poll: this is the
+ * one control whose displayed position must be the SERVER's, and folding it
+ * into the 10 s tick would repaint the switch under an admin's finger.
+ *
+ * OPTIMISTIC WITH ROLLBACK. The button flips immediately and reverts if the PUT
+ * fails — a toggle that sits inert for a round trip during an incident invites
+ * a second click, and a second click on a kill switch is the last thing anyone
+ * wants. `pending` blocks that second click regardless.
+ *
+ * Only turning push OFF is confirmed. Turning it back ON restores the product's
+ * normal behaviour and needs no ceremony; asking "are you sure you want things
+ * to work?" trains people to click through the dialog that matters.
+ */
+function PushToggle({ onError }: { onError: (err: unknown) => void }) {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [pending, setPending] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!hasSession()) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const s = await adminGetSettings();
+        if (!cancelled) {
+          setEnabled(s.push_enabled);
+          setFailed(false);
+        }
+      } catch (err) {
+        // Local, not the page banner: an unreadable switch must not blank every
+        // other panel on an ops page.
+        if (!cancelled) setFailed(true);
+        if (!cancelled && err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+          onError(err);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [onError]);
+
+  async function toggle(): Promise<void> {
+    if (enabled === null || pending) return;
+    const next = !enabled;
+    if (!next && !window.confirm('ยืนยันปิด push ทั้งระบบ?')) return;
+
+    const previous = enabled;
+    setEnabled(next);
+    setPending(true);
+    try {
+      const res = await adminSetPushEnabled(next);
+      // Trust the server's answer over the optimistic guess.
+      setEnabled(res.push_enabled);
+      setFailed(false);
+    } catch (err) {
+      setEnabled(previous);
+      setFailed(true);
+      onError(err);
+    } finally {
+      setPending(false);
+    }
+  }
+
+  const on = enabled === true;
+  const label =
+    enabled === null
+      ? failed
+        ? 'อ่านสถานะ push ไม่สำเร็จ'
+        : 'กำลังอ่านสถานะ push…'
+      : on
+        ? 'Push เปิดอยู่ — กดเพื่อปิด'
+        : 'Push ปิดอยู่ — กดเพื่อเปิด';
+
+  return (
+    <div style={{ ...S.card, ...P.wrap, ...(enabled === false ? P.wrapOff : {}) }}>
+      <div>
+        <div style={S.kpiLabel}>สวิตช์ push ทั้งระบบ</div>
+        <div style={{ ...S.statusText, color: enabled === null ? 'var(--color-text-muted)' : undefined }}>
+          <span
+            style={{
+              ...S.dot,
+              background: enabled === null ? 'var(--color-text-muted)' : on ? '#16a34a' : '#dc2626',
+            }}
+          />
+          {label}
+        </div>
+        <p style={S.kpiHint}>
+          ปิดแล้วจะไม่มี push ออกจากระบบเลย (แจ้งเตือนงาน / ประกาศงานใหม่ / ตีกลับ-รับงาน) —
+          มีผลทั้ง API และ worker ภายใน 60 วินาที · งานที่ตั้งเวลาไว้ยังอยู่ครบ ไม่ถูกลบ
+        </p>
+      </div>
+
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label={label}
+        disabled={enabled === null || pending}
+        onClick={() => void toggle()}
+        style={{
+          ...P.track,
+          background: enabled === null ? 'var(--color-surface-3)' : on ? '#16a34a' : '#dc2626',
+          opacity: enabled === null || pending ? 0.6 : 1,
+          cursor: enabled === null || pending ? 'not-allowed' : 'pointer',
+        }}
+      >
+        <span style={{ ...P.knob, transform: on ? 'translateX(24px)' : 'translateX(0)' }} />
+      </button>
+    </div>
+  );
+}
 
 /** Features 3–4 — API and worker liveness, side by side. */
 function ServiceStatusStrip({ health }: { health: AdminHealth | null }) {
@@ -420,17 +570,61 @@ function FailedJobsTable({
   loading,
   jobs,
   onToggle,
+  onResolved,
 }: {
   open: boolean;
   loading: boolean;
   jobs: Record<AdminQueueKey, AdminFailedJob[]> | null;
   onToggle: () => void;
+  /** Called after a successful retry or remove so the row can leave the list. */
+  onResolved: (queue: AdminQueueKey, jobId: string) => void;
 }) {
+  // Which row has a request in flight, and per-row failure text. Keyed by
+  // `${queue}-${id}` so two rows can never share a spinner.
+  const [busy, setBusy] = useState<string | null>(null);
+  const [rowError, setRowError] = useState<Record<string, string>>({});
+
   const flat = jobs
     ? (Object.entries(jobs) as [AdminQueueKey, AdminFailedJob[]][]).flatMap(([key, list]) =>
         list.map((j) => ({ ...j, queue: key })),
       )
     : [];
+
+  /**
+   * Both actions share this: they are server-authoritative and NOT optimistic.
+   * The API refuses anything that is not in the failed set (409), and a job the
+   * retention window already evicted is a 404 — pulling the row before the
+   * server agreed would hide exactly those answers.
+   */
+  async function act(queue: AdminQueueKey, jobId: string, action: 'retry' | 'remove'): Promise<void> {
+    const rowKey = `${queue}-${jobId}`;
+    if (busy) return;
+    if (action === 'remove' && !window.confirm('ลบงานนี้ออกจากคิวถาวร? กู้คืนไม่ได้')) return;
+
+    setBusy(rowKey);
+    setRowError((prev) => {
+      const next = { ...prev };
+      delete next[rowKey];
+      return next;
+    });
+    try {
+      if (action === 'retry') await adminRetryJob(queue, jobId);
+      else await adminRemoveJob(queue, jobId);
+      onResolved(queue, jobId);
+    } catch (err) {
+      const message =
+        err instanceof ApiError && err.status === 409
+          ? 'งานนี้ไม่ได้อยู่ในสถานะล้มเหลวแล้ว'
+          : err instanceof ApiError && err.status === 404
+            ? 'ไม่พบงานนี้ในคิวแล้ว'
+            : err instanceof ApiError && err.status === 503
+              ? 'คิวนี้ติดต่อไม่ได้ตอนนี้'
+              : 'ทำรายการไม่สำเร็จ';
+      setRowError((prev) => ({ ...prev, [rowKey]: message }));
+    } finally {
+      setBusy(null);
+    }
+  }
 
   return (
     <>
@@ -447,7 +641,7 @@ function FailedJobsTable({
         <>
           <p style={S.note}>
             20 รายการล่าสุดต่อคิว · ไม่รีเฟรชอัตโนมัติ (กด “ซ่อน” แล้วเปิดใหม่เพื่อโหลดซ้ำไม่ได้ —
-            รีโหลดหน้าเพื่อดึงชุดใหม่)
+            รีโหลดหน้าเพื่อดึงชุดใหม่) · ลองใหม่/ลบ ได้เฉพาะงานที่อยู่ในสถานะล้มเหลว และทุกครั้งถูกบันทึกไว้ในบันทึกผู้ดูแล
           </p>
           <div className="admin-table-wrap">
             <table className="admin-table">
@@ -459,34 +653,67 @@ function FailedJobsTable({
                   <th>พยายาม</th>
                   <th>สาเหตุ</th>
                   <th>ล้มเหลวเมื่อ</th>
+                  <th>จัดการ</th>
                 </tr>
               </thead>
               <tbody>
                 {loading && (
                   <tr>
-                    <td colSpan={6} style={S.emptyCell}>
+                    <td colSpan={7} style={S.emptyCell}>
                       กำลังโหลด…
                     </td>
                   </tr>
                 )}
                 {!loading && flat.length === 0 && (
                   <tr>
-                    <td colSpan={6} style={S.emptyCell}>
+                    <td colSpan={7} style={S.emptyCell}>
                       ไม่มีงานล้มเหลวค้างอยู่
                     </td>
                   </tr>
                 )}
                 {!loading &&
-                  flat.map((j) => (
-                    <tr key={`${j.queue}-${j.id}`}>
-                      <td>{QUEUE_LABELS[j.queue]}</td>
-                      <td>{j.name}</td>
-                      <td>{j.jobType ?? '—'}</td>
-                      <td>{j.attemptsMade}</td>
-                      <td style={S.reasonCell}>{j.reason ?? '—'}</td>
-                      <td>{fmtDateTime(j.failedAt)}</td>
-                    </tr>
-                  ))}
+                  flat.map((j) => {
+                    const rowKey = `${j.queue}-${j.id}`;
+                    const inFlight = busy === rowKey;
+                    return (
+                      <tr key={rowKey}>
+                        <td>{QUEUE_LABELS[j.queue]}</td>
+                        <td>{j.name}</td>
+                        <td>{j.jobType ?? '—'}</td>
+                        <td>{j.attemptsMade}</td>
+                        <td style={S.reasonCell}>
+                          {j.reason ?? '—'}
+                          {rowError[rowKey] && <div style={S.badText}>{rowError[rowKey]}</div>}
+                        </td>
+                        <td>{fmtDateTime(j.failedAt)}</td>
+                        <td>
+                          <div style={P.rowActions}>
+                            {/* Both disabled while EITHER is running — a retry
+                                and a remove racing on one job id is a state
+                                nobody should be able to create with two clicks. */}
+                            <button
+                              type="button"
+                              className="btn secondary"
+                              style={P.smallBtn}
+                              disabled={inFlight || busy !== null}
+                              onClick={() => void act(j.queue, j.id, 'retry')}
+                            >
+                              {inFlight ? '…' : 'ลองใหม่'}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn secondary"
+                              style={{ ...P.smallBtn, ...P.dangerBtn }}
+                              disabled={inFlight || busy !== null}
+                              onClick={() => void act(j.queue, j.id, 'remove')}
+                            >
+                              {inFlight ? '…' : 'ลบ'}
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>
@@ -846,16 +1073,22 @@ function SupportTicketTable({
   data,
   status,
   onStatusChange,
+  onTicketUpdated,
 }: {
   data: AdminSupportTickets | null;
   status: string;
   onStatusChange: (s: string) => void;
+  onTicketUpdated: (t: AdminSupportTicket) => void;
 }) {
   const STATUSES: { key: string; label: string }[] = [
     { key: 'open', label: 'เปิดอยู่' },
     { key: 'answered', label: 'ตอบแล้ว' },
     { key: 'closed', label: 'ปิดแล้ว' },
   ];
+
+  // At most one inline form open at a time: two half-written replies on screen
+  // is a way to submit the wrong one.
+  const [editing, setEditing] = useState<string | null>(null);
 
   return (
     <>
@@ -881,7 +1114,8 @@ function SupportTicketTable({
       </div>
 
       <p style={S.note}>
-        อ่านอย่างเดียว — การตอบตั๋วยังไม่มีในระบบ (routes /support/* ยังปิดอยู่ที่ 503)
+        การรับตั๋วจากผู้ใช้ยังปิดอยู่ (routes /support/* ตอบ 503) — ตารางนี้จัดการตั๋วที่มีอยู่แล้วได้
+        · ข้อความตอบถูกเก็บไว้ในบันทึกผู้ดูแล ไม่ได้ส่งถึงผู้ใช้ (ตาราง support_tickets ไม่มีคอลัมน์เธรด)
       </p>
 
       <div className="admin-table-wrap">
@@ -895,36 +1129,167 @@ function SupportTicketTable({
               <th>ครบกำหนด</th>
               <th>เหลือ (ชม.)</th>
               <th>ตอบแล้ว</th>
+              <th>จัดการ</th>
             </tr>
           </thead>
           <tbody>
             {(!data || data.tickets.length === 0) && (
               <tr>
-                <td colSpan={7} style={S.emptyCell}>
+                <td colSpan={8} style={S.emptyCell}>
                   ไม่มีตั๋วในสถานะนี้
                 </td>
               </tr>
             )}
             {data?.tickets.map((t) => (
-              <tr key={t.id} style={t.breached ? S.rowBad : undefined}>
-                <td>
-                  {t.subject}
-                  {t.onboardingCall && <div style={S.subtle}>ขอ onboarding call</div>}
-                </td>
-                <td>{t.displayName ?? t.userId.slice(0, 8)}</td>
-                <td>{t.planAtCreation}</td>
-                <td>{t.slaHours} ชม.</td>
-                <td>{fmtDateTime(t.dueAt)}</td>
-                <td style={t.breached ? S.badText : undefined}>
-                  {t.breached ? 'เกินแล้ว' : t.hoursRemaining}
-                </td>
-                <td>{t.firstResponseAt ? fmtDateTime(t.firstResponseAt) : '—'}</td>
-              </tr>
+              <Fragment key={t.id}>
+                <tr style={t.breached ? S.rowBad : undefined}>
+                  <td>
+                    {t.subject}
+                    {t.onboardingCall && <div style={S.subtle}>ขอ onboarding call</div>}
+                  </td>
+                  <td>{t.displayName ?? t.userId.slice(0, 8)}</td>
+                  <td>{t.planAtCreation}</td>
+                  <td>{t.slaHours} ชม.</td>
+                  <td>{fmtDateTime(t.dueAt)}</td>
+                  <td style={t.breached ? S.badText : undefined}>
+                    {t.breached ? 'เกินแล้ว' : t.hoursRemaining}
+                  </td>
+                  <td>{t.firstResponseAt ? fmtDateTime(t.firstResponseAt) : '—'}</td>
+                  <td>
+                    {/* A closed ticket is terminal — the API 409s any further
+                        edit so it must not offer a button that cannot work. */}
+                    {t.status === 'closed' ? (
+                      <span style={S.subtle}>ปิดแล้ว</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        style={P.smallBtn}
+                        onClick={() => setEditing(editing === t.id ? null : t.id)}
+                      >
+                        {editing === t.id ? 'ยกเลิก' : 'ปิด ticket'}
+                      </button>
+                    )}
+                  </td>
+                </tr>
+                {editing === t.id && (
+                  <tr>
+                    <td colSpan={8} style={P.formCell}>
+                      <TicketForm
+                        ticket={t}
+                        onDone={(updated) => {
+                          onTicketUpdated(updated);
+                          setEditing(null);
+                        }}
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
             ))}
           </tbody>
         </table>
       </div>
     </>
+  );
+}
+
+/**
+ * The inline reply/close form for one ticket.
+ *
+ * `reply` is optional and `status` defaults to 'closed' — the button that opens
+ * this form is labelled "ปิด ticket", so closing is the action the admin already
+ * chose and the form only asks what else to record.
+ *
+ * The row is updated from the SERVER's response, not from the form's own
+ * values: first_response_at is stamped server-side and only on the first
+ * response, so an optimistic row would show the wrong timestamp for the second
+ * edit of a ticket that was already answered.
+ */
+function TicketForm({
+  ticket,
+  onDone,
+}: {
+  ticket: AdminSupportTicket;
+  onDone: (updated: AdminSupportTicket) => void;
+}) {
+  const [reply, setReply] = useState('');
+  const [status, setStatus] = useState<'answered' | 'closed'>('closed');
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function submit(): Promise<void> {
+    if (saving) return;
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await adminUpdateTicket(ticket.id, {
+        status,
+        ...(reply.trim() ? { reply: reply.trim() } : {}),
+      });
+      const now = Date.now();
+      const dueMs = new Date(res.ticket.dueAt).getTime();
+      const settledMs = res.ticket.firstResponseAt ? new Date(res.ticket.firstResponseAt).getTime() : now;
+      onDone({
+        ...ticket,
+        status: res.ticket.status,
+        firstResponseAt: res.ticket.firstResponseAt,
+        // Recomputed with the SAME rule the API's read endpoint uses: an
+        // answered ticket is judged on when it was answered, not on now.
+        breached: settledMs > dueMs,
+      });
+    } catch (e) {
+      setErr(
+        e instanceof ApiError && e.status === 409
+          ? 'ตั๋วนี้ถูกปิดไปแล้ว'
+          : e instanceof ApiError && e.status === 404
+            ? 'ไม่พบตั๋วนี้แล้ว'
+            : 'บันทึกไม่สำเร็จ',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={P.form}>
+      <label style={P.formLabel} htmlFor={`ticket-reply-${ticket.id}`}>
+        ข้อความตอบ (ไม่บังคับ · สูงสุด 2000 ตัวอักษร)
+      </label>
+      <textarea
+        id={`ticket-reply-${ticket.id}`}
+        value={reply}
+        maxLength={2000}
+        rows={3}
+        onChange={(e) => setReply(e.target.value)}
+        style={P.textarea}
+        placeholder="บันทึกไว้ในบันทึกผู้ดูแล — ผู้ใช้ไม่เห็นข้อความนี้"
+      />
+      <div style={P.formRow}>
+        <label style={P.formLabel} htmlFor={`ticket-status-${ticket.id}`}>
+          สถานะใหม่
+        </label>
+        <select
+          id={`ticket-status-${ticket.id}`}
+          value={status}
+          onChange={(e) => setStatus(e.target.value as 'answered' | 'closed')}
+          style={P.select}
+        >
+          <option value="closed">ปิดแล้ว</option>
+          <option value="answered">ตอบแล้ว (ยังไม่ปิด)</option>
+        </select>
+        <button
+          type="button"
+          className="btn"
+          style={P.smallBtn}
+          disabled={saving}
+          onClick={() => void submit()}
+        >
+          {saving ? 'กำลังบันทึก…' : 'บันทึก'}
+        </button>
+      </div>
+      {err && <div style={S.badText}>{err}</div>}
+    </div>
   );
 }
 
@@ -1229,4 +1594,78 @@ const S: Record<string, React.CSSProperties> = {
   },
   meterFill: { height: '100%', borderRadius: 'var(--radius-full)', transition: 'width 300ms ease' },
   meterPct: { fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)', minWidth: 34 },
+};
+
+/* ---------- TIER 2 write-control tokens ----------
+   Kept separate from S so the read-only page's styling and the controls that
+   MUTATE things stay visually and textually distinguishable in the source. */
+
+const P: Record<string, React.CSSProperties> = {
+  wrap: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 16,
+    flexWrap: 'wrap',
+    marginBottom: 16,
+  },
+  // A muted red wash while push is OFF: the page must not look normal in the
+  // state where the product is deliberately silent.
+  wrapOff: { borderColor: '#dc2626', background: 'rgba(220, 38, 38, 0.06)' },
+  track: {
+    width: 52,
+    height: 28,
+    borderRadius: 'var(--radius-full)',
+    border: 'none',
+    padding: 2,
+    display: 'inline-flex',
+    alignItems: 'center',
+    flexShrink: 0,
+    transition: 'background 200ms ease',
+  },
+  knob: {
+    width: 24,
+    height: 24,
+    borderRadius: '50%',
+    background: '#fff',
+    boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+    transition: 'transform 200ms ease',
+  },
+  rowActions: { display: 'flex', gap: 6, flexWrap: 'wrap' },
+  smallBtn: { padding: '4px 12px', fontSize: 'var(--font-size-xs)', whiteSpace: 'nowrap' },
+  dangerBtn: { color: 'var(--color-danger, #dc2626)', borderColor: 'rgba(220, 38, 38, 0.4)' },
+  formCell: { background: 'var(--color-surface-2, var(--color-surface))', padding: 12 },
+  form: { display: 'flex', flexDirection: 'column', gap: 8 },
+  formRow: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+  formLabel: { fontSize: 'var(--font-size-xs)', color: 'var(--color-text-secondary)' },
+  textarea: {
+    width: '100%',
+    fontFamily: 'inherit',
+    fontSize: 'var(--font-size-sm)',
+    padding: 8,
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
+    resize: 'vertical',
+  },
+  select: {
+    fontFamily: 'inherit',
+    fontSize: 'var(--font-size-sm)',
+    padding: '6px 10px',
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
+  },
+  numberInput: {
+    fontFamily: 'inherit',
+    fontSize: 'var(--font-size-sm)',
+    padding: '6px 10px',
+    width: 120,
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
+  },
 };

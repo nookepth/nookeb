@@ -1030,6 +1030,12 @@ export interface AdminUserDetail {
     normalizedPlan: string;
     storageUsed: number;
     storageLimit: number;
+    /**
+     * Admin manual locker ceiling (migration 059). null = no override, i.e.
+     * storageLimit came from the plan. Optional so a response from an API that
+     * predates 059 still typechecks.
+     */
+    storageLimitOverride?: number | null;
     createdAt: string;
     isAdmin: boolean;
   };
@@ -1042,6 +1048,150 @@ export interface AdminUserDetail {
 
 export function getAdminUserDetail(id: string): Promise<AdminUserDetail> {
   return apiFetch(`/admin/users/${id}`);
+}
+
+/* ==========================================================================
+   Admin TIER 2 — WRITE actions.
+
+   Everything above this point reads. Everything below CHANGES someone else's
+   account, or the whole product's messaging, and every one of them is recorded
+   in admin_audit_log server-side (migration 059).
+
+   Two client-side rules follow from that:
+     * every caller confirms first — these are not undo-able from the UI;
+     * every caller surfaces the failure. Unlike the read fetchers, whose
+       endpoints fail soft to empty payloads, these genuinely 4xx/5xx, and a
+       500 specifically means "the write was reverted because it could not be
+       audited" — the user must be told, never left looking at an optimistic
+       value that no longer exists on the server.
+   ========================================================================== */
+
+export interface AdminSettings {
+  push_enabled: boolean;
+}
+
+export function adminGetSettings(): Promise<AdminSettings> {
+  return apiFetch(`/admin/settings`);
+}
+
+/** Global LINE push kill switch. Affects the API and the worker within 60 s. */
+export function adminSetPushEnabled(enabled: boolean): Promise<AdminSettings> {
+  return apiFetch(`/admin/settings/push_enabled`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+/** The RAW values users.plan may hold — 'team' is legacy and folds to premium. */
+export type AdminPlanValue = 'free' | 'pro' | 'premium' | 'team';
+
+export interface AdminPlanChangeResult {
+  id: string;
+  plan: AdminPlanValue;
+  normalizedPlan: string;
+  storageLimit: number;
+  storageLimitOverride: number | null;
+  /** false when the user already held that plan — the call was a no-op. */
+  changed: boolean;
+}
+
+export function adminSetUserPlan(id: string, plan: AdminPlanValue): Promise<AdminPlanChangeResult> {
+  return apiFetch(`/admin/users/${id}/plan`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ plan }),
+  });
+}
+
+export interface AdminStorageOverrideResult {
+  id: string;
+  storageLimitOverride: number | null;
+  storageLimit: number;
+}
+
+/** `bytes: null` removes the override and restores the plan's own allowance. */
+export function adminSetStorageOverride(
+  id: string,
+  bytes: number | null,
+): Promise<AdminStorageOverrideResult> {
+  return apiFetch(`/admin/users/${id}/storage-override`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bytes }),
+  });
+}
+
+export interface AdminQuotaResetResult {
+  userId: string;
+  feature: string;
+  period: string;
+  rowsReset: number;
+  previousUsed: number;
+}
+
+/** Zeroes one monthly counter for the CURRENT period. 404 when no row exists. */
+export function adminResetQuota(id: string, feature: string): Promise<AdminQuotaResetResult> {
+  return apiFetch(`/admin/users/${id}/quotas/${encodeURIComponent(feature)}/reset`, {
+    method: 'POST',
+  });
+}
+
+export interface AdminRevokeSessionResult {
+  id: string;
+  sessionVersion: number;
+}
+
+/** Invalidates every JWT the user holds. 409 when another admin raced this one. */
+export function adminRevokeSession(id: string): Promise<AdminRevokeSessionResult> {
+  return apiFetch(`/admin/users/${id}/revoke-sessions`, { method: 'POST' });
+}
+
+/** Requeue one FAILED job. 409 when the job is in any other state. */
+export function adminRetryJob(queue: AdminQueueKey, jobId: string): Promise<{ ok: true }> {
+  return apiFetch(`/admin/system/queues/${queue}/jobs/${encodeURIComponent(jobId)}/retry`, {
+    method: 'POST',
+  });
+}
+
+/** Delete one FAILED job. IRREVERSIBLE — the payload goes with it. */
+export function adminRemoveJob(queue: AdminQueueKey, jobId: string): Promise<{ ok: true }> {
+  return apiFetch(`/admin/system/queues/${queue}/jobs/${encodeURIComponent(jobId)}/remove`, {
+    method: 'POST',
+  });
+}
+
+/** Stamps cancelled_at on every unsent, uncancelled reminder for one task. */
+export function adminCancelReminders(taskId: string): Promise<{ taskId: string; cancelled: number }> {
+  return apiFetch(`/admin/tasks/${taskId}/cancel-reminders`, { method: 'POST' });
+}
+
+export interface AdminTicketUpdate {
+  status?: 'answered' | 'closed';
+  /** Recorded in the audit row — support_tickets has no reply column. */
+  reply?: string;
+}
+
+export interface AdminTicketUpdateResult {
+  ticket: {
+    id: string;
+    userId: string;
+    subject: string;
+    status: string;
+    firstResponseAt: string | null;
+    slaHours: number;
+    dueAt: string;
+    planAtCreation: string;
+    createdAt: string;
+  };
+}
+
+export function adminUpdateTicket(id: string, body: AdminTicketUpdate): Promise<AdminTicketUpdateResult> {
+  return apiFetch(`/admin/support/tickets/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 export function getMe(): Promise<UserDto & { defaultSpaceId: string | null; isAdmin: boolean }> {

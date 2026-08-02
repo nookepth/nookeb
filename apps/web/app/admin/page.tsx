@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from 'react';
 import {
+  adminResetQuota,
+  adminRevokeSession,
+  adminSetStorageOverride,
+  adminSetUserPlan,
   ApiError,
   getAdminFeatures,
   getAdminOverview,
@@ -31,6 +35,7 @@ import {
   type AdminTasks,
   type AdminSpace,
   type AdminTimeseriesPoint,
+  type AdminPlanValue,
   type AdminUser,
   type AdminUserDetail,
   type FeatureModule,
@@ -498,6 +503,16 @@ function UserDetailDrawer({
               {u.isAdmin && <span className="tag-chip">admin</span>}
             </div>
 
+            <PlanControl
+              userId={u.id}
+              current={u.plan}
+              onChanged={(plan, normalizedPlan, storageLimit) =>
+                setDetail((prev) =>
+                  prev ? { ...prev, user: { ...prev.user, plan, normalizedPlan, storageLimit } } : prev,
+                )
+              }
+            />
+
             <h3 style={D.h3}>พื้นที่จัดเก็บ</h3>
             <DrawerBar pct={storagePct} />
             <p style={D.subtle}>
@@ -507,6 +522,18 @@ function UserDetailDrawer({
               ไฟล์ {detail.content.fileCount} · {formatBytes(detail.content.fileBytes)} · ห้องนิรภัย{' '}
               {detail.content.vaultFileCount}
             </p>
+
+            <StorageOverrideControl
+              userId={u.id}
+              current={u.storageLimitOverride ?? null}
+              onSaved={(override, limit) =>
+                setDetail((prev) =>
+                  prev
+                    ? { ...prev, user: { ...prev.user, storageLimitOverride: override, storageLimit: limit } }
+                    : prev,
+                )
+              }
+            />
 
             <h3 style={D.h3}>โควตาเดือนนี้</h3>
             {detail.quotas.length === 0 && <p style={D.subtle}>ยังไม่มีข้อมูลโควตา</p>}
@@ -518,6 +545,27 @@ function UserDetailDrawer({
                     <span>{q.feature}</span>
                     <span style={D.subtle}>
                       {q.used} / {q.unlimited ? 'ไม่จำกัด' : q.limit}
+                      <QuotaResetButton
+                        userId={u.id}
+                        feature={q.feature}
+                        disabled={q.used === 0}
+                        onReset={() =>
+                          // Optimistic: the endpoint's only success shape is
+                          // "this counter is now 0", so there is nothing else it
+                          // could have become. A failure restores nothing because
+                          // the server reverts its own write.
+                          setDetail((prev) =>
+                            prev
+                              ? {
+                                  ...prev,
+                                  quotas: prev.quotas.map((x) =>
+                                    x.feature === q.feature ? { ...x, used: 0 } : x,
+                                  ),
+                                }
+                              : prev,
+                          )
+                        }
+                      />
                     </span>
                   </div>
                   {!q.unlimited && q.limit > 0 && <DrawerBar pct={pct} />}
@@ -561,9 +609,316 @@ function UserDetailDrawer({
                 )}
               </>
             )}
+
+            <h3 style={D.h3}>เซสชัน</h3>
+            <RevokeSessionsControl userId={u.id} />
           </>
         )}
       </aside>
+    </div>
+  );
+}
+
+/* ==========================================================================
+   TIER 2 write controls (routes/admin.ts, migration 059).
+
+   Every one of these changes SOMEONE ELSE'S account and is recorded in
+   admin_audit_log server-side. Three rules they all follow:
+
+     * confirm before the request — none of them is undoable from this UI;
+     * `saving` disables the control, so a double click cannot fire twice;
+     * a failure is shown INLINE and the local value is left alone. A 500 from
+       these endpoints specifically means "the write was reverted because it
+       could not be audited", so silently keeping an optimistic value would show
+       an admin a state the server does not have.
+   ========================================================================== */
+
+const PLAN_OPTIONS: { value: AdminPlanValue; label: string }[] = [
+  { value: 'free', label: 'free — หนูเก็บวัยเด็ก' },
+  { value: 'pro', label: 'pro — หนูเก็บโตแย้ว' },
+  { value: 'premium', label: 'premium — หนูเก็บแปลงร่าง' },
+  // Legacy raw value; migration 051's CHECK still accepts it and it folds onto
+  // premium. Offered so an existing 'team' row can be seen and edited as itself.
+  { value: 'team', label: 'team (ค่าเดิม — นับเป็น premium)' },
+];
+
+/**
+ * Direct plan override.
+ *
+ * Deliberately NOT a purchase: the endpoint writes users.plan and re-derives
+ * the locker limit, and creates no `subscriptions` row. The copy says so,
+ * because the consequence is real — an admin-granted paid plan has no billing
+ * period and the nightly expiry sweep will never take it away again.
+ */
+function PlanControl({
+  userId,
+  current,
+  onChanged,
+}: {
+  userId: string;
+  current: string;
+  onChanged: (plan: string, normalizedPlan: string, storageLimit: number) => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function change(next: AdminPlanValue): Promise<void> {
+    if (saving || next === current) return;
+    if (!window.confirm(`เปลี่ยนแผนของผู้ใช้นี้จาก "${current}" เป็น "${next}"?`)) return;
+
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await adminSetUserPlan(userId, next);
+      onChanged(res.plan, res.normalizedPlan, res.storageLimit);
+    } catch (e) {
+      setErr(e instanceof ApiError && e.status === 404 ? 'ไม่พบผู้ใช้นี้' : 'เปลี่ยนแผนไม่สำเร็จ');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={D.control}>
+      <label style={D.controlLabel} htmlFor={`plan-${userId}`}>
+        เปลี่ยนแผน (override โดยผู้ดูแล — ไม่สร้างรายการชำระเงิน)
+      </label>
+      <select
+        id={`plan-${userId}`}
+        value={current}
+        disabled={saving}
+        onChange={(e) => void change(e.target.value as AdminPlanValue)}
+        style={D.select}
+      >
+        {PLAN_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {saving && <span style={D.subtle}>กำลังบันทึก…</span>}
+      {err && <div style={D.errorText}>{err}</div>}
+    </div>
+  );
+}
+
+const GB = 1024 * 1024 * 1024;
+
+/**
+ * Manual locker ceiling.
+ *
+ * Entered in GB because that is the unit the whole product talks in, and
+ * converted to bytes here — the API's column is bytes, and a UI that asked for
+ * bytes would be a UI that invites a typo three orders of magnitude wide.
+ *
+ * "ล้างค่า" sends null, which removes the override and hands the user back to
+ * their plan's computed allowance. That is a different thing from entering 0,
+ * which pins them to a zero-byte locker; the copy distinguishes the two because
+ * the field cannot.
+ */
+function StorageOverrideControl({
+  userId,
+  current,
+  onSaved,
+}: {
+  userId: string;
+  current: number | null;
+  onSaved: (override: number | null, storageLimit: number) => void;
+}) {
+  const [gb, setGb] = useState<string>(current === null ? '' : String(current / GB));
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Re-seed when the drawer switches to another user, or after a save changes
+  // the server's value — without this the field would keep the previous user's.
+  useEffect(() => {
+    setGb(current === null ? '' : String(current / GB));
+    setErr(null);
+  }, [current, userId]);
+
+  async function save(bytes: number | null): Promise<void> {
+    if (saving) return;
+    const what = bytes === null ? 'ล้างค่า override และกลับไปใช้โควตาตามแผน' : `ตั้งเพดานเป็น ${bytes / GB} GB`;
+    if (!window.confirm(`${what} สำหรับผู้ใช้นี้?`)) return;
+
+    setSaving(true);
+    setErr(null);
+    try {
+      const res = await adminSetStorageOverride(userId, bytes);
+      onSaved(res.storageLimitOverride, res.storageLimit);
+    } catch (e) {
+      setErr(e instanceof ApiError && e.status === 400 ? 'ค่าที่ใส่ไม่ถูกต้อง (0 – 1024 GB)' : 'บันทึกไม่สำเร็จ');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function submit(): void {
+    const parsed = Number(gb);
+    if (gb.trim() === '' || !Number.isFinite(parsed) || parsed < 0) {
+      setErr('ใส่จำนวน GB เป็นตัวเลขไม่ติดลบ (หรือกด “ล้างค่า”)');
+      return;
+    }
+    // Rounded to whole bytes: the API takes an integer, and a fractional GB
+    // entry would otherwise 400 with a message about integers that means
+    // nothing to whoever typed "2.5".
+    void save(Math.round(parsed * GB));
+  }
+
+  return (
+    <div style={D.control}>
+      <label style={D.controlLabel} htmlFor={`override-${userId}`}>
+        เพดานพื้นที่แบบกำหนดเอง (GB)
+      </label>
+      <div style={D.controlRow}>
+        <input
+          id={`override-${userId}`}
+          type="number"
+          min={0}
+          step="0.5"
+          value={gb}
+          disabled={saving}
+          onChange={(e) => setGb(e.target.value)}
+          placeholder="ใช้ค่าจากแผน"
+          style={D.numberInput}
+        />
+        <button type="button" className="btn" style={D.smallBtn} disabled={saving} onClick={submit}>
+          บันทึก
+        </button>
+        <button
+          type="button"
+          className="btn secondary"
+          style={D.smallBtn}
+          disabled={saving || current === null}
+          onClick={() => void save(null)}
+        >
+          ล้างค่า
+        </button>
+      </div>
+      <p style={D.subtle}>
+        {current === null
+          ? 'ตอนนี้ใช้โควตาตามแผน — ค่าที่ตั้งที่นี่จะไม่ถูกเขียนทับเมื่อเปลี่ยนแผนหรือมีคนกรอกโค้ดแนะนำ'
+          : `override อยู่ที่ ${(current / GB).toFixed(2)} GB · “ล้างค่า” เพื่อกลับไปใช้โควตาตามแผน`}
+      </p>
+      {err && <div style={D.errorText}>{err}</div>}
+    </div>
+  );
+}
+
+/** Zero one monthly counter. Disabled at 0 — there is nothing to reset. */
+function QuotaResetButton({
+  userId,
+  feature,
+  disabled,
+  onReset,
+}: {
+  userId: string;
+  feature: string;
+  disabled: boolean;
+  onReset: () => void;
+}) {
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function reset(): Promise<void> {
+    if (saving) return;
+    if (!window.confirm(`รีเซ็ตโควตา "${feature}" ของเดือนนี้เป็น 0?`)) return;
+
+    setSaving(true);
+    setErr(null);
+    try {
+      await adminResetQuota(userId, feature);
+      onReset();
+    } catch (e) {
+      setErr(
+        // 404 = no row for this period, which already MEANS zero used. Saying
+        // "ยังไม่มีการใช้งาน" is the honest translation of that, not an error.
+        e instanceof ApiError && e.status === 404 ? 'ยังไม่มีการใช้งานเดือนนี้' : 'รีเซ็ตไม่สำเร็จ',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        className="btn secondary"
+        style={{ ...D.smallBtn, marginLeft: 8 }}
+        disabled={saving || disabled}
+        onClick={() => void reset()}
+      >
+        {saving ? '…' : 'Reset'}
+      </button>
+      {err && <div style={D.errorText}>{err}</div>}
+    </>
+  );
+}
+
+/**
+ * Bump users.session_version, invalidating every JWT the user holds.
+ *
+ * The button stays disabled for 5 s after success. Not a rate limit — the
+ * server has none for this — but a pause long enough for the confirmation to be
+ * read, on a control whose only visible effect happens somewhere else entirely.
+ */
+function RevokeSessionsControl({ userId }: { userId: string }) {
+  const [saving, setSaving] = useState(false);
+  const [cooling, setCooling] = useState(false);
+  const [done, setDone] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  // Reset when the drawer switches user, and clear any pending cooldown timer.
+  useEffect(() => {
+    setDone(false);
+    setErr(null);
+    setCooling(false);
+  }, [userId]);
+
+  useEffect(() => {
+    if (!cooling) return;
+    const id = setTimeout(() => setCooling(false), 5000);
+    return () => clearTimeout(id);
+  }, [cooling]);
+
+  async function revoke(): Promise<void> {
+    if (saving || cooling) return;
+    if (!window.confirm('ยกเลิกทุกเซสชันของผู้ใช้นี้? ผู้ใช้จะต้องเข้าสู่ระบบใหม่')) return;
+
+    setSaving(true);
+    setErr(null);
+    try {
+      await adminRevokeSession(userId);
+      setDone(true);
+      setCooling(true);
+    } catch (e) {
+      setErr(
+        e instanceof ApiError && e.status === 409
+          ? 'มีผู้ดูแลคนอื่นทำรายการพร้อมกัน — ลองใหม่อีกครั้ง'
+          : e instanceof ApiError && e.status === 404
+            ? 'ไม่พบผู้ใช้นี้'
+            : 'ยกเลิกเซสชันไม่สำเร็จ',
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div style={D.control}>
+      <button
+        type="button"
+        className="btn secondary"
+        style={{ ...D.smallBtn, ...D.dangerBtn }}
+        disabled={saving || cooling}
+        onClick={() => void revoke()}
+      >
+        {saving ? 'กำลังยกเลิก…' : 'ยกเลิกทุกเซสชัน'}
+      </button>
+      {done && <span style={D.okText}>เซสชันถูกยกเลิกแล้ว</span>}
+      {err && <div style={D.errorText}>{err}</div>}
+      <p style={D.subtle}>โทเคนที่ออกไปแล้วทั้งหมดจะใช้ไม่ได้ทันที (แคช 60 วินาทีถูกล้างให้ด้วย)</p>
     </div>
   );
 }
@@ -1445,5 +1800,43 @@ const D: Record<string, React.CSSProperties> = {
     gap: 8,
     fontSize: 'var(--font-size-xs)',
     marginBottom: 4,
+  },
+
+  /* ---------- TIER 2 write controls ----------
+     Boxed and left-bordered so a control that CHANGES the account is visually
+     distinct from the read-only fields it sits between. */
+  control: {
+    margin: '10px 0 4px',
+    padding: '10px 12px',
+    borderLeft: '3px solid var(--color-primary)',
+    background: 'var(--color-surface-3)',
+    borderRadius: 'var(--radius-sm)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 6,
+  },
+  controlLabel: { fontSize: 'var(--font-size-xs)', fontWeight: 700 },
+  controlRow: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' },
+  smallBtn: { padding: '4px 12px', fontSize: 'var(--font-size-xs)', whiteSpace: 'nowrap' },
+  dangerBtn: { color: 'var(--color-danger, #dc2626)', borderColor: 'rgba(220, 38, 38, 0.4)' },
+  okText: { fontSize: 'var(--font-size-xs)', color: '#16a34a', fontWeight: 600 },
+  select: {
+    fontFamily: 'inherit',
+    fontSize: 'var(--font-size-sm)',
+    padding: '6px 10px',
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
+  },
+  numberInput: {
+    fontFamily: 'inherit',
+    fontSize: 'var(--font-size-sm)',
+    padding: '6px 10px',
+    width: 110,
+    borderRadius: 'var(--radius-sm)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface)',
+    color: 'var(--color-text)',
   },
 };

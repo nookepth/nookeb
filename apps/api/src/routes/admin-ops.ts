@@ -1,5 +1,6 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { z } from 'zod';
 import { config } from '../config';
 import { registerAdminGuard } from '../middleware/adminGuard';
 import { currentPeriodStart, periodResetAtIso } from '../config/billing-period';
@@ -12,6 +13,13 @@ import {
   type QueueKey,
   type QueueStat,
 } from '../services/queue-stats.service';
+import { removeFailedJob, retryFailedJob, summariseJob } from '../services/queue-actions.service';
+import { requireAdminAction } from '../services/admin-audit.service';
+import {
+  invalidatePushEnabledCache,
+  readPushEnabledUncached,
+  setPushEnabled,
+} from '../services/push-flag.service';
 
 /**
  * /admin/system — the OPERATIONS half of the admin surface.
@@ -36,14 +44,23 @@ import {
  * 500 is a broken page. This mirrors the migration-029/042 posture in admin.ts,
  * where an unapplied RPC leaves a panel blank rather than erroring.
  *
- * Nothing here mutates. There is no retry-job, no drain, no ticket reply — the
- * page observes, and every write path stays where it already lives.
+ * ── The fail-soft rule stops at the READ endpoints ──────────────────────────
+ * TIER 2 added four mutating endpoints to this file (the push kill switch, job
+ * retry/remove, ticket triage). They are the exact INVERSE of the contract
+ * above: they validate with zod, they audit through requireAdminAction, and
+ * they answer 4xx/5xx rather than degrading. `soft()` must never wrap one — an
+ * admin told "done" about a write that silently did not happen is the worst
+ * outcome available here, and the whole point of the audit log is that it
+ * cannot occur.
  */
 const adminOpsRoutes: FastifyPluginAsync = async (app) => {
   registerAdminGuard(app);
 
   const clampDays = (raw: string | undefined): number =>
     Math.min(Math.max(Number(raw) || 30, 1), 90);
+
+  /** Acting admin's LINE id — always present, registerAdminGuard authenticates first. */
+  const actor = (request: FastifyRequest): string => request.authUser!.lineUserId;
 
   /**
    * Run a fetch, or return `fallback` if it throws. The one place this file's
@@ -889,6 +906,314 @@ const adminOpsRoutes: FastifyPluginAsync = async (app) => {
         uploadedBy: f.uploaded_by,
         createdAt: f.created_at,
       })),
+    };
+  });
+
+  // ==========================================================================
+  // TIER 2 — the OPS write actions. Read the fail-soft caveat in the file
+  // header first: none of the four below may be wrapped in `soft()`.
+  // ==========================================================================
+
+  // --------------------------------------------------------------------------
+  // GET /admin/settings — the product-wide switches.
+  //
+  // Reads UNCACHED. getPushEnabled()'s 60 s Redis cache exists to keep the push
+  // path cheap; showing an admin a value that may be a minute stale — on the
+  // very page whose job is to tell them what the setting is — would make a flip
+  // look like it did not take.
+  //
+  // This is the one endpoint in the file that answers 500 on a read failure
+  // rather than degrading, and deliberately so: a toggle rendered from a
+  // fabricated default is a switch that lies about its own position.
+  // --------------------------------------------------------------------------
+  app.get('/admin/settings', async () => {
+    const pushEnabled = await readPushEnabledUncached(app.supabase);
+    return { push_enabled: pushEnabled };
+  });
+
+  // --------------------------------------------------------------------------
+  // PUT /admin/settings/push_enabled — the global LINE push kill switch.
+  //
+  // Composes with TASK_NOTIFICATIONS_ENABLED rather than replacing it: that env
+  // flag gates SCHEDULING at deploy time, this row gates DELIVERY at incident
+  // time and takes effect on jobs already queued (see push-flag.service.ts).
+  //
+  // Idempotent — setting the value it already holds writes, audits and returns
+  // 200. Auditing the no-op is deliberate: "an admin asserted push should be
+  // off at 02:14" is exactly the kind of thing an incident timeline needs, and
+  // suppressing it would lose that.
+  // --------------------------------------------------------------------------
+  app.put('/admin/settings/push_enabled', async (request, reply) => {
+    const parsed = z.object({ enabled: z.boolean() }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const next = parsed.data.enabled;
+
+    // Captured BEFORE the write so the compensating revert has a real prior
+    // value rather than assuming it was the negation (a no-op flip would then
+    // revert to the wrong thing).
+    const before = await readPushEnabledUncached(app.supabase);
+
+    try {
+      // setPushEnabled writes the row, invalidates the cache and audits, in
+      // that order. It throws AdminAuditError when the audit insert fails.
+      await setPushEnabled(next, app.supabase, actor(request));
+    } catch (err) {
+      const { error: revertErr } = await app.supabase
+        .from('system_settings')
+        .upsert(
+          { key: 'push_enabled', value: before, updated_at: new Date().toISOString() },
+          { onConflict: 'key' },
+        );
+      if (revertErr) {
+        // The narrow hole in the compensation design: the write stands and is
+        // unaudited. This log line IS the recovery path, so it carries both
+        // values rather than just the error.
+        app.log.error(
+          { err: revertErr, before, attempted: next },
+          'push_enabled revert FAILED — the switch is applied but unaudited',
+        );
+      }
+      // Re-invalidate regardless: the revert changed what the DB says, and the
+      // cache was populated (or cleared) against the value being undone.
+      await invalidatePushEnabledCache();
+      throw err;
+    }
+
+    return { push_enabled: next };
+  });
+
+  // --------------------------------------------------------------------------
+  // POST /admin/system/queues/:queue/jobs/:jobId/{retry,remove}
+  //
+  // Both refuse anything that is not in the FAILED set — the reasoning (an
+  // active job's payload pulled from under a running worker, a delayed reminder
+  // promoted to fire early) is in queue-actions.service.ts.
+  //
+  // AUDIT ORDERING IS INVERTED HERE. Every other TIER 2 write reads, writes,
+  // audits and reverts on failure. A removed BullMQ job cannot be put back, so
+  // these two audit FIRST and act second: a failed audit insert then means
+  // nothing happened at all. The cost is that a crash between the two leaves an
+  // audit row for an action that did not occur, which is the safe direction.
+  // Both hold the job's summary in `before`, since after a removal there is
+  // nothing left to describe.
+  // --------------------------------------------------------------------------
+  const QUEUE_PARAM = z.enum(QUEUE_KEYS);
+
+  interface JobActionParams {
+    queue: string;
+    jobId: string;
+  }
+
+  /** Map a queue-action result onto its HTTP answer. One place, both routes. */
+  function jobActionFailure(
+    result: Exclude<Awaited<ReturnType<typeof retryFailedJob>>, { ok: true }>,
+  ): { code: number; body: Record<string, unknown> } {
+    switch (result.reason) {
+      case 'not_found':
+        return { code: 404, body: { error: 'Job not found', code: 'JOB_NOT_FOUND' } };
+      case 'not_failed':
+        return {
+          code: 409,
+          body: { error: 'job is not failed', code: 'JOB_NOT_FAILED', state: result.state },
+        };
+      case 'queue_unavailable':
+        return { code: 503, body: { error: 'Queue unavailable', code: 'QUEUE_UNAVAILABLE' } };
+      default:
+        return { code: 502, body: { error: 'Queue operation failed', code: 'QUEUE_ERROR' } };
+    }
+  }
+
+  app.post<{ Params: JobActionParams }>(
+    '/admin/system/queues/:queue/jobs/:jobId/retry',
+    async (request, reply) => {
+      const parsed = QUEUE_PARAM.safeParse(request.params.queue);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Unknown queue', queue: request.params.queue });
+      }
+      const key: QueueKey = parsed.data;
+      const jobId = request.params.jobId;
+
+      const snapshot = await summariseJob(app.fileQueue, key, jobId);
+      if (!snapshot) return reply.code(404).send({ error: 'Job not found', code: 'JOB_NOT_FOUND' });
+
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'job_retry',
+        targetType: 'job',
+        targetId: `${key}:${jobId}`,
+        before: { queue: key, ...snapshot },
+        after: { queue: key, requeued: true },
+      });
+
+      const result = await retryFailedJob(app.fileQueue, key, jobId);
+      if (!result.ok) {
+        const { code, body } = jobActionFailure(result);
+        // The audit row stays. It records an authorised attempt, which is true
+        // and is what an "why is there a retry row but the job is still failed?"
+        // question needs to see.
+        return reply.code(code).send(body);
+      }
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Params: JobActionParams }>(
+    '/admin/system/queues/:queue/jobs/:jobId/remove',
+    async (request, reply) => {
+      const parsed = QUEUE_PARAM.safeParse(request.params.queue);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: 'Unknown queue', queue: request.params.queue });
+      }
+      const key: QueueKey = parsed.data;
+      const jobId = request.params.jobId;
+
+      const snapshot = await summariseJob(app.fileQueue, key, jobId);
+      if (!snapshot) return reply.code(404).send({ error: 'Job not found', code: 'JOB_NOT_FOUND' });
+
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'job_remove',
+        targetType: 'job',
+        targetId: `${key}:${jobId}`,
+        before: { queue: key, ...snapshot },
+        // null, not an object: the job no longer exists, and "removed" is the
+        // whole of its resulting state.
+        after: null,
+      });
+
+      const result = await removeFailedJob(app.fileQueue, key, jobId);
+      if (!result.ok) {
+        const { code, body } = jobActionFailure(result);
+        return reply.code(code).send(body);
+      }
+      return { ok: true };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // PATCH /admin/support/tickets/:id — the reply/close half of the SLA queue.
+  //
+  // This is the admin surface whose absence 503-disabled POST/GET /support/*
+  // (see "Temporarily Disabled Endpoints" in CLAUDE.md). It does NOT re-enable
+  // those routes — intake stays closed, and closing that loop is a separate
+  // decision — but it is the half that was missing.
+  //
+  // `reply` HAS NO COLUMN, and one is not being added here. support_tickets
+  // (migration 051) has subject/body/status/first_response_at and no thread. So
+  // the reply text is recorded in the AUDIT ROW's `after`, which is a real,
+  // queryable record of what was said and by whom, and first_response_at is
+  // stamped because that is what "we responded" MEANS to the SLA clock. A
+  // proper reply thread is a schema decision, not something to smuggle in as a
+  // side effect of a triage endpoint.
+  //
+  // 409 on an already-closed ticket: reopening is not a transition this
+  // endpoint offers, and silently editing a closed ticket would move a
+  // first_response_at that a settled SLA was already judged against.
+  //
+  // The response omits `body` — the user's own free text has no business being
+  // echoed back into an admin payload that nothing renders.
+  // --------------------------------------------------------------------------
+  app.patch<{ Params: { id: string } }>('/admin/support/tickets/:id', async (request, reply) => {
+    const parsed = z
+      .object({
+        status: z.enum(['answered', 'closed']).optional(),
+        reply: z.string().max(2000).optional(),
+      })
+      .refine((d) => d.status !== undefined || d.reply !== undefined, {
+        message: 'Provide status, reply, or both',
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const { status: nextStatus, reply: replyText } = parsed.data;
+    const ticketId = request.params.id;
+
+    const { data: current, error: readErr } = await app.supabase
+      .from('support_tickets')
+      .select('id, user_id, subject, status, first_response_at, sla_hours, due_at, plan_at_creation, created_at')
+      .eq('id', ticketId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!current) return reply.code(404).send({ error: 'Ticket not found' });
+
+    const before = current as {
+      id: string;
+      user_id: string;
+      subject: string;
+      status: string;
+      first_response_at: string | null;
+      sla_hours: number;
+      due_at: string;
+      plan_at_creation: string;
+      created_at: string;
+    };
+
+    if (before.status === 'closed') {
+      return reply
+        .code(409)
+        .send({ error: 'Ticket is already closed', code: 'TICKET_CLOSED' });
+    }
+
+    const now = new Date().toISOString();
+    const patch: Record<string, unknown> = { updated_at: now };
+    if (nextStatus !== undefined) patch.status = nextStatus;
+    // Stamped once and never moved: the SLA is judged on the FIRST response, so
+    // a second edit must not reset the clock in the admin's favour.
+    if (before.first_response_at === null) patch.first_response_at = now;
+
+    const { data: updated, error: updErr } = await app.supabase
+      .from('support_tickets')
+      .update(patch)
+      .eq('id', ticketId)
+      .select('id, user_id, subject, status, first_response_at, sla_hours, due_at, plan_at_creation, created_at')
+      .maybeSingle();
+    if (updErr) throw updErr;
+    if (!updated) return reply.code(404).send({ error: 'Ticket not found' });
+
+    const after = updated as typeof before;
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'support_ticket_update',
+        targetType: 'ticket',
+        targetId: ticketId,
+        before: { status: before.status, firstResponseAt: before.first_response_at },
+        after: {
+          status: after.status,
+          firstResponseAt: after.first_response_at,
+          // The only place the reply text is persisted at all — see the note
+          // above. Omitted entirely when none was sent, so a bare status change
+          // does not record an empty reply.
+          ...(replyText !== undefined ? { reply: replyText } : {}),
+        },
+      });
+    } catch (err) {
+      await app.supabase
+        .from('support_tickets')
+        .update({ status: before.status, first_response_at: before.first_response_at })
+        .eq('id', ticketId);
+      throw err;
+    }
+
+    return {
+      ticket: {
+        id: after.id,
+        userId: after.user_id,
+        subject: after.subject,
+        status: after.status,
+        firstResponseAt: after.first_response_at,
+        slaHours: Number(after.sla_hours),
+        dueAt: after.due_at,
+        planAtCreation: after.plan_at_creation,
+        createdAt: after.created_at,
+      },
     };
   });
 };

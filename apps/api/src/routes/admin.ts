@@ -1,13 +1,38 @@
-import type { FastifyPluginAsync } from 'fastify';
+import type { FastifyPluginAsync, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import type { SpaceRecord, UserRecord } from '@nookeb/shared';
 import { isAdminLineUser } from '../config';
 import { registerAdminGuard } from '../middleware/adminGuard';
-import { MONTHLY_FEATURES, normalizePlan, type Plan } from '../config/plans';
+import { currentPeriodStart } from '../config/billing-period';
+import { MONTHLY_FEATURES, normalizePlan, type MonthlyFeature, type Plan } from '../config/plans';
 import { listMonthlyQuotas } from '../services/quota.service';
+import { reconcileBoostsForPlan, syncStorageLimit } from '../services/membership.service';
+import { requireAdminAction } from '../services/admin-audit.service';
+
+/**
+ * The RAW values `users.plan` may hold. Wider than PLANS (the three canonical
+ * plans) because migration 051's CHECK still accepts the legacy 'team', and
+ * normalizePlan folds it onto premium. An admin must be able to see and set the
+ * raw value — hiding 'team' behind normalization would make an existing row
+ * un-editable without also silently rewriting it.
+ */
+const RAW_PLAN_VALUES = ['free', 'pro', 'premium', 'team'] as const;
+type RawPlanValue = (typeof RAW_PLAN_VALUES)[number];
+
+/** Locker ceiling an admin may set by hand: 1 TiB. */
+const MAX_STORAGE_OVERRIDE_BYTES = 1_099_511_627_776;
 
 const adminRoutes: FastifyPluginAsync = async (app) => {
   registerAdminGuard(app);
+
+  /**
+   * The acting admin's LINE user id, for the audit row.
+   *
+   * Non-null by construction: registerAdminGuard runs app.authenticate before
+   * any handler, so `authUser` is always populated here. The helper exists so
+   * the non-null assertion is written once rather than at eight call sites.
+   */
+  const actor = (request: FastifyRequest): string => request.authUser!.lineUserId;
 
   // GET /admin/users — all users with storage + file counts
   app.get('/admin/users', async () => {
@@ -706,6 +731,10 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
         normalizedPlan: plan,
         storageUsed: Number(u.storage_used),
         storageLimit: Number(u.storage_limit),
+        // migration 059. `undefined` (column not yet added) and SQL NULL both
+        // mean "no override", and both must render as "ใช้ค่าจากแผน" rather
+        // than as a 0-byte ceiling — so they collapse to null here, never 0.
+        storageLimitOverride: overrideOf(user),
         createdAt: u.created_at,
         isAdmin: isAdminLineUser(u.line_user_id),
       },
@@ -745,6 +774,471 @@ const adminRoutes: FastifyPluginAsync = async (app) => {
     if (!data) return reply.code(404).send({ error: 'User not found' });
     return { id: (data as UserRecord).id, storageLimit: (data as UserRecord).storage_limit };
   });
+
+  // ==========================================================================
+  // TIER 2 — privileged WRITES.
+  //
+  // Everything below changes someone else's account. Three rules hold for all
+  // of them, and none is optional:
+  //
+  //  1. zod-validated body. No handler reads request.body directly.
+  //  2. requireAdminAction() before the 200. A failed audit insert throws
+  //     AdminAuditError → 500, so an unaudited write cannot be reported as a
+  //     success.
+  //  3. COMPENSATING ROLLBACK. PostgREST has no multi-statement transaction
+  //     (see the contract in admin-audit.service.ts), so each handler reads its
+  //     `before` state, writes, audits, and on an audit failure writes `before`
+  //     back before letting the error propagate. `rollback()` below is that
+  //     step, and it swallows nothing: a revert that itself fails is logged with
+  //     both values, because at that point the log line IS the recovery path.
+  //
+  // These are ADMIN OVERRIDES, not purchases. None of them touches
+  // `subscriptions` and none calls changePlan() — that function is the seam a
+  // future payment webhook will use, and a second caller would be a second way
+  // to mint a paid subscription without payment (see "Temporarily Disabled
+  // Endpoints" in CLAUDE.md).
+  // ==========================================================================
+
+  /**
+   * Undo a write whose audit row could not be written. Never throws — the
+   * AdminAuditError it is compensating for must be the error the admin sees.
+   */
+  async function rollback(label: string, undo: () => PromiseLike<{ error: unknown }>): Promise<void> {
+    try {
+      const { error } = await undo();
+      if (error) {
+        app.log.error({ err: error, step: label }, 'admin rollback FAILED — write is applied but unaudited');
+      }
+    } catch (err) {
+      app.log.error({ err, step: label }, 'admin rollback THREW — write is applied but unaudited');
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // PATCH /admin/users/:id/plan — direct plan override.
+  //
+  // Writes users.plan, then re-derives storage_limit and releases boosts the
+  // new plan no longer entitles the user to. Deliberately does NOT create,
+  // cancel or touch a `subscriptions` row: this grants the ENTITLEMENT without
+  // claiming money changed hands, which is the honest shape for an override and
+  // keeps the billing seam single-caller.
+  //
+  // Consequence worth knowing: an admin-granted paid plan has no
+  // current_period_end, so the nightly expireLapsedSubscriptions() sweep will
+  // never downgrade it. It is permanent until an admin sets it back.
+  // --------------------------------------------------------------------------
+  app.patch<{ Params: { id: string } }>('/admin/users/:id/plan', async (request, reply) => {
+    const parsed = z.object({ plan: z.enum(RAW_PLAN_VALUES) }).safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const userId = request.params.id;
+    const nextRaw: RawPlanValue = parsed.data.plan;
+
+    const { data: current, error: readErr } = await app.supabase
+      .from('users')
+      .select('id, plan, referral_count, storage_limit, storage_limit_override')
+      .eq('id', userId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!current) return reply.code(404).send({ error: 'User not found' });
+
+    const previousRaw = (current.plan as string | null) ?? 'free';
+    const previousLimit = Number(current.storage_limit ?? 0);
+    const override = overrideOf(current);
+    const referralCount = Number((current.referral_count as number | null) ?? 0);
+
+    // Idempotent: setting the plan a user already has is a no-op that still
+    // reports success, so a double-submitted form cannot 409 or double-audit.
+    if (previousRaw === nextRaw) {
+      return {
+        id: userId,
+        plan: previousRaw,
+        normalizedPlan: normalizePlan(previousRaw),
+        storageLimit: previousLimit,
+        storageLimitOverride: override,
+        changed: false,
+      };
+    }
+
+    const { error: updErr } = await app.supabase
+      .from('users')
+      .update({ plan: nextRaw, updated_at: new Date().toISOString() })
+      .eq('id', userId);
+    if (updErr) throw updErr;
+
+    // The plan column is written raw; everything downstream reasons in
+    // normalized plans, so 'team' correctly buys premium limits.
+    const nextPlan: Plan = normalizePlan(nextRaw);
+    const storageLimit = await syncStorageLimit(app.supabase, userId, {
+      plan: nextPlan,
+      referralCount,
+      overrideBytes: override,
+    });
+    await reconcileBoostsForPlan(app.supabase, userId, nextPlan);
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'user_plan_change',
+        targetType: 'user',
+        targetId: userId,
+        before: { plan: previousRaw, storageLimit: previousLimit },
+        after: { plan: nextRaw, storageLimit },
+      });
+    } catch (err) {
+      // Boost releases are NOT reverted: releasing a boost is itself a
+      // recorded, benign action (the user simply reclaims the slot), and
+      // re-activating one would fabricate a fresh 30-day window.
+      await rollback('user_plan_change', () =>
+        app.supabase
+          .from('users')
+          .update({ plan: previousRaw, storage_limit: previousLimit })
+          .eq('id', userId),
+      );
+      throw err;
+    }
+
+    return {
+      id: userId,
+      plan: nextRaw,
+      normalizedPlan: nextPlan,
+      storageLimit,
+      storageLimitOverride: override,
+      changed: true,
+    };
+  });
+
+  // --------------------------------------------------------------------------
+  // PATCH /admin/users/:id/storage-override — manual locker ceiling.
+  //
+  // `bytes: null` REMOVES the override and hands the user back to their plan's
+  // computed allowance. syncStorageLimit() is called in BOTH branches, not just
+  // the non-null one: clearing an override that is still mirrored into
+  // storage_limit would leave the old ceiling in force with nothing recording
+  // why, which is the exact failure the override column was added to end.
+  //
+  // 0 is a REAL value, not "clear it" — it pins the user to a zero-byte locker,
+  // which is a legitimate (if blunt) way to stop an abusive account from
+  // uploading. Only null clears.
+  // --------------------------------------------------------------------------
+  app.patch<{ Params: { id: string } }>('/admin/users/:id/storage-override', async (request, reply) => {
+    const parsed = z
+      .object({
+        bytes: z.union([z.number().int().min(0).max(MAX_STORAGE_OVERRIDE_BYTES), z.null()]),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) {
+      return reply.code(400).send({ error: 'Invalid body', issues: parsed.error.issues });
+    }
+    const userId = request.params.id;
+    const nextOverride = parsed.data.bytes;
+
+    const { data: current, error: readErr } = await app.supabase
+      .from('users')
+      .select('id, plan, referral_count, storage_limit, storage_limit_override')
+      .eq('id', userId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!current) return reply.code(404).send({ error: 'User not found' });
+
+    const previousOverride = overrideOf(current);
+    const previousLimit = Number(current.storage_limit ?? 0);
+    const plan = normalizePlan(current.plan as string | null);
+    const referralCount = Number((current.referral_count as number | null) ?? 0);
+
+    const { error: updErr } = await app.supabase
+      .from('users')
+      .update({ storage_limit_override: nextOverride, updated_at: new Date().toISOString() })
+      .eq('id', userId);
+    if (updErr) throw updErr;
+
+    // Pass the value we just wrote rather than letting syncStorageLimit re-read
+    // it — one fewer round trip, and it cannot read back a concurrent write.
+    const storageLimit = await syncStorageLimit(app.supabase, userId, {
+      plan,
+      referralCount,
+      overrideBytes: nextOverride,
+    });
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'user_storage_override',
+        targetType: 'user',
+        targetId: userId,
+        before: { storageLimitOverride: previousOverride, storageLimit: previousLimit },
+        after: { storageLimitOverride: nextOverride, storageLimit },
+      });
+    } catch (err) {
+      await rollback('user_storage_override', () =>
+        app.supabase
+          .from('users')
+          .update({ storage_limit_override: previousOverride, storage_limit: previousLimit })
+          .eq('id', userId),
+      );
+      throw err;
+    }
+
+    return { id: userId, storageLimitOverride: nextOverride, storageLimit };
+  });
+
+  // --------------------------------------------------------------------------
+  // POST /admin/users/:id/quotas/:feature/reset — zero one monthly counter.
+  //
+  // Scoped to the CURRENT Bangkok period only. user_quotas rows are keyed by
+  // period_start (migration 051), so past months are immutable history and a
+  // reset can never reach them.
+  //
+  // 404 when no row exists for this period, rather than creating one at 0: a
+  // missing row already MEANS zero used (consume_quota inserts on first use),
+  // so creating one would write a row that says nothing and hand back a
+  // success that did nothing.
+  //
+  // Resets EVERY scope for the feature. `group_files` is scoped per group, so a
+  // user can hold several rows for one feature; an admin clicking "reset ไฟล์ใน
+  // กลุ่ม" means all of them, and asking for a group id in that UI would be a
+  // worse question than the one it answers.
+  // --------------------------------------------------------------------------
+  app.post<{ Params: { id: string; feature: string } }>(
+    '/admin/users/:id/quotas/:feature/reset',
+    async (request, reply) => {
+      const { id: userId, feature } = request.params;
+      if (!(MONTHLY_FEATURES as readonly string[]).includes(feature)) {
+        return reply.code(400).send({ error: 'Unknown quota feature', feature });
+      }
+      const monthlyFeature = feature as MonthlyFeature;
+      const period = currentPeriodStart();
+
+      const { data: existing, error: readErr } = await app.supabase
+        .from('user_quotas')
+        .select('id, scope_id, used, limit_value')
+        .eq('user_id', userId)
+        .eq('feature', monthlyFeature)
+        .eq('period_start', period);
+      if (readErr) throw readErr;
+
+      const rows = (existing ?? []) as { id: string; scope_id: string; used: number; limit_value: number }[];
+      if (rows.length === 0) {
+        return reply.code(404).send({ error: 'No quota row for this user, feature and period', period });
+      }
+
+      const { error: updErr } = await app.supabase
+        .from('user_quotas')
+        .update({ used: 0 })
+        .eq('user_id', userId)
+        .eq('feature', monthlyFeature)
+        .eq('period_start', period);
+      if (updErr) throw updErr;
+
+      try {
+        await requireAdminAction({
+          supabase: app.supabase,
+          adminLineId: actor(request),
+          action: 'user_quota_reset',
+          targetType: 'user',
+          targetId: userId,
+          before: {
+            feature: monthlyFeature,
+            period,
+            rows: rows.map((r) => ({ scopeId: r.scope_id, used: Number(r.used) })),
+          },
+          after: { feature: monthlyFeature, period, used: 0 },
+        });
+      } catch (err) {
+        // Restore each scope's own prior counter. A single blanket UPDATE
+        // cannot do this — the rows had different `used` values.
+        for (const r of rows) {
+          await rollback('user_quota_reset', () =>
+            app.supabase
+              .from('user_quotas')
+              .update({ used: r.used })
+              .eq('id', r.id),
+          );
+        }
+        throw err;
+      }
+
+      return {
+        userId,
+        feature: monthlyFeature,
+        period,
+        rowsReset: rows.length,
+        previousUsed: rows.reduce((n, r) => n + Number(r.used ?? 0), 0),
+      };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // POST /admin/users/:id/revoke-sessions — invalidate every issued JWT.
+  //
+  // Bumping users.session_version (migration 009) makes every outstanding token
+  // for that user fail the auth middleware's version check.
+  //
+  // The UPDATE carries `.eq('session_version', before)` so a concurrent bump
+  // cannot be lost: read-modify-write without it would let two admins both read
+  // 4 and both write 5, and the second revocation would silently not happen.
+  // A lost race answers 409 and the admin clicks again.
+  //
+  // The auth middleware caches session_version in Redis for 60 s, so the key is
+  // deleted here — otherwise a revocation an admin just performed would appear
+  // not to work for up to a minute, which is exactly when it matters most.
+  // --------------------------------------------------------------------------
+  app.post<{ Params: { id: string } }>('/admin/users/:id/revoke-sessions', async (request, reply) => {
+    const userId = request.params.id;
+
+    const { data: current, error: readErr } = await app.supabase
+      .from('users')
+      .select('id, session_version')
+      .eq('id', userId)
+      .maybeSingle();
+    if (readErr) throw readErr;
+    if (!current) return reply.code(404).send({ error: 'User not found' });
+
+    // Rows predating migration 009 have no value; the middleware treats missing
+    // as 1, so the same default is used here.
+    const before = Number((current.session_version as number | null) ?? 1);
+    const next = before + 1;
+
+    const { data: updated, error: updErr } = await app.supabase
+      .from('users')
+      .update({ session_version: next, updated_at: new Date().toISOString() })
+      .eq('id', userId)
+      .eq('session_version', before)
+      .select('id')
+      .maybeSingle();
+    if (updErr) throw updErr;
+    if (!updated) {
+      return reply
+        .code(409)
+        .send({ error: 'Session version changed concurrently — retry', code: 'CONCURRENT_REVOKE' });
+    }
+
+    await bustSessionCache(userId);
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'user_revoke_sessions',
+        targetType: 'user',
+        targetId: userId,
+        before: { sessionVersion: before },
+        after: { sessionVersion: next },
+      });
+    } catch (err) {
+      await rollback('user_revoke_sessions', () =>
+        app.supabase
+          .from('users')
+          .update({ session_version: before })
+          .eq('id', userId)
+          .eq('session_version', next),
+      );
+      // Bust again: the revert changed the value the first bust re-populated.
+      await bustSessionCache(userId);
+      throw err;
+    }
+
+    return { id: userId, sessionVersion: next };
+  });
+
+  /**
+   * Drop the auth middleware's 60 s session_version cache for one user.
+   * Never throws — a failed delete only costs up to 60 s of staleness, which
+   * the TTL already bounds, and must not fail a completed revocation.
+   */
+  async function bustSessionCache(userId: string): Promise<void> {
+    try {
+      await app.redis.del(`sv:${userId}`);
+    } catch (err) {
+      app.log.warn({ err, userId }, 'session_version cache bust failed (TTL will expire it)');
+    }
+  }
+
+  // --------------------------------------------------------------------------
+  // POST /admin/tasks/:taskId/cancel-reminders — stop a task's pending pushes.
+  //
+  // The narrow, per-task counterpart to the global push_enabled switch: one
+  // task is chasing a group at 03:00 and only that one should stop.
+  //
+  // Cancels only rows that are BOTH unsent and not already cancelled. Never
+  // deletes: task_reminders rows are stamped (sent_at / failed_at /
+  // cancelled_at) and kept, which is what makes the delivery panel on
+  // /admin/system able to distinguish "withdrawn" from "never scheduled".
+  //
+  // A cancelled row's delayed BullMQ job is NOT removed — it still fires, and
+  // the worker's own cancelled_at check stands it down. That is the same shape
+  // the product's existing completion path uses (rollUpCompletion cancels rows,
+  // not jobs), so there is one cancellation mechanism rather than two.
+  // --------------------------------------------------------------------------
+  app.post<{ Params: { taskId: string } }>('/admin/tasks/:taskId/cancel-reminders', async (request, reply) => {
+    const taskId = request.params.taskId;
+
+    const { data: task, error: taskErr } = await app.supabase
+      .from('tasks')
+      .select('id, title, status')
+      .eq('id', taskId)
+      .maybeSingle();
+    if (taskErr) throw taskErr;
+    if (!task) return reply.code(404).send({ error: 'Task not found' });
+
+    const cancelledAt = new Date().toISOString();
+    const { data: affected, error: updErr } = await app.supabase
+      .from('task_reminders')
+      .update({ cancelled_at: cancelledAt })
+      .eq('task_id', taskId)
+      .is('cancelled_at', null)
+      .is('sent_at', null)
+      .select('id, remind_type, remind_at');
+    if (updErr) throw updErr;
+
+    const rows = (affected ?? []) as { id: string; remind_type: string; remind_at: string }[];
+
+    try {
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'task_cancel_reminders',
+        targetType: 'task',
+        targetId: taskId,
+        before: {
+          taskTitle: (task as { title: string }).title,
+          taskStatus: (task as { status: string }).status,
+          pending: rows.map((r) => ({ id: r.id, remindType: r.remind_type, remindAt: r.remind_at })),
+        },
+        after: { cancelled: rows.length, cancelledAt },
+      });
+    } catch (err) {
+      if (rows.length > 0) {
+        await rollback('task_cancel_reminders', () =>
+          app.supabase
+            .from('task_reminders')
+            .update({ cancelled_at: null })
+            .in(
+              'id',
+              rows.map((r) => r.id),
+            ),
+        );
+      }
+      throw err;
+    }
+
+    return { taskId, cancelled: rows.length };
+  });
 };
+
+/**
+ * users.storage_limit_override, normalised to `number | null`.
+ *
+ * Three shapes collapse to null: SQL NULL, and `undefined` from a row read
+ * before migration 059 added the column. A BIGINT can arrive as a string from
+ * PostgREST, so anything present is coerced through Number().
+ */
+function overrideOf(row: unknown): number | null {
+  const raw = (row as { storage_limit_override?: number | string | null } | null)?.storage_limit_override;
+  return raw === null || raw === undefined ? null : Number(raw);
+}
 
 export default adminRoutes;

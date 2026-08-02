@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream';
 import { config } from '../config';
 import type { FlexMessage } from './flex.service';
+import { getPushEnabled } from './push-flag.service';
 
 const LINE_API = 'https://api.line.me/v2/bot';
 const LINE_DATA_API = 'https://api-data.line.me/v2/bot';
@@ -126,8 +127,32 @@ export class LinePushError extends Error {
  * 5xx = transient) or record failed_at (4xx = permanent, e.g. quota exhausted
  * returns 429 with a monthly-limit message — the caller logs loudly either way
  * because a silent quota failure is this API's known trap).
+ *
+ * GATED BY THE push_enabled KILL SWITCH (migration 059). The guard is HERE, at
+ * the last possible moment, rather than at the scheduling sites, for two
+ * reasons: it is the single choke point every push in the product already goes
+ * through, so nothing can route around it; and gating delivery rather than
+ * scheduling means a flip takes effect on jobs that are already queued and in
+ * flight, which is the whole point of an incident switch.
+ *
+ * A blocked push RETURNS NORMALLY — it is not an error. Throwing would make the
+ * task reminder worker burn three attempts and stamp failed_at on a row that
+ * nothing was wrong with, turning an admin's deliberate silence into a
+ * self-inflicted failure spike on the /admin/system page.
+ *
+ * getPushEnabled() fails OPEN, so a Redis or Supabase outage can never mute the
+ * product here — see the fail-open note in push-flag.service.ts.
  */
 export async function pushMessage(to: string, messages: LineMessage[]): Promise<void> {
+  const enabled = await getPushEnabled();
+  if (!enabled) {
+    // Console only — there is no push_log table yet (TIER 3). The task worker's
+    // own logs plus admin_audit_log's setting_push_enabled row are how a
+    // "why did nothing send?" investigation lands here.
+    console.warn('[push] blocked by push_enabled=false', { to });
+    return;
+  }
+
   let res: Response;
   try {
     res = await fetch(`${LINE_API}/message/push`, {

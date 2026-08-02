@@ -91,33 +91,96 @@ export async function getMembership(
  * This supersedes migration 030's referral_tiers ladder for the FREE plan (see
  * the gap report): the allowance is now base 1 GB + 1 GB per referral capped at
  * 4 GB, computed in code, not read from referral_tiers.
+ *
+ * ── THE ADMIN OVERRIDE WINS (migration 059) ─────────────────────────────────
+ *
+ * The written value is COALESCE(storage_limit_override, lockerLimitBytes(...)).
+ * Before 059 an admin who raised storage_limit by hand had it silently reverted
+ * by the next call to this function — a plan change, a referral redemption or a
+ * lapsed subscription — which is precisely the bug migration 024's GREATEST()
+ * guard was written for on the referral path. Folding the override in at
+ * COMPUTE time makes it durable without teaching every caller about it.
+ *
+ * `overrideBytes` may be supplied by a caller that just wrote the column (PATCH
+ * /admin/users/:id/storage-override), to avoid re-reading a value it already
+ * knows and to close the window where a concurrent write is read back instead.
+ * Pass `null` to mean "no override"; OMIT it to mean "read it from the row".
  */
 export async function syncStorageLimit(
   supabase: SupabaseClient,
   userId: string,
-  opts?: { plan?: Plan; referralCount?: number },
+  opts?: { plan?: Plan; referralCount?: number; overrideBytes?: number | null },
 ): Promise<number> {
   let plan = opts?.plan;
   let referralCount = opts?.referralCount;
+  let override = opts?.overrideBytes;
 
-  if (plan === undefined || referralCount === undefined) {
-    const { data, error } = await supabase
-      .from('users')
-      .select('plan, referral_count')
-      .eq('id', userId)
-      .maybeSingle();
-    if (error) throw error;
-    plan ??= normalizePlan(data?.plan as string | null);
-    referralCount ??= Number((data?.referral_count as number | null) ?? 0);
+  if (plan === undefined || referralCount === undefined || override === undefined) {
+    const row = await readLimitInputs(supabase, userId);
+    plan ??= normalizePlan(row.plan);
+    referralCount ??= Number(row.referral_count ?? 0);
+    override ??= row.storage_limit_override;
   }
 
-  const limit = lockerLimitBytes(plan, referralCount);
+  const computed = lockerLimitBytes(plan, referralCount);
+  const limit = override ?? computed;
   const { error: updErr } = await supabase
     .from('users')
     .update({ storage_limit: limit })
     .eq('id', userId);
   if (updErr) throw updErr;
   return limit;
+}
+
+/**
+ * The three columns syncStorageLimit computes from, read tolerantly.
+ *
+ * `storage_limit_override` only exists once migration 059 is applied. This
+ * function is on the path of every plan change, referral redemption and nightly
+ * subscription expiry, so a PostgREST "column does not exist" here would take
+ * all three down for every user the moment the code deployed ahead of the
+ * migration. It degrades to the pre-059 shape instead — no override, which is
+ * exactly what "the column does not exist yet" means.
+ *
+ * The fallback costs one extra round trip, and only in the window before 059 is
+ * applied. Once it is, the first select always succeeds.
+ */
+async function readLimitInputs(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<{ plan: string | null; referral_count: number | null; storage_limit_override: number | null }> {
+  const withOverride = await supabase
+    .from('users')
+    .select('plan, referral_count, storage_limit_override')
+    .eq('id', userId)
+    .maybeSingle();
+
+  if (!withOverride.error) {
+    const d = withOverride.data as {
+      plan?: string | null;
+      referral_count?: number | null;
+      storage_limit_override?: number | string | null;
+    } | null;
+    return {
+      plan: d?.plan ?? null,
+      referral_count: d?.referral_count ?? null,
+      // BIGINT can arrive as a string from PostgREST once values pass 2^53;
+      // 60 GB does not, but normalising here costs nothing and removes the trap.
+      storage_limit_override:
+        d?.storage_limit_override === null || d?.storage_limit_override === undefined
+          ? null
+          : Number(d.storage_limit_override),
+    };
+  }
+
+  const legacy = await supabase
+    .from('users')
+    .select('plan, referral_count')
+    .eq('id', userId)
+    .maybeSingle();
+  if (legacy.error) throw legacy.error;
+  const d = legacy.data as { plan?: string | null; referral_count?: number | null } | null;
+  return { plan: d?.plan ?? null, referral_count: d?.referral_count ?? null, storage_limit_override: null };
 }
 
 export interface ChangePlanResult {
@@ -225,8 +288,14 @@ export async function changePlan(
  *
  * Imported lazily from boost.service to keep the dependency one-way: boosts
  * know nothing about plan changes, membership drives them.
+ *
+ * EXPORTED for the TIER 2 admin override (PATCH /admin/users/:id/plan), which
+ * moves users.plan directly without going through changePlan() — it is an
+ * override, not a purchase, so it must not fabricate a subscription row. It
+ * still owes the same boost reconciliation, so it calls this rather than
+ * re-deriving the rule.
  */
-async function reconcileBoostsForPlan(
+export async function reconcileBoostsForPlan(
   supabase: SupabaseClient,
   userId: string,
   plan: Plan,

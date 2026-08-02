@@ -2,9 +2,11 @@
  * Read-only BullMQ introspection for the /admin/system page.
  *
  * Every function here is OBSERVATION ONLY. Nothing in this module retries,
- * promotes, drains or removes a job — an ops page that can mutate the queue is
- * a different feature with a different risk profile, and the /admin/* surface
- * has no write path today beyond PATCH /admin/users/:id.
+ * promotes, drains or removes a job. TIER 2 added exactly two mutations
+ * (retry / remove a single failed job) and they live in their own file,
+ * services/queue-actions.service.ts, so this module's read-only guarantee still
+ * holds by inspection. The one thing shared across the boundary is
+ * `resolveQueue` below — resolving a handle is still observation.
  *
  * Queue handles: the file queue is the Fastify decoration installed by
  * plugins/bullmq.ts (already connected, already closed on app shutdown); the
@@ -105,6 +107,18 @@ function resolveQueues(fileQueue: Queue): { key: QueueKey; queue: Queue | null }
  * trips regardless of how many jobs exist — safe to poll on a 10 s timer, which
  * is what the page does.
  */
+/**
+ * One queue handle by key, or null when it cannot be constructed.
+ *
+ * Exported for services/queue-actions.service.ts so the two admin surfaces
+ * agree on exactly which four queues exist and how each handle is obtained —
+ * a second resolver would be a second place for the sheets queue's
+ * lazily-constructed handle to be got wrong.
+ */
+export function resolveQueue(fileQueue: Queue, key: QueueKey): Queue | null {
+  return resolveQueues(fileQueue).find((e) => e.key === key)?.queue ?? null;
+}
+
 export async function getQueueStats(fileQueue: Queue): Promise<QueueStat[]> {
   const entries = resolveQueues(fileQueue);
 
@@ -163,11 +177,11 @@ export async function getFailedJobs(
   fileQueue: Queue,
   key: QueueKey,
 ): Promise<FailedJobSummary[]> {
-  const entry = resolveQueues(fileQueue).find((e) => e.key === key);
-  if (!entry?.queue) return [];
+  const queue = resolveQueue(fileQueue, key);
+  if (!queue) return [];
 
   try {
-    const jobs = await entry.queue.getFailed(0, 19);
+    const jobs = await queue.getFailed(0, 19);
     return jobs.map((job): FailedJobSummary => {
       const data = job.data as { type?: unknown } | null;
       const firstLine = (job.failedReason ?? '').split('\n')[0]?.trim();
