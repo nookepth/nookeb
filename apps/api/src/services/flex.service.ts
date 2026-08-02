@@ -14,19 +14,79 @@ import type { SessionKind } from '@nookeb/shared';
 import { config } from '../config';
 import { documentTypeDisplayName, formatThaiBuddhistDate, type DocumentType } from './docx-builder.service';
 
-const LINE_GREEN = '#06C755';
-const BRAND_RED = '#b53a32'; // nookeb brand — CTA buttons/links
+// ─────────────────────────────────────────────────────────────────────────────
+// DESIGN TOKENS
+//
+// What Flex can and cannot do — read this before "fixing" the card styling:
+// there is NO CSS here. LINE renders these JSON trees natively in its own client,
+// so there is no hover/active/focus state, no `disabled` attribute, no cursor, no
+// entrance animation, no font-family (hence no monospace / tabular-nums), no
+// box-shadow, and no control over the bubble's own corner radius. Anything in a
+// design brief that needs one of those has no equivalent and must be solved a
+// different way — the notes on each helper below say which way was taken.
+//
+// What Flex DOES give us, and what the system below is built out of: per-box
+// `background` linear gradients, `backgroundColor`, `cornerRadius`, `borderWidth`
+// /`borderColor`, `paddingAll`, text `size`/`weight`/`color`/`lineSpacing`/
+// `letterSpacing`, 8-digit #RRGGBBAA colors, and boxes nested to any depth.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// ── Neutrals ────────────────────────────────────────────────────────────────
+const LINE_GREEN = '#06C755'; // reserved for COMPLETED states only (see WORKING)
+const WORKING_AMBER = '#B45309'; // in-flight states — green claimed "done" while a job was still running
+const BRAND_RED = '#b53a32'; // nookeb brand — locker CTA
 const ERROR_RED = '#FF334B';
-const MUTED = '#8C8C8C';
-const INK = '#111111';
-const TEAL = '#0D9488'; // referral accents — invite code + progress-bar fill
+const INK = '#111111'; // headlines
+const BODY = '#374151'; // body copy — 10.3:1 on white
+const MUTED = '#6B7280'; // secondary/helper — 4.87:1 on white (was #8C8C8C = 3.36:1, failed AA)
+const HAIRLINE = '#E5E7EB'; // dividers between key/value rows
+const TEAL = '#0D9488'; // referral progress-bar fill (a BAR, not text — 3:1 non-text is enough)
+const TEAL_TEXT = '#0F766E'; // the same teal darkened to 5.5:1 for anything that is text
 const BAR_TRACK = '#EEEEEE'; // referral progress-bar background
-// Convert-to-Word result card — dark header zone. #1F2937 (slate) over pure
-// #111827 (near-black): it reads as a distinct surface rather than a void, keeps
-// the white title/gray subtitle legible, and pairs cleanly with the brand-red
-// CTA below (near-black would fight the red and feel like an error state).
-const DOCX_HEADER = '#1F2937';
-const DOCX_SUBTITLE = '#D1D5DB'; // light gray subtitle on the dark header
+
+/**
+ * One accent family per card type. The rule the old cards broke: the header and
+ * the CTA must come from the SAME hue — scan shipped a #1E88E5 header over a
+ * #b53a32 button, and รวมไฟล์ a #1E3A5F header over a #2563EB button, so every
+ * card read as two half-finished designs stapled together.
+ *
+ * `from`/`to` are a deliberately DARK, low-travel gradient. That is not only
+ * taste: `soft` (the subtitle color) has to clear 4.5:1 against the LIGHTEST
+ * point of the gradient, which caps `from`'s relative luminance at ~0.135. Every
+ * pair below is checked against that — see the ratios in the comments.
+ */
+interface CardTheme {
+  /** gradient start (top-left) — the lightest point the header ever reaches */
+  from: string;
+  /** gradient end (bottom-right) */
+  to: string;
+  /** CTA button + status accent. Always the same hue as the gradient. */
+  accent: string;
+  /** tinted surface for callouts/meta panels, holds `accent` text at ≥5:1 */
+  tint: string;
+  /** subtitle color on the header — ≥4.5:1 against `from` */
+  soft: string;
+  /** how many marks the header glyph draws — the non-color way to tell cards apart */
+  marks: 1 | 2 | 3;
+}
+
+const THEME = {
+  /** สแกน — blue. white/from 5.75:1 · soft/from 4.56:1 · white/accent 5.69:1 */
+  scan: { from: '#1663C4', to: '#0D3F80', accent: '#1565C0', tint: '#EFF5FE', soft: '#DCE6F5', marks: 3 },
+  /** รวมไฟล์ — indigo. Distinct from scan blue at a glance. white/from 8.1:1 */
+  merge: { from: '#3A45A5', to: '#232C6B', accent: '#3A45A5', tint: '#F0F1FB', soft: '#D5D8F2', marks: 2 },
+  /** แปลงไฟล์ + ผลลัพธ์ Word — teal. white/from 6.0:1 · white/accent 5.50:1 */
+  convert: { from: '#0E6A63', to: '#093F3A', accent: '#0F766E', tint: '#ECF8F6', soft: '#D3EAE7', marks: 1 },
+  /** อัปโหลด/ล็อคเกอร์ — brand red. Intentional: this is the nookeb brand color,
+      and it is the only card family whose CTA points at the locker itself. */
+  locker: { from: '#A83630', to: '#6E241F', accent: BRAND_RED, tint: '#FCF1F0', soft: '#F3D9D7', marks: 1 },
+  /** ไดอารี่ — rose. Was #E85D8A, which held white at only 3.28:1 (failed AA). */
+  diary: { from: '#B92457', to: '#7A1338', accent: '#C2255C', tint: '#FDF0F5', soft: '#F7DAE4', marks: 2 },
+} as const satisfies Record<string, CardTheme>;
+
+// Named shorthands for the diary section further down.
+const DIARY_PINK = THEME.diary.accent;
+const DIARY_PINK_SOFT = THEME.diary.tint;
 
 /**
  * Strip emoji/pictographs from a string for LINE Flex text fields (Fix 5).
@@ -50,21 +110,39 @@ export interface FlexMessage {
   contents: Record<string, unknown>;
 }
 
-/** Small filled square used as a status indicator in place of an icon glyph. */
+// ─────────────────────────────────────────────────────────────────────────────
+// PRIMITIVES — every card is composed from these, so a change here lands on all
+// of them at once. This is the closest Flex gets to a shared stylesheet.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Status indicator: a 9px core inside a 20px tinted halo. The old flat 14px
+ * square carried no weight next to `size:'sm'` text and read as a bullet rather
+ * than a state. The halo is the accent at 18% alpha (#RRGGBBAA — Flex supports
+ * 8-digit hex), so it tints itself from whatever color it is given.
+ */
 function statusDot(color: string): Record<string, unknown> {
   return {
     type: 'box',
     layout: 'vertical',
-    width: '14px',
-    height: '14px',
-    cornerRadius: '4px',
-    backgroundColor: color,
-    contents: [],
+    width: '20px',
+    height: '20px',
+    cornerRadius: '10px',
+    backgroundColor: `${color}2E`,
+    justifyContent: 'center',
+    alignItems: 'center',
+    contents: [
+      { type: 'box', layout: 'vertical', width: '9px', height: '9px', cornerRadius: '5px', backgroundColor: color, contents: [] },
+    ],
   };
 }
 
-/** A [dot] + text row, vertically centred (horizontal box — baseline can't hold a box). */
-function iconRow(color: string, text: string, textColor: string = INK): Record<string, unknown> {
+/**
+ * A [dot] + text row, vertically centred (horizontal box — a baseline layout
+ * cannot hold a box child). Kept at the original signature; every caller in this
+ * file still passes (color, text[, textColor]).
+ */
+function iconRow(color: string, text: string, textColor: string = BODY): Record<string, unknown> {
   return {
     type: 'box',
     layout: 'horizontal',
@@ -72,22 +150,242 @@ function iconRow(color: string, text: string, textColor: string = INK): Record<s
     alignItems: 'center',
     contents: [
       statusDot(color),
-      { type: 'text', text, size: 'sm', color: textColor, flex: 1, wrap: true },
+      { type: 'text', text, size: 'sm', color: textColor, flex: 1, wrap: true, lineSpacing: '5px' },
     ],
   };
 }
 
 /**
- * Gray secondary "cancel" button — lets the user leave merge mode at any step
- * without having to type "ยกเลิก" (sends that same trigger word as a message).
+ * The status block the brief asks for: dot + a heavy primary line + a smaller
+ * muted helper line underneath, indented to hang off the dot's gutter. Use this
+ * instead of {@link iconRow} whenever the row IS the card's headline.
  */
-function cancelButton(): Record<string, unknown> {
+function statusBlock(color: string, title: string, hint?: string): Record<string, unknown> {
+  const lines: Record<string, unknown>[] = [
+    { type: 'text', text: title, weight: 'bold', size: 'md', color: INK, wrap: true, lineSpacing: '4px' },
+  ];
+  if (hint) lines.push({ type: 'text', text: hint, size: 'xs', color: MUTED, wrap: true, lineSpacing: '4px', margin: 'xs' });
+  return {
+    type: 'box',
+    layout: 'horizontal',
+    spacing: 'md',
+    contents: [
+      { type: 'box', layout: 'vertical', width: '20px', contents: [statusDot(color)] },
+      { type: 'box', layout: 'vertical', flex: 1, contents: lines },
+    ],
+  };
+}
+
+/**
+ * Header glyph — 1–3 stacked white bars in a translucent rounded tile. Flex
+ * `image`/`icon` render HTTPS JPEG/PNG only (see the note at the top of this
+ * file), and emoji are banned by the brand rule, so an icon has to be BUILT out
+ * of boxes. The bar count differs per theme, which is what makes the card types
+ * distinguishable to anyone who cannot separate the hues.
+ */
+function headerGlyph(theme: CardTheme): Record<string, unknown> {
+  const bars = Array.from({ length: theme.marks }, () => ({
+    type: 'box',
+    layout: 'vertical',
+    height: '3px',
+    cornerRadius: '2px',
+    backgroundColor: '#FFFFFF',
+    contents: [],
+  }));
+  return {
+    type: 'box',
+    layout: 'vertical',
+    width: '30px',
+    height: '30px',
+    cornerRadius: '9px',
+    backgroundColor: '#FFFFFF29',
+    paddingAll: '8px',
+    spacing: 'xs',
+    justifyContent: 'center',
+    contents: bars,
+  };
+}
+
+/**
+ * Card header: gradient surface + glyph + brand eyebrow + bold title + optional
+ * subtitle. Replaces the old "one bold white word on a flat fill".
+ *
+ * `styles.header.backgroundColor` still has to be set by the caller to
+ * `theme.to` — a LINE client too old for `background.linearGradient` falls back
+ * to it, and without the fallback such a client paints the header white and the
+ * white title vanishes.
+ */
+function cardHeader(theme: CardTheme, title: string, subtitle?: string): Record<string, unknown> {
+  const text: Record<string, unknown>[] = [
+    { type: 'text', text: 'หนูเก็บ', size: 'xxs', color: '#FFFFFF', weight: 'bold', letterSpacing: '2px' },
+    { type: 'text', text: title, weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true, margin: 'xs' },
+  ];
+  if (subtitle) {
+    text.push({ type: 'text', text: subtitle, size: 'xs', color: theme.soft, wrap: true, margin: 'sm', lineSpacing: '4px' });
+  }
+  return {
+    type: 'box',
+    layout: 'vertical',
+    paddingAll: '18px',
+    background: { type: 'linearGradient', angle: '155deg', startColor: theme.from, endColor: theme.to },
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'md',
+        contents: [
+          headerGlyph(theme),
+          { type: 'box', layout: 'vertical', flex: 1, contents: text },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Step rail — the honest substitute for the "spinner / progress bar" the brief
+ * asks for on the in-flight cards. Flex cannot animate anything, and a fake
+ * percentage would be a lie (the worker reports no progress fraction), so this
+ * shows WHICH STAGE the job is at instead: filled segments behind, tinted
+ * segments ahead, and the current stage named underneath.
+ */
+function stepRail(theme: CardTheme, labels: readonly string[], activeIndex: number): Record<string, unknown> {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'sm',
+    margin: 'md',
+    contents: [
+      {
+        type: 'box',
+        layout: 'horizontal',
+        spacing: 'xs',
+        contents: labels.map((_, i) => ({
+          type: 'box',
+          layout: 'vertical',
+          height: '4px',
+          flex: 1,
+          cornerRadius: '2px',
+          backgroundColor: i <= activeIndex ? theme.accent : `${theme.accent}24`,
+          contents: [],
+        })),
+      },
+      {
+        type: 'text',
+        text: `ขั้นที่ ${activeIndex + 1}/${labels.length} · ${labels[activeIndex] ?? ''}`,
+        size: 'xxs',
+        color: MUTED,
+        wrap: true,
+      },
+    ],
+  };
+}
+
+/**
+ * Bullet list with a real hanging indent. Flex has no list component and no
+ * text-indent, so the old cards packed bullets into ONE text node with "\n• " —
+ * which wraps flush to the left margin and loses the indent on the second line.
+ * Each bullet is its own row here, with the marker in a fixed 10px gutter.
+ */
+function bulletList(theme: CardTheme, items: readonly string[]): Record<string, unknown> {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    spacing: 'sm',
+    margin: 'lg',
+    contents: items.map((text) => ({
+      type: 'box',
+      layout: 'horizontal',
+      spacing: 'sm',
+      contents: [
+        {
+          type: 'box',
+          layout: 'vertical',
+          width: '10px',
+          contents: [
+            { type: 'box', layout: 'vertical', width: '4px', height: '4px', cornerRadius: '2px', backgroundColor: theme.accent, offsetTop: '7px', contents: [] },
+          ],
+        },
+        { type: 'text', text, size: 'sm', color: BODY, flex: 1, wrap: true, lineSpacing: '5px' },
+      ],
+    })),
+  };
+}
+
+/** Tinted callout box — a soft `theme.tint` surface holding accent-colored text. */
+function noticeBox(theme: CardTheme, text: string): Record<string, unknown> {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    backgroundColor: theme.tint,
+    cornerRadius: '12px',
+    paddingAll: '12px',
+    margin: 'md',
+    contents: [
+      { type: 'text', text, size: 'xs', color: theme.accent, weight: 'bold', wrap: true, lineSpacing: '4px' },
+    ],
+  };
+}
+
+/**
+ * Full-width primary CTA. `height:'md'` (~52px) is deliberate — `'sm'` is ~40px
+ * and misses the 44px touch-target floor that half these cards were under.
+ *
+ * The plain-text branch is NOT decorative: LINE rejects a `uri` action that
+ * isn't https, so a dev/localhost URL has to degrade to a tappable link line or
+ * the whole message fails to send.
+ */
+function primaryAction(theme: CardTheme, label: string, url: string): Record<string, unknown> {
+  if (!url.startsWith('https://')) {
+    return { type: 'text', text: `${label}: ${url}`, size: 'xs', color: theme.accent, wrap: true };
+  }
   return {
     type: 'button',
-    style: 'secondary',
-    height: 'sm',
-    action: { type: 'message', label: 'ยกเลิก ✖', text: 'ยกเลิก' },
+    style: 'primary',
+    height: 'md',
+    color: theme.accent,
+    action: { type: 'uri', label, uri: url },
   };
+}
+
+/**
+ * Secondary "ยกเลิก" control — an OUTLINED button in the card's own accent.
+ *
+ * Why not `style:'secondary'`: that renders a light-gray filled slab, which is
+ * also how LINE draws a de-emphasised control, so an always-enabled cancel read
+ * as greyed out. Flex has no `disabled` state to distinguish it from, so the
+ * only fix is to stop borrowing the disabled look. The 2px wrapper padding plus
+ * the border lifts the ~40px `sm` button to ~46px of tappable height.
+ *
+ * The label lost its "✖": U+2716 is Extended_Pictographic, i.e. exactly what the
+ * no-emoji-in-Flex-cards brand rule (and `stripEmoji`) exists to keep out.
+ */
+function outlineButton(theme: CardTheme, label: string, text: string): Record<string, unknown> {
+  return {
+    type: 'box',
+    layout: 'vertical',
+    cornerRadius: '12px',
+    borderWidth: '1px',
+    borderColor: `${theme.accent}59`,
+    paddingAll: '2px',
+    contents: [
+      {
+        type: 'button',
+        style: 'link',
+        height: 'sm',
+        color: theme.accent,
+        action: { type: 'message', label, text },
+      },
+    ],
+  };
+}
+
+/**
+ * Gray secondary "cancel" button — lets the user leave a mode at any step
+ * without having to type "ยกเลิก" (sends that same trigger word as a message).
+ */
+function cancelButton(theme: CardTheme): Record<string, unknown> {
+  return outlineButton(theme, 'ยกเลิก', 'ยกเลิก');
 }
 
 /**
@@ -103,53 +401,36 @@ export function buildProgressFlexMessage(params: {
 }): FlexMessage {
   const { total, progressViewUrl } = params;
   const who = params.username ?? 'คุณ';
+  const theme = THEME.locker;
 
-  const footerContents: Record<string, unknown>[] = [
-    { type: 'text', text: 'แป๊บนึงน้าพี่', size: 'xs', color: MUTED, align: 'center' },
-  ];
-  // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
-  footerContents.push(
-    progressViewUrl.startsWith('https://')
-      ? {
-          type: 'button',
-          style: 'primary',
-          color: BRAND_RED,
-          margin: 'md',
-          action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: progressViewUrl },
-        }
-      : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${progressViewUrl}`, size: 'xs', color: BRAND_RED, wrap: true, margin: 'md' },
-  );
   return {
     type: 'flex',
     altText: `หนูกำลังเก็บ ${total} ชิ้นให้อยู่น้า`,
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'รอสักครู่น้า หนูกำลังเก็บอยู่เลย', weight: 'bold', size: 'lg', color: INK, wrap: true },
-        ],
-      },
+      header: cardHeader(theme, 'กำลังเก็บให้อยู่น้า', `รับของจากพี่ ${who} แล้ว ${total} ชิ้น`),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: [
-          { type: 'text', text: `รับของจากพี่ ${who} แล้วน้า`, size: 'sm', color: '#333333', wrap: true },
-          iconRow(LINE_GREEN, 'หนูเก็บให้แล้วน้า'),
+          // WORKING_AMBER, not LINE_GREEN: the old card showed a green dot next to
+          // "หนูเก็บให้แล้วน้า" on a card whose own header says "รอสักครู่". Green is
+          // the completed state everywhere else, so it was claiming a finished
+          // upload while the batch was still streaming to R2.
+          statusBlock(WORKING_AMBER, 'กำลังอัปโหลดเข้าล็อคเกอร์', 'แป๊บนึงน้าพี่ กดปุ่มด้านล่างดูความคืบหน้าแบบสดๆ ได้เลย'),
+          stepRail(theme, ['รับไฟล์', 'อัปโหลด', 'เข้าล็อคเกอร์'], 1),
         ],
       },
       footer: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '12px',
-        contents: footerContents,
+        paddingAll: '14px',
+        contents: [primaryAction(theme, 'ดูล็อคเกอร์ได้เลย', progressViewUrl)],
       },
-      styles: { header: { backgroundColor: '#FFFFFF' }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: theme.to }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
@@ -165,15 +446,7 @@ export function buildProgressFlexMessage(params: {
  * {@link buildPdfMergeFlexMessage}.
  */
 export function buildDocxConvertFlexMessage(): FlexMessage {
-  const header = {
-    type: 'box',
-    layout: 'vertical',
-    paddingAll: '16px',
-    contents: [
-      { type: 'text', text: 'ระบบแปลงไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
-    ],
-  };
-  const styles = { header: { backgroundColor: DOCX_HEADER }, body: { backgroundColor: '#FFFFFF' } };
+  const theme = THEME.convert;
 
   return {
     type: 'flex',
@@ -181,55 +454,63 @@ export function buildDocxConvertFlexMessage(): FlexMessage {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header,
+      header: cardHeader(theme, 'ระบบแปลงไฟล์', 'รูปหรือ PDF เป็นไฟล์ Word (.docx)'),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: [
-          {
-            type: 'text',
-            text: 'ส่งรูปหรือไฟล์ PDF มาได้เลยน้า หนูจะแปลงเป็นไฟล์ Word (.docx) ให้',
-            weight: 'bold',
-            size: 'md',
-            color: INK,
-            wrap: true,
-          },
-          {
-            type: 'text',
-            text: '• เอกสารพิมพ์ชัดๆ ถ่ายตรงๆ จะได้ผลดีที่สุดน้า\n• ลายมือหรือรูปเบลออาจอ่านไม่ค่อยออกน้า\n• เปลี่ยนใจพิมพ์ "ยกเลิก" ได้เลย (โหมดนี้ค้างไว้ 10 นาทีน้า)',
-            size: 'sm',
-            color: '#333333',
-            wrap: true,
-          },
+          statusBlock(theme.accent, 'ส่งไฟล์มาได้เลยน้า', 'รับรูปภาพหรือ PDF หนูจะแปลงให้เป็น Word ที่พี่แก้ต่อได้เลย'),
+          { type: 'separator', margin: 'lg', color: HAIRLINE },
+          bulletList(theme, [
+            'เอกสารพิมพ์ชัดๆ ถ่ายตรงๆ จะได้ผลดีที่สุดน้า',
+            'ลายมือหรือรูปเบลออาจอ่านไม่ค่อยออกน้า',
+          ]),
+          noticeBox(theme, 'โหมดนี้ค้างไว้ 10 นาที เปลี่ยนใจกดยกเลิกด้านล่างได้เลยน้า'),
         ],
       },
       footer: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '12px',
-        contents: [cancelButton()],
+        paddingAll: '14px',
+        contents: [cancelButton(theme)],
       },
-      styles,
+      styles: { header: { backgroundColor: theme.to }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
-
-const SCAN_BLUE = '#1E88E5'; // scan-mode card header — distinct from the merge (red) card
 
 /** Which "ระบบสแกน" (scan-to-PDF) card to build. Mirrors {@link PdfMergeCardVariant}. */
 export type ScanCardVariant =
   | { kind: 'opened' }
   | { kind: 'page'; count: number };
 
-/** Cancel button for the scan cards — sends "หนูเก็บยกเลิก" (prefixed for group safety). */
-function scanCancelButton(): Record<string, unknown> {
+/** Cancel button for the scan/merge cards — sends "หนูเก็บยกเลิก" (prefixed for group safety). */
+function scanCancelButton(theme: CardTheme): Record<string, unknown> {
+  return outlineButton(theme, 'ยกเลิก', 'หนูเก็บยกเลิก');
+}
+
+/**
+ * Session counter — the collected page/file count as a large tabular figure over
+ * its unit. Flex cannot set font-family, so true monospace/tabular-nums is off
+ * the table; `letterSpacing` on an `xxl` numeral is what keeps multi-digit counts
+ * from looking cramped, and the fixed-width column keeps the number's left edge
+ * pinned as it grows from 1 to 20.
+ */
+function countTile(theme: CardTheme, count: number, unit: string): Record<string, unknown> {
   return {
-    type: 'button',
-    style: 'secondary',
-    height: 'sm',
-    action: { type: 'message', label: 'ยกเลิก ✖', text: 'หนูเก็บยกเลิก' },
+    type: 'box',
+    layout: 'vertical',
+    width: '64px',
+    backgroundColor: theme.tint,
+    cornerRadius: '12px',
+    paddingAll: '10px',
+    justifyContent: 'center',
+    contents: [
+      { type: 'text', text: String(count), size: 'xxl', weight: 'bold', color: theme.accent, align: 'center', letterSpacing: '1px' },
+      { type: 'text', text: unit, size: 'xxs', color: theme.accent, align: 'center' },
+    ],
   };
 }
 
@@ -240,13 +521,14 @@ function scanCancelButton(): Record<string, unknown> {
  * 'page' (per-page confirmation).
  */
 export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened' }): FlexMessage {
-  const header = {
+  const theme = THEME.scan;
+  const styles = { header: { backgroundColor: theme.to }, body: { backgroundColor: '#FFFFFF' } };
+  const footer = {
     type: 'box',
     layout: 'vertical',
-    paddingAll: '16px',
-    contents: [{ type: 'text', text: 'ระบบสแกน', weight: 'bold', size: 'lg', color: '#FFFFFF' }],
+    paddingAll: '14px',
+    contents: [scanCancelButton(theme)],
   };
-  const styles = { header: { backgroundColor: SCAN_BLUE }, body: { backgroundColor: '#FFFFFF' } };
 
   if (variant.kind === 'page') {
     const headline = `สแกนแล้ว ${variant.count} หน้าน้า`;
@@ -256,32 +538,36 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
       contents: {
         type: 'bubble',
         size: 'kilo',
-        header,
+        header: cardHeader(theme, 'ระบบสแกน', 'กำลังเก็บหน้าเอกสาร'),
         body: {
           type: 'box',
           layout: 'vertical',
           spacing: 'md',
-          paddingAll: '16px',
+          paddingAll: '18px',
           contents: [
             {
               type: 'box',
               layout: 'horizontal',
-              spacing: 'md',
+              spacing: 'lg',
               alignItems: 'center',
               contents: [
-                statusDot(LINE_GREEN),
-                { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
+                countTile(theme, variant.count, 'หน้า'),
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  flex: 1,
+                  contents: [
+                    { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, wrap: true, lineSpacing: '4px' },
+                    { type: 'text', text: 'ส่งหน้าถัดไปมาได้เรื่อยๆ เลยน้า', size: 'xs', color: MUTED, wrap: true, margin: 'xs' },
+                  ],
+                },
               ],
             },
-            { type: 'text', text: 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
+            stepRail(theme, ['เก็บหน้าเอกสาร', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
+            noticeBox(theme, 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
           ],
         },
-        footer: {
-          type: 'box',
-          layout: 'vertical',
-          paddingAll: '12px',
-          contents: [scanCancelButton()],
-        },
+        footer,
         styles,
       },
     };
@@ -293,39 +579,28 @@ export function buildScanFlexMessage(variant: ScanCardVariant = { kind: 'opened'
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header,
+      header: cardHeader(theme, 'ระบบสแกน', 'ถ่ายเอกสารเป็นไฟล์ PDF คมๆ'),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: [
-          { type: 'text', text: 'เปิดโหมดสแกนเอกสารแล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
-          {
-            type: 'text',
-            text: 'ส่งรูปเอกสารมาได้เลย หนูจะสแกนและแปลงเป็น PDF ให้น้า ครบแล้วพิมพ์ "เสร็จ"',
-            size: 'sm',
-            color: '#333333',
-            wrap: true,
-          },
+          statusBlock(theme.accent, 'เปิดโหมดสแกนแล้วน้า', 'ส่งรูปเอกสารมาทีละหน้าได้เลย หนูจะแต่งให้คมแล้วรวมเป็น PDF ให้'),
+          stepRail(theme, ['เก็บหน้าเอกสาร', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
+          noticeBox(theme, 'ครบทุกหน้าแล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
         ],
       },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '12px',
-        contents: [scanCancelButton()],
-      },
+      footer,
       styles,
     },
   };
 }
 
-// ระบบรวมไฟล์ (migration 044; unified images+PDF) — deep navy header, blue CTA.
-// Deliberately distinct from the scan card's lighter blue (SCAN_BLUE) so the two
-// remaining document modes are never confused at a glance.
-const PDF_NAVY = '#1E3A5F';
-const PDF_BLUE = '#2563EB';
+// ระบบรวมไฟล์ (migration 044; unified images+PDF) — INDIGO (THEME.merge), header
+// and CTA drawn from the one family. It used to be a navy #1E3A5F header over a
+// #2563EB button, two different blues that also collided with the scan card's
+// blue; indigo keeps it clearly distinct from สแกน while staying cohesive itself.
 
 /** Which "ระบบรวมไฟล์" card to build (the single, unified merge card). */
 export type PdfMergeCardVariant =
@@ -341,15 +616,14 @@ export type PdfMergeCardVariant =
 export function buildPdfMergeFlexMessage(
   variant: PdfMergeCardVariant = { kind: 'opened' },
 ): FlexMessage {
-  const header = {
+  const theme = THEME.merge;
+  const styles = { header: { backgroundColor: theme.to }, body: { backgroundColor: '#FFFFFF' } };
+  const footer = {
     type: 'box',
     layout: 'vertical',
-    paddingAll: '16px',
-    contents: [
-      { type: 'text', text: 'ระบบรวมไฟล์', weight: 'bold', size: 'lg', color: '#FFFFFF' },
-    ],
+    paddingAll: '14px',
+    contents: [scanCancelButton(theme)],
   };
-  const styles = { header: { backgroundColor: PDF_NAVY }, body: { backgroundColor: '#FFFFFF' } };
 
   if (variant.kind === 'page') {
     const headline = `เพิ่มไฟล์ ${variant.count} รายการแล้วน้า`;
@@ -359,32 +633,36 @@ export function buildPdfMergeFlexMessage(
       contents: {
         type: 'bubble',
         size: 'kilo',
-        header,
+        header: cardHeader(theme, 'ระบบรวมไฟล์', 'กำลังเก็บไฟล์เข้าคิว'),
         body: {
           type: 'box',
           layout: 'vertical',
           spacing: 'md',
-          paddingAll: '16px',
+          paddingAll: '18px',
           contents: [
             {
               type: 'box',
               layout: 'horizontal',
-              spacing: 'md',
+              spacing: 'lg',
               alignItems: 'center',
               contents: [
-                statusDot(LINE_GREEN),
-                { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, flex: 1, wrap: true },
+                countTile(theme, variant.count, 'ไฟล์'),
+                {
+                  type: 'box',
+                  layout: 'vertical',
+                  flex: 1,
+                  contents: [
+                    { type: 'text', text: headline, weight: 'bold', size: 'md', color: INK, wrap: true, lineSpacing: '4px' },
+                    { type: 'text', text: 'หนูจะรวมตามลำดับที่พี่ส่งมาน้า', size: 'xs', color: MUTED, wrap: true, margin: 'xs' },
+                  ],
+                },
               ],
             },
-            { type: 'text', text: 'ครบทุกไฟล์แล้วพิมพ์ "เสร็จ" ได้เลยน้า', size: 'sm', color: '#333333', wrap: true },
+            stepRail(theme, ['เก็บไฟล์', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
+            noticeBox(theme, 'ครบทุกไฟล์แล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
           ],
         },
-        footer: {
-          type: 'box',
-          layout: 'vertical',
-          paddingAll: '12px',
-          contents: [scanCancelButton()],
-        },
+        footer,
         styles,
       },
     };
@@ -396,29 +674,19 @@ export function buildPdfMergeFlexMessage(
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header,
+      header: cardHeader(theme, 'ระบบรวมไฟล์', 'รวมรูปและ PDF เป็นไฟล์เดียว'),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: [
-          { type: 'text', text: 'เปิดโหมดรวมไฟล์แล้วน้า', weight: 'bold', size: 'md', color: INK, wrap: true },
-          {
-            type: 'text',
-            text: 'รองรับทั้งรูปภาพและ PDF ส่งทีละอันได้เลยน้า ครบแล้วพิมพ์ "เสร็จ" หนูจะรวมเป็นไฟล์เดียวให้',
-            size: 'sm',
-            color: '#333333',
-            wrap: true,
-          },
+          statusBlock(theme.accent, 'เปิดโหมดรวมไฟล์แล้วน้า', 'รองรับทั้งรูปภาพและ PDF ส่งมาทีละอันได้เลย หนูจะรวมตามลำดับที่ส่ง'),
+          stepRail(theme, ['เก็บไฟล์', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'], 0),
+          noticeBox(theme, 'ครบทุกไฟล์แล้วพิมพ์ "เสร็จ" ได้เลยน้า'),
         ],
       },
-      footer: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '12px',
-        contents: [scanCancelButton()],
-      },
+      footer,
       styles,
     },
   };
@@ -440,25 +708,20 @@ export function buildFinalizingFlexMessage(params: {
   dashboardUrl: string;
 }): FlexMessage {
   const { kind, count, dashboardUrl } = params;
-  const headerColor = kind === 'scan' ? SCAN_BLUE : kind === 'pdf' ? PDF_NAVY : BRAND_RED;
-  const accent = kind === 'pdf' ? PDF_BLUE : BRAND_RED;
+  // The session's OWN theme carries through to the finalize card, so the flow
+  // keeps one accent from "เปิดโหมด" to "เข้าล็อคเกอร์" instead of switching hue
+  // at the last step. Legacy 'merge' sessions fall back to the locker red.
+  const theme = kind === 'scan' ? THEME.scan : kind === 'pdf' ? THEME.merge : THEME.locker;
   const title =
     kind === 'scan' ? 'ระบบสแกน' : kind === 'pdf' ? 'ระบบรวมไฟล์' : 'ระบบรวมรูป';
   const statusLine =
     kind === 'scan'
       ? `หนูกำลังสแกน ${count} หน้าเป็น PDF ให้น้า`
       : `หนูกำลังรวม ${count} ไฟล์เป็น PDF ให้น้า`;
-
-  // LINE requires https for uri actions — fall back to plain text in dev (http localhost)
-  const footer = dashboardUrl.startsWith('https://')
-    ? {
-        type: 'button',
-        style: 'primary',
-        color: accent,
-        height: 'sm',
-        action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: dashboardUrl },
-      }
-    : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${dashboardUrl}`, size: 'xs', color: accent, wrap: true };
+  const railLabels =
+    kind === 'scan'
+      ? (['เก็บหน้าเอกสาร', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'] as const)
+      : (['เก็บไฟล์', 'รวมเป็น PDF', 'เข้าล็อคเกอร์'] as const);
 
   return {
     type: 'flex',
@@ -466,24 +729,26 @@ export function buildFinalizingFlexMessage(params: {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        paddingAll: '16px',
-        contents: [{ type: 'text', text: title, weight: 'bold', size: 'lg', color: '#FFFFFF' }],
-      },
+      header: cardHeader(theme, title, 'กำลังสร้างไฟล์ให้น้า'),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: [
-          iconRow(LINE_GREEN, statusLine),
-          { type: 'text', text: 'แป๊บนึงน้าพี่ เดี๋ยวเก็บเข้าล็อคเกอร์ให้เลยน้า', size: 'xs', color: MUTED, wrap: true },
+          // Amber, not green — the PDF does not exist yet at this point. The old
+          // card put a green (= done) dot next to "หนูกำลังสแกน…".
+          statusBlock(WORKING_AMBER, statusLine, 'แป๊บนึงน้าพี่ เดี๋ยวเก็บเข้าล็อคเกอร์ให้เลยน้า'),
+          stepRail(theme, railLabels, 1),
         ],
       },
-      footer: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [footer] },
-      styles: { header: { backgroundColor: headerColor }, body: { backgroundColor: '#FFFFFF' } },
+      footer: {
+        type: 'box',
+        layout: 'vertical',
+        paddingAll: '14px',
+        contents: [primaryAction(theme, 'ดูล็อคเกอร์ได้เลย', dashboardUrl)],
+      },
+      styles: { header: { backgroundColor: theme.to }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
@@ -556,11 +821,11 @@ export function buildRedeemSuccessFlexMessage(params: {
     ? {
         type: 'button',
         style: 'primary',
-        color: TEAL,
+        color: TEAL_TEXT,
         height: 'sm',
         action: { type: 'uri', label: 'อัปโหลดเลย', uri: dashboardUrl },
       }
-    : { type: 'text', text: `อัปโหลดเลย: ${dashboardUrl}`, size: 'xs', color: TEAL, wrap: true };
+    : { type: 'text', text: `อัปโหลดเลย: ${dashboardUrl}`, size: 'xs', color: TEAL_TEXT, wrap: true };
 
   return {
     type: 'flex',
@@ -571,7 +836,7 @@ export function buildRedeemSuccessFlexMessage(params: {
       header: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: TEAL,
+        backgroundColor: TEAL_TEXT,
         paddingAll: '16px',
         contents: [
           { type: 'text', text: 'หนูเก็บ · ได้พื้นที่เพิ่มแล้ว', weight: 'bold', size: 'sm', color: '#FFFFFF', wrap: true },
@@ -584,12 +849,12 @@ export function buildRedeemSuccessFlexMessage(params: {
         paddingAll: '16px',
         contents: [
           { type: 'text', text: 'ยินดีด้วยนะ!', weight: 'bold', size: 'lg', color: INK },
-          { type: 'text', text: `+${bonusGB} GB เพิ่มเข้าบัญชีแล้ว`, size: 'sm', color: TEAL, weight: 'bold' },
+          { type: 'text', text: `+${bonusGB} GB เพิ่มเข้าบัญชีแล้ว`, size: 'sm', color: TEAL_TEXT, weight: 'bold' },
           { type: 'text', text: `พื้นที่ทั้งหมด ${totalGB} GB`, size: 'sm', color: MUTED },
         ],
       },
       footer: { type: 'box', layout: 'vertical', paddingAll: '12px', contents: [footer] },
-      styles: { header: { backgroundColor: TEAL }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: TEAL_TEXT }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
@@ -685,7 +950,7 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
       header: {
         type: 'box',
         layout: 'vertical',
-        backgroundColor: TEAL,
+        backgroundColor: TEAL_TEXT,
         paddingAll: '16px',
         contents: [
           { type: 'text', text: 'หนูเก็บ · โค้ดชวนเพื่อน', color: '#FFFFFF', size: 'sm', weight: 'bold', wrap: true },
@@ -710,7 +975,7 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
                 text: params.code,
                 size: 'xxl',
                 weight: 'bold',
-                color: TEAL,
+                color: TEAL_TEXT,
                 align: 'center',
                 letterSpacing: '4px',
               },
@@ -722,7 +987,7 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
             layout: 'horizontal',
             contents: [
               { type: 'text', text: 'เชิญแล้ว', size: 'xs', color: '#6B7280', flex: 1 },
-              { type: 'text', text: `${params.referralCount} คน`, size: 'xs', color: TEAL, weight: 'bold', align: 'end' },
+              { type: 'text', text: `${params.referralCount} คน`, size: 'xs', color: TEAL_TEXT, weight: 'bold', align: 'end' },
             ],
           },
           // Progress hint
@@ -744,7 +1009,7 @@ export function buildInviteFlexMessage(params: ReferralProgressParams & { code: 
           },
         ],
       },
-      styles: { header: { backgroundColor: TEAL }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: TEAL_TEXT }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
@@ -1120,11 +1385,30 @@ function metaRow(label: string, value: string): Record<string, unknown> {
     type: 'box',
     layout: 'horizontal',
     spacing: 'sm',
+    paddingTop: '8px',
+    paddingBottom: '8px',
     contents: [
-      { type: 'text', text: label, size: 'xs', color: MUTED, flex: 3 },
-      { type: 'text', text: value, size: 'xs', color: '#333333', align: 'end', wrap: true, flex: 5 },
+      { type: 'text', text: label, size: 'xs', color: MUTED, flex: 3, gravity: 'center' },
+      // `align:'end'` + a FIXED flex ratio is the only column alignment Flex
+      // offers: there is no font-family, so no monospace and no tabular figures.
+      // Values still line up on their right edge, which is what makes "1.4 MB"
+      // and "12.7 MB" scan as a column.
+      { type: 'text', text: value, size: 'xs', color: INK, weight: 'bold', align: 'end', wrap: true, flex: 5, gravity: 'center' },
     ],
   };
+}
+
+/**
+ * Key/value panel with hairline dividers BETWEEN rows (never above the first or
+ * below the last — a trailing rule reads as a broken section).
+ */
+function metaTable(rows: readonly Record<string, unknown>[]): Record<string, unknown> {
+  const contents: Record<string, unknown>[] = [];
+  rows.forEach((row, i) => {
+    if (i > 0) contents.push({ type: 'separator', color: HAIRLINE });
+    contents.push(row);
+  });
+  return { type: 'box', layout: 'vertical', margin: 'md', contents };
 }
 
 /**
@@ -1146,20 +1430,20 @@ export function buildConvertToDocxResultCard(params: {
   convertedAt?: Date;
   warning?: string;
 }): FlexMessage {
-  const headerContents: Record<string, unknown>[] = [
-    { type: 'text', text: 'แปลงเป็น Word เสร็จแล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
-  ];
-  if (params.documentType) {
-    headerContents.push({
-      type: 'text',
-      text: `ประเภท: ${documentTypeDisplayName(params.documentType)}`,
-      size: 'xs',
-      color: DOCX_SUBTITLE,
-      wrap: true,
-    });
-  }
+  // Same teal family as the แปลงไฟล์ START card — the result now looks like the
+  // finished state of the mode the user opened, not an unrelated card. It used to
+  // be a neutral slate header over a brand-red button, borrowed from the locker.
+  const theme = THEME.convert;
+  const subtitle = params.documentType
+    ? `ประเภท: ${documentTypeDisplayName(params.documentType)}`
+    : undefined;
 
-  const bodyContents: Record<string, unknown>[] = [iconRow(LINE_GREEN, params.docxFilename)];
+  // Green here is correct and load-bearing: the .docx exists by the time this
+  // card is built. It is the only one of these cards that has earned LINE_GREEN.
+  const bodyContents: Record<string, unknown>[] = [
+    statusBlock(LINE_GREEN, params.docxFilename, 'ไฟล์อยู่ในล็อคเกอร์แล้วน้า เปิดแก้ต่อได้เลย'),
+  ];
+
   const meta: Record<string, unknown>[] = [];
   if (params.pageCount !== undefined) meta.push(metaRow('จำนวนหน้า', `${params.pageCount} หน้า`));
   if (params.fileSize !== undefined) meta.push(metaRow('ขนาดไฟล์', formatFileSize(params.fileSize)));
@@ -1169,11 +1453,18 @@ export function buildConvertToDocxResultCard(params: {
     const when = `${formatThaiBuddhistDate(t)} ${pad(t.getHours())}:${pad(t.getMinutes())} น.`;
     meta.push(metaRow('แปลงเมื่อ', when));
   }
-  if (meta.length > 0) {
-    bodyContents.push({ type: 'separator', margin: 'md', color: BAR_TRACK });
-    bodyContents.push(...meta);
+  if (meta.length > 0) bodyContents.push(metaTable(meta));
+  if (params.warning) {
+    bodyContents.push({
+      type: 'box',
+      layout: 'vertical',
+      backgroundColor: '#FEF3F2',
+      cornerRadius: '12px',
+      paddingAll: '12px',
+      margin: 'md',
+      contents: [iconRow(ERROR_RED, params.warning, '#8A1C13')],
+    });
   }
-  if (params.warning) bodyContents.push(iconRow(ERROR_RED, params.warning, MUTED));
 
   return {
     type: 'flex',
@@ -1181,46 +1472,32 @@ export function buildConvertToDocxResultCard(params: {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'xs',
-        backgroundColor: DOCX_HEADER,
-        paddingAll: '16px',
-        contents: headerContents,
-      },
+      header: cardHeader(theme, 'แปลงเป็น Word เสร็จแล้วน้า', subtitle),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'sm',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: bodyContents,
       },
       footer: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '12px',
-        contents: [
-          params.lockerUrl.startsWith('https://')
-            ? {
-                type: 'button',
-                style: 'primary',
-                color: BRAND_RED,
-                action: { type: 'uri', label: 'ดูล็อคเกอร์ได้เลย', uri: params.lockerUrl },
-              }
-            : { type: 'text', text: `ดูล็อคเกอร์ได้เลย: ${params.lockerUrl}`, size: 'xs', color: BRAND_RED, wrap: true },
-        ],
+        paddingAll: '14px',
+        contents: [primaryAction(theme, 'ดูล็อคเกอร์ได้เลย', params.lockerUrl)],
       },
-      styles: { header: { backgroundColor: DOCX_HEADER }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: theme.to }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
 
 // ── ไดอารี่ 365 วัน (My Diary) ───────────────────────────────────────────────
-// Pink header zone to match the diary's scrapbook aesthetic on the web
+// Rose header zone to match the diary's scrapbook aesthetic on the web
 // (classic_pink template). Same kilo-bubble structure as every other card.
-const DIARY_PINK = '#E85D8A';
-const DIARY_PINK_SOFT = '#FDF0F5';
+// DIARY_PINK / DIARY_PINK_SOFT are defined with the other tokens at the top of
+// the file; the accent moved from #E85D8A to THEME.diary.accent because white
+// text on #E85D8A measured 3.28:1 — under the 4.5:1 AA floor for the header
+// title and well under it for the subtitle.
 
 /**
  * Diary prompt card — replied when "ไดอารี่" arms diary mode. Explains the
@@ -1239,53 +1516,25 @@ export function buildDiaryPromptCard(params: {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        spacing: 'xs',
-        backgroundColor: DIARY_PINK,
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'บันทึกไดอารี่วันนี้', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
-          { type: 'text', text: params.dateThai, size: 'xs', color: '#FCE7F0', wrap: true },
-        ],
-      },
+      header: cardHeader(THEME.diary, 'บันทึกไดอารี่วันนี้', params.dateThai),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'md',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: [
-          iconRow(DIARY_PINK, 'ส่งรูปภาพวันนี้มา 1 รูป'),
-          iconRow(TEAL, 'อยากใส่ข้อความ พิมพ์ก่อนแล้วค่อยส่งรูปน้า'),
-          { type: 'text', text: 'หรือส่งแค่รูปเลยก็ได้นะ', size: 'sm', color: '#333333', wrap: true },
-          {
-            type: 'box',
-            layout: 'vertical',
-            backgroundColor: DIARY_PINK_SOFT,
-            cornerRadius: '8px',
-            paddingAll: '10px',
-            contents: [
-              {
-                type: 'text',
-                text: `รูปนี้จะเป็นวันที่ ${params.nextDayNumber}/365 ของไดอารี่`,
-                size: 'xs',
-                color: DIARY_PINK,
-                weight: 'bold',
-                align: 'center',
-                wrap: true,
-              },
-            ],
-          },
+          statusBlock(DIARY_PINK, 'ส่งรูปภาพวันนี้มา 1 รูป', 'หรือส่งแค่รูปเลยก็ได้นะ'),
+          iconRow(TEAL_TEXT, 'อยากใส่ข้อความ พิมพ์ก่อนแล้วค่อยส่งรูปน้า'),
+          noticeBox(THEME.diary, `รูปนี้จะเป็นวันที่ ${params.nextDayNumber}/365 ของไดอารี่`),
         ],
       },
       footer: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '12px',
-        contents: [cancelButton()],
+        paddingAll: '14px',
+        contents: [cancelButton(THEME.diary)],
       },
-      styles: { header: { backgroundColor: DIARY_PINK }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: THEME.diary.to }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
@@ -1301,8 +1550,7 @@ export function buildDiaryResultCard(params: {
   diaryUrl: string;
 }): FlexMessage {
   const bodyContents: Record<string, unknown>[] = [
-    iconRow(LINE_GREEN, `วันที่ ${params.dayNumber}/365 เรียบร้อย`),
-    { type: 'text', text: params.dateThai, size: 'xs', color: MUTED },
+    statusBlock(LINE_GREEN, `วันที่ ${params.dayNumber}/365 เรียบร้อย`, params.dateThai),
   ];
   const caption = stripEmoji(params.caption).trim();
   if (caption) {
@@ -1310,10 +1558,10 @@ export function buildDiaryResultCard(params: {
       type: 'box',
       layout: 'vertical',
       backgroundColor: DIARY_PINK_SOFT,
-      cornerRadius: '8px',
-      paddingAll: '10px',
-      margin: 'sm',
-      contents: [{ type: 'text', text: caption, size: 'sm', color: '#4B5563', wrap: true }],
+      cornerRadius: '12px',
+      paddingAll: '12px',
+      margin: 'md',
+      contents: [{ type: 'text', text: caption, size: 'sm', color: BODY, wrap: true, lineSpacing: '5px' }],
     });
   }
   return {
@@ -1322,38 +1570,21 @@ export function buildDiaryResultCard(params: {
     contents: {
       type: 'bubble',
       size: 'kilo',
-      header: {
-        type: 'box',
-        layout: 'vertical',
-        backgroundColor: DIARY_PINK,
-        paddingAll: '16px',
-        contents: [
-          { type: 'text', text: 'บันทึกไดอารี่แล้วน้า', weight: 'bold', size: 'lg', color: '#FFFFFF', wrap: true },
-        ],
-      },
+      header: cardHeader(THEME.diary, 'บันทึกไดอารี่แล้วน้า', `วันที่ ${params.dayNumber} จาก 365 วัน`),
       body: {
         type: 'box',
         layout: 'vertical',
         spacing: 'sm',
-        paddingAll: '16px',
+        paddingAll: '18px',
         contents: bodyContents,
       },
       footer: {
         type: 'box',
         layout: 'vertical',
-        paddingAll: '12px',
-        contents: [
-          params.diaryUrl.startsWith('https://')
-            ? {
-                type: 'button',
-                style: 'primary',
-                color: DIARY_PINK,
-                action: { type: 'uri', label: 'ดูไดอารี่ของฉัน', uri: params.diaryUrl },
-              }
-            : { type: 'text', text: `ดูไดอารี่ของฉัน: ${params.diaryUrl}`, size: 'xs', color: DIARY_PINK, wrap: true },
-        ],
+        paddingAll: '14px',
+        contents: [primaryAction(THEME.diary, 'ดูไดอารี่ของฉัน', params.diaryUrl)],
       },
-      styles: { header: { backgroundColor: DIARY_PINK }, body: { backgroundColor: '#FFFFFF' } },
+      styles: { header: { backgroundColor: THEME.diary.to }, body: { backgroundColor: '#FFFFFF' } },
     },
   };
 }
