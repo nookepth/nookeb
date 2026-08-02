@@ -45,16 +45,23 @@ import {
 import { countVaultFiles, evaluateCapacity } from '../services/quota.service';
 import { ensurePlan } from '../middleware/planGuard';
 import { retentionDaysForPlan } from '../jobs/trashCleanup.job';
-import type { Plan } from '../config/plans';
+import { UNLIMITED, planDisplayName, type Plan } from '../config/plans';
 
 /**
  * ห้องนิรภัย (Vault) — PIN-protected, view-only, per-user encrypted store.
  * Web-only: nothing in the LINE webhook/worker writes to vault_files.
  *
- * Guard chain: authenticate (plugin hook) → requireVaultPremium →
- * requireVaultSession. Lock states use 403 + a `code` the web switches on
- * ('VAULT_PREMIUM_REQUIRED' | 'VAULT_LOCKED') — NOT 401, which the web client
- * treats as "logged out" and would clear the whole session hint.
+ * Guard chain: authenticate (plugin hook) → requireVaultSession. Lock states
+ * use 403 + a `code` the web switches on ('VAULT_LOCKED') — NOT 401, which the
+ * web client treats as "logged out" and would clear the whole session hint.
+ *
+ * THE VAULT IS AVAILABLE ON EVERY PLAN. There used to be a requireVaultPremium
+ * guard in this chain (403 VAULT_PREMIUM_REQUIRED) that let only
+ * `users.vault_plan === 'premium'` in at all. It is gone: a plan now changes
+ * only HOW MANY files fit (CAPACITY_LIMITS.vault_files — free 10 / pro 30 /
+ * premium 100), never whether the room opens. `users.vault_plan` is therefore
+ * no longer an access gate; setup-pin still stamps it as a record of the plan
+ * at activation, and nothing reads it.
  *
  * View-side rules (the reason this feature exists):
  *  - NO download endpoint, NO presigned URLs — approved deviation from
@@ -164,27 +171,6 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     return (data as VaultUserRow | null) ?? null;
   }
 
-  // Premium gate (manual vault_plan flag until billing lands), cached in Redis
-  // for 60s — same pattern as the session-version cache in middleware/auth.
-  const planCacheKey = (userId: string): string => `vault_plan:${userId}`;
-  async function requireVaultPremium(
-    request: FastifyRequest,
-    reply: FastifyReply,
-  ): Promise<void> {
-    const userId = request.authUser!.userId;
-    let plan = await app.redis.get(planCacheKey(userId));
-    if (plan === null) {
-      const user = await getVaultUser(userId);
-      plan = user?.vault_plan ?? 'free';
-      await app.redis.set(planCacheKey(userId), plan, 'EX', 60);
-    }
-    if (plan !== 'premium') {
-      await reply
-        .code(403)
-        .send({ error: 'Vault requires premium', code: 'VAULT_PREMIUM_REQUIRED' });
-    }
-  }
-
   // Unlock gate — slides the 15-min session TTL on every guarded call.
   async function requireVaultSession(
     request: FastifyRequest,
@@ -197,7 +183,9 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     }
   }
 
-  const guarded = { preHandler: [requireVaultPremium, requireVaultSession] };
+  // The unlock session is the ONLY gate on vault reads/writes now — no plan
+  // check, by design (see the header).
+  const guarded = { preHandler: [requireVaultSession] };
 
   // Shared PIN verification for unlock + delete: lockout first (429), then
   // argon2 verify; every failure feeds the same per-USER brute-force counter
@@ -252,12 +240,12 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
 
   // POST /vault/setup-pin — first-time activation (authenticate only).
   //
-  // vault_plan is stamped from the user's ACTUAL users.plan, never a hardcoded
-  // 'premium': it used to self-grant premium to anyone who set a PIN, which made
-  // requireVaultPremium above a no-op — setting a 6-digit PIN was the whole
-  // paywall. Setting a PIN is now free and harmless; it simply does not buy the
-  // tier. ensurePlan() is the same resolver every other gate uses (it normalises
-  // the legacy 'team' value to 'premium'), so the two can never disagree.
+  // EVERY plan may set a PIN and open a vault. vault_plan is still stamped from
+  // the user's ACTUAL plan via ensurePlan() (the same resolver every other gate
+  // uses, which normalises the legacy 'team' value to 'premium'), but it is now
+  // only a record of the plan at activation — nothing gates on it, so it can no
+  // longer be wrong in a way a user can feel. The per-file ceiling is read live
+  // from the membership plan on each upload instead.
   app.post('/vault/setup-pin', async (request, reply) => {
     const parsed = pinSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -283,9 +271,8 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
       .eq('id', userId)
       .is('vault_pin_hash', null); // races with a concurrent setup lose here
     if (error) throw error;
-    // Must mirror the value just written — priming this with 'premium' would
-    // hand out a 60-second vault session the DB row does not back.
-    await app.redis.set(planCacheKey(userId), resolvedVaultPlan, 'EX', 60);
+    // No cache prime any more: the `vault_plan:{userId}` key existed solely to
+    // spare the removed premium gate a SELECT per request. Nothing reads it.
 
     void logEvent(app.supabase, { eventType: 'vault_setup', userId, source: 'web' });
     return { success: true };
@@ -312,18 +299,39 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     return { success: true };
   });
 
-  // GET /vault/session-status — drives the web page's 4 states. Non-sliding.
+  // GET /vault/session-status — drives the web page's states. Non-sliding.
+  //
+  // This is the vault's status endpoint (there is no separate /vault/status),
+  // so the per-plan capacity figures are reported here: the web can render
+  // "เหลืออีก X ช่อง" without a second call and without doing the arithmetic.
+  // Reported OUTSIDE the unlock gate on purpose — a slot count is not vault
+  // CONTENT (no filenames, no bytes), and the page needs it to warn before the
+  // user unlocks and picks a file.
   app.get('/vault/session-status', async (request) => {
     const { userId, sessionVersion } = request.authUser!;
-    const [user, expiresIn] = await Promise.all([
+    const [user, expiresIn, plan, vaultFileCount] = await Promise.all([
       getVaultUser(userId),
       peekVaultSession(app.redis, userId, sessionVersion),
+      ensurePlan(request),
+      countVaultFiles(app.supabase, userId),
     ]);
+    const capacity = evaluateCapacity({ plan, feature: 'vault_files', currentCount: vaultFileCount });
+
     return {
       hasPin: Boolean(user?.vault_pin_hash),
-      isPremium: user?.vault_plan === 'premium',
+      // Kept in the payload and pinned TRUE for every plan: the vault is no
+      // longer a premium feature, and the web switches on this field to decide
+      // whether to render the room at all. Dropping it would 404-by-undefined
+      // into the paywall screen for everyone; it now means "may use the vault",
+      // which is universally true. Remove it once the web stops reading it.
+      isPremium: true,
       isUnlocked: expiresIn !== null,
       expiresIn,
+      // §10 capacity — UNLIMITED (-1) is passed through as the sentinel rather
+      // than Infinity, which JSON.stringify would turn into null.
+      vaultFileLimit: capacity.limit,
+      vaultFileCount,
+      vaultSlotsRemaining: capacity.unlimited ? UNLIMITED : capacity.remaining,
     };
   });
 
@@ -346,8 +354,11 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     const userId = request.authUser!.userId;
 
     // §10 — CAPACITY limit on total live vault items (free 10 / pro 30 /
-    // premium 100). Checked BEFORE the storage reservation and before a single
-    // byte is streamed, so a full vault costs nothing to reject.
+    // premium 100, from CAPACITY_LIMITS.vault_files — the single source of
+    // truth for every plan number). Checked BEFORE the storage reservation and
+    // before a single byte is streamed, so a full vault costs nothing to
+    // reject. This ceiling is now the ONLY thing a plan changes about the
+    // vault; access itself is universal.
     //
     // This is a count of live rows, not a monthly counter: deleting a vault
     // file frees the slot immediately. Two simultaneous uploads at 9/10 can
@@ -359,9 +370,15 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     if (!capacity.allowed) {
       mp.file.resume(); // drain so the connection isn't left hanging
       return reply.code(403).send({
-        error: `ห้องนิรภัยเต็มแล้วน้า แพ็กเกจนี้เก็บได้ ${capacity.limit} ไฟล์`,
+        error: `ห้องนิรภัยเต็มแล้วน้า แพ็กเกจ${planDisplayName(plan)}เก็บได้ ${capacity.limit} ไฟล์`,
+        // `code` stays VAULT_FULL because the web switches on it (lib/quota-errors.ts
+        // maps it to the Thai capacity copy) and no frontend file may change here.
+        // `errorCode` carries the newer VAULT_FILE_LIMIT_REACHED name for clients
+        // written against it; collapse the two once the web reads the new one.
         code: 'VAULT_FULL',
+        errorCode: 'VAULT_FILE_LIMIT_REACHED',
         feature: 'vault_files',
+        plan,
         limit: capacity.limit,
         used: capacity.used,
       });
@@ -654,9 +671,11 @@ const vaultRoutes: FastifyPluginAsync = async (app) => {
     const capacity = evaluateCapacity({ plan, feature: 'vault_files', currentCount: vaultCount });
     if (!capacity.allowed) {
       return reply.code(403).send({
-        error: `ห้องนิรภัยเต็มแล้วน้า แพ็กเกจนี้เก็บได้ ${capacity.limit} ไฟล์`,
+        error: `ห้องนิรภัยเต็มแล้วน้า แพ็กเกจ${planDisplayName(plan)}เก็บได้ ${capacity.limit} ไฟล์`,
         code: 'VAULT_FULL',
+        errorCode: 'VAULT_FILE_LIMIT_REACHED',
         feature: 'vault_files',
+        plan,
         limit: capacity.limit,
         used: capacity.used,
       });
