@@ -67,6 +67,28 @@ function baht(amount: number): string {
   return `${amount.toLocaleString('th-TH')} บาท`;
 }
 
+/**
+ * ราคาก่อนลด (compare-at) — the ONLY numbers in this block that do not come from
+ * the API, and the one place it deliberately duplicates /dashboard/plans instead
+ * of importing: they are a marketing anchor, not a price the system ever charged,
+ * so config/plans.ts has no field for them (adding one would imply the billing
+ * code could bill it) and a page file is not a module to import constants from.
+ * KEEP THESE TWO TABLES IN STEP — the account page's copy is the reference.
+ * Monthly figures only; the yearly anchor is 10×, the same "two months free"
+ * shape as the real yearly price.
+ */
+const COMPARE_AT_MONTHLY: Record<string, number> = {
+  pro: 109,
+  premium: 259,
+};
+
+/** The struck-through anchor above the price, or null when there isn't one. */
+function compareAtText(plan: PlanSummaryDto, cycle: BillingCycle): string | null {
+  const monthly = COMPARE_AT_MONTHLY[plan.plan];
+  if (!monthly || plan.pricing.monthly <= 0) return null;
+  return baht(cycle === 'monthly' ? monthly : monthly * 10);
+}
+
 function priceText(plan: PlanSummaryDto, cycle: BillingCycle): string {
   if (plan.pricing.monthly === 0) return 'ฟรี';
   const amount = cycle === 'monthly' ? plan.pricing.monthly : plan.pricing.yearly;
@@ -149,6 +171,7 @@ export default function PlansSection() {
           // Pro is the recommended tier — the first paid step, and the one that
           // covers the limits most groups actually hit.
           const recommended = plan.plan === 'pro';
+          const compareAt = compareAtText(plan, cycle);
           const subLabel = priceSubLabel(plan, cycle);
           return (
             <section
@@ -160,6 +183,15 @@ export default function PlansSection() {
               {/* No emoji on tier names — brand rule. Name comes from the API. */}
               <h3 className={card.cardName}>{plan.displayName}</h3>
 
+              {/* Same spacer trick as the note below: the free tier has no
+                  anchor, so the tag renders hidden and holds the line. */}
+              <div
+                className={card.priceCompare}
+                style={compareAt ? undefined : { visibility: 'hidden' }}
+                aria-hidden={compareAt ? undefined : true}
+              >
+                {compareAt ?? '— บาท'}
+              </div>
               <div className={card.priceRow}>
                 <span className={card.price}>{priceText(plan, cycle)}</span>
               </div>
