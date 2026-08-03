@@ -21,8 +21,8 @@ import {
   addTaskLink,
   deleteTaskLink,
   listGroupTaskMembers,
-  downloadTaskIcs,
 } from '@/lib/api';
+import { saveTaskToCalendar } from '@/lib/taskCalendar';
 import { startLineLogin } from '@/lib/auth';
 import { trackEvent } from '@/lib/track';
 import { formatBytes } from '@/lib/format';
@@ -86,23 +86,6 @@ function toLocalInput(iso: string | null): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(
     d.getMinutes(),
   )}`;
-}
-
-/**
- * Filename for the downloaded .ics. Derived from the task title so a user who
- * saves several tasks does not end up with nookeb-task(3).ics — the API's
- * Content-Disposition is a fixed generic name, which is right for the LINE
- * button (no title context there) and wrong here.
- *
- * Stripped to characters every OS accepts as a filename; an empty result falls
- * back to the generic name rather than producing a bare ".ics".
- */
-function icsFilename(title: string): string {
-  const safe = title
-    .replace(/[\\/:*?"<>|]/g, '')
-    .trim()
-    .slice(0, 60);
-  return safe ? `${safe}.ics` : 'nookeb-task.ics';
 }
 
 /* ---- small inline icons (brand rule: no emoji in UI text) ---- */
@@ -568,13 +551,15 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
       {/* action buttons row — evenly spaced, consistent border-radius */}
       {((isCreator && !isClosed) || calendarDeadline) && (
         <div className={styles.detailActions}>
-          {/* Downloads the real .ics from GET /tasks/:id/ics instead of the old
-              Google-Calendar template redirect. Three things the redirect could
-              not do: it carries EVERY item's deadline (a multi task used to
-              export only the global one), it carries the -1d/-3h alarms the
-              endpoint already builds, and it works with whatever calendar app
-              the user actually uses. Staying on the page also means the
-              in-progress edit sheet / scroll position survive. */}
+          {/* Opens Google Calendar's event template instead of downloading the
+              .ics from GET /tasks/:id/ics. The download is the richer payload
+              (every item's deadline, the -1d/-3h alarms) but it is unusable on
+              the two surfaces this page actually runs on: the LINE in-app
+              browser cannot open a text/calendar attachment at all, and on
+              mobile the file lands in Downloads needing a second manual step.
+              One tap into the user's real calendar beats a richer file nobody
+              opens. The ICS endpoint is untouched for direct links.
+              Shared with the LIFF detail page — see lib/taskCalendar.ts. */}
           {calendarDeadline && (
             <button
               type="button"
@@ -582,8 +567,13 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
               style={{ flex: 1, padding: '13px 10px', whiteSpace: 'nowrap' }}
               onClick={() => {
                 trackEvent('task_ics_download', { task_type: task.type });
-                void downloadTaskIcs(task.id, icsFilename(task.title)).catch(() => {
-                  showToast('ดาวน์โหลดไฟล์ปฏิทินไม่สำเร็จ ลองใหม่อีกทีน้า');
+                void saveTaskToCalendar(
+                  task.id,
+                  task.title,
+                  calendarDeadline,
+                  task.items[0]?.description ?? '',
+                ).catch(() => {
+                  showToast('เปิดปฏิทินไม่สำเร็จ ลองใหม่อีกทีน้า');
                 });
               }}
             >

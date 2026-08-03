@@ -648,11 +648,21 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       if (task.type === 'recurring' && parsed.data.globalDeadline) {
         return reply.code(400).send({ error: 'งานประจำเลื่อนรอบเองตามกำหนด แก้ deadline ไม่ได้น้า' });
       }
-      if (
-        parsed.data.globalDeadline &&
-        new Date(parsed.data.globalDeadline).getTime() <= Date.now()
-      ) {
-        return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
+      // The future-deadline rule applies to a RESCHEDULE, not to re-sending the
+      // deadline the task already has. An overdue task's edit sheet is prefilled
+      // from the stored deadline, so a title-only edit posted the SAME past
+      // instant back and was rejected — the title became uneditable the moment
+      // the deadline passed, for no reason anyone chose. Comparison is by
+      // timestamp, not string: the sheet's datetime-local input has no seconds,
+      // so a stored 18:00:37 comes back as 18:00:00 and would look "changed".
+      let deadlineChanged = parsed.data.globalDeadline !== undefined;
+      if (parsed.data.globalDeadline) {
+        const next = new Date(parsed.data.globalDeadline).getTime();
+        const current = task.global_deadline ? new Date(task.global_deadline).getTime() : null;
+        deadlineChanged = current === null || Math.abs(next - current) >= 60_000;
+        if (deadlineChanged && next <= Date.now()) {
+          return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
+        }
       }
 
       const previousDeadline = task.global_deadline;
@@ -700,7 +710,11 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
       }
 
       const updated = (await getTaskWithDetails(app.supabase, task.id))!;
-      if (parsed.data.globalDeadline !== undefined) {
+      // Only on a real reschedule. A title-only edit on an overdue task re-sends
+      // the SAME deadline (the sheet is prefilled), and cancelling + rebuilding
+      // the rounds for that would churn the still-pending overdue chase for no
+      // change at all.
+      if (deadlineChanged) {
         await rescheduleReminders(app.supabase, updated, previousDeadline);
       }
       return { task: toTaskDto(updated) };
@@ -750,8 +764,18 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
         // Mirrors the create-time rule: every item needs SOME effective deadline.
         return reply.code(400).send({ error: 'ทุกข้อต้องมี deadline (ของข้อเองหรือของงาน)' });
       }
-      if (parsed.data.deadline && new Date(parsed.data.deadline).getTime() <= Date.now()) {
-        return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
+      // Same rule as PATCH /tasks/:id above: reject a reschedule INTO the past,
+      // never a re-send of the item's existing (possibly overdue) deadline.
+      // `deadline` is required by itemDeadlineSchema, so the edit sheet always
+      // sends it even when only the title changed — without this an overdue
+      // sub-item's title could not be corrected at all.
+      if (parsed.data.deadline) {
+        const next = new Date(parsed.data.deadline).getTime();
+        const current = item.deadline ? new Date(item.deadline).getTime() : null;
+        const unchanged = current !== null && Math.abs(next - current) < 60_000;
+        if (!unchanged && next <= Date.now()) {
+          return reply.code(400).send({ error: 'deadline ต้องอยู่ในอนาคตน้า' });
+        }
       }
 
       const itemUpdate: { deadline: string | null; title?: string; description?: string | null } = {

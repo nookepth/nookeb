@@ -375,60 +375,9 @@ export function closeLiff(): void {
 }
 
 /**
- * "บันทึกลงปฏิทิน" — put a task's deadline into the user's calendar.
- *
- * We ALWAYS open the Google Calendar event-template URL, because it is the one
- * path that works in every environment the task view actually runs in:
- *   - the LINE in-app browser CANNOT download/open a `.ics` attachment, so the
- *     old `/tasks/:id/ics` navigation silently did nothing there;
- *   - iOS/Android/desktop browsers all open the Google Calendar template fine.
- * Inside the LINE client we go through `liff.openWindow({ external: true })`
- * (a bare `window.open` is unreliable in the in-app webview); everywhere else
- * we use `window.open`.
- *
- * `taskId` is kept in the signature for call-site compatibility (the ICS
- * endpoint still exists server-side for direct links) but is unused here.
+ * "บันทึกลงปฏิทิน" — re-exported from lib/taskCalendar.ts, which is the single
+ * implementation shared with the DASHBOARD detail page. It lives there rather
+ * than here so the dashboard can use it without importing this module (and with
+ * it, the LIFF SDK) — see that file's header for the open strategy.
  */
-export async function saveTaskToCalendar(
-  taskId: string,
-  title: string,
-  deadlineISO: string,
-  description = '',
-): Promise<void> {
-  void taskId;
-  const pad = (n: number) => String(n).padStart(2, '0');
-  const fmt = (d: Date) =>
-    `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}T${pad(
-      d.getUTCHours(),
-    )}${pad(d.getUTCMinutes())}00Z`;
-  const start = new Date(deadlineISO);
-  const end = new Date(start.getTime() + 3600000);
-  const gcal = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(
-    title || 'งาน',
-  )}&dates=${fmt(start)}/${fmt(end)}&details=${encodeURIComponent(description)}`;
-
-  // 1) Real LIFF client with the SDK ready → open the device's browser, where
-  //    Google Calendar behaves normally.
-  try {
-    if (liff.isInClient()) {
-      liff.openWindow({ url: gcal, external: true });
-      return;
-    }
-  } catch {
-    // SDK not ready — fall through to the UA checks below
-  }
-
-  // 2) LINE in-app browser where the SDK is NOT in-client (task links opened as
-  //    a plain URL): window.open is blocked / opens a blank tab that closes
-  //    instantly, so navigate the CURRENT tab. A top-level navigation to the
-  //    Google Calendar template always works; the user can tap back afterwards.
-  if (/\bLine\//i.test(navigator.userAgent)) {
-    window.location.href = gcal;
-    return;
-  }
-
-  // 3) Everywhere else (Safari/Chrome/desktop) → new tab, with a top-level
-  //    fallback if the popup is blocked.
-  const win = window.open(gcal, '_blank', 'noopener,noreferrer');
-  if (!win) window.location.href = gcal;
-}
+export { saveTaskToCalendar, buildGoogleCalendarUrl } from './taskCalendar';
