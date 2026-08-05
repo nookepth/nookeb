@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SupabaseClient } from '@supabase/supabase-js';
-import { runSheetsTrialExpiry } from './sheetsTrialExpiry.job';
+import { runSheetsTrialExpiry, type RevokeOutcome } from './sheetsTrialExpiry.job';
 
 /**
  * หนูเก็บลองงาน expiry sweep (migration 062).
@@ -76,7 +76,9 @@ function fakeSupabase(
           select: () => ({
             eq: (_col: string, id: string) => ({
               maybeSingle: async () => ({
-                data: connected.has(id) ? { encrypted_token: `enc-${id}` } : null,
+                data: connected.has(id)
+                  ? { encrypted_token: `enc-${id}`, google_email: `${id}@example.test` }
+                  : null,
                 error: null,
               }),
             }),
@@ -106,7 +108,10 @@ function user(id: string, plan = 'free', lineId: string | null = `U-${id}`): Tri
   return { id, line_user_id: lineId, plan, sheets_trial_expires_at: EXPIRED };
 }
 
-function deps(rec: Recorded, revokeResult: (userId: string) => boolean = () => true) {
+function deps(
+  rec: Recorded,
+  revokeResult: (userId: string) => RevokeOutcome = () => 'REVOKED_SUCCESS',
+) {
   return {
     revokeGrant: async (userId: string) => {
       rec.revokeCalls.push(userId);
@@ -164,7 +169,7 @@ describe('runSheetsTrialExpiry', () => {
     const rec = blank();
     const supabase = fakeSupabase([user('u1')], new Set(['u1']), rec);
 
-    const result = await runSheetsTrialExpiry(supabase, deps(rec, () => false));
+    const result = await runSheetsTrialExpiry(supabase, deps(rec, () => 'REVOKE_FAILED_TRANSIENT'));
 
     assert.deepEqual(rec.deletes, [], 'the only copy of the token must survive a retry');
     assert.deepEqual(rec.claims, [], 'claiming here would strand a live grant forever');
@@ -225,13 +230,110 @@ describe('runSheetsTrialExpiry', () => {
         rec.revokeCalls.push(userId);
         if (userId === 'bad') throw new Error('boom');
         rec.order.push(`revoke:${userId}`);
-        return true;
+        return 'REVOKED_SUCCESS' as const;
       },
     });
 
     assert.equal(result.revoked, 1);
     assert.deepEqual(rec.claims, ['good']);
     assert.equal(result.examined, 2);
+  });
+
+  // -------------------------------------------------------------------------
+  // FIX 2 — a decrypt failure is NOT a successful revoke.
+  //
+  // Before the three-state RevokeOutcome, revokeRefreshToken returned `true`
+  // when decryptSecret threw. `true` is what this sweep reads as "Google has
+  // confirmed the grant is gone, destroy the credential" — so it deleted the
+  // row while the grant stayed live at Google, with nothing left able to revoke
+  // it and no record of which account it was on. A VAULT_MASTER_KEY rotation
+  // makes every stored token undecryptable at once, so a single sweep after a
+  // rotation would have orphaned every grant in the product.
+  // -------------------------------------------------------------------------
+  describe('when the stored token cannot be decrypted', () => {
+    const undecryptable = (): RevokeOutcome => 'DECRYPT_FAILED_PERMANENT';
+
+    it('records the orphaned grant BEFORE deleting the credential', async () => {
+      const rec = blank();
+      const recorded: { userId: string; googleEmail: string | null }[] = [];
+      const supabase = fakeSupabase([user('u1')], new Set(['u1']), rec);
+
+      const result = await runSheetsTrialExpiry(supabase, {
+        ...deps(rec, undecryptable),
+        recordOrphan: async (o) => {
+          recorded.push({ userId: o.userId, googleEmail: o.googleEmail });
+          rec.order.push(`orphan:${o.userId}`);
+          return true;
+        },
+      });
+
+      assert.deepEqual(
+        rec.order,
+        ['revoke:u1', 'orphan:u1', 'delete:u1', 'claim:u1'],
+        'the durable record must exist before the row is destroyed',
+      );
+      // The email is the only thing that tells a human WHICH Google account
+      // still carries the grant, and the row holding it is about to go.
+      assert.deepEqual(recorded, [{ userId: 'u1', googleEmail: 'u1@example.test' }]);
+      assert.equal(result.orphaned, 1);
+      assert.equal(result.revoked, 0, 'this must never be counted as a revocation');
+    });
+
+    it('does NOT count the orphan as revoked, and sends no expiry notice', async () => {
+      // The notice says the permission was handed back to Google. For an
+      // orphaned grant that is false, and a false reassurance is worse than
+      // silence — the user would never go and remove it themselves.
+      const rec = blank();
+      const result = await runSheetsTrialExpiry(fakeSupabase([user('u1')], new Set(['u1']), rec), {
+        ...deps(rec, undecryptable),
+        recordOrphan: async () => true,
+      });
+
+      assert.deepEqual(rec.pushes, []);
+      assert.equal(result.orphaned, 1);
+    });
+
+    it('deletes NOTHING when the orphan record could not be written', async () => {
+      // The record is a precondition, not a side effect: without it the grant
+      // becomes invisible forever the moment the row is deleted. So a failed
+      // record leaves everything in place and the next run tries again.
+      const rec = blank();
+      const result = await runSheetsTrialExpiry(fakeSupabase([user('u1')], new Set(['u1']), rec), {
+        ...deps(rec, undecryptable),
+        recordOrphan: async () => false,
+      });
+
+      assert.deepEqual(rec.deletes, []);
+      assert.deepEqual(rec.claims, [], 'claiming would drop this user from the sweep forever');
+      assert.equal(result.orphaned, 0);
+      assert.equal(result.deferred, 1);
+    });
+
+    it('deletes NOTHING when no recorder is wired up at all', async () => {
+      // A missing dependency must fail in the same direction as a failed write.
+      const rec = blank();
+      const result = await runSheetsTrialExpiry(
+        fakeSupabase([user('u1')], new Set(['u1']), rec),
+        deps(rec, undecryptable),
+      );
+
+      assert.deepEqual(rec.deletes, []);
+      assert.deepEqual(rec.claims, []);
+      assert.equal(result.deferred, 1);
+    });
+
+    it('treats a throwing recorder as a failed record', async () => {
+      const rec = blank();
+      const result = await runSheetsTrialExpiry(fakeSupabase([user('u1')], new Set(['u1']), rec), {
+        ...deps(rec, undecryptable),
+        recordOrphan: async () => {
+          throw new Error('audit table unavailable');
+        },
+      });
+
+      assert.deepEqual(rec.deletes, []);
+      assert.equal(result.deferred, 1);
+    });
   });
 
   it('skips silently on a pre-062 database', async () => {

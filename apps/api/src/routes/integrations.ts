@@ -10,6 +10,7 @@ import {
   getIntegration,
   isGoogleSheetsConfigured,
   markRevokePending,
+  recordOrphanedGrant,
   revokeRefreshToken,
   saveIntegration,
 } from '../services/google-sheets.service';
@@ -257,9 +258,46 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
     // disconnected). Idempotent: a second press is a no-op, not a 404.
     if (!row) return { success: true, revoked: false };
 
-    const revoked = await revokeRefreshToken(userId, row.encrypted_token, 'manual_disconnect');
+    const outcome = await revokeRefreshToken(userId, row.encrypted_token, 'manual_disconnect');
 
-    if (!revoked) {
+    // FIX 2 — the token would not decrypt, so this grant can never be revoked
+    // by us. Before the three-state result this arrived as success and the row
+    // was deleted, losing the only trace of a live grant on the user's Google
+    // account. Record it durably FIRST; the record is what makes deleting the
+    // dead row acceptable, so a failed record leaves everything in place.
+    if (outcome === 'DECRYPT_FAILED_PERMANENT') {
+      const recorded = await recordOrphanedGrant(app.supabase, {
+        userId,
+        googleEmail: row.google_email,
+        context: 'manual_disconnect',
+        detail: 'manual disconnect: stored refresh token would not decrypt',
+      });
+      if (!recorded) {
+        request.log.error(
+          { userId },
+          'ALERT unrevocable grant could not be recorded — credential left in place',
+        );
+        return reply.code(503).send({
+          success: false,
+          code: 'DISCONNECT_UNAVAILABLE',
+          message: 'ตอนนี้หนูตัดการเชื่อมต่อให้ไม่ได้น้า ลองใหม่อีกครั้งนะ',
+        });
+      }
+      await deleteIntegration(app.supabase, userId);
+      // Honest: the connection is gone from our side, but the permission at
+      // Google is NOT something we were able to hand back. Telling the user
+      // where to finish the job is the only remedy left.
+      return reply.code(200).send({
+        success: true,
+        revoked: false,
+        code: 'GRANT_NOT_REVOKED',
+        message:
+          'หนูตัดการเชื่อมต่อให้แล้วน้า แต่คืนสิทธิ์ให้อัตโนมัติไม่ได้ — ' +
+          'รบกวนพี่เข้าไปลบสิทธิ์ของหนูเก็บที่ myaccount.google.com/permissions ด้วยน้า',
+      });
+    }
+
+    if (outcome === 'REVOKE_FAILED_TRANSIENT') {
       const parked = await markRevokePending(
         app.supabase,
         userId,
@@ -295,7 +333,7 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
     }
 
     await deleteIntegration(app.supabase, userId);
-    return { success: true, revoked };
+    return { success: true, revoked: outcome === 'REVOKED_SUCCESS' };
   });
 };
 

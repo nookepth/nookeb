@@ -52,13 +52,40 @@ import { listExpiredTrials, markTrialRevoked } from '../services/sheets-trial.se
  */
 const DEFAULT_BATCH_SIZE = 200;
 
+/**
+ * FIX 2 — the three outcomes of a revoke, mirrored here as a structural type.
+ *
+ * Declared locally rather than imported from services/google-sheets.service so
+ * this module stays env-free (project rule 14): that service reads `config` at
+ * import time. The literals are identical and the worker's injected function is
+ * the real one, so a divergence fails to compile at the injection site.
+ */
+export type RevokeOutcome =
+  | 'REVOKED_SUCCESS'
+  | 'REVOKE_FAILED_TRANSIENT'
+  | 'DECRYPT_FAILED_PERMANENT';
+
 export interface SheetsTrialExpiryDeps {
   /**
-   * Revoke the grant at Google. `true` = gone (including "already invalid"),
-   * `false` = transient failure, leave the credential and retry next run.
-   * Injected rather than imported so this module stays env-free.
+   * Revoke the grant at Google. See RevokeOutcome — each result obliges this
+   * sweep to do something different, and the third one used to be indis-
+   * tinguishable from the first. Injected rather than imported so this module
+   * stays env-free.
    */
-  revokeGrant: (userId: string, encryptedToken: string) => Promise<boolean>;
+  revokeGrant: (userId: string, encryptedToken: string) => Promise<RevokeOutcome>;
+  /**
+   * Durably record a grant that can NEVER be revoked (FIX 2), returning whether
+   * it was recorded. The sweep refuses to delete the credential when this
+   * answers false — see the call site.
+   *
+   * Optional only so tests may sweep without it; a missing recorder is treated
+   * as "could not record", i.e. the safe direction.
+   */
+  recordOrphan?: (orphan: {
+    userId: string;
+    googleEmail: string | null;
+    detail: string;
+  }) => Promise<boolean>;
   /** LINE push. Optional: omit to sweep silently (tests, or a muted rollout). */
   push?: (lineUserId: string, text: string) => Promise<void>;
   /**
@@ -85,6 +112,12 @@ export interface SheetsTrialExpiryResult {
   nothingToRevoke: number;
   /** Left for the next run — Google's revoke endpoint was unreachable. */
   deferred: number;
+  /**
+   * FIX 2 — the stored token would not decrypt, so the grant can never be
+   * revoked. Recorded in google_grant_orphans, then the dead credential row was
+   * removed and the trial claimed. Every one of these needs a human.
+   */
+  orphaned: number;
   /** Migration 062 not applied; nothing was read. */
   skipped: boolean;
 }
@@ -128,6 +161,7 @@ export async function runSheetsTrialExpiry(
     keptOnPlan: 0,
     nothingToRevoke: 0,
     deferred: 0,
+    orphaned: 0,
     skipped: false,
   };
 
@@ -156,9 +190,13 @@ export async function runSheetsTrialExpiry(
       }
 
       // ---- 2. Is there a credential to destroy? --------------------------
+      // `google_email` rides along for FIX 2: if the token turns out to be
+      // undecryptable, that address is the only thing that tells a human WHICH
+      // Google account still has a live grant on it, and this row is about to
+      // be deleted.
       const { data: integration, error } = await supabase
         .from('google_integrations')
-        .select('encrypted_token')
+        .select('encrypted_token, google_email')
         .eq('user_id', user.id)
         .maybeSingle();
       if (error) throw error;
@@ -177,15 +215,58 @@ export async function runSheetsTrialExpiry(
       // Before the local delete, always: the encrypted row is the only copy of
       // the refresh token, so deleting first would leave a live grant nobody
       // can ever revoke.
-      const gone = await deps.revokeGrant(
-        user.id,
-        (integration as { encrypted_token: string }).encrypted_token,
-      );
-      if (!gone) {
+      const cred = integration as { encrypted_token: string; google_email: string | null };
+      const outcome = await deps.revokeGrant(user.id, cred.encrypted_token);
+
+      if (outcome === 'REVOKE_FAILED_TRANSIENT') {
         // Transient. Leave the row AND the claim untouched so the next run
         // retries this user from the top. Access is already blocked at request
         // time, so nothing is granted by the delay.
         result.deferred += 1;
+        continue;
+      }
+
+      if (outcome === 'DECRYPT_FAILED_PERMANENT') {
+        // FIX 2. This used to arrive as REVOKED_SUCCESS and fall straight
+        // through to the delete below — destroying the row while the grant
+        // stayed live at Google, silently, with no record of which account it
+        // was on. Nothing can revoke it now, so the ONLY thing of value left is
+        // a durable note that it exists.
+        //
+        // The record is therefore a PRECONDITION of the delete, not a
+        // side-effect of it: if it cannot be written, nothing is touched and the
+        // next run tries again. Retrying the revoke itself is pointless (the
+        // ciphertext will not start decrypting), but retrying the RECORD is not.
+        const recorded = deps.recordOrphan
+          ? await deps
+              .recordOrphan({
+                userId: user.id,
+                googleEmail: cred.google_email,
+                detail: 'trial expiry sweep: stored refresh token would not decrypt',
+              })
+              .catch(() => false)
+          : false;
+
+        if (!recorded) {
+          console.error(
+            `[sheets-trial] ALERT unrevocable grant for ${user.id} could NOT be recorded — ` +
+              'leaving the credential row in place and retrying next run',
+          );
+          result.deferred += 1;
+          continue;
+        }
+
+        const { error: orphanDeleteError } = await supabase
+          .from('google_integrations')
+          .delete()
+          .eq('user_id', user.id);
+        if (orphanDeleteError) throw orphanDeleteError;
+
+        await markTrialRevoked(supabase, user.id, now);
+        result.orphaned += 1;
+        // No push. "หนูคืนสิทธิ์ที่ขอไว้กับ Google เรียบร้อย" is the one thing
+        // the expiry notice says that is now false, and telling a user their
+        // permission was handed back when it was not is worse than silence.
         continue;
       }
 
@@ -236,7 +317,7 @@ export async function runSheetsTrialExpiry(
   console.log(
     `[sheets-trial] sweep examined=${result.examined} revoked=${result.revoked} ` +
       `keptOnPlan=${result.keptOnPlan} nothingToRevoke=${result.nothingToRevoke} ` +
-      `deferred=${result.deferred}`,
+      `deferred=${result.deferred} orphaned=${result.orphaned}`,
   );
   return result;
 }

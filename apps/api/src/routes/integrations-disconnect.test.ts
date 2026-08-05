@@ -74,6 +74,8 @@ interface Db {
   deletes: string[];
   /** Ordered log of the operations that touched the credential table. */
   order: string[];
+  /** FIX 2 — rows written to google_grant_orphans. */
+  orphanInserts: Record<string, unknown>[];
 }
 
 /**
@@ -85,9 +87,10 @@ interface Db {
  * and a fake that ignores the filter would report that as working no matter
  * what the code did.
  */
-function fakeDb(seed: Row[], rec: { order: string[] }): Db {
+function fakeDb(seed: Row[], rec: { order: string[] }, orphanInsertFails = false): Db {
   const rows = [...seed];
   const deletes: string[] = [];
+  const orphanInserts: Record<string, unknown>[] = [];
 
   const from = (table: string): Record<string, unknown> => {
     if (table === 'users') {
@@ -108,6 +111,17 @@ function fakeDb(seed: Row[], rec: { order: string[] }): Db {
         }),
       };
       return u;
+    }
+    if (table === 'google_grant_orphans') {
+      // FIX 2's durable trail. Recorded, and optionally failed on demand.
+      const o: Record<string, unknown> = {
+        insert: async (values: Record<string, unknown>) => {
+          rec.order.push(`orphan:${values.user_id}`);
+          orphanInserts.push(values);
+          return orphanInsertFails ? { error: { message: 'table unavailable' } } : { error: null };
+        },
+      };
+      return o;
     }
     assert.equal(table, 'google_integrations');
     const filters: [string, unknown][] = [];
@@ -179,7 +193,7 @@ function fakeDb(seed: Row[], rec: { order: string[] }): Db {
     return builder;
   };
 
-  return { client: { from }, rows, deletes, order: rec.order };
+  return { client: { from }, rows, deletes, order: rec.order, orphanInserts };
 }
 
 async function buildApp(db: Db): Promise<FastifyInstance> {
@@ -333,6 +347,62 @@ describe('DELETE /integrations/google', () => {
 
     assert.equal(res.statusCode, 200);
     assert.deepEqual(db.deletes, [USER_ID]);
+  });
+
+  // FIX 2 — the token will not decrypt (VAULT_MASTER_KEY rotated). Nothing was
+  // sent to Google and nothing ever can be, so the grant is live and
+  // unrevocable. This used to be reported as a successful revoke and the row was
+  // deleted, erasing the last trace of it.
+  describe('when the stored token cannot be decrypted', () => {
+    /** A syntactically valid but undecryptable ciphertext under the real key. */
+    async function corruptRow(): Promise<Row> {
+      const row = await seedRow();
+      const other = await vaultCrypto.deriveSecretKey('a-different-user-entirely');
+      return { ...row, encrypted_token: vaultCrypto.encryptSecret(other, 'fake-refresh-token') };
+    }
+
+    it('records the orphaned grant before deleting, and does not claim success', async () => {
+      restore = stubRevoke(() => {
+        throw new Error('must not reach Google — nothing could be decrypted to send');
+      });
+
+      const db = fakeDb([await corruptRow()], { order: [] });
+      app = await buildApp(db);
+
+      const res = await app.inject({ method: 'DELETE', url: '/integrations/google' });
+
+      assert.deepEqual(
+        db.order,
+        [`orphan:${USER_ID}`, `delete:${USER_ID}`],
+        'the durable record must exist before the row is destroyed',
+      );
+      assert.equal(db.orphanInserts.length, 1);
+      assert.equal(db.orphanInserts[0]!.reason, 'decrypt_failed');
+      assert.equal(db.orphanInserts[0]!.context, 'manual_disconnect');
+      // The account email is the only thing that names WHICH Google account
+      // still carries the grant, and its row is about to be deleted.
+      assert.equal(db.orphanInserts[0]!.google_email, 'someone@example.test');
+
+      const body = res.json();
+      assert.equal(res.statusCode, 200);
+      assert.equal(body.revoked, false, 'nothing was revoked and the response must say so');
+      assert.equal(body.code, 'GRANT_NOT_REVOKED');
+      assert.match(body.message, /myaccount\.google\.com/);
+    });
+
+    it('deletes nothing when the orphan record cannot be written', async () => {
+      restore = stubRevoke(() => new Response('', { status: 200 }));
+
+      const db = fakeDb([await corruptRow()], { order: [] }, true);
+      app = await buildApp(db);
+
+      const res = await app.inject({ method: 'DELETE', url: '/integrations/google' });
+
+      assert.deepEqual(db.deletes, [], 'without a record, deleting loses the grant forever');
+      assert.equal(db.rows.length, 1);
+      assert.equal(res.statusCode, 503);
+      assert.equal(res.json().code, 'DISCONNECT_UNAVAILABLE');
+    });
   });
 
   it('is idempotent when there is nothing connected', async () => {

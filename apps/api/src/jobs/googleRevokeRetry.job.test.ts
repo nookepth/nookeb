@@ -2,6 +2,7 @@ import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { runGoogleRevokeRetry, REVOKE_STUCK_AFTER_ATTEMPTS } from './googleRevokeRetry.job';
+import type { RevokeOutcome } from './sheetsTrialExpiry.job';
 import { __setRevokeColumnsSupportedForTests } from '../services/google-sheets.service';
 
 /**
@@ -71,7 +72,10 @@ function parked(id: string, attempts = 0): ParkedRow {
   };
 }
 
-function deps(rec: Recorded, revokeResult: (userId: string) => boolean = () => true) {
+function deps(
+  rec: Recorded,
+  revokeResult: (userId: string) => RevokeOutcome = () => 'REVOKED_SUCCESS',
+) {
   return {
     revokeGrant: async (userId: string) => {
       rec.revokes.push(userId);
@@ -80,6 +84,8 @@ function deps(rec: Recorded, revokeResult: (userId: string) => boolean = () => t
     },
   };
 }
+
+const TRANSIENT = (): RevokeOutcome => 'REVOKE_FAILED_TRANSIENT';
 
 describe('runGoogleRevokeRetry', () => {
   beforeEach(() => {
@@ -103,7 +109,7 @@ describe('runGoogleRevokeRetry', () => {
     const rec = blank();
     const result = await runGoogleRevokeRetry(
       fakeSupabase([parked('u1')], rec),
-      deps(rec, () => false),
+      deps(rec, TRANSIENT),
     );
 
     assert.deepEqual(rec.deletes, [], 'the only copy of the token must survive');
@@ -116,7 +122,7 @@ describe('runGoogleRevokeRetry', () => {
     let googleIsUp = false;
     const row = parked('u1');
     const supabase = fakeSupabase([row], rec);
-    const d = deps(rec, () => googleIsUp);
+    const d = deps(rec, () => (googleIsUp ? 'REVOKED_SUCCESS' : 'REVOKE_FAILED_TRANSIENT'));
 
     const first = await runGoogleRevokeRetry(supabase, d);
     assert.equal(first.stillPending, 1);
@@ -137,7 +143,7 @@ describe('runGoogleRevokeRetry', () => {
     // A retry that refreshed it would reset the one clock that makes a
     // permanently stuck grant visible, so only the counter may move.
     const rec = blank();
-    await runGoogleRevokeRetry(fakeSupabase([parked('u1', 4)], rec), deps(rec, () => false));
+    await runGoogleRevokeRetry(fakeSupabase([parked('u1', 4)], rec), deps(rec, TRANSIENT));
 
     assert.deepEqual(rec.attemptBumps, [{ userId: 'u1', attempts: 5 }]);
   });
@@ -149,7 +155,7 @@ describe('runGoogleRevokeRetry', () => {
     const result = await runGoogleRevokeRetry(
       fakeSupabase([parked('u1', REVOKE_STUCK_AFTER_ATTEMPTS - 1)], rec),
       {
-        ...deps(rec, () => false),
+        ...deps(rec, TRANSIENT),
         onStuck: async (row) => {
           stuckReports.push(row.user_id);
         },
@@ -165,7 +171,7 @@ describe('runGoogleRevokeRetry', () => {
     const rec = blank();
     const stuckReports: string[] = [];
     const result = await runGoogleRevokeRetry(fakeSupabase([parked('u1', 0)], rec), {
-      ...deps(rec, () => false),
+      ...deps(rec, TRANSIENT),
       onStuck: async (row) => {
         stuckReports.push(row.user_id);
       },
@@ -183,7 +189,7 @@ describe('runGoogleRevokeRetry', () => {
           rec.revokes.push(userId);
           if (userId === 'bad') throw new Error('boom');
           rec.order.push(`revoke:${userId}`);
-          return true;
+          return 'REVOKED_SUCCESS' as const;
         },
       },
     );
@@ -191,6 +197,53 @@ describe('runGoogleRevokeRetry', () => {
     assert.equal(result.examined, 2);
     assert.equal(result.completed, 1);
     assert.deepEqual(rec.deletes, ['good']);
+  });
+
+  // FIX 2 — the same precondition as the trial sweep: a grant that can never be
+  // revoked must be recorded before the row that points at it is destroyed.
+  describe('when the parked token cannot be decrypted', () => {
+    const undecryptable = (): RevokeOutcome => 'DECRYPT_FAILED_PERMANENT';
+
+    it('records the orphan, then removes the dead row', async () => {
+      const rec = blank();
+      const recorded: string[] = [];
+
+      const result = await runGoogleRevokeRetry(fakeSupabase([parked('u1')], rec), {
+        ...deps(rec, undecryptable),
+        recordOrphan: async (o) => {
+          recorded.push(o.userId);
+          rec.order.push(`orphan:${o.userId}`);
+          return true;
+        },
+      });
+
+      assert.deepEqual(rec.order, ['revoke:u1', 'orphan:u1', 'delete:u1']);
+      assert.deepEqual(recorded, ['u1']);
+      assert.equal(result.orphaned, 1);
+      assert.equal(result.completed, 0, 'an orphan is not a completed revocation');
+    });
+
+    it('keeps the row parked when the orphan record could not be written', async () => {
+      const rec = blank();
+      const result = await runGoogleRevokeRetry(fakeSupabase([parked('u1')], rec), {
+        ...deps(rec, undecryptable),
+        recordOrphan: async () => false,
+      });
+
+      assert.deepEqual(rec.deletes, []);
+      assert.equal(result.orphaned, 0);
+      assert.equal(result.stillPending, 1);
+    });
+
+    it('keeps the row parked when no recorder is wired up', async () => {
+      const rec = blank();
+      const result = await runGoogleRevokeRetry(
+        fakeSupabase([parked('u1')], rec),
+        deps(rec, undecryptable),
+      );
+      assert.deepEqual(rec.deletes, []);
+      assert.equal(result.stillPending, 1);
+    });
   });
 
   it('skips silently on a pre-063 database', async () => {

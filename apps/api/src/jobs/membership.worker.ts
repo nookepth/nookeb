@@ -12,7 +12,7 @@ import { config } from '../config';
 import { createRedis } from '../plugins/redis';
 import { pushMessage } from '../services/line.service';
 import { getFlag } from '../services/feature-flags.service';
-import { revokeRefreshToken } from '../services/google-sheets.service';
+import { recordOrphanedGrant, revokeRefreshToken } from '../services/google-sheets.service';
 import { getSheetsQueue } from '../services/sheetsQueue';
 import { MEMBERSHIP_QUEUE, type MembershipJob } from './membership.queue';
 import { runQuotaPeriodCleanup } from './quotaReset.job';
@@ -68,6 +68,12 @@ export function createMembershipWorker(): Worker<MembershipJob> {
             // Context is explicit so the sweep's revoke failures are greppable
             // apart from a user-initiated disconnect's (FIX 1).
             revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'trial_sweep'),
+            // FIX 2 — the durable trail for a grant that can never be revoked.
+            // Injected (rather than imported inside the job) so the job module
+            // stays env-free; the sweep refuses to delete a credential when
+            // this answers false.
+            recordOrphan: (orphan) =>
+              recordOrphanedGrant(supabase, { ...orphan, context: 'trial_sweep' }),
             push: async (to, text) => {
               await pushMessage(to, [{ type: 'text', text }], supabase, 'sheets_trial');
             },
@@ -88,6 +94,8 @@ export function createMembershipWorker(): Worker<MembershipJob> {
           // knows about plans.
           await runGoogleRevokeRetry(supabase, {
             revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'pending_retry'),
+            recordOrphan: (orphan) =>
+              recordOrphanedGrant(supabase, { ...orphan, context: 'pending_retry' }),
           });
           break;
         default: {

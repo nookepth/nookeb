@@ -520,24 +520,63 @@ export async function authorizedClient(
 }
 
 /**
+ * The three genuinely different outcomes of a revoke attempt — FIX 2.
+ *
+ * This USED TO BE A BOOLEAN, and the bug was structural rather than a slip: two
+ * values cannot express three states, so the undecryptable case had to be
+ * reported as one of the other two, and it was reported as SUCCESS. The sweep
+ * reads success as "Google has confirmed the grant is gone, destroy the
+ * credential" — so a token that had never been sent anywhere was deleted while
+ * the grant stayed live at Google, permanently and with no record. Rotating
+ * VAULT_MASTER_KEY makes every stored token undecryptable at once, so the first
+ * sweep after a rotation would have orphaned every outstanding grant in the
+ * product in one pass.
+ *
+ * Each value carries a different obligation for the caller, and there is no
+ * sensible default for a caller that ignores the distinction — which is why
+ * this is a union and not a boolean with a side channel.
+ */
+export type RevokeOutcome =
+  /**
+   * The grant is gone. Either we just revoked it, or Google says the token is
+   * already invalid/unknown — that second case is success, not failure: the
+   * user revoked us from their Google account page, or an earlier run revoked
+   * it and died before deleting the row. Treating it as an error would wedge
+   * that user in the sweep forever, retried every 15 minutes against a token
+   * that will never become valid again.
+   *
+   * OBLIGATION: none. Deleting the credential is now safe.
+   */
+  | 'REVOKED_SUCCESS'
+  /**
+   * Network, timeout, or a Google 5xx. Nothing has been revoked YET, but it
+   * still can be — we still hold a usable token.
+   *
+   * OBLIGATION: keep the credential and retry. Deleting it here destroys the
+   * only copy of the token and with it any chance of ever revoking the grant.
+   */
+  | 'REVOKE_FAILED_TRANSIENT'
+  /**
+   * The stored token would not decrypt (VAULT_MASTER_KEY rotated, or the row is
+   * corrupt). Nothing was sent to Google and nothing ever can be: the grant is
+   * live and we have permanently lost the ability to revoke it. Retrying is
+   * pointless — the ciphertext will not start decrypting.
+   *
+   * OBLIGATION: record it durably (recordOrphanedGrant) BEFORE destroying the
+   * row, and do not destroy the row if that record could not be written. The
+   * orphan row replaces the token as the only trace that this grant exists.
+   */
+  | 'DECRYPT_FAILED_PERMANENT';
+
+/**
  * Revoke the stored grant at Google — หนูเก็บลองงาน's hard cutoff (migration 062).
  *
  * Revoking the REFRESH token invalidates every access token derived from it, so
  * one call ends the grant outright. There is nothing else to revoke: this
  * codebase never stores an access token (see authorizedClient).
  *
- * ── The return value, and why "already invalid" is success ────────────────
- *
- * `true`  the grant is gone — either we just revoked it, or Google says the
- *         token is already invalid/unknown. The second case is not a failure:
- *         the user revoked us from their Google account page, or a previous run
- *         revoked it and died before deleting the row. Treating it as an error
- *         would wedge that user in the sweep forever, retried every 15 minutes
- *         against a token that will never become valid again.
- * `false` transient — network, timeout, or a Google 5xx. The caller must leave
- *         the credential in place and let the next sweep retry. It must NOT
- *         delete the row: deleting it destroys the only copy of the token and
- *         with it any chance of ever revoking that grant.
+ * Returns a {@link RevokeOutcome} — read its doc, each value obliges the caller
+ * to do something different.
  *
  * Nothing is thrown, so one unreachable Google cannot abort a whole sweep.
  *
@@ -560,17 +599,29 @@ export async function revokeRefreshToken(
   userId: string,
   encryptedToken: string,
   context: RevokeContext = 'trial_sweep',
-): Promise<boolean> {
+): Promise<RevokeOutcome> {
   const tag = `[sheets-revoke:${context}]`;
   let refreshToken: string;
   try {
     refreshToken = decryptSecret(await deriveSecretKey(userId), encryptedToken);
   } catch (err) {
-    // Undecryptable (VAULT_MASTER_KEY rotated, row corrupt). The token is
-    // unusable by us and unrecoverable, so there is nothing to revoke and
-    // nothing to gain from retrying — let the caller delete the dead row.
-    console.error(`${tag} could not decrypt stored token for revoke:`, (err as Error).message);
-    return true;
+    // FIX 2: this used to `return true`, i.e. tell the caller the grant was
+    // revoked. It was not — nothing was sent to Google, and the grant is now
+    // permanently unrevocable. ALERT level, with the user id and an explicit
+    // timestamp, because the log line is the second half of the trail (the
+    // first is the google_grant_orphans row the caller must write) and because
+    // a key rotation produces one of these per connected user, which is the
+    // signal an on-call engineer needs to see immediately.
+    console.error(
+      `${tag} ALERT unrevocable grant: stored token would not decrypt`,
+      {
+        userId,
+        context,
+        at: new Date().toISOString(),
+        message: (err as Error).message,
+      },
+    );
+    return 'DECRYPT_FAILED_PERMANENT';
   }
 
   try {
@@ -580,20 +631,150 @@ export async function revokeRefreshToken(
       body: new URLSearchParams({ token: refreshToken }),
       signal: AbortSignal.timeout(10_000),
     });
-    if (res.ok) return true;
+    if (res.ok) return 'REVOKED_SUCCESS';
 
-    // 400 invalid_token = already revoked or never valid. See the doc comment.
+    // 400 invalid_token = already revoked or never valid. See RevokeOutcome.
     if (res.status === 400) {
       const detail = await res.text().catch(() => '');
-      if (/invalid_token/i.test(detail)) return true;
+      if (/invalid_token/i.test(detail)) return 'REVOKED_SUCCESS';
       console.error(`${tag} google revoke rejected: 400 ${detail.slice(0, 200)}`);
-      return false;
+      return 'REVOKE_FAILED_TRANSIENT';
     }
     console.error(`${tag} google revoke failed: status=${res.status} user=${userId}`);
-    return false;
+    return 'REVOKE_FAILED_TRANSIENT';
   } catch (err) {
     console.error(`${tag} google revoke request failed for ${userId}:`, (err as Error).message);
+    return 'REVOKE_FAILED_TRANSIENT';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Orphaned grants — FIX 2 (migration 064)
+// ---------------------------------------------------------------------------
+
+export interface OrphanedGrant {
+  userId: string;
+  googleEmail?: string | null;
+  /** Today always 'decrypt_failed'. Open-ended by design — see migration 064. */
+  reason?: string;
+  context: RevokeContext;
+  detail?: string;
+}
+
+/**
+ * Record a grant we can no longer revoke. Returns whether it was recorded.
+ *
+ * THE RETURN VALUE IS A GATE, NOT A STATUS. Every caller must refuse to delete
+ * the credential row when this is `false`: the row and this record are the only
+ * two things that can ever point at the orphaned grant, and destroying the row
+ * without writing the record loses it forever with nothing left to look at. A
+ * `false` therefore means "leave everything exactly as it is and try again next
+ * run" — the same posture as a transient revoke failure.
+ *
+ * NEVER THROWS. A missing table (064 unapplied), an RLS refusal or a dead
+ * connection all come back as `false`, which is the fail-CLOSED direction here.
+ *
+ * The insert is idempotent per (user_id, reason) while unresolved — a partial
+ * unique index (064) — so a sweep that keeps finding the same undecryptable
+ * credential does not turn one incident into a rising count. A duplicate is
+ * reported as SUCCESS, because the record it would have written already exists,
+ * which is exactly what the caller needs to be true before it deletes.
+ */
+export async function recordOrphanedGrant(
+  supabase: SupabaseClient,
+  orphan: OrphanedGrant,
+): Promise<boolean> {
+  const reason = orphan.reason ?? 'decrypt_failed';
+  try {
+    const { error } = await supabase.from('google_grant_orphans').insert({
+      user_id: orphan.userId,
+      google_email: orphan.googleEmail ?? null,
+      reason,
+      context: orphan.context,
+      detail: orphan.detail?.slice(0, 500) ?? null,
+    });
+
+    if (error) {
+      // 23505 = the partial unique index fired: an OPEN row for this user and
+      // reason already exists. The trail is already there, so the caller may
+      // proceed exactly as if we had just written it.
+      if ((error as { code?: string }).code === '23505') return true;
+      console.error('[google-grant-orphans] could not record an unrevocable grant', {
+        userId: orphan.userId,
+        context: orphan.context,
+        at: new Date().toISOString(),
+        error,
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error('[google-grant-orphans] INSERT THREW — unrevocable grant not recorded', {
+      userId: orphan.userId,
+      context: orphan.context,
+      at: new Date().toISOString(),
+      err,
+    });
     return false;
+  }
+}
+
+export interface OrphanedGrantSummary {
+  /** Open (unresolved) orphan rows. This is the number that should be zero. */
+  open: number;
+  /** Open rows first detected within the last 24 hours — the "is this happening NOW" signal. */
+  openLast24h: number;
+  /** Most recent detection, open or not. */
+  lastDetectedAt: string | null;
+}
+
+/**
+ * The decrypt-failure metric — FIX 2.
+ *
+ * A count rather than a rate, because the thing worth alerting on is a BACKLOG:
+ * every open row is a live third-party grant on someone's Google account that
+ * only a human can now remove. One is worth an alert; the number rising in a
+ * single hour is a key rotation in progress.
+ *
+ * Fail-soft (zeros + null) so a missing migration 064 leaves an admin card
+ * blank rather than breaking the page — the read side follows the /admin/system
+ * contract even though the WRITE side above is deliberately fail-closed.
+ */
+export async function summariseOrphanedGrants(
+  supabase: SupabaseClient,
+): Promise<OrphanedGrantSummary> {
+  const empty: OrphanedGrantSummary = { open: 0, openLast24h: 0, lastDetectedAt: null };
+  try {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const [openRes, recentRes, lastRes] = await Promise.all([
+      supabase
+        .from('google_grant_orphans')
+        .select('id', { count: 'exact', head: true })
+        .is('resolved_at', null),
+      supabase
+        .from('google_grant_orphans')
+        .select('id', { count: 'exact', head: true })
+        .is('resolved_at', null)
+        .gte('detected_at', since),
+      supabase
+        .from('google_grant_orphans')
+        .select('detected_at')
+        .order('detected_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+    ]);
+
+    if (openRes.error) throw openRes.error;
+    return {
+      open: openRes.count ?? 0,
+      openLast24h: recentRes.error ? 0 : (recentRes.count ?? 0),
+      lastDetectedAt:
+        (lastRes.data as { detected_at?: string } | null)?.detected_at ?? null,
+    };
+  } catch (err) {
+    console.warn('[google-grant-orphans] summary unavailable:', err);
+    return empty;
   }
 }
 
