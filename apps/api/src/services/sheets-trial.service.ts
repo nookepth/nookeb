@@ -325,5 +325,193 @@ export async function markTrialRevoked(
   if (error) throw error;
 }
 
+// ---------------------------------------------------------------------------
+// Admin surface (FIX 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The three states an admin can filter on.
+ *
+ * These are DERIVED from the same two columns everything else reads, not a new
+ * status column — a stored status would be a second source of truth that could
+ * disagree with `expires_at`, and `expires_at` is the one the entitlement check
+ * compares on every request. A list that disagreed with the gate would be worse
+ * than no list.
+ *
+ *   active   started, not yet past its cutoff, not yet cleaned up
+ *   expired  past its cutoff and NOT yet cleaned up — i.e. exactly the sweep's
+ *            own backlog, which is the number worth watching
+ *   revoked  cleaned up: grant revoked (or orphaned) and credential destroyed
+ */
+export type TrialAdminStatus = 'active' | 'expired' | 'revoked';
+
+export interface TrialAdminRow {
+  id: string;
+  line_user_id: string | null;
+  plan: string | null;
+  sheets_trial_activated_at: string | null;
+  sheets_trial_expires_at: string | null;
+  sheets_trial_revoked_at: string | null;
+}
+
+export interface TrialAdminPage {
+  rows: TrialAdminRow[];
+  /** Total matching the filter, for the pager. Null when PostgREST withheld it. */
+  total: number | null;
+  migrated: boolean;
+}
+
+const ADMIN_SELECT =
+  'id, line_user_id, plan, sheets_trial_activated_at, sheets_trial_expires_at, sheets_trial_revoked_at';
+
+/**
+ * One page of trials for /admin/sheets-trial.
+ *
+ * `activated_at IS NOT NULL` is stated on every branch. A user who never
+ * started a trial has all three columns NULL and must never appear in any of
+ * the three lists; relying on the other predicates to exclude them by
+ * implication is the same class of assumption FIX 6 removes from
+ * listExpiredTrials.
+ */
+export async function listTrialsForAdmin(
+  supabase: SupabaseClient,
+  status: TrialAdminStatus,
+  opts: { limit: number; offset: number; now?: Date },
+): Promise<TrialAdminPage> {
+  const now = (opts.now ?? new Date()).toISOString();
+
+  // Built as one chain per branch rather than by reassigning a `query`
+  // variable: PostgREST's builder returns a new, differently-parameterised type
+  // from every filter method, and reassigning through them makes tsc give up
+  // with "type instantiation is excessively deep".
+  //
+  // Oldest expiry first for 'expired' (that is the sweep's own order, so the
+  // list reads as the backlog it is); newest activation first otherwise.
+  const base = () =>
+    supabase
+      .from('users')
+      .select(ADMIN_SELECT, { count: 'exact' })
+      .not('sheets_trial_activated_at', 'is', null);
+
+  const to = opts.offset + opts.limit - 1;
+
+  const { data, error, count } =
+    status === 'active'
+      ? await base()
+          .gt('sheets_trial_expires_at', now)
+          .is('sheets_trial_revoked_at', null)
+          .order('sheets_trial_activated_at', { ascending: false })
+          .range(opts.offset, to)
+      : status === 'expired'
+        ? await base()
+            .lte('sheets_trial_expires_at', now)
+            .is('sheets_trial_revoked_at', null)
+            .order('sheets_trial_expires_at', { ascending: true })
+            .range(opts.offset, to)
+        : await base()
+            .not('sheets_trial_revoked_at', 'is', null)
+            .order('sheets_trial_activated_at', { ascending: false })
+            .range(opts.offset, to);
+
+  if (error && isMissingTrialColumn(error)) return { rows: [], total: 0, migrated: false };
+  if (error) throw error;
+  return {
+    rows: (data as TrialAdminRow[] | null) ?? [],
+    total: count ?? null,
+    migrated: true,
+  };
+}
+
+export type TrialPrecheck =
+  | { ok: true; expiresAt: string | null }
+  | { ok: false; reason: 'NO_TRIAL' | 'ALREADY_REVOKED' | 'NOT_MIGRATED' };
+
+/**
+ * Can this user's trial be force-expired, and what does it look like right now?
+ *
+ * READ ONLY, and separated from forceExpireTrial so the admin route can answer
+ * 409/503 and record the `before` state WITHOUT having written anything. The
+ * route audits before it acts (the action is irreversible), and an audit row
+ * asserting an authorised action against a user it turned out not to apply to
+ * is worse than no row — so the validation has to come first, and it has to not
+ * write.
+ */
+export async function forceExpireTrialPrecheck(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<TrialPrecheck> {
+  const { row, migrated } = await readTrialRow(supabase, userId);
+  if (!migrated) return { ok: false, reason: 'NOT_MIGRATED' };
+  if (!row?.sheets_trial_activated_at) return { ok: false, reason: 'NO_TRIAL' };
+  if (row.sheets_trial_revoked_at) return { ok: false, reason: 'ALREADY_REVOKED' };
+  return { ok: true, expiresAt: row.sheets_trial_expires_at };
+}
+
+export type ForceExpireResult =
+  | { ok: true; user: ExpiredTrialUser; alreadyExpired: boolean }
+  /** No trial was ever started, so there is nothing to end. */
+  | { ok: false; reason: 'NO_TRIAL' }
+  /** The sweep already cleaned this one up. */
+  | { ok: false; reason: 'ALREADY_REVOKED' }
+  | { ok: false; reason: 'NOT_MIGRATED' };
+
+/**
+ * Bring a trial's cutoff forward to NOW — FIX 3, step one of two.
+ *
+ * This ONLY moves `sheets_trial_expires_at`. It does not revoke anything and it
+ * does not claim the trial; the caller then runs cleanUpExpiredTrial, which is
+ * the same function the sweep runs, so the actual ending of a trial has exactly
+ * one implementation.
+ *
+ * Moving the column rather than jumping straight to the cleanup is what makes
+ * the force-expire honest: `expires_at` is what resolveSheetsAccess compares on
+ * every request, so the moment this returns the user is genuinely cut off —
+ * even if the revoke that follows has to be retried by the sweep.
+ *
+ * ── It cannot EXTEND a trial ──────────────────────────────────────────────
+ *
+ * The update is guarded on `expires_at > now`, so an already-expired trial is
+ * left exactly as it is (reported as `alreadyExpired`, which is a success —
+ * force-expiring something already expired should proceed to the cleanup, not
+ * fail). Without that guard this endpoint would happily write a LATER timestamp
+ * onto a trial and hand a user more free days, which is a plan-grant an admin
+ * route has no business making — the same reasoning that keeps
+ * PATCH /admin/users/:id/plan out of `changePlan()`.
+ */
+export async function forceExpireTrial(
+  supabase: SupabaseClient,
+  userId: string,
+  now: Date = new Date(),
+): Promise<ForceExpireResult> {
+  const { row, migrated } = await readTrialRow(supabase, userId);
+  if (!migrated) return { ok: false, reason: 'NOT_MIGRATED' };
+  if (!row?.sheets_trial_activated_at) return { ok: false, reason: 'NO_TRIAL' };
+  if (row.sheets_trial_revoked_at) return { ok: false, reason: 'ALREADY_REVOKED' };
+
+  const alreadyExpired = new Date(row.sheets_trial_expires_at ?? 0).getTime() <= now.getTime();
+
+  if (!alreadyExpired) {
+    const { error } = await supabase
+      .from('users')
+      .update({ sheets_trial_expires_at: now.toISOString() })
+      .eq('id', userId)
+      // Never later, only earlier. See the doc comment.
+      .gt('sheets_trial_expires_at', now.toISOString());
+    if (error) throw error;
+  }
+
+  // Re-read the shape the cleanup expects, so it works from committed state
+  // rather than from anything this function assumed.
+  const { data, error: readError } = await supabase
+    .from('users')
+    .select('id, line_user_id, plan, sheets_trial_expires_at')
+    .eq('id', userId)
+    .maybeSingle();
+  if (readError) throw readError;
+  if (!data) return { ok: false, reason: 'NO_TRIAL' };
+
+  return { ok: true, user: data as ExpiredTrialUser, alreadyExpired };
+}
+
 /** Re-exported so routes and the web serve one number, never a literal. */
 export { SHEETS_TRIAL_DAYS };

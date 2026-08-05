@@ -42,7 +42,11 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { PLAN_DISPLAY_NAME, SHEETS_TRIAL_DISPLAY_NAME, hasFeature, normalizePlan } from '../config/plans';
-import { listExpiredTrials, markTrialRevoked } from '../services/sheets-trial.service';
+import {
+  listExpiredTrials,
+  markTrialRevoked,
+  type ExpiredTrialUser,
+} from '../services/sheets-trial.service';
 
 /**
  * Users cleaned up per run. The sweep runs every 15 minutes and picks up the
@@ -178,136 +182,8 @@ export async function runSheetsTrialExpiry(
 
   for (const user of users) {
     try {
-      // ---- 1. Did they upgrade during the trial? -------------------------
-      // Read from the row we already have rather than a second query: the plan
-      // was selected alongside the trial columns for exactly this check.
-      if (hasFeature(normalizePlan(user.plan), 'google_sheets')) {
-        // Claim the trial as spent, and touch NOTHING else. Their connection is
-        // now held by their plan, not by the trial.
-        await markTrialRevoked(supabase, user.id, now);
-        result.keptOnPlan += 1;
-        continue;
-      }
-
-      // ---- 2. Is there a credential to destroy? --------------------------
-      // `google_email` rides along for FIX 2: if the token turns out to be
-      // undecryptable, that address is the only thing that tells a human WHICH
-      // Google account still has a live grant on it, and this row is about to
-      // be deleted.
-      const { data: integration, error } = await supabase
-        .from('google_integrations')
-        .select('encrypted_token, google_email')
-        .eq('user_id', user.id)
-        .maybeSingle();
-      if (error) throw error;
-
-      if (!integration) {
-        // Never connected, or disconnected before the trial ran out. Nothing to
-        // revoke and nothing was taken away, so no notice either — telling
-        // someone their access was cut off when they cancelled it themselves is
-        // just confusing.
-        await markTrialRevoked(supabase, user.id, now);
-        result.nothingToRevoke += 1;
-        continue;
-      }
-
-      // ---- 3. Revoke at Google FIRST ------------------------------------
-      // Before the local delete, always: the encrypted row is the only copy of
-      // the refresh token, so deleting first would leave a live grant nobody
-      // can ever revoke.
-      const cred = integration as { encrypted_token: string; google_email: string | null };
-      const outcome = await deps.revokeGrant(user.id, cred.encrypted_token);
-
-      if (outcome === 'REVOKE_FAILED_TRANSIENT') {
-        // Transient. Leave the row AND the claim untouched so the next run
-        // retries this user from the top. Access is already blocked at request
-        // time, so nothing is granted by the delay.
-        result.deferred += 1;
-        continue;
-      }
-
-      if (outcome === 'DECRYPT_FAILED_PERMANENT') {
-        // FIX 2. This used to arrive as REVOKED_SUCCESS and fall straight
-        // through to the delete below — destroying the row while the grant
-        // stayed live at Google, silently, with no record of which account it
-        // was on. Nothing can revoke it now, so the ONLY thing of value left is
-        // a durable note that it exists.
-        //
-        // The record is therefore a PRECONDITION of the delete, not a
-        // side-effect of it: if it cannot be written, nothing is touched and the
-        // next run tries again. Retrying the revoke itself is pointless (the
-        // ciphertext will not start decrypting), but retrying the RECORD is not.
-        const recorded = deps.recordOrphan
-          ? await deps
-              .recordOrphan({
-                userId: user.id,
-                googleEmail: cred.google_email,
-                detail: 'trial expiry sweep: stored refresh token would not decrypt',
-              })
-              .catch(() => false)
-          : false;
-
-        if (!recorded) {
-          console.error(
-            `[sheets-trial] ALERT unrevocable grant for ${user.id} could NOT be recorded — ` +
-              'leaving the credential row in place and retrying next run',
-          );
-          result.deferred += 1;
-          continue;
-        }
-
-        const { error: orphanDeleteError } = await supabase
-          .from('google_integrations')
-          .delete()
-          .eq('user_id', user.id);
-        if (orphanDeleteError) throw orphanDeleteError;
-
-        await markTrialRevoked(supabase, user.id, now);
-        result.orphaned += 1;
-        // No push. "หนูคืนสิทธิ์ที่ขอไว้กับ Google เรียบร้อย" is the one thing
-        // the expiry notice says that is now false, and telling a user their
-        // permission was handed back when it was not is worse than silence.
-        continue;
-      }
-
-      // ---- 4. Delete the credential -------------------------------------
-      // A HARD delete, deliberately, and consistent with how a manual
-      // disconnect already behaves (deleteIntegration in
-      // google-sheets.service.ts). Project rule 6's soft-delete exists to keep
-      // the USER's content restorable; this row is a third-party credential,
-      // and a revoked token kept as a tombstone is pure liability with nothing
-      // to restore. The user's spreadsheet and tasks are untouched.
-      const { error: deleteError } = await supabase
-        .from('google_integrations')
-        .delete()
-        .eq('user_id', user.id);
-      if (deleteError) throw deleteError;
-
-      // ---- 5. Claim, then notify ----------------------------------------
-      await markTrialRevoked(supabase, user.id, now);
-      result.revoked += 1;
-
-      // Cancel any queued backfill for this user. Ordinary `sheets_sync` jobs
-      // need no cancelling — the worker re-resolves entitlement per job and
-      // stands down, which also covers a job that is already ACTIVE and
-      // therefore beyond cancelling anyway.
-      if (deps.cancelPendingSync) {
-        await deps.cancelPendingSync(user.id).catch((err) => {
-          console.warn(`[sheets-trial] could not cancel queued sync for ${user.id}:`, err);
-        });
-      }
-
-      // The push goes LAST and its failure is swallowed. It runs after the
-      // claim on purpose: a throw here would fail the BullMQ job, and the retry
-      // would re-run a user who is already claimed — so at worst a notice is
-      // lost, never a revocation repeated or a message sent twice.
-      if (deps.push && user.line_user_id) {
-        await deps
-          .push(user.line_user_id, expiryNoticeText(deps.webUrl))
-          .catch((err) => {
-            console.warn(`[sheets-trial] expiry notice failed for ${user.id}:`, err);
-          });
-      }
+      const outcome = await cleanUpExpiredTrial(supabase, user, deps, now);
+      result[outcome] += 1;
     } catch (err) {
       // Per-user isolation: this user is left unclaimed and retried next run.
       console.error(`[sheets-trial] expiry sweep failed for user ${user.id}:`, err);
@@ -320,4 +196,160 @@ export async function runSheetsTrialExpiry(
       `deferred=${result.deferred} orphaned=${result.orphaned}`,
   );
   return result;
+}
+
+/** Which counter a single user's cleanup lands in. */
+export type TrialCleanupOutcome =
+  | 'revoked'
+  | 'keptOnPlan'
+  | 'nothingToRevoke'
+  | 'deferred'
+  | 'orphaned';
+
+/**
+ * Clean up ONE expired trial: revoke the grant, destroy the credential, claim
+ * the trial, notify.
+ *
+ * EXTRACTED SO THE ADMIN FORCE-EXPIRE CANNOT DIVERGE FROM THE SWEEP (FIX 3).
+ * Before the admin surface existed, ending a trial early meant editing the
+ * database by hand — which skips the upgrade check, the revoke-before-delete
+ * ordering, the orphan record and the claim, i.e. every property the sweep was
+ * written to guarantee. POST /admin/sheets-trial/:userId/force-expire calls
+ * THIS function, so there is exactly one implementation of "end a trial" and a
+ * change to it applies to both callers by construction.
+ *
+ * Throws on a database error; the caller decides whether that isolates one user
+ * (the sweep) or fails a request (the admin route).
+ */
+export async function cleanUpExpiredTrial(
+  supabase: SupabaseClient,
+  user: ExpiredTrialUser,
+  deps: SheetsTrialExpiryDeps,
+  now: Date,
+): Promise<TrialCleanupOutcome> {
+  // ---- 1. Did they upgrade during the trial? -------------------------
+  // Read from the row we already have rather than a second query: the plan
+  // was selected alongside the trial columns for exactly this check.
+  if (hasFeature(normalizePlan(user.plan), 'google_sheets')) {
+    // Claim the trial as spent, and touch NOTHING else. Their connection is
+    // now held by their plan, not by the trial.
+    await markTrialRevoked(supabase, user.id, now);
+    return 'keptOnPlan';
+  }
+
+  // ---- 2. Is there a credential to destroy? --------------------------
+  // `google_email` rides along for FIX 2: if the token turns out to be
+  // undecryptable, that address is the only thing that tells a human WHICH
+  // Google account still has a live grant on it, and this row is about to
+  // be deleted.
+  const { data: integration, error } = await supabase
+    .from('google_integrations')
+    .select('encrypted_token, google_email')
+    .eq('user_id', user.id)
+    .maybeSingle();
+  if (error) throw error;
+
+  if (!integration) {
+    // Never connected, or disconnected before the trial ran out. Nothing to
+    // revoke and nothing was taken away, so no notice either — telling
+    // someone their access was cut off when they cancelled it themselves is
+    // just confusing.
+    await markTrialRevoked(supabase, user.id, now);
+    return 'nothingToRevoke';
+  }
+
+  // ---- 3. Revoke at Google FIRST ------------------------------------
+  // Before the local delete, always: the encrypted row is the only copy of
+  // the refresh token, so deleting first would leave a live grant nobody
+  // can ever revoke.
+  const cred = integration as { encrypted_token: string; google_email: string | null };
+  const outcome = await deps.revokeGrant(user.id, cred.encrypted_token);
+
+  if (outcome === 'REVOKE_FAILED_TRANSIENT') {
+    // Transient. Leave the row AND the claim untouched so the next run
+    // retries this user from the top. Access is already blocked at request
+    // time, so nothing is granted by the delay.
+    return 'deferred';
+  }
+
+  if (outcome === 'DECRYPT_FAILED_PERMANENT') {
+    // FIX 2. This used to arrive as REVOKED_SUCCESS and fall straight
+    // through to the delete below — destroying the row while the grant
+    // stayed live at Google, silently, with no record of which account it
+    // was on. Nothing can revoke it now, so the ONLY thing of value left is
+    // a durable note that it exists.
+    //
+    // The record is therefore a PRECONDITION of the delete, not a
+    // side-effect of it: if it cannot be written, nothing is touched and the
+    // next run tries again. Retrying the revoke itself is pointless (the
+    // ciphertext will not start decrypting), but retrying the RECORD is not.
+    const recorded = deps.recordOrphan
+      ? await deps
+          .recordOrphan({
+            userId: user.id,
+            googleEmail: cred.google_email,
+            detail: 'trial expiry sweep: stored refresh token would not decrypt',
+          })
+          .catch(() => false)
+      : false;
+
+    if (!recorded) {
+      console.error(
+        `[sheets-trial] ALERT unrevocable grant for ${user.id} could NOT be recorded — ` +
+          'leaving the credential row in place and retrying next run',
+      );
+      return 'deferred';
+    }
+
+    const { error: orphanDeleteError } = await supabase
+      .from('google_integrations')
+      .delete()
+      .eq('user_id', user.id);
+    if (orphanDeleteError) throw orphanDeleteError;
+
+    await markTrialRevoked(supabase, user.id, now);
+    // No push. "หนูคืนสิทธิ์ที่ขอไว้กับ Google เรียบร้อย" is the one thing
+    // the expiry notice says that is now false, and telling a user their
+    // permission was handed back when it was not is worse than silence.
+    return 'orphaned';
+  }
+
+  // ---- 4. Delete the credential -------------------------------------
+  // A HARD delete, deliberately, and consistent with how a manual
+  // disconnect already behaves (deleteIntegration in
+  // google-sheets.service.ts). Project rule 6's soft-delete exists to keep
+  // the USER's content restorable; this row is a third-party credential,
+  // and a revoked token kept as a tombstone is pure liability with nothing
+  // to restore. The user's spreadsheet and tasks are untouched.
+  const { error: deleteError } = await supabase
+    .from('google_integrations')
+    .delete()
+    .eq('user_id', user.id);
+  if (deleteError) throw deleteError;
+
+  // ---- 5. Claim, then notify ----------------------------------------
+  await markTrialRevoked(supabase, user.id, now);
+
+  // Cancel any queued backfill for this user. Ordinary `sheets_sync` jobs
+  // need no cancelling — the worker re-resolves entitlement per job and
+  // stands down, which also covers a job that is already ACTIVE and
+  // therefore beyond cancelling anyway.
+  if (deps.cancelPendingSync) {
+    await deps.cancelPendingSync(user.id).catch((err) => {
+      console.warn(`[sheets-trial] could not cancel queued sync for ${user.id}:`, err);
+    });
+  }
+
+  // The push goes LAST and its failure is swallowed. It runs after the
+  // claim on purpose: a throw here would fail the BullMQ job, and the retry
+  // would re-run a user who is already claimed — so at worst a notice is
+  // lost, never a revocation repeated or a message sent twice.
+  if (deps.push && user.line_user_id) {
+    await deps
+      .push(user.line_user_id, expiryNoticeText(deps.webUrl))
+      .catch((err) => {
+        console.warn(`[sheets-trial] expiry notice failed for ${user.id}:`, err);
+      });
+  }
+  return 'revoked';
 }

@@ -30,6 +30,16 @@ import {
   type FeatureFlagKey,
 } from '../services/feature-flags.service';
 import { toggleDiaryReminderSchedule } from '../jobs/membership.queue';
+import {
+  forceExpireTrial,
+  forceExpireTrialPrecheck,
+  listTrialsForAdmin,
+  type TrialAdminStatus,
+} from '../services/sheets-trial.service';
+import { cleanUpExpiredTrial } from '../jobs/sheetsTrialExpiry.job';
+import { recordOrphanedGrant, revokeRefreshToken, summariseOrphanedGrants } from '../services/google-sheets.service';
+import { getSheetsQueue } from '../services/sheetsQueue';
+import { pushMessage } from '../services/line.service';
 import { getLineQuotaSummary, type LineQuotaSummary } from '../services/line-quota.service';
 import { R2_RECONCILE_JOB_ID, type FileJob } from '@nookeb/shared';
 
@@ -1620,6 +1630,154 @@ const adminOpsRoutes: FastifyPluginAsync = async (app) => {
       },
       { status: 'idle' },
     ),
+  );
+
+  // ==========================================================================
+  // FIX 3 — the หนูเก็บลองงาน admin surface.
+  //
+  // Before this, the ONLY way to see trial state or end a trial early was to
+  // edit `users` by hand in the Supabase SQL editor. That is not merely
+  // inconvenient: a hand-written UPDATE skips the upgrade check, the
+  // revoke-before-delete ordering, the orphan record and the claim column —
+  // every property the sweep exists to guarantee. So the write below does not
+  // touch SQL at all; it calls the SAME cleanUpExpiredTrial the sweep calls.
+  // ==========================================================================
+
+  // GET /admin/sheets-trial?status=&limit=&offset= — the READ. Fail-soft, per
+  // this file's contract for reads: an unapplied migration 062 leaves the panel
+  // empty rather than erroring.
+  app.get<{ Querystring: { status?: string; limit?: string; offset?: string } }>(
+    '/admin/sheets-trial',
+    async (request) => {
+      const status: TrialAdminStatus =
+        request.query.status === 'active' || request.query.status === 'revoked'
+          ? request.query.status
+          : // 'expired' is the default because it is the sweep's own backlog —
+            // the one list where a non-zero length means something needs doing.
+            'expired';
+      const limit = Math.min(Math.max(Number(request.query.limit) || 50, 1), 200);
+      const offset = Math.max(Number(request.query.offset) || 0, 0);
+
+      const page = await soft(
+        'sheets-trial:list',
+        () => listTrialsForAdmin(app.supabase, status, { limit, offset }),
+        { rows: [], total: 0, migrated: false } as Awaited<ReturnType<typeof listTrialsForAdmin>>,
+      );
+
+      // FIX 2's metric rides along: the orphan backlog is only ever looked at
+      // from this page, and it is the number that must be zero.
+      const orphans = await soft(
+        'sheets-trial:orphans',
+        () => summariseOrphanedGrants(app.supabase),
+        { open: 0, openLast24h: 0, lastDetectedAt: null },
+      );
+
+      return { status, limit, offset, ...page, orphans };
+    },
+  );
+
+  // --------------------------------------------------------------------------
+  // POST /admin/sheets-trial/:userId/force-expire — the WRITE.
+  //
+  // TIER 2 contract, not the fail-soft read contract: zod-validated, audited
+  // through requireAdminAction, and it answers 4xx/5xx rather than degrading.
+  //
+  // AUDITED FIRST, THEN ACTED ON — the same inverted order as the queue
+  // retry/remove and r2-reconcile endpoints, for the same reason: this revokes
+  // a third-party OAuth grant and destroys a credential, and NONE of that can be
+  // undone. A failed audit must therefore mean nothing happened at all. The cost
+  // is that a crash between the two leaves an audit row for an action that did
+  // not occur, which is the safe direction to be wrong in (and the sweep will
+  // finish the job anyway, because the cutoff has already moved).
+  //
+  // The two steps are deliberately separate:
+  //   1. forceExpireTrial() moves `sheets_trial_expires_at` to now. That column
+  //      is what resolveSheetsAccess compares on every request, so access ends
+  //      the instant this returns — before anything is revoked. It is guarded so
+  //      it can only ever move a cutoff EARLIER; this endpoint must not be a
+  //      back door for granting free days.
+  //   2. cleanUpExpiredTrial() — the sweep's own function, unchanged — revokes
+  //      at Google, destroys the credential and claims the trial. A transient
+  //      Google failure comes back as 'deferred', which is reported honestly and
+  //      is not an error: the 15-minute sweep picks it up, exactly as it does
+  //      for a trial that expired on its own.
+  // --------------------------------------------------------------------------
+  app.post<{ Params: { userId: string } }>(
+    '/admin/sheets-trial/:userId/force-expire',
+    async (request, reply) => {
+      const params = z.object({ userId: z.string().uuid() }).safeParse(request.params);
+      if (!params.success) {
+        return reply.code(400).send({ error: 'Invalid user id', issues: params.error.issues });
+      }
+      const parsedBody = z
+        .object({ reason: z.string().min(1).max(500).optional() })
+        .safeParse(request.body ?? {});
+      if (!parsedBody.success) {
+        return reply.code(400).send({ error: 'Invalid body', issues: parsedBody.error.issues });
+      }
+      const { userId } = params.data;
+      const now = new Date();
+
+      // Read-and-validate BEFORE the audit, so a 404/409 does not leave an audit
+      // row claiming an action was authorised against a user it could not apply
+      // to. Nothing has been written at this point.
+      const prepared = await forceExpireTrialPrecheck(app.supabase, userId);
+      if (!prepared.ok) {
+        const code = prepared.reason === 'NOT_MIGRATED' ? 503 : 409;
+        return reply.code(code).send({ error: prepared.reason, code: prepared.reason });
+      }
+
+      await requireAdminAction({
+        supabase: app.supabase,
+        adminLineId: actor(request),
+        action: 'sheets_trial_force_expire',
+        targetType: 'user',
+        targetId: userId,
+        before: {
+          sheets_trial_expires_at: prepared.expiresAt,
+          sheets_trial_revoked_at: null,
+        },
+        after: {
+          sheets_trial_expires_at: now.toISOString(),
+          reason: parsedBody.data.reason ?? null,
+        },
+      });
+
+      const moved = await forceExpireTrial(app.supabase, userId, now);
+      if (!moved.ok) {
+        // Raced with the sweep between the precheck and here. The trial is over
+        // either way, which is what the admin asked for.
+        return reply.code(409).send({ error: moved.reason, code: moved.reason });
+      }
+
+      const outcome = await cleanUpExpiredTrial(
+        app.supabase,
+        moved.user,
+        {
+          revokeGrant: (id, token) => revokeRefreshToken(id, token, 'admin_force_expire'),
+          recordOrphan: (orphan) =>
+            recordOrphanedGrant(app.supabase, { ...orphan, context: 'admin_force_expire' }),
+          push: async (to, text) => {
+            await pushMessage(to, [{ type: 'text', text }], app.supabase, 'sheets_trial');
+          },
+          cancelPendingSync: async (id) => {
+            const job = await getSheetsQueue().getJob(`sheets-historical-${id}`);
+            await job?.remove();
+          },
+          webUrl: config.WEB_URL,
+        },
+        now,
+      );
+
+      return {
+        userId,
+        expiredAt: now.toISOString(),
+        outcome,
+        // Honest about the one non-final state: the cutoff has moved and access
+        // is gone, but the grant at Google has not been handed back yet.
+        cleanupComplete: outcome !== 'deferred',
+      };
+    },
   );
 
   // --------------------------------------------------------------------------
