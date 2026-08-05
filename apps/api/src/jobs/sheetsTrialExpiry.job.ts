@@ -124,6 +124,19 @@ export interface SheetsTrialExpiryResult {
   orphaned: number;
   /** Migration 062 not applied; nothing was read. */
   skipped: boolean;
+  /** The cap this run used, so a caller can interpret `atCap` without knowing it. */
+  batchSize: number;
+  /**
+   * FIX 5 — did this run come back holding EXACTLY its cap?
+   *
+   * One full batch is not a problem; it is a run doing its job. But the cap is
+   * the ONLY way the sweep can silently fall behind (drain rate is capped at
+   * batchSize per 15 minutes ≈ 19.2k users/day), and a run that fills its batch
+   * is the only observable moment at which that could be happening. Reported so
+   * the monitor can count them CONSECUTIVELY — a streak is the signal; a single
+   * full batch is not.
+   */
+  atCap: boolean;
 }
 
 /**
@@ -159,6 +172,7 @@ export async function runSheetsTrialExpiry(
   deps: SheetsTrialExpiryDeps,
 ): Promise<SheetsTrialExpiryResult> {
   const now = deps.now ?? new Date();
+  const batchSize = deps.batchSize ?? DEFAULT_BATCH_SIZE;
   const result: SheetsTrialExpiryResult = {
     examined: 0,
     revoked: 0,
@@ -167,18 +181,19 @@ export async function runSheetsTrialExpiry(
     deferred: 0,
     orphaned: 0,
     skipped: false,
+    batchSize,
+    atCap: false,
   };
 
-  const { users, migrated } = await listExpiredTrials(
-    supabase,
-    now,
-    deps.batchSize ?? DEFAULT_BATCH_SIZE,
-  );
+  const { users, migrated } = await listExpiredTrials(supabase, now, batchSize);
   if (!migrated) {
     result.skipped = true;
     return result;
   }
   result.examined = users.length;
+  // FIX 5. `>=` rather than `===`: a limit is a ceiling, and a query that ever
+  // came back with more must not read as "comfortably under it".
+  result.atCap = users.length >= batchSize;
 
   for (const user of users) {
     try {
@@ -193,7 +208,8 @@ export async function runSheetsTrialExpiry(
   console.log(
     `[sheets-trial] sweep examined=${result.examined} revoked=${result.revoked} ` +
       `keptOnPlan=${result.keptOnPlan} nothingToRevoke=${result.nothingToRevoke} ` +
-      `deferred=${result.deferred} orphaned=${result.orphaned}`,
+      `deferred=${result.deferred} orphaned=${result.orphaned}` +
+      (result.atCap ? ` AT-CAP(${result.batchSize})` : ''),
   );
   return result;
 }

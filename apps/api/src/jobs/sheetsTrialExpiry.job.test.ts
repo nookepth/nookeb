@@ -336,6 +336,38 @@ describe('runSheetsTrialExpiry', () => {
     });
   });
 
+  // FIX 5 — the per-run cap has to be observable, or a backlog drains ever more
+  // slowly with expired trials keeping their Google credentials and nothing
+  // anywhere saying so.
+  describe('batch cap reporting', () => {
+    it('reports atCap when the run comes back holding exactly its cap', async () => {
+      const rec = blank();
+      const supabase = fakeSupabase([user('a'), user('b')], new Set(), rec);
+      const result = await runSheetsTrialExpiry(supabase, { ...deps(rec), batchSize: 2 });
+
+      assert.equal(result.atCap, true);
+      assert.equal(result.batchSize, 2);
+    });
+
+    it('does not report atCap when the run came back under its cap', async () => {
+      const rec = blank();
+      const supabase = fakeSupabase([user('a')], new Set(), rec);
+      const result = await runSheetsTrialExpiry(supabase, { ...deps(rec), batchSize: 2 });
+
+      assert.equal(result.atCap, false);
+    });
+
+    it('reports atCap on an over-full result rather than reading it as headroom', async () => {
+      // `>=`, not `===`: a limit is a ceiling, and a query that somehow returned
+      // more than it must never read as "comfortably under".
+      const rec = blank();
+      const supabase = fakeSupabase([user('a'), user('b'), user('c')], new Set(), rec);
+      const result = await runSheetsTrialExpiry(supabase, { ...deps(rec), batchSize: 2 });
+
+      assert.equal(result.atCap, true);
+    });
+  });
+
   it('skips silently on a pre-062 database', async () => {
     const rec = blank();
     const supabase = {
