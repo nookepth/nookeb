@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { NO_TRIAL, evaluateTrial, type SheetsTrialRow } from './sheets-trial.service';
+import {
+  NO_TRIAL,
+  evaluateTrial,
+  listExpiredTrials,
+  type SheetsTrialRow,
+} from './sheets-trial.service';
 
 /**
  * หนูเก็บลองงาน — the trial state machine (migration 062).
@@ -86,5 +91,146 @@ describe('evaluateTrial', () => {
     // here is for a row read through some path that predates it.
     assert.deepEqual(evaluateTrial(row('2026-07-20T12:00:00.000Z', null), now), NO_TRIAL);
     assert.deepEqual(evaluateTrial(row(null, '2026-09-20T12:00:00.000Z'), now), NO_TRIAL);
+  });
+});
+
+/**
+ * FIX 6 — the sweep's driving query filters on `activated_at IS NOT NULL`
+ * ITSELF, rather than relying on migration 062's coherence CHECK to imply it.
+ *
+ * The old query was `expires_at <= now AND revoked_at IS NULL`. That only
+ * excludes a user who never started a trial because the CHECK guarantees
+ * activated_at and expires_at are written together, so a NULL activated_at
+ * implies a NULL expires_at, which `lte(...)` filters out.
+ *
+ * Correct, and fragile: it depends on a constraint in another file, applied by
+ * hand, on a table whose columns may already exist elsewhere — exactly the case
+ * where the `ADD COLUMN IF NOT EXISTS` statements succeed and the CHECK is the
+ * part that gets skipped. And the sweep's response to a matched row is to revoke
+ * that user's Google grant and delete their credential.
+ *
+ * These tests run WITHOUT the constraint by construction — the fake applies only
+ * the predicates the code actually sends — so a row that could only exist on a
+ * database missing the CHECK is exactly what they feed it.
+ */
+describe('listExpiredTrials — FIX 6', () => {
+  interface FakeRow {
+    id: string;
+    sheets_trial_activated_at: string | null;
+    sheets_trial_expires_at: string | null;
+    sheets_trial_revoked_at: string | null;
+  }
+
+  /**
+   * Applies the filters the query actually sends, and NOTHING else. No CHECK
+   * constraint exists here — which is the whole point.
+   */
+  function fakeSupabase(rows: FakeRow[]) {
+    const filters: { op: string; col: string; val: unknown }[] = [];
+    const b: Record<string, unknown> = {
+      from: () => b,
+      select: () => b,
+      order: () => b,
+      not: (col: string, _op: string, val: unknown) => {
+        filters.push({ op: 'not-is', col, val });
+        return b;
+      },
+      lte: (col: string, val: unknown) => {
+        filters.push({ op: 'lte', col, val });
+        return b;
+      },
+      is: (col: string, val: unknown) => {
+        filters.push({ op: 'is', col, val });
+        return b;
+      },
+      limit: async () => ({
+        data: rows.filter((r) =>
+          filters.every(({ op, col, val }) => {
+            const cur = (r as unknown as Record<string, unknown>)[col];
+            if (op === 'is') return cur === val;
+            if (op === 'not-is') return cur !== val;
+            if (op === 'lte') return cur !== null && String(cur) <= String(val);
+            return true;
+          }),
+        ),
+        error: null,
+      }),
+    };
+    return b as unknown as import('@supabase/supabase-js').SupabaseClient;
+  }
+
+  const NOW = new Date('2026-08-05T12:00:00.000Z');
+  const PAST = '2026-08-01T00:00:00.000Z';
+
+  it('never returns a row whose activation stamp is missing', async () => {
+    // The row this fix exists for: an expiry with no activation. It can only
+    // occur on a database missing 062's CHECK, and the old query would have
+    // handed it to the sweep, which revokes and deletes credentials.
+    const supabase = fakeSupabase([
+      {
+        id: 'half-written',
+        sheets_trial_activated_at: null,
+        sheets_trial_expires_at: PAST,
+        sheets_trial_revoked_at: null,
+      },
+    ]);
+
+    const { users } = await listExpiredTrials(supabase, NOW, 100);
+    assert.deepEqual(users, [], 'a row with no activation must never reach the sweep');
+  });
+
+  it('still returns a genuinely expired, uncleaned trial', async () => {
+    const supabase = fakeSupabase([
+      {
+        id: 'real',
+        sheets_trial_activated_at: '2026-07-18T00:00:00.000Z',
+        sheets_trial_expires_at: PAST,
+        sheets_trial_revoked_at: null,
+      },
+    ]);
+
+    const { users } = await listExpiredTrials(supabase, NOW, 100);
+    assert.equal(users.length, 1);
+    assert.equal((users[0] as unknown as FakeRow).id, 'real');
+  });
+
+  it('picks the real trial out of a table full of users who never started one', async () => {
+    const never = (id: string): FakeRow => ({
+      id,
+      sheets_trial_activated_at: null,
+      sheets_trial_expires_at: null,
+      sheets_trial_revoked_at: null,
+    });
+    const supabase = fakeSupabase([
+      never('u1'),
+      never('u2'),
+      {
+        id: 'real',
+        sheets_trial_activated_at: '2026-07-18T00:00:00.000Z',
+        sheets_trial_expires_at: PAST,
+        sheets_trial_revoked_at: null,
+      },
+      never('u3'),
+    ]);
+
+    const { users } = await listExpiredTrials(supabase, NOW, 100);
+    assert.deepEqual(
+      users.map((u) => u.id),
+      ['real'],
+    );
+  });
+
+  it('still excludes a trial the sweep has already claimed', async () => {
+    const supabase = fakeSupabase([
+      {
+        id: 'done',
+        sheets_trial_activated_at: '2026-07-18T00:00:00.000Z',
+        sheets_trial_expires_at: PAST,
+        sheets_trial_revoked_at: '2026-08-02T00:00:00.000Z',
+      },
+    ]);
+
+    const { users } = await listExpiredTrials(supabase, NOW, 100);
+    assert.deepEqual(users, []);
   });
 });

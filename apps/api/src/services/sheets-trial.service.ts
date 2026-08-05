@@ -282,6 +282,28 @@ export interface ExpiredTrialUser {
  *
  * Bounded per run so one sweep cannot run unboundedly long; the remainder is
  * picked up 15 minutes later, oldest first.
+ *
+ * ── `activated_at IS NOT NULL` is stated, not inferred (FIX 6) ────────────
+ *
+ * The two predicates above do not, on their own, say "this user started a
+ * trial". They only exclude a user who never did BECAUSE migration 062's
+ * `users_sheets_trial_coherent` CHECK guarantees activated_at and expires_at are
+ * set together — so a NULL activated_at implies a NULL expires_at, which
+ * `lte(...)` then filters out.
+ *
+ * That is a correct argument and a fragile one. It depends on a constraint in a
+ * different file, applied by hand (no migration in this project is
+ * auto-applied), on a table that already has these columns on some
+ * environments — exactly the case where the ALTERs succeed via
+ * `ADD COLUMN IF NOT EXISTS` and the CHECK is the part that gets skipped or
+ * dropped. The moment that link breaks, this query returns every user with a
+ * half-written trial row, and the sweep's response to a matched row is to
+ * revoke their Google grant and delete their credential.
+ *
+ * The cost of stating it is one more predicate on a partial-indexed query. The
+ * cost of inferring it is destroying credentials for people who never started a
+ * trial. So it is stated here as well, and the constraint stays as the
+ * second line of defence rather than the only one.
  */
 export async function listExpiredTrials(
   supabase: SupabaseClient,
@@ -291,6 +313,8 @@ export async function listExpiredTrials(
   const { data, error } = await supabase
     .from('users')
     .select('id, line_user_id, plan, sheets_trial_expires_at')
+    // FIX 6 — see above. Do not remove on the grounds that the CHECK covers it.
+    .not('sheets_trial_activated_at', 'is', null)
     .lte('sheets_trial_expires_at', now.toISOString())
     .is('sheets_trial_revoked_at', null)
     .order('sheets_trial_expires_at', { ascending: true })

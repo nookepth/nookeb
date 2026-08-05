@@ -50,8 +50,10 @@ function fakeSupabase(
     from(table: string) {
       if (table === 'users') {
         const builder: Record<string, unknown> = {
-          // listExpiredTrials: select → lte → is → order → limit
+          // listExpiredTrials: select → not → lte → is → order → limit
+          // (`not` is FIX 6's explicit activated_at filter.)
           select: () => builder,
+          not: () => builder,
           lte: () => builder,
           order: () => builder,
           limit: async () => ({ data: users, error: null }),
@@ -373,12 +375,14 @@ describe('runSheetsTrialExpiry', () => {
     const supabase = {
       from: () => ({
         select: () => ({
-          lte: () => ({
-            is: () => ({
-              order: () => ({
-                limit: async () => ({
-                  data: null,
-                  error: { code: '42703', message: 'column does not exist' },
+          not: () => ({
+            lte: () => ({
+              is: () => ({
+                order: () => ({
+                  limit: async () => ({
+                    data: null,
+                    error: { code: '42703', message: 'column does not exist' },
+                  }),
                 }),
               }),
             }),
