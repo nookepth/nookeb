@@ -20,10 +20,77 @@ import { runBoostExpiry } from './boostExpiry.job';
 import { runDiaryAddonSweep, runDiaryReminderSweep } from './diaryReminder.job';
 import { runSheetsTrialExpiry } from './sheetsTrialExpiry.job';
 import { runGoogleRevokeRetry } from './googleRevokeRetry.job';
+import { SHEETS_TRIAL_JOB_NAME, recordSweepOutcome } from './sheetsTrialMonitor';
+import { recordJobHeartbeat } from '../services/job-heartbeat.service';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
+
+/**
+ * FIX 4/5 — the sheets-trial sweep, wrapped in a heartbeat.
+ *
+ * Extracted from the switch because the wrapper is the point: the sweep's only
+ * evidence that it had run was a console.log at the end of a run, and "no log
+ * line" is not something anyone can watch for. `recordJobHeartbeat` turns that
+ * absence into a positive fact that services/sweep-watchdog.ts (running in the
+ * API process, because a dead worker cannot notice it is dead) can find going
+ * stale.
+ *
+ * The heartbeat is written on BOTH paths — a run that threw records `ok: false`
+ * and leaves `last_success_at` where it was, so "it ran and crashed" and "it did
+ * not run" both read as "has not succeeded since X", which is correct: they are
+ * equally useless outcomes.
+ *
+ * The error is RE-THROWN after the heartbeat so BullMQ still retries. Recording
+ * a failure must not swallow it.
+ */
+async function sweepSheetsTrials(): Promise<void> {
+  try {
+    const result = await runSheetsTrialExpiry(supabase, {
+      // Context is explicit so the sweep's revoke failures are greppable
+      // apart from a user-initiated disconnect's (FIX 1).
+      revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'trial_sweep'),
+      // FIX 2 — the durable trail for a grant that can never be revoked.
+      // Injected (rather than imported inside the job) so the job module
+      // stays env-free; the sweep refuses to delete a credential when
+      // this answers false.
+      recordOrphan: (orphan) =>
+        recordOrphanedGrant(supabase, { ...orphan, context: 'trial_sweep' }),
+      push: async (to, text) => {
+        await pushMessage(to, [{ type: 'text', text }], supabase, 'sheets_trial');
+      },
+      // Best-effort tidy-up of a queued backfill. The stable jobId is the
+      // one from enqueueHistoricalSync; `remove()` on an absent or
+      // already-settled job is a no-op.
+      cancelPendingSync: async (userId) => {
+        const job = await getSheetsQueue().getJob(`sheets-historical-${userId}`);
+        await job?.remove();
+      },
+      webUrl: config.WEB_URL,
+    });
+
+    await recordSweepOutcome(supabase, result);
+
+    // FIX 1 — the parked-disconnect retry rides the same 15-minute tick.
+    // A separate function over a separate query (see the job's header);
+    // it shares the cadence, not the logic. Run AFTER the trial sweep so
+    // a user who is in both sets has their trial handled by the path that
+    // knows about plans.
+    await runGoogleRevokeRetry(supabase, {
+      revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'pending_retry'),
+      recordOrphan: (orphan) =>
+        recordOrphanedGrant(supabase, { ...orphan, context: 'pending_retry' }),
+    });
+  } catch (err) {
+    await recordJobHeartbeat(supabase, {
+      jobName: SHEETS_TRIAL_JOB_NAME,
+      ok: false,
+      result: { error: (err as Error).message },
+    });
+    throw err;
+  }
+}
 
 export function createMembershipWorker(): Worker<MembershipJob> {
   const worker = new Worker<MembershipJob>(
@@ -61,42 +128,7 @@ export function createMembershipWorker(): Worker<MembershipJob> {
           });
           break;
         case 'sheets_trial_expiry':
-          // หนูเก็บลองงาน (migration 062). Config-dependent work is injected
-          // here for the same reason as the two cases above — the job module
-          // stays env-free and unit-testable.
-          await runSheetsTrialExpiry(supabase, {
-            // Context is explicit so the sweep's revoke failures are greppable
-            // apart from a user-initiated disconnect's (FIX 1).
-            revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'trial_sweep'),
-            // FIX 2 — the durable trail for a grant that can never be revoked.
-            // Injected (rather than imported inside the job) so the job module
-            // stays env-free; the sweep refuses to delete a credential when
-            // this answers false.
-            recordOrphan: (orphan) =>
-              recordOrphanedGrant(supabase, { ...orphan, context: 'trial_sweep' }),
-            push: async (to, text) => {
-              await pushMessage(to, [{ type: 'text', text }], supabase, 'sheets_trial');
-            },
-            // Best-effort tidy-up of a queued backfill. The stable jobId is the
-            // one from enqueueHistoricalSync; `remove()` on an absent or
-            // already-settled job is a no-op.
-            cancelPendingSync: async (userId) => {
-              const job = await getSheetsQueue().getJob(`sheets-historical-${userId}`);
-              await job?.remove();
-            },
-            webUrl: config.WEB_URL,
-          });
-
-          // FIX 1 — the parked-disconnect retry rides the same 15-minute tick.
-          // A separate function over a separate query (see the job's header);
-          // it shares the cadence, not the logic. Run AFTER the trial sweep so
-          // a user who is in both sets has their trial handled by the path that
-          // knows about plans.
-          await runGoogleRevokeRetry(supabase, {
-            revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'pending_retry'),
-            recordOrphan: (orphan) =>
-              recordOrphanedGrant(supabase, { ...orphan, context: 'pending_retry' }),
-          });
+          await sweepSheetsTrials();
           break;
         default: {
           // Exhaustiveness guard: a new job type added to the union without a

@@ -40,6 +40,9 @@ import { cleanUpExpiredTrial } from '../jobs/sheetsTrialExpiry.job';
 import { recordOrphanedGrant, revokeRefreshToken, summariseOrphanedGrants } from '../services/google-sheets.service';
 import { getSheetsQueue } from '../services/sheetsQueue';
 import { pushMessage } from '../services/line.service';
+import { readJobHeartbeats } from '../services/job-heartbeat.service';
+import { listOpenOpsAlerts } from '../services/ops-alert.service';
+import { STALE_AFTER_MS, runSweepWatchdog } from '../services/sweep-watchdog';
 import { getLineQuotaSummary, type LineQuotaSummary } from '../services/line-quota.service';
 import { R2_RECONCILE_JOB_ID, type FileJob } from '@nookeb/shared';
 
@@ -1642,6 +1645,36 @@ const adminOpsRoutes: FastifyPluginAsync = async (app) => {
   // every property the sweep exists to guarantee. So the write below does not
   // touch SQL at all; it calls the SAME cleanUpExpiredTrial the sweep calls.
   // ==========================================================================
+
+  // --------------------------------------------------------------------------
+  // GET /admin/system/sweeps — FIX 4's read side.
+  //
+  // "Is the cleanup actually running?" was previously unanswerable from
+  // anywhere: the sweep's only output was a console.log at the end of a run,
+  // which is by definition absent when the run does not happen. This serves the
+  // heartbeat rows, the watchdog's live verdict, and every open ops alert.
+  //
+  // The watchdog verdict is recomputed on read rather than served from a cache,
+  // so opening this page mid-incident gives the current answer rather than
+  // whatever the last 5-minute tick concluded. That call also raises/resolves
+  // the alert as a side effect, which is deliberate: an admin looking at the
+  // page is exactly when a recovered sweep should have its alert closed.
+  //
+  // Fail-soft, like every read in this file.
+  // --------------------------------------------------------------------------
+  app.get('/admin/system/sweeps', async () => {
+    const [heartbeats, findings, alerts] = await Promise.all([
+      soft('sweeps:heartbeats', () => readJobHeartbeats(app.supabase), []),
+      soft('sweeps:watchdog', () => runSweepWatchdog(app.supabase), []),
+      soft('sweeps:alerts', () => listOpenOpsAlerts(app.supabase), []),
+    ]);
+    return {
+      heartbeats,
+      watchdog: findings,
+      openAlerts: alerts,
+      staleAfterMs: STALE_AFTER_MS,
+    };
+  });
 
   // GET /admin/sheets-trial?status=&limit=&offset= — the READ. Fail-soft, per
   // this file's contract for reads: an unapplied migration 062 leaves the panel

@@ -6,6 +6,7 @@ import rateLimit from '@fastify/rate-limit';
 import { TASK_NOTIFICATIONS_ENABLED } from '@nookeb/shared';
 import { config } from './config';
 import { getFlag } from './services/feature-flags.service';
+import { startSweepWatchdog } from './services/sweep-watchdog';
 import supabasePlugin from './plugins/supabase';
 import r2Plugin from './plugins/r2';
 import redisPlugin from './plugins/redis';
@@ -320,6 +321,22 @@ async function main(): Promise<void> {
     })
     .catch((err) => app.log.warn({ err }, 'could not read DB-backed feature flags at boot'));
   app.log.info({ TASK_NOTIFICATIONS_ENABLED }, 'feature flag: task notifications');
+
+  // FIX 4 — watch the membership worker's sweeps from OUTSIDE the worker.
+  //
+  // The sheets-trial expiry sweep is the only thing that revokes Google
+  // credentials after a trial ends, and it lives in one place: a 15-minute
+  // repeatable on the membership worker. A check inside that worker cannot
+  // detect the failure that matters — a dead process does not run its own
+  // health check, and a wedged one does not either. The API is a separate
+  // Railway service with a separate lifecycle, so this is the only place the
+  // question "has the sweep stopped?" can actually be asked.
+  //
+  // An in-process interval rather than a queue job, because a repeatable would
+  // be executed by the very worker being watched. Same shape and same reasoning
+  // as taskScheduler's self-heal interval. It is unref()'d, so it can never
+  // hold this process open during a deploy.
+  startSweepWatchdog(app.supabase);
 
   // Flush any in-memory upload batches still inside the 1.5s debounce window
   // before exiting — otherwise those collected files are lost with no trace.
