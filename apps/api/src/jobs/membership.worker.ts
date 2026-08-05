@@ -19,6 +19,7 @@ import { runQuotaPeriodCleanup } from './quotaReset.job';
 import { runBoostExpiry } from './boostExpiry.job';
 import { runDiaryAddonSweep, runDiaryReminderSweep } from './diaryReminder.job';
 import { runSheetsTrialExpiry } from './sheetsTrialExpiry.job';
+import { runGoogleRevokeRetry } from './googleRevokeRetry.job';
 
 const supabase = createClient(config.SUPABASE_URL, config.SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
@@ -64,7 +65,9 @@ export function createMembershipWorker(): Worker<MembershipJob> {
           // here for the same reason as the two cases above — the job module
           // stays env-free and unit-testable.
           await runSheetsTrialExpiry(supabase, {
-            revokeGrant: revokeRefreshToken,
+            // Context is explicit so the sweep's revoke failures are greppable
+            // apart from a user-initiated disconnect's (FIX 1).
+            revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'trial_sweep'),
             push: async (to, text) => {
               await pushMessage(to, [{ type: 'text', text }], supabase, 'sheets_trial');
             },
@@ -76,6 +79,15 @@ export function createMembershipWorker(): Worker<MembershipJob> {
               await job?.remove();
             },
             webUrl: config.WEB_URL,
+          });
+
+          // FIX 1 — the parked-disconnect retry rides the same 15-minute tick.
+          // A separate function over a separate query (see the job's header);
+          // it shares the cadence, not the logic. Run AFTER the trial sweep so
+          // a user who is in both sets has their trial handled by the path that
+          // knows about plans.
+          await runGoogleRevokeRetry(supabase, {
+            revokeGrant: (userId, token) => revokeRefreshToken(userId, token, 'pending_retry'),
           });
           break;
         default: {

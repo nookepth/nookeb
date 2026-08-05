@@ -9,6 +9,8 @@ import {
   getAuthUrl,
   getIntegration,
   isGoogleSheetsConfigured,
+  markRevokePending,
+  revokeRefreshToken,
   saveIntegration,
 } from '../services/google-sheets.service';
 import { claimOAuthState, storeOAuthState } from '../services/google-oauth-state';
@@ -221,9 +223,79 @@ const integrationsRoutes: FastifyPluginAsync = async (app) => {
   // DELETE /integrations/google — disconnect. Removes the credential row only:
   // the user's spreadsheet is theirs and stays exactly as it is, and their
   // tasks are untouched.
-  app.delete('/integrations/google', { preHandler: app.authenticate }, async (request) => {
-    await deleteIntegration(app.supabase, request.authUser!.userId);
-    return { success: true };
+  //
+  // ── FIX 1: REVOKE AT GOOGLE FIRST, ALWAYS ────────────────────────────────
+  //
+  // This used to call deleteIntegration() straight away. The encrypted row is
+  // the ONLY copy of the refresh token, so that destroyed our ability to ever
+  // revoke the grant while leaving the grant itself alive at Google forever —
+  // unrecoverably, because there was nothing left to revoke WITH. The automatic
+  // trial-expiry sweep has always had this ordering right
+  // (jobs/sheetsTrialExpiry.job.ts); the manual path did not, and a user who
+  // presses "ยกเลิกการเชื่อมต่อ" has asked for exactly the same thing.
+  //
+  // The ordering below is identical to the sweep's, deliberately: revoke →
+  // delete → done, and a transient failure deletes NOTHING.
+  //
+  // ── What a transient failure must not do ─────────────────────────────────
+  //
+  // Unlike the sweep, there is a user waiting on this response, and the two
+  // easy answers are both wrong: deleting anyway is the leak being fixed, and
+  // answering `{ success: true }` while doing nothing is worse still, because
+  // the user now believes their Google account is disconnected when it is not.
+  //
+  // So the row is PARKED (`revoke_pending_at`, migration 063). That makes the
+  // disconnect real immediately — getIntegration() hides parked rows, so the
+  // dashboard shows disconnected and both sheetsWorker paths stop syncing — while
+  // the encrypted token survives just long enough for the 15-minute retry pass
+  // to finish revoking it at Google. The response says `pending`, not `success`.
+  app.delete('/integrations/google', { preHandler: app.authenticate }, async (request, reply) => {
+    const userId = request.authUser!.userId;
+    const row = await getIntegration(app.supabase, userId);
+
+    // Already disconnected (or already parked, which getIntegration reports as
+    // disconnected). Idempotent: a second press is a no-op, not a 404.
+    if (!row) return { success: true, revoked: false };
+
+    const revoked = await revokeRefreshToken(userId, row.encrypted_token, 'manual_disconnect');
+
+    if (!revoked) {
+      const parked = await markRevokePending(
+        app.supabase,
+        userId,
+        'manual disconnect: google revoke unreachable',
+      );
+      if (parked) {
+        request.log.warn(
+          { userId },
+          'manual disconnect parked — google revoke failed, retry pass will finish it',
+        );
+        // 202: accepted and in progress. The user IS disconnected (nothing will
+        // sync, the card reads disconnected); what is still outstanding is the
+        // revocation at Google, which is ours to finish, not theirs to retry.
+        return reply.code(202).send({
+          success: false,
+          pending: true,
+          code: 'DISCONNECT_REVOKE_PENDING',
+          message:
+            'หนูตัดการเชื่อมต่อให้แล้วน้า แต่ยังคืนสิทธิ์กับ Google ไม่สำเร็จ — หนูจะลองใหม่ให้อัตโนมัติภายใน 15 นาทีน้า',
+        });
+      }
+
+      // Pre-063: there is nowhere to park it. Fall back to the OLD behaviour
+      // rather than refusing to disconnect at all — an un-migrated deployment
+      // keeps exactly the leak it already had, which is a worse outcome than a
+      // working disconnect but a much better one than a disconnect button that
+      // does not work.
+      request.log.error(
+        { userId },
+        'manual disconnect: google revoke failed and migration 063 is not applied — ' +
+          'deleting the credential anyway, the grant at Google is now UNREVOCABLE',
+      );
+    }
+
+    await deleteIntegration(app.supabase, userId);
+    return { success: true, revoked };
   });
 };
 

@@ -170,6 +170,26 @@ export interface GoogleIntegrationRow {
   sheet_url: string | null;
   last_synced_at: string | null;
   last_error: string | null;
+  /** FIX 1 (migration 063). Absent on a pre-063 database. */
+  revoke_pending_at?: string | null;
+  revoke_attempts?: number | null;
+  revoke_last_error?: string | null;
+}
+
+/**
+ * Postgres "column does not exist" for migration 063's revoke-pending columns.
+ *
+ * Same shape and same reasoning as isMissingTrialColumn in
+ * services/sheets-trial.service.ts: SQLSTATE first (PostgREST forwards it
+ * verbatim), message fallback because a schema-cache miss surfaces as PGRST204
+ * with the column named in the message rather than as 42703.
+ */
+function isMissingRevokeColumn(error: { code?: string; message?: string; details?: string | null } | null): boolean {
+  if (!error) return false;
+  if (error.code === '42703') return true;
+  return /revoke_pending_at|revoke_attempts|revoke_last_error/.test(
+    `${error.message ?? ''} ${error.details ?? ''}`,
+  );
 }
 
 /** Present iff the whole chain is configured — OAuth client AND the key that
@@ -241,6 +261,27 @@ export async function exchangeCode(code: string): Promise<ExchangedTokens> {
 
 // ---- persistence ----
 
+/**
+ * Whether migration 063 is applied, as learned at runtime.
+ *
+ * Starts optimistic and is flipped to `false` the first time PostgREST reports
+ * the column missing, so a pre-063 deployment pays the failed round trip once
+ * rather than on every write. Never flipped back: a migration is not un-applied
+ * mid-process, and a stale `false` costs only the revoke-parking feature, which
+ * is exactly what a pre-063 database cannot have anyway.
+ */
+let revokeColumnsSupported = true;
+
+/** Spread helper: the revoke columns, or nothing at all on a pre-063 database. */
+function revokeColumns<T extends Record<string, unknown>>(patch: T): T | Record<string, never> {
+  return revokeColumnsSupported ? patch : {};
+}
+
+/** TEST SEAM. Reset the learned pre-063 state between cases. */
+export function __setRevokeColumnsSupportedForTests(value: boolean): void {
+  revokeColumnsSupported = value;
+}
+
 export async function saveIntegration(
   supabase: SupabaseClient,
   userId: string,
@@ -260,16 +301,56 @@ export async function saveIntegration(
       sheet_url: null,
       last_error: null,
       updated_at: new Date().toISOString(),
+      // FIX 1 (063): reconnecting UNPARKS a disconnect whose revoke never
+      // completed. Without this, a user who disconnected while Google was
+      // unreachable and then reconnected would have their brand-new credential
+      // revoked and deleted by the retry pass minutes later.
+      ...revokeColumns({
+        revoke_pending_at: null,
+        revoke_attempts: 0,
+        revoke_last_error: null,
+      }),
     },
     { onConflict: 'user_id' },
   );
-  if (error) throw error;
+  if (error) {
+    if (!isMissingRevokeColumn(error)) throw error;
+    // Pre-063: retry without the columns that do not exist yet.
+    revokeColumnsSupported = false;
+    return saveIntegration(supabase, userId, refreshToken, email);
+  }
 }
 
+/**
+ * The user's LIVE integration, or null.
+ *
+ * FIX 1 (063): a row parked with `revoke_pending_at` is reported as NO
+ * INTEGRATION. That is the whole reason the parking column can exist without
+ * lying to the user — they pressed disconnect, so from this function outward
+ * (the dashboard card, both sheetsWorker sync paths, the historical-backfill
+ * guard) they ARE disconnected, immediately, even though the encrypted token
+ * survives a few more minutes so the grant can still be revoked at Google.
+ *
+ * The retry pass is the only caller that wants those rows, and it queries the
+ * table directly (listPendingRevocations).
+ */
 export async function getIntegration(
   supabase: SupabaseClient,
   userId: string,
 ): Promise<GoogleIntegrationRow | null> {
+  if (revokeColumnsSupported) {
+    const { data, error } = await supabase
+      .from('google_integrations')
+      .select('*')
+      .eq('user_id', userId)
+      .is('revoke_pending_at', null)
+      .maybeSingle();
+    if (!error) return (data as GoogleIntegrationRow | null) ?? null;
+    if (!isMissingRevokeColumn(error)) throw error;
+    revokeColumnsSupported = false;
+  }
+
+  // Pre-063 fallback: no parking column exists, so no row can be parked.
   const { data, error } = await supabase
     .from('google_integrations')
     .select('*')
@@ -277,6 +358,116 @@ export async function getIntegration(
     .maybeSingle();
   if (error) throw error;
   return (data as GoogleIntegrationRow | null) ?? null;
+}
+
+/**
+ * Park a disconnect whose Google revoke failed transiently — FIX 1.
+ *
+ * Returns `true` when the row was parked (the retry pass will finish the job),
+ * `false` when migration 063 is not applied and there is nowhere to park it.
+ * The caller decides what to do with `false`; routes/integrations.ts falls back
+ * to the pre-fix behaviour of deleting the row, because refusing to disconnect
+ * at all on an un-migrated deployment would be a worse regression than the leak
+ * that deployment already had.
+ */
+export async function markRevokePending(
+  supabase: SupabaseClient,
+  userId: string,
+  reason: string,
+): Promise<boolean> {
+  if (!revokeColumnsSupported) return false;
+
+  const { data: prior } = await supabase
+    .from('google_integrations')
+    .select('revoke_attempts')
+    .eq('user_id', userId)
+    .maybeSingle();
+  const attempts = Number((prior as { revoke_attempts?: number } | null)?.revoke_attempts ?? 0);
+
+  const { error } = await supabase
+    .from('google_integrations')
+    .update({
+      // Preserved across retries: the stamp is "when the user asked", which is
+      // what an admin needs to see, not "when we last tried".
+      revoke_pending_at: new Date().toISOString(),
+      revoke_attempts: attempts + 1,
+      // Truncated and pre-sanitised by the caller. NEVER a token — see the
+      // logging rule on revokeRefreshToken.
+      revoke_last_error: reason.slice(0, 300),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId);
+
+  if (error) {
+    if (isMissingRevokeColumn(error)) {
+      revokeColumnsSupported = false;
+      return false;
+    }
+    throw error;
+  }
+  return true;
+}
+
+/**
+ * Bump only the attempt counter and reason on an ALREADY parked row.
+ *
+ * Distinct from markRevokePending so a retry cannot move `revoke_pending_at`
+ * forward — that column answers "how long has this grant been outstanding?",
+ * and a retry that refreshed it would reset the clock on the one number that
+ * makes a permanently stuck grant visible.
+ */
+export async function recordRevokeRetryFailure(
+  supabase: SupabaseClient,
+  userId: string,
+  attempts: number,
+  reason: string,
+): Promise<void> {
+  if (!revokeColumnsSupported) return;
+  const { error } = await supabase
+    .from('google_integrations')
+    .update({
+      revoke_attempts: attempts + 1,
+      revoke_last_error: reason.slice(0, 300),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('user_id', userId);
+  if (error && !isMissingRevokeColumn(error)) throw error;
+}
+
+export interface PendingRevocation {
+  user_id: string;
+  encrypted_token: string;
+  revoke_pending_at: string;
+  revoke_attempts: number;
+}
+
+/**
+ * Disconnects whose Google revoke has not succeeded yet, oldest first.
+ *
+ * NO TIME WINDOW, for the same reason listExpiredTrials has none (migration
+ * 062's header): a windowed query drops anything a missed run skipped, and what
+ * would be dropped here is a live third-party grant nobody will ever look at
+ * again. `revoke_pending_at IS NOT NULL` is simply "still outstanding".
+ */
+export async function listPendingRevocations(
+  supabase: SupabaseClient,
+  limit: number,
+): Promise<{ rows: PendingRevocation[]; supported: boolean }> {
+  const { data, error } = await supabase
+    .from('google_integrations')
+    .select('user_id, encrypted_token, revoke_pending_at, revoke_attempts')
+    .not('revoke_pending_at', 'is', null)
+    .order('revoke_pending_at', { ascending: true })
+    .limit(limit);
+
+  if (error) {
+    if (isMissingRevokeColumn(error)) {
+      revokeColumnsSupported = false;
+      return { rows: [], supported: false };
+    }
+    throw error;
+  }
+  return { rows: (data as PendingRevocation[] | null) ?? [], supported: true };
 }
 
 /**
@@ -352,11 +543,25 @@ export async function authorizedClient(
  *
  * NEVER LOG THE TOKEN, or the request body that carries it. Only the response
  * is inspected, exactly as describeGoogleError does.
+ *
+ * ── `context` (FIX 1) ─────────────────────────────────────────────────────
+ *
+ * Which path asked for the revoke, carried into every log line as
+ * `[sheets-revoke:{context}]`. Three callers, three very different incidents:
+ * a `trial_sweep` failure is a background retry that will come round again, a
+ * `manual_disconnect` failure is a user standing in front of a spinner right
+ * now, and a `pending_retry` failure that keeps recurring is a grant that may
+ * never be revoked. Before this they all logged under one prefix and were
+ * indistinguishable after the fact.
  */
+export type RevokeContext = 'trial_sweep' | 'manual_disconnect' | 'pending_retry' | 'admin_force_expire';
+
 export async function revokeRefreshToken(
   userId: string,
   encryptedToken: string,
+  context: RevokeContext = 'trial_sweep',
 ): Promise<boolean> {
+  const tag = `[sheets-revoke:${context}]`;
   let refreshToken: string;
   try {
     refreshToken = decryptSecret(await deriveSecretKey(userId), encryptedToken);
@@ -364,7 +569,7 @@ export async function revokeRefreshToken(
     // Undecryptable (VAULT_MASTER_KEY rotated, row corrupt). The token is
     // unusable by us and unrecoverable, so there is nothing to revoke and
     // nothing to gain from retrying — let the caller delete the dead row.
-    console.error('[sheets-trial] could not decrypt stored token for revoke:', (err as Error).message);
+    console.error(`${tag} could not decrypt stored token for revoke:`, (err as Error).message);
     return true;
   }
 
@@ -381,13 +586,13 @@ export async function revokeRefreshToken(
     if (res.status === 400) {
       const detail = await res.text().catch(() => '');
       if (/invalid_token/i.test(detail)) return true;
-      console.error(`[sheets-trial] google revoke rejected: 400 ${detail.slice(0, 200)}`);
+      console.error(`${tag} google revoke rejected: 400 ${detail.slice(0, 200)}`);
       return false;
     }
-    console.error(`[sheets-trial] google revoke failed: status=${res.status}`);
+    console.error(`${tag} google revoke failed: status=${res.status} user=${userId}`);
     return false;
   } catch (err) {
-    console.error('[sheets-trial] google revoke request failed:', (err as Error).message);
+    console.error(`${tag} google revoke request failed for ${userId}:`, (err as Error).message);
     return false;
   }
 }
