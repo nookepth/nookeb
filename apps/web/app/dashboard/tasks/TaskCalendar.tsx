@@ -45,6 +45,32 @@ const TONE_CLASS: Record<DayTask['tone'], string> = {
   upcoming: 'calChipUpcoming',
 };
 
+/* ---- phone-width summary (see the .calCellDots block in tasks.module.css) ----
+   A 375px viewport gives a day cell ~43px of width. A time + a title cannot be
+   read at that size, so below 768px the chips are hidden and the cell prints an
+   indicator instead: one dot per task up to three, a single count pip beyond
+   that. The task text is not lost — it moves to the day list under the grid,
+   which is where a phone can actually render it. Both elements are in the DOM
+   at every width and CSS decides which one shows, so the desktop tree is
+   unchanged. */
+
+const DOT_CLASS: Record<DayTask['tone'], string> = {
+  overdue: 'calDotOverdue',
+  done: 'calDotDone',
+  upcoming: 'calDot',
+};
+
+/** How many dots a cell prints before switching to a single count pip. */
+const MAX_DOTS = 3;
+
+/** Severity order for the count pip's tint — the worst state a day holds is the
+ *  one worth colouring, so a day with one overdue task among five reads red. */
+function worstTone(tasks: DayTask[]): DayTask['tone'] {
+  if (tasks.some((t) => t.tone === 'overdue')) return 'overdue';
+  if (tasks.some((t) => t.tone === 'upcoming')) return 'upcoming';
+  return 'done';
+}
+
 /**
  * Hand-rolled month calendar (no date library). Each day cell now prints the
  * actual task titles due that day, tinted by state — brand for upcoming, red
@@ -146,6 +172,23 @@ export default function TaskCalendar({
               >
                 <span className={styles.calDayNum}>{day}</span>
                 {mark && mark.count > 0 && <span className={styles.calDayCount}>{mark.count}</span>}
+                {dayTasks.length > 0 && (
+                  <span className={styles.calCellDots} aria-hidden>
+                    {dayTasks.length <= MAX_DOTS ? (
+                      dayTasks.map((t) => (
+                        // `calCellDot` carries the SIZE and the tone class only
+                        // the colour: of the three legend classes reused here
+                        // for their tint, only `.calDot` has dimensions, so an
+                        // overdue dot on its own rendered as a 0×0 nothing.
+                        <span key={t.id} className={`${styles.calCellDot} ${styles[DOT_CLASS[t.tone]]}`} />
+                      ))
+                    ) : (
+                      <span className={`${styles.calCellPip} ${styles[DOT_CLASS[worstTone(dayTasks)]]}`}>
+                        {dayTasks.length}
+                      </span>
+                    )}
+                  </span>
+                )}
               </button>
 
               {shown.length > 0 && (
@@ -188,7 +231,9 @@ export default function TaskCalendar({
         <span className={styles.calLegendItem}>
           <span className={`${styles.calDot} ${styles.calDotDone}`} /> เสร็จแล้ว
         </span>
+        {/* Two hints, one per layout — the phone grid has no titles to tap. */}
         <span className={styles.calLegendHint}>แตะชื่องานเพื่อเปิดดู · แตะวันที่เพื่อกรองรายการด้านล่าง</span>
+        <span className={styles.calLegendHintMobile}>แตะวันที่เพื่อดูงานของวันนั้นด้านล่าง</span>
       </div>
     </div>
   );

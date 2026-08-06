@@ -308,6 +308,15 @@ export default function TasksPage() {
   const [highlightUid, setHighlightUid] = useState<string | null>(null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [pins, setPins] = useState<string[]>([]);
+  /**
+   * The ปฏิทิน day-list header. On a phone the month grid fills most of the
+   * viewport, so tapping a day updates a list that is entirely below the fold
+   * and the tap reads as if it did nothing — the whole point of the phone
+   * calendar is that the titles live down there. Scrolled into view by the
+   * effect below; `scroll-margin-top` in the stylesheet keeps it clear of the
+   * sticky zone nav.
+   */
+  const calListHeadRef = useRef<HTMLDivElement | null>(null);
   const [focusCollapsed, setFocusCollapsed] = useState(false);
   const [feedCollapsed, setFeedCollapsed] = useState(true);
   const [leavingIds, setLeavingIds] = useState<Set<string>>(new Set());
@@ -507,6 +516,26 @@ export default function TasksPage() {
       setWantSearchFocus(false);
     }
   }, [wantSearchFocus, section]);
+
+  /**
+   * Phone only: reveal the day list when a calendar day is picked.
+   *
+   * Gated on the same 767px breakpoint the stylesheet uses for the compact
+   * grid, because on desktop the list is already beside/below the fold-free
+   * calendar and yanking the page down would be an unasked-for scroll. Skipped
+   * when the day is CLEARED (null) — that is the user tapping the same day
+   * again, and scrolling them somewhere on an un-select is disorienting.
+   */
+  useEffect(() => {
+    if (section !== 'calendar' || !selectedDay) return;
+    if (!window.matchMedia('(max-width: 767px)').matches) return;
+    // Called straight from the effect, NOT deferred through requestAnimationFrame
+    // the way the รายงานทีม highlight is. That one has to wait out the zone
+    // switch's own scroll-to-top; picking a day starts no competing scroll, so
+    // there is nothing to sequence after — and a bare rAF is paused outright
+    // while the page is not compositing, which would drop the scroll entirely.
+    calListHeadRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [selectedDay, section]);
 
   /* ---- pref setters that also persist ---- */
   const changeFilter = (f: TaskFilter) => {
@@ -1140,7 +1169,7 @@ export default function TasksPage() {
               {section === 'calendar' && (
                 <>
                   <TaskCalendar tasks={all} selected={selectedDay} onSelect={setSelectedDay} />
-                  <div className={styles.calListHead}>
+                  <div className={styles.calListHead} ref={calListHeadRef}>
                     {selectedDay ? (
                       <div className={styles.dayFilterChip}>
                         <span>แสดงงานวันที่ {selectedDayLabel}</span>

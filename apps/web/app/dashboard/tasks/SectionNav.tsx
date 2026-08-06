@@ -1,5 +1,6 @@
 'use client';
 
+import { useEffect, useRef } from 'react';
 import styles from './tasks.module.css';
 
 export type Section =
@@ -118,6 +119,23 @@ export default function SectionNav({
   onChange: (s: Section) => void;
   badges?: Partial<Record<Section, number>>;
 }) {
+  const activeRef = useRef<HTMLButtonElement | null>(null);
+
+  /**
+   * Keep the selected tab inside the scroller.
+   *
+   * Seven tabs need ~770px; a 375px phone shows two and a half, so วิเคราะห์ or
+   * วิธีใช้ could be the ACTIVE zone with its tab parked off-screen — the row
+   * then reads as if some other zone were selected. `inline: 'nearest'` is a
+   * no-op once the tab is already fully visible, which is every width wide
+   * enough to fit the row, so desktop never scrolls. `block: 'nearest'` is
+   * load-bearing: the default 'start' would scroll the PAGE to this sticky nav
+   * on first paint.
+   */
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+  }, [section]);
+
   return (
     <nav className={styles.sectionNav} aria-label="ส่วนของหน้า">
       <div className={styles.sectionNavRow} role="tablist">
@@ -128,6 +146,7 @@ export default function SectionNav({
               key={s}
               type="button"
               role="tab"
+              ref={section === s ? activeRef : undefined}
               aria-selected={section === s}
               className={`${styles.sectionTab} ${section === s ? styles.sectionTabActive : ''}`}
               onClick={() => onChange(s)}

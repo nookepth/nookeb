@@ -3379,3 +3379,563 @@
 .dueHeadToday .dueHeadCount {
   color: #8f2f28;
 }
+
+/* ============================================================================
+   MOBILE PASS (2026-08-06) — phone widths, ≤767px.
+
+   Everything above this line was written for a pointer and a wide column; this
+   block is the phone's half of the page. It is APPEND-ONLY and lives entirely
+   inside one `max-width: 767px` query, so no rule above changes and every
+   desktop/tablet width renders exactly what it rendered before.
+
+   767px, not 1023px: between 768 and 1023 the layout is already the desktop one
+   at a narrower column (a calendar cell is ~100px there, wide enough for a task
+   chip), and pulling that band into the phone treatment would be a redesign of
+   tablet, which was not asked for.
+
+   The three elements that only exist for this block (.calCellDots, the trend
+   chart's short label and value caption) are declared display:none FIRST, so
+   they are inert at every width above the query even though they are in the
+   DOM. That is deliberate: a phone layout built by hiding markup is one that
+   cannot drift out of sync with the desktop tree.
+   ========================================================================= */
+
+/* phone-only elements — off by default, switched on inside the query below */
+.calCellDots,
+.calLegendHintMobile,
+.trendLabelShort,
+.trendColVal {
+  display: none;
+}
+
+@media (max-width: 767px) {
+  /* ---- page frame ---------------------------------------------------- */
+  .wrap {
+    /* 12px gutters rather than 16: at 375px every extra pair of pixels goes
+       straight into the calendar cell and the roster's number columns, which
+       are the two things on this page with nothing left to give. The bottom
+       padding clears the FAB — a task card ending under it cannot be read. */
+    padding: 16px 12px 104px;
+  }
+  .title {
+    font-size: 20px;
+    gap: 8px;
+  }
+  .hint {
+    font-size: 13px;
+    margin-bottom: 14px;
+  }
+  .titleRow {
+    gap: 8px;
+  }
+  /* the two header controls were 23px and 36px tall — both under the thumb */
+  .back {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+    margin-bottom: 4px;
+  }
+  .refreshBtn {
+    min-height: 40px;
+    padding: 9px 14px;
+  }
+
+  /* iOS Safari zooms the whole page when a focused field is under 16px. Every
+     text entry on this page (and the shared detail page) was 14px. */
+  .input,
+  .textarea,
+  .searchInput,
+  .sortSelect {
+    font-size: 16px;
+  }
+
+  /* ---- zone nav ------------------------------------------------------ */
+  /* Seven zones need ~770px and the phone has 375, so this row scrolls no
+     matter what. Full-bleed is what makes that scroll feel deliberate rather
+     than clipped: the strip runs edge to edge, tabs are cut off BY the screen
+     instead of by a rounded card sitting inside a gutter, and the last tab can
+     be flicked to with the thumb already at the edge. SectionNav keeps the
+     active tab in view, so the selected zone is never the one off-screen. */
+  .sectionNav {
+    margin: 4px -12px 0;
+    padding: 8px 0 0;
+  }
+  .sectionNavRow {
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    gap: 2px;
+    padding: 5px 12px;
+    scroll-padding-inline: 12px;
+    scroll-snap-type: x proximity;
+    /* a visible scrollbar under a 50px strip is all noise */
+    scrollbar-width: none;
+  }
+  .sectionNavRow::-webkit-scrollbar {
+    display: none;
+  }
+  .sectionTab {
+    min-height: 40px;
+    padding: 9px 11px;
+    font-size: 13px;
+    gap: 5px;
+    scroll-snap-align: start;
+  }
+  .sectionHint {
+    font-size: 12px;
+    margin: 8px 2px 12px;
+    line-height: 1.55;
+  }
+
+  /* ---- hero: profile + ring ------------------------------------------ */
+  /* 52px avatar + 84px ring + 32px padding left the name column 145px, which
+     wrapped the plan badge onto its own line and squeezed the motivation copy
+     into four. Both circles shrink; the text gets ~40px back. */
+  .profileCard {
+    padding: 12px;
+    gap: 10px;
+  }
+  .profileAvatar {
+    width: 46px;
+    height: 46px;
+  }
+  .ringWrap {
+    width: 66px;
+    height: 66px;
+  }
+  /* the ring's own <svg> is a fixed 84px box — scale the whole thing rather
+     than re-plumbing the component's geometry for one breakpoint */
+  .ringWrap > svg {
+    width: 66px;
+    height: 66px;
+  }
+  .ringCount {
+    font-size: 13px;
+  }
+  .ringLabel {
+    font-size: 9px;
+  }
+  .motivation {
+    font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  /* ---- KPI + metric tiles -------------------------------------------- */
+  .statCard {
+    padding: 12px;
+    gap: 5px;
+  }
+  .statNum {
+    font-size: 22px;
+  }
+  .metricBox {
+    padding: 11px 4px;
+  }
+
+  /* ---- ภาพรวม: focus banner + activity feed --------------------------- */
+  /* Both lists were 38px rows — readable, but under the 44px a thumb needs. */
+  .focusItem,
+  .feedItem {
+    padding: 11px 10px;
+    gap: 10px;
+  }
+  .focusHead,
+  .feedHead {
+    padding: 13px 14px;
+  }
+  .segmented {
+    /* four range buttons at 29px tall, wrapped so they never overflow */
+    flex-wrap: wrap;
+  }
+  .segBtn {
+    min-height: 38px;
+    padding: 8px 13px;
+  }
+  .customRange {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  /* ---- งานของฉัน: search, chips, sort, cards -------------------------- */
+  /* The control bar stops being sticky here, and only here.
+     Search + scope chips + sort + export + four status tabs stack 281px tall
+     on a phone. Pinned under the 60px zone nav that is 341px of permanently
+     occupied screen — 42% of an iPhone SE, leaving room for two task cards.
+     The zone nav stays pinned because it is the page's navigation and it is
+     one row; these are per-list controls, they sit at the top of the list they
+     control, and scrolling up is how a phone reaches them. Desktop keeps the
+     sticky bar: there the same stack is a fifth of the viewport. */
+  .stickyBar {
+    position: static;
+    padding-top: 4px;
+  }
+  .searchRow {
+    gap: 6px;
+  }
+  .searchBar {
+    height: 46px;
+  }
+  .searchClear {
+    width: 30px;
+    height: 30px;
+  }
+  .gotoCalBtn {
+    height: 46px;
+    padding: 0 12px;
+  }
+  .chip {
+    min-height: 38px;
+    padding: 9px 14px;
+    font-size: 12.5px;
+  }
+  /* sort and export share one row and split it, so neither is a 29px sliver */
+  .filterActions {
+    justify-content: stretch;
+  }
+  .sortWrap {
+    flex: 1;
+    min-width: 0;
+  }
+  .sortSelect {
+    width: 100%;
+    max-width: none;
+    min-height: 40px;
+    padding: 8px 12px 8px 30px;
+  }
+  .exportBtn {
+    min-height: 40px;
+    padding: 8px 14px;
+    font-size: 12.5px;
+  }
+  /* Four counted tabs need ~411px and a 375 screen offers 351, so this row
+     scrolls. Tightened until the fourth tab PEEKS rather than sitting just off
+     the edge — a partially visible tab is the affordance; a row that ends
+     flush at the last fully drawn one reads as the whole set. Counts can grow
+     ("(100)"), so this narrows the gap, it does not close it. */
+  .tabs {
+    gap: 2px;
+  }
+  .tab {
+    padding: 11px 10px;
+  }
+  .card {
+    padding: 14px;
+  }
+  .cardTitle {
+    font-size: 16px;
+  }
+  /* the star and the "..." were 28px squares sitting side by side */
+  .pinBtn,
+  .menuBtn {
+    width: 38px;
+    height: 38px;
+  }
+  .menuItem {
+    padding: 12px 14px;
+  }
+  .doneBtn {
+    min-height: 38px;
+    padding: 8px 14px;
+  }
+  .dueHead {
+    padding: 8px 12px;
+  }
+
+  /* ---- ติดตามสถานะ ---------------------------------------------------- */
+  .reviewCallout {
+    gap: 10px;
+    padding: 12px 14px;
+  }
+  .stageCard {
+    padding: 13px 14px 11px;
+  }
+  .stageItem {
+    padding: 10px 8px;
+  }
+
+  /* ====================================================================
+     ปฏิทิน — the phone calendar.
+
+     A 375px viewport divides into seven ~43px columns. The desktop cell
+     prints up to four chips of "HH:MM + title" inside that, which at 10.5px
+     renders as overlapping grey mush — legible neither as a time nor as a
+     name. So below 768px the cell carries an INDICATOR and nothing else:
+
+       ≤3 tasks → one dot per task, tinted by that task's own state
+       >3 tasks → a single count pip, tinted by the worst state present
+
+     and the titles move to the day list under the grid, which has the full
+     width to render them at a readable size. Tapping a day scrolls that list
+     into view (see the effect in page.tsx) so the tap always has a visible
+     result. Nothing is hidden behind a hover: the chips' `title` tooltips
+     were the desktop affordance and they are gone from this layout entirely.
+     ==================================================================== */
+  .calCard {
+    padding: 10px 8px 12px;
+  }
+  .calHead {
+    margin-bottom: 8px;
+  }
+  .calNavBtn {
+    width: 42px;
+    height: 42px;
+  }
+  .calTodayBtn {
+    min-height: 38px;
+    padding: 8px 13px;
+  }
+  .calGrid {
+    gap: 3px;
+  }
+  .calWeekday {
+    font-size: 10.5px;
+    padding: 2px 0 4px;
+  }
+  .calCell,
+  .calCellEmpty {
+    /* 48px, not the desktop 96: the cell no longer holds text, and a month of
+       96px rows would push the day list two screens below the grid */
+    min-height: 48px;
+  }
+  .calCell {
+    padding: 0;
+    gap: 0;
+    border-radius: 9px;
+  }
+  /* the whole cell is the tap target now, not just the number row */
+  .calDayBtn {
+    flex: 1;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    padding: 4px 0;
+    border-radius: 9px;
+  }
+  .calDayNum {
+    font-size: 13.5px;
+  }
+  /* the count moved into the dot row; the chips have nowhere to go */
+  .calDayCount,
+  .calChips,
+  .calLegendHint {
+    display: none;
+  }
+  .calCellDots {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    height: 8px;
+  }
+  /* size for all three tints — `.calDotOverdue` / `.calDotDone` are background
+     -only rules (the legend gets its box from `.calDot`, which they are always
+     written alongside there), so a dot wearing one of them and nothing else
+     collapsed to 0×0 */
+  .calCellDot {
+    width: 5px;
+    height: 5px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+  }
+  /* Overrides .calDot's 5px square box — the shared legend dot classes are
+     reused here only for their TINT, which is what keeps the indicator and
+     the legend under the grid from ever disagreeing about what red means. */
+  .calCellPip {
+    width: auto;
+    min-width: 17px;
+    height: 15px;
+    padding: 0 4px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+    color: #fff;
+  }
+  /* selected day reads as a filled chip — at 48px a 1px inset ring is easy to
+     miss, and this is the state the list below is keyed to */
+  .calCellSelected .calDayNum {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 999px;
+    background: #b53a32;
+    color: #fff;
+  }
+  .calLegend {
+    gap: 10px;
+    margin-top: 10px;
+  }
+  .calLegendHintMobile {
+    display: block;
+    font-size: 11px;
+    color: #b0b0b0;
+    text-align: center;
+  }
+  /* clears the sticky zone nav when the day list is scrolled into view */
+  .calListHead {
+    scroll-margin-top: 70px;
+  }
+  .dayFilterChip {
+    padding: 7px 8px 7px 14px;
+    font-size: 13px;
+  }
+  .dayFilterClear {
+    width: 30px;
+    height: 30px;
+  }
+
+  /* ====================================================================
+     รายงานทีม — the roster unstacks into cards.
+
+     The row is a six-column grid with a 560px floor, inside a card that is
+     341px wide on a phone: the name column ate the width and ทั้งหมด/เสร็จ/
+     ค้าง/เลยกำหนด/ตรงเวลา sat off-screen behind a horizontal scroll nobody
+     signposts. Here the name takes a full row of its own and the five numbers
+     share the one below, each printing its own heading from `data-label` —
+     the shared header row is hidden because it can no longer line up with
+     anything.
+     ==================================================================== */
+  .rosterCard {
+    overflow-x: visible;
+    padding: 4px 10px 12px;
+  }
+  .rosterHead {
+    display: none;
+  }
+  .rosterRow {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    min-width: 0;
+    gap: 10px 4px;
+    padding: 12px 10px 18px;
+    margin-bottom: 10px;
+    border: 1px solid #f0f0f0;
+    border-radius: 14px;
+  }
+  .rosterRow:last-child {
+    margin-bottom: 0;
+    border-bottom: 1px solid #f0f0f0;
+  }
+  .rosterName {
+    grid-column: 1 / -1;
+  }
+  .rosterAvatar {
+    width: 42px;
+    height: 42px;
+  }
+  .rosterCell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    font-size: 15px;
+    line-height: 1.2;
+  }
+  .rosterCell::before {
+    content: attr(data-label);
+    font-size: 10px;
+    font-weight: 700;
+    color: #b0b0b0;
+    line-height: 1.25;
+    text-align: center;
+  }
+  .rosterBar {
+    left: 10px;
+    right: 10px;
+    bottom: 7px;
+  }
+  .rosterFoot {
+    margin-top: 14px;
+  }
+
+  /* ---- วิเคราะห์ ------------------------------------------------------- */
+  /* The two counts were only ever in the bars' `title` tooltips, which a
+     touch device cannot open — so on this layout they are printed above the
+     column and the chart stops depending on a pointer to be readable. The
+     x labels drop their month for the same reason the calendar dropped its
+     chips: eight columns across 375px cannot hold "12 ส.ค." */
+  .trendChart {
+    height: 190px;
+    gap: 3px;
+  }
+  .trendBar {
+    width: 46%;
+    max-width: 12px;
+  }
+  .trendLabel {
+    display: none;
+  }
+  .trendLabelShort {
+    display: block;
+    font-size: 10.5px;
+    color: #8c8c8c;
+    white-space: nowrap;
+  }
+  .trendColVal {
+    display: block;
+    font-size: 9.5px;
+    font-weight: 800;
+    color: #8c8c8c;
+    line-height: 1;
+    min-height: 10px;
+    font-variant-numeric: tabular-nums;
+  }
+  .trendLegend {
+    gap: 10px;
+  }
+  .lateLabel {
+    width: 72px;
+  }
+
+  /* ---- วิธีใช้ --------------------------------------------------------- */
+  /* The 132px first column left ~180px for the explanation, which broke every
+     line into three. Both row types stack instead. */
+  .howtoSimpleRow {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+  .howtoChip {
+    justify-self: start;
+  }
+  .howtoRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .howtoCmd {
+    font-size: 12px;
+  }
+
+  /* ---- overlays: FAB, toast, modal ------------------------------------ */
+  .fab {
+    right: 14px;
+    bottom: calc(16px + env(safe-area-inset-bottom));
+    padding: 13px 18px;
+  }
+  /* the toast used to land underneath the FAB */
+  .toast {
+    bottom: calc(80px + env(safe-area-inset-bottom));
+    max-width: calc(100vw - 32px);
+    text-align: center;
+  }
+  .modal {
+    padding: 18px 16px;
+    max-height: 88vh;
+    border-radius: 18px;
+  }
+  .modalActions {
+    gap: 10px;
+  }
+  .modalActions .primaryBtn,
+  .modalActions .ghostBtn {
+    flex: 1;
+    min-height: 44px;
+    justify-content: center;
+  }
+  .memberPick {
+    padding: 12px 8px;
+  }
+}

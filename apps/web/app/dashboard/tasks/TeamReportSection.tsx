@@ -134,13 +134,24 @@ export default function TeamReportSection({
                     </span>
                   </span>
                 </span>
-                <span className={styles.rosterCell}>{p.total}</span>
-                <span className={`${styles.rosterCell} ${styles.rosterCellDone}`}>{p.done}</span>
-                <span className={styles.rosterCell}>{p.pending}</span>
-                <span className={`${styles.rosterCell} ${p.overdue > 0 ? styles.rosterCellOver : ''}`}>
+                {/* `data-label` carries the column heading down to phone
+                    widths, where the row unstacks into a card and the shared
+                    header above is hidden — a bare "3" under a name means
+                    nothing. Printed by the .rosterCell::before rule in the
+                    mobile block of tasks.module.css; ignored at every width
+                    where the header row is on screen. */}
+                <span className={styles.rosterCell} data-label="ทั้งหมด">{p.total}</span>
+                <span className={`${styles.rosterCell} ${styles.rosterCellDone}`} data-label="เสร็จ">{p.done}</span>
+                <span className={styles.rosterCell} data-label="ค้าง">{p.pending}</span>
+                <span
+                  className={`${styles.rosterCell} ${p.overdue > 0 ? styles.rosterCellOver : ''}`}
+                  data-label="เลยกำหนด"
+                >
                   {p.overdue}
                 </span>
-                <span className={styles.rosterCell}>{p.onTimePct !== null ? `${p.onTimePct}%` : '—'}</span>
+                <span className={styles.rosterCell} data-label="ตรงเวลา">
+                  {p.onTimePct !== null ? `${p.onTimePct}%` : '—'}
+                </span>
                 <span className={styles.rosterBar} aria-hidden>
                   <span className={styles.rosterBarFill} style={{ width: `${pct}%` }} />
                 </span>

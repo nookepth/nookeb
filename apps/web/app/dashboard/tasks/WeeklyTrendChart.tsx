@@ -10,6 +10,11 @@ const WEEK_MS = 7 * 86_400_000;
 
 interface Bucket {
   label: string;
+  /** Phone-width label. Eight columns across a 375px screen leave ~33px each,
+   *  which ellipsises "12 ส.ค." into "12 ส…" — the month is the part that has
+   *  to go, since the eight bars are consecutive weeks and the day alone still
+   *  orders them. `label` stays the desktop text; CSS picks one. */
+  short: string;
   created: number;
   done: number;
 }
@@ -37,6 +42,7 @@ export default function WeeklyTrendChart({ tasks, viewerUid }: { tasks: TaskDto[
       const d = new Date(start);
       out.push({
         label: i === 0 ? 'สัปดาห์นี้' : `${d.getDate()} ${THAI_MONTHS[d.getMonth()]}`,
+        short: i === 0 ? 'นี้' : `${d.getDate()}`,
         created: 0,
         done: 0,
       });
@@ -87,6 +93,13 @@ export default function WeeklyTrendChart({ tasks, viewerUid }: { tasks: TaskDto[
       <div className={styles.trendChart} role="img" aria-label="กราฟแท่งเปรียบเทียบงานที่เข้ามากับงานที่ปิดได้">
         {buckets.map((b, i) => (
           <div key={i} className={styles.trendCol}>
+            {/* The two counts live in the bars' `title` tooltips, which a phone
+                has no way to open — so on touch widths they are printed above
+                the column instead. Blank when the week is empty: eight "0/0"
+                captions are noise, and an empty column already reads as zero. */}
+            <span className={styles.trendColVal} aria-hidden>
+              {b.created > 0 || b.done > 0 ? `${b.created}/${b.done}` : ''}
+            </span>
             <div className={styles.trendBars}>
               <span
                 className={`${styles.trendBar} ${styles.trendBarCreated}`}
@@ -100,6 +113,7 @@ export default function WeeklyTrendChart({ tasks, viewerUid }: { tasks: TaskDto[
               />
             </div>
             <span className={styles.trendLabel}>{b.label}</span>
+            <span className={styles.trendLabelShort}>{b.short}</span>
           </div>
         ))}
       </div>
