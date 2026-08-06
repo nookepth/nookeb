@@ -35,7 +35,9 @@ import {
 } from '../../services/task-confirm';
 import { logEvent } from '../../services/events.service';
 import { config } from '../../config';
-import { normalizePlan } from '../../config/plans';
+import { normalizePlan, type Plan } from '../../config/plans';
+import { consumeQuota, releaseQuota } from '../../services/quota.service';
+import { quotaExceededThai } from '../../services/quota-message';
 import { enqueueSheetsSync } from '../../services/sheetsQueue';
 
 /**
@@ -178,6 +180,30 @@ async function resolvePlanIsPro(app: FastifyInstance, lineUserId: string): Promi
     .eq('line_user_id', lineUserId)
     .maybeSingle();
   return normalizePlan((data as { plan?: string } | null)?.plan) !== 'free';
+}
+
+/**
+ * The commander's account row, for the §5 `tasks` quota.
+ *
+ * Returns null when the LINE uid has no `users` row — a group member can issue
+ * "หนูเก็บเตือนงาน" without ever having friended the OA or logged into the web
+ * app, and there is no account to charge. That case FAILS OPEN (the task is
+ * created, uncounted): blocking it would make chat task creation depend on an
+ * onboarding step the command flow never asks for. Every path that DOES have an
+ * account is counted, which is the population the limit is about.
+ */
+async function resolveCommanderAccount(
+  app: FastifyInstance,
+  lineUserId: string,
+): Promise<{ userId: string; plan: Plan } | null> {
+  const { data } = await app.supabase
+    .from('users')
+    .select('id, plan')
+    .eq('line_user_id', lineUserId)
+    .maybeSingle();
+  const row = data as { id?: string; plan?: string } | null;
+  if (!row?.id) return null;
+  return { userId: row.id, plan: normalizePlan(row.plan) };
 }
 
 /**
@@ -442,6 +468,46 @@ async function createTaskFromConfirm(
     return;
   }
 
+  // §5 — the `tasks` monthly quota (7 / 25 / 100). POST /tasks reserves this via
+  // quotaCheck('tasks'), but the chat command never touches that route: it calls
+  // createTaskWithItems directly, so until now a group task typed into LINE was
+  // both uncounted and un-capped. Reserved here — AFTER the idempotency claim so
+  // a redelivered confirm cannot charge twice, and BEFORE the insert so a
+  // rejection costs nothing — using the same engine as every other quota.
+  //
+  // A rejection unwinds exactly like the create-failure path below (drop the
+  // claim, restore the pending intent) so the commander can tap ยืนยัน again
+  // after an upgrade or the monthly reset, and answers with the shared Thai
+  // sentence rather than the route's JSON — a chat has no status codes.
+  const account = await resolveCommanderAccount(app, intent.commanderId);
+  if (account) {
+    const decision = await consumeQuota(app.supabase, {
+      userId: account.userId,
+      feature: 'tasks',
+      plan: account.plan,
+    });
+    if (!decision.allowed) {
+      await app.redis.del(idemKey).catch(() => {});
+      await restorePendingConfirm(app.redis, intent).catch(() => {});
+      void logEvent(app.supabase, {
+        eventType: 'feature_blocked_quota',
+        userId: account.userId,
+        source: 'line',
+        metadata: { feature: 'tasks', via: 'line_command' },
+      });
+      await replyText(
+        event,
+        quotaExceededThai({
+          feature: 'tasks',
+          limit: decision.limit,
+          used: decision.used,
+          resetAt: decision.resetAt,
+        }),
+      );
+      return;
+    }
+  }
+
   let task;
   try {
     const { data: space } = await app.supabase
@@ -466,9 +532,16 @@ async function createTaskFromConfirm(
     });
   } catch (createErr) {
     // Release the idempotency claim AND restore the pending intent so the
-    // commander can retry ยืนยัน — the failed create left no visible task.
+    // commander can retry ยืนยัน — the failed create left no visible task. The
+    // quota unit reserved above goes back for the same reason (best-effort: a
+    // leaked unit costs one task until the reset, and must not mask createErr).
     await app.redis.del(idemKey).catch(() => {});
     await restorePendingConfirm(app.redis, intent).catch(() => {});
+    if (account) {
+      await releaseQuota(app.supabase, { userId: account.userId, feature: 'tasks' }).catch(
+        () => undefined,
+      );
+    }
     throw createErr;
   }
 
@@ -543,14 +616,14 @@ export async function handleTaskConfirmPostback(
   try {
     if (action === 'cancel') {
       await deletePendingConfirm(app.redis, groupId, tapper);
-      await replyText(event, 'ยกเลิกแล้วค่ะ ถ้าจะสั่งงานใหม่พิมพ์มาได้เลยน้า');
+      await replyText(event, 'ยกเลิกแล้วน้า ถ้าจะสั่งงานใหม่พิมพ์มาได้เลยน้า');
       return true;
     }
 
     // confirm: atomically claim so a double-tap / redelivery can't double-create.
     const intent = await claimPendingConfirm(app.redis, groupId, tapper);
     if (!intent) {
-      await replyText(event, 'คำสั่งหมดอายุแล้ว กรุณาพิมพ์ใหม่');
+      await replyText(event, 'คำสั่งนี้หมดอายุแล้วน้า พิมพ์สั่งงานใหม่อีกทีได้เลยน้า');
       return true;
     }
     await createTaskFromConfirm(app, event, intent);

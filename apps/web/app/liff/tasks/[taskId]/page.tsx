@@ -546,6 +546,32 @@ export default function TaskViewPage({ params }: { params: { taskId: string } })
         </section>
       )}
 
+      {/* "ดูงานทั้งหมด" — the only route out of a task back to the full list.
+          Its own section, NOT part of the action row above: that row renders
+          only for the creator or when there is a deadline, so an assignee
+          opening a deadline-less task saw no way out at all.
+
+          A plain same-origin navigation on purpose — do NOT route this through
+          liff.openWindow({ external: true }) like บันทึกลงปฏิทิน does. The
+          external browser is a separate cookie jar and /dashboard/tasks would
+          land unauthenticated; the LIFF webview already holds the session
+          cookie POST /auth/liff set on this origin. */}
+      <section className={styles.section}>
+        <a
+          className={styles.secondaryBtn}
+          href="/dashboard/tasks"
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '13px 10px',
+            textDecoration: 'none',
+          }}
+        >
+          ดูงานทั้งหมด
+        </a>
+      </section>
+
       {/* progress bar */}
       <section className={styles.section}>
         <div className={styles.card}>

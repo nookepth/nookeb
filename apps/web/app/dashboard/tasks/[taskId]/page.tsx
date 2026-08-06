@@ -605,6 +605,22 @@ export default function TaskDetailPage({ params }: { params: { taskId: string } 
         </div>
       )}
 
+      {/* "ดูงานทั้งหมด" — the action-row peer of the ← breadcrumb at the top of
+          the page. Both are kept: the breadcrumb is a faint 14px grey link that
+          reads as chrome, and the row above it renders only for the creator or
+          when there is a deadline — so an assignee on a closed, deadline-less
+          task had nothing button-shaped pointing back to the list. Same control
+          and same copy as the LIFF detail page. */}
+      <div className={styles.detailActions}>
+        <a
+          className={styles.secondaryBtn}
+          href="/dashboard/tasks"
+          style={{ flex: 1, padding: '13px 10px', textDecoration: 'none' }}
+        >
+          ดูงานทั้งหมด
+        </a>
+      </div>
+
       {/* progress bar */}
       <div className={styles.card} style={{ marginTop: 14 }}>
         <div className={styles.detailTitleRow} style={{ marginBottom: 8 }}>
