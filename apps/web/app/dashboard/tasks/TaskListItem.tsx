@@ -4,7 +4,15 @@ import { useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import type { TaskDto, TaskItemDto, TaskStatus } from '@nookeb/shared';
 import { ClockIcon } from '@/components/icons';
-import { formatRelativeDeadline, isOverdue, taskProgress, urgency } from './taskUtils';
+import { unnamedLabel } from './mascots';
+import {
+  effectiveDeadline,
+  formatRelativeDeadline,
+  isOverdue,
+  taskProgress,
+  urgency,
+  URGENCY_META,
+} from './taskUtils';
 import styles from './tasks.module.css';
 
 const TYPE_LABEL: Record<TaskDto['type'], string> = {
@@ -104,7 +112,18 @@ export default function TaskListItem({
 
   const { done, total } = taskProgress(task);
   const pct = total > 0 ? Math.round((done / total) * 100) : 0;
-  const u = urgency(task.globalDeadline);
+  /**
+   * The date this card is actually judged by — the same one `isOverdue` uses.
+   *
+   * Reading `task.globalDeadline` here instead was a real contradiction on a
+   * แยกรายการ task, which legitimately carries per-item deadlines and NO global
+   * one: `isOverdue` (via `effectiveDeadline`) flagged the card red with a
+   * warning triangle, while the deadline row below it — gated on the global
+   * field — rendered nothing at all. The card asserted a problem and withheld
+   * the date that made it one.
+   */
+  const deadline = effectiveDeadline(task);
+  const u = urgency(deadline);
   const overdue = isOverdue(task);
   const isDone = task.status === 'done';
   const isCancelled = task.status === 'cancelled';
@@ -133,8 +152,27 @@ export default function TaskListItem({
   const renderItem = (item: TaskItemDto) => {
     const mine = item.assignees.find((a) => a.lineUid === viewerUid);
     const itemDone = item.status === 'done';
-    const myPending = mine && !mine.doneAt && !itemDone && item.status !== 'cancelled';
-    const names = item.assignees.map((a) => a.displayName || 'สมาชิก').join(', ');
+    /**
+     * รอตรวจ / ตีกลับ (migration 045). These were invisible here: the row drew
+     * done-vs-pending only, so an item that had been submitted and was sitting
+     * on the creator's desk looked exactly like one nobody had started, and a
+     * rejected item looked like ordinary outstanding work rather than something
+     * bounced back. ติดตามสถานะ was built to surface this, but the task list is
+     * where people actually work, so it has to be legible here too.
+     *
+     * `submitted` also suppresses the เสร็จแล้ว button below — self-marking an
+     * item that is awaiting review is exactly the self-approval the ส่งงานกลับ
+     * flow exists to prevent, and the API rejects it anyway.
+     */
+    const submitted = item.status === 'submitted';
+    const rejected = item.status === 'rejected';
+    const myPending =
+      mine && !mine.doneAt && !itemDone && !submitted && item.status !== 'cancelled';
+    // One fallback for a missing display_name across the whole dashboard: the
+    // roster/mascots use unnamedLabel(), so a bare "สมาชิก" here rendered two
+    // different names for the same person on two zones of the same page — and
+    // collapsed two unnamed people into "สมาชิก, สมาชิก" on one row.
+    const names = item.assignees.map((a) => a.displayName || unnamedLabel(a.lineUid)).join(', ');
     const dotClass = itemDone
       ? styles.itemDone
       : myPending || item.assignees.some((a) => !a.doneAt)
@@ -150,9 +188,23 @@ export default function TaskListItem({
             {item.deadline ? ` · ${formatRelativeDeadline(item.deadline)}` : ''}
           </div>
         </div>
+        {/* ตีกลับ is a LABEL, not a replacement for the action: the item is
+            still live and its assignee can still close it from here, exactly as
+            before. รอตรวจ below is the one state that does take the button
+            away, because self-marking an item that is awaiting the creator's
+            review is the self-approval the ส่งงานกลับ flow exists to prevent. */}
+        {rejected && !itemDone && (
+          <span className={`${styles.reviewChip} ${styles.reviewChipRejected}`} title="ถูกตีกลับ ต้องแก้แล้วส่งใหม่">
+            ตีกลับ
+          </span>
+        )}
         {itemDone ? (
           <span className={styles.doneChip}>
             <CheckIcon /> เสร็จ
+          </span>
+        ) : submitted ? (
+          <span className={`${styles.reviewChip} ${styles.reviewChipWaiting}`} title="ส่งงานกลับแล้ว รอคนสั่งงานกดรับงานหรือตีกลับ">
+            รอตรวจ
           </span>
         ) : myPending ? (
           <button
@@ -208,6 +260,19 @@ export default function TaskListItem({
           {task.title}
         </h3>
         <span className={styles.cardBadges}>
+          {/* ความเร่งด่วน the creator picked (migration 050). Hidden once the
+              task is closed — the priority of finished work is noise, and the
+              row is already dimmed. Absent on chat-created tasks, which is a
+              real state, so nothing is rendered rather than a fake "ปกติ". */}
+          {task.urgency && !isDone && !isCancelled && (
+            <span
+              className={styles.urgencyBadge}
+              style={{ color: URGENCY_META[task.urgency].fg, background: URGENCY_META[task.urgency].bg }}
+              title={`ความเร่งด่วน: ${URGENCY_META[task.urgency].label}`}
+            >
+              {URGENCY_META[task.urgency].label}
+            </span>
+          )}
           <span className={task.isPersonal ? styles.scopePersonal : styles.scopeGroup}>
             {task.isPersonal ? 'ส่วนตัว' : 'กลุ่ม'}
           </span>
@@ -271,11 +336,15 @@ export default function TaskListItem({
           </span>
         </span>
       </div>
-      {task.globalDeadline && (
+      {deadline && (
         <span className={`${styles.deadline} ${u ? styles[u] : ''}`}>
           <ClockIcon size={14} />
           {u === 'overdue' ? 'เลยกำหนด ' : 'กำหนดส่ง '}
-          {formatRelativeDeadline(task.globalDeadline)}
+          {formatRelativeDeadline(deadline)}
+          {/* On a แยกรายการ task this date is the EARLIEST item's, not one the
+              whole task shares — say so, or the card reads as a single hard
+              deadline that some of its own rows then appear to contradict. */}
+          {!task.globalDeadline && <span className={styles.deadlineNote}>(รายการที่ใกล้ที่สุด)</span>}
         </span>
       )}
       <div className={styles.progressRow}>
@@ -283,7 +352,10 @@ export default function TaskListItem({
           <div className={styles.progressFill} style={{ width: `${pct}%` }} />
         </div>
         <span className={styles.progressText}>
-          {done}/{total} เสร็จ
+          {/* An empty track reading "0/0 เสร็จ" is indistinguishable from "0 of 1
+              person finished", when the truth is that nobody is on this task
+              yet — a different problem with a different fix. */}
+          {total > 0 ? `${done}/${total} เสร็จ` : 'ยังไม่มีผู้รับผิดชอบ'}
         </span>
       </div>
       <div className={styles.items}>{task.items.map(renderItem)}</div>

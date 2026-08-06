@@ -484,6 +484,20 @@ export interface TaskDto {
    * thing to every reader.
    */
   notifyOnlyPending: boolean;
+  /**
+   * ความเร่งด่วน picked at creation (migration 050). NULL = ปกติ / not chosen.
+   *
+   * This was a WRITE-ONLY column for its whole life: the LIFF detail step and
+   * the dashboard's create modal both send it, `POST /tasks` stores it, and the
+   * Google Sheets mirror reads it off the RECORD for column K — but `toTaskDto`
+   * never mapped it, so no client could ever read back the priority its own
+   * user had just set. Exposed here so the dashboard can show and sort by it.
+   *
+   * Chat-created tasks carry NULL (the in-chat command has no urgency clause),
+   * so any UI over this field must treat "unset" as a real, common state and
+   * never as ปกติ-by-default — see `URGENCY_META` on the web side.
+   */
+  urgency: TaskUrgency | null;
   items: TaskItemDto[];
   links: TaskLinkDto[];
   /**

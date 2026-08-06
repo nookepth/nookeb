@@ -1,4 +1,25 @@
-import type { TaskDto } from '@nookeb/shared';
+import type { TaskDto, TaskUrgency } from '@nookeb/shared';
+
+/**
+ * ความเร่งด่วน, as the dashboard renders it.
+ *
+ * Labels and colours mirror `URGENCY_OPTIONS` in lib/taskDraft.ts — the picker
+ * the creator actually used — so a task badged "ด่วนมาก" here is the same word
+ * and the same red they chose. `rank` orders newest-first sorting; NULL sorts
+ * last because "nobody chose" is not the same as "low priority", and a chat
+ * created task always has NULL.
+ */
+export const URGENCY_META: Record<TaskUrgency, { label: string; rank: number; fg: string; bg: string }> = {
+  urgent_max: { label: 'ด่วนมาก', rank: 0, fg: '#C62828', bg: '#fdecec' },
+  urgent: { label: 'ด่วน', rank: 1, fg: '#C2610A', bg: '#fff3e6' },
+  normal: { label: 'ปกติ', rank: 2, fg: '#B45309', bg: '#fdf6e7' },
+  relaxed: { label: 'ไม่รีบ', rank: 3, fg: '#2E7D32', bg: '#eaf5eb' },
+};
+
+/** Sort weight for a task's chosen urgency; unset sorts after every choice. */
+export function urgencyRank(u: TaskUrgency | null | undefined): number {
+  return u ? URGENCY_META[u].rank : 99;
+}
 
 export const THAI_MONTHS = [
   'ม.ค.',

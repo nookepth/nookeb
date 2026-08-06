@@ -206,6 +206,42 @@
   color: #06c755;
 }
 
+/* รอตรวจ / ตีกลับ on a task-list item (migration 045 states).
+   Deliberately pills rather than plain coloured text like .doneChip: เสร็จ is a
+   resting state, these two are someone's turn to act, and the filled pill is the
+   same weight the status badge in the card header carries. The two hues are
+   lifted from .stageReview / .stageRejected so an item reads the same colour
+   here as it does in the ติดตามสถานะ lane it is sitting in. */
+.reviewChip {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+.reviewChipWaiting {
+  color: #1d4ed8;
+  background: #e8eefc;
+}
+.reviewChipRejected {
+  color: #c62828;
+  background: #fdecec;
+}
+
+/* "(รายการที่ใกล้ที่สุด)" — the qualifier on a แยกรายการ task whose date comes
+   from its earliest item rather than a task-level deadline. Muted and never
+   inheriting the urgent/overdue weight of its parent, so it reads as a footnote
+   on the date rather than as part of the warning. */
+.deadlineNote {
+  margin-left: 5px;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: #a0a0a0;
+}
+
 .empty {
   text-align: center;
   padding: 64px 16px;
@@ -292,9 +328,7 @@
 }
 
 /* status badge (color supplied inline) */
-.statusBadge {
-  font-weight: 700;
-}
+/* colour only — shape and weight come from the shared card-badge rule below */
 
 /* ---- detail page ---- */
 .detailTitleRow {
@@ -1117,10 +1151,6 @@
   color: #b91c1c;
   margin-right: 6px;
 }
-.scopePersonal,
-.scopeGroup {
-  font-weight: 700;
-}
 .scopePersonal {
   color: #6d28d9;
   background: #ede9fe;
@@ -1214,10 +1244,14 @@
   animation: shimmer 1.4s ease infinite;
 }
 
-/* sticky search + tab bar — stays reachable while scrolling a long list */
+/* sticky search + tab bar — stays reachable while scrolling a long list.
+   `top` clears the zone nav, which is ALSO sticky at 0 with a higher z-index:
+   at top:0 both docked to the same line and the nav (painting over) hid the
+   search field completely. 58px tucks the bar's first few pixels behind the
+   nav's card so they dock flush with no see-through gap between them. */
 .stickyBar {
   position: sticky;
-  top: 0;
+  top: 58px;
   z-index: 20;
   background: #f5f5f5;
   padding-top: 8px;
@@ -1733,44 +1767,193 @@
   color: #8c8c8c;
   padding: 4px 0 6px;
 }
+/* --- day cells: titles on the grid, not just dots ---
+   The cell is a div (see TaskCalendar.tsx); the day number and each task chip
+   are the interactive elements inside it. Height is a min, not an aspect-ratio:
+   a week with three-chip days must be allowed to grow rather than clip. */
 .calCellEmpty {
-  aspect-ratio: 1;
+  min-height: 96px;
+  border-radius: 10px;
+  background: #fcfcfc;
 }
 .calCell {
-  aspect-ratio: 1;
+  min-height: 96px;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  align-items: stretch;
   gap: 3px;
-  border: 1px solid transparent;
-  background: none;
+  border: 1px solid #f2f2f2;
+  background: #fff;
   border-radius: 10px;
-  cursor: pointer;
-  font-family: inherit;
-  padding: 0;
+  padding: 4px;
+  overflow: hidden;
 }
 .calCell:hover {
-  background: #f7f7f7;
+  border-color: #e2e2e2;
+}
+/* a day with nothing due recedes — the eye should land on the busy days */
+.calCellQuiet {
+  background: #fcfcfc;
+  border-color: #f7f7f7;
 }
 .calCellToday {
   border-color: #b53a32;
+  box-shadow: inset 0 0 0 1px #b53a32;
 }
 .calCellSelected {
-  background: #b53a32;
+  background: #fdf6f5;
+  border-color: #b53a32;
+  box-shadow: inset 0 0 0 1px #b53a32;
 }
-.calCellSelected:hover {
-  background: #9c2f28;
+
+/* day number + count — the button that filters the list below */
+.calDayBtn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  padding: 2px 3px;
+  cursor: pointer;
+  font-family: inherit;
+  flex-shrink: 0;
 }
-.calCellSelected .calDayNum {
-  color: #fff;
+.calDayBtn:hover {
+  background: #f2f2f2;
+}
+.calCellSelected .calDayBtn:hover {
+  background: #f7e6e4;
 }
 .calDayNum {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 12.5px;
+  font-weight: 700;
   color: #333;
   line-height: 1;
 }
+.calCellToday .calDayNum,
+.calCellSelected .calDayNum {
+  color: #b53a32;
+}
+.calDayCount {
+  font-size: 10px;
+  font-weight: 700;
+  color: #8c8c8c;
+  background: #f2f2f2;
+  border-radius: 999px;
+  padding: 1px 5px;
+  line-height: 1.4;
+}
+
+/* task chips */
+.calChips {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.calChip {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  width: 100%;
+  min-width: 0;
+  border: none;
+  border-left: 2.5px solid transparent;
+  border-radius: 4px;
+  padding: 2.5px 4px;
+  font-family: inherit;
+  font-size: 10.5px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.calChipTime {
+  flex: 0 0 auto;
+  font-weight: 700;
+  opacity: 0.75;
+  font-variant-numeric: tabular-nums;
+}
+.calChipTitle {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.calChipUpcoming {
+  background: #fdf1f0;
+  border-left-color: #b53a32;
+  color: #8f2f28;
+}
+.calChipUpcoming:hover {
+  background: #fbe6e4;
+}
+.calChipOverdue {
+  background: #fee2e2;
+  border-left-color: #e03131;
+  color: #b91c1c;
+}
+.calChipOverdue:hover {
+  background: #fdd3d3;
+}
+.calChipDone {
+  background: #f4f4f4;
+  border-left-color: #06c755;
+  color: #6b7280;
+}
+.calChipDone .calChipTitle {
+  text-decoration: line-through;
+}
+.calChipDone:hover {
+  background: #ececec;
+}
+.calChipMore {
+  border: none;
+  background: none;
+  padding: 1px 5px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  color: #8c8c8c;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 4px;
+}
+.calChipMore:hover {
+  background: #f2f2f2;
+  color: #b53a32;
+}
+
+.calHeadRight {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.calTodayBtn {
+  border: 1px solid #eee;
+  background: #fff;
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8c8c8c;
+  cursor: pointer;
+}
+.calTodayBtn:hover {
+  color: #b53a32;
+  border-color: #b53a32;
+}
+.calLegendHint {
+  font-size: 11px;
+  color: #b0b0b0;
+}
+
 .calDots {
   display: flex;
   gap: 2px;
@@ -1782,9 +1965,6 @@
   border-radius: 50%;
   background: #b53a32;
 }
-.calCellSelected .calDot {
-  background: #fff;
-}
 .calDotOverdue {
   background: #e03131;
 }
@@ -1794,8 +1974,12 @@
 .calLegend {
   display: flex;
   gap: 14px;
+  align-items: center;
+  flex-wrap: wrap;
   justify-content: center;
-  margin-top: 10px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid #f5f5f5;
 }
 .calLegendItem {
   display: inline-flex;
@@ -2088,12 +2272,17 @@
   margin: 14px 0 0;
 }
 
-/* ---- standardized card badges (ส่วนตัว/กลุ่ม/ประเภทงาน/สถานะ) ----
-   One shape for every variant — only the colors above differ. */
+/* ---- standardized card badges (ส่วนตัว/กลุ่ม/ประเภทงาน/สถานะ/ความเร่งด่วน) ----
+   One shape AND one weight for every variant — only the colors differ.
+   Typography must never encode urgency: ด่วนมาก used to sit outside this
+   group and rendered at the inherited size with no padding, which read as
+   a different (broken) component next to the others. Do NOT re-add a
+   per-badge font-size/height/padding/font-weight override. */
 .typeTag,
 .statusBadge,
 .scopePersonal,
-.scopeGroup {
+.scopeGroup,
+.urgencyBadge {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
@@ -2101,6 +2290,7 @@
   height: 22px;
   padding: 0 8px;
   font-size: 11px;
+  font-weight: 700;
   line-height: 22px;
   border-radius: 11px;
   white-space: nowrap;
@@ -2219,4 +2409,939 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ============================================================================
+   ZONED LAYOUT (desktop pass) — the page is now a nav of focused zones rather
+   than one long scroll. Append-only; every token below is lifted from what was
+   already on this page (brand #b53a32, #f5f5f5 backdrop, white 16px cards, the
+   status palette from STATUS_BADGE). Nothing above this line changed.
+   ========================================================================= */
+
+/* The content column widens on real desktops so รายงานทีม and the stage board
+   are not squeezed into a phone-width strip. Deliberately stops at 980px: the
+   gutter that is left is where the floating crew lives. */
+@media (min-width: 1200px) {
+  .wrap {
+    max-width: 980px;
+  }
+}
+/* ปฏิทิน only. A month grid is seven columns wide whatever the content column
+   does, so at 980px each day gets ~134px and a task title truncates after about
+   a dozen characters — which defeats the point of printing titles at all. The
+   extra 180px buys roughly six more characters per chip. Stops at 1160 so the
+   gutters stay wide enough for the floating crew to rest clear of the card. */
+@media (min-width: 1280px) {
+  .wrapWide {
+    max-width: 1160px;
+  }
+}
+
+/* ---- zone nav ---- */
+.sectionNav {
+  position: sticky;
+  top: 0;
+  z-index: 25;
+  background: #f5f5f5;
+  padding: 10px 0 0;
+  margin: 6px 0 0;
+}
+.sectionNavRow {
+  display: flex;
+  gap: 4px;
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 14px;
+  padding: 5px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+.sectionTab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  border-radius: 10px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  font-weight: 700;
+  font-family: inherit;
+  color: #8c8c8c;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.sectionTab:hover {
+  background: #faf5f4;
+  color: #111;
+}
+.sectionTabActive,
+.sectionTabActive:hover {
+  background: #b53a32;
+  color: #fff;
+}
+.sectionTabIcon {
+  display: inline-flex;
+  opacity: 0.9;
+}
+.sectionTabBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #fee2e2;
+  color: #b91c1c;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+.sectionTabActive .sectionTabBadge {
+  background: rgba(255, 255, 255, 0.24);
+  color: #fff;
+}
+.sectionHint {
+  font-size: 12.5px;
+  color: #8c8c8c;
+  margin: 10px 2px 14px;
+  line-height: 1.5;
+}
+
+/* jump-to-calendar button, replacing the old inline list/calendar toggle */
+.gotoCalBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid #e5e5e5;
+  border-radius: 12px;
+  background: #fff;
+  color: #8c8c8c;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: inherit;
+  cursor: pointer;
+}
+.gotoCalBtn:hover {
+  color: #b53a32;
+  border-color: #b53a32;
+}
+
+/* ---- ปฏิทิน zone: the list header under the month grid ---- */
+.calListHead {
+  display: flex;
+  align-items: center;
+  margin: 14px 0 0;
+}
+.calListLabel {
+  font-size: 13px;
+  font-weight: 700;
+  color: #8c8c8c;
+}
+
+/* ---- ติดตามสถานะ: the pipeline board ---- */
+.reviewCallout {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 16px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #9a3412;
+  line-height: 1.6;
+}
+.reviewCalloutNum {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: #fed7aa;
+  color: #9a3412;
+  font-size: 18px;
+  font-weight: 800;
+}
+
+.stageGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+@media (min-width: 900px) {
+  .stageGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.stageCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 14px 16px 12px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+.stageHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.stagePip {
+  width: 10px;
+  height: 10px;
+  border-radius: 4px;
+  flex: 0 0 auto;
+}
+.stageLabel {
+  font-size: 14px;
+  font-weight: 800;
+  color: #111;
+}
+.stageCount {
+  margin-left: auto;
+  font-size: 18px;
+  font-weight: 800;
+  color: #111;
+  line-height: 1;
+}
+.stageNote {
+  font-size: 11.5px;
+  color: #8c8c8c;
+  margin: 4px 0 9px;
+}
+.stageTrack {
+  height: 5px;
+  background: #f0f0f0;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.stageFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+/* tones reuse the STATUS_BADGE palette already used by the task cards */
+.stagePending {
+  background: #9ca3af;
+}
+.stageProgress {
+  background: #f59e0b;
+}
+.stageReview {
+  background: #2563eb;
+}
+.stageRejected {
+  background: #e03131;
+}
+.stageDone {
+  background: #10b981;
+}
+.stageCancelled {
+  background: #d1d5db;
+}
+.stageList {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stageItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: none;
+  border-radius: 10px;
+  padding: 7px 8px;
+  text-align: left;
+  font-family: inherit;
+  cursor: pointer;
+}
+.stageItem:hover {
+  background: #fafafa;
+}
+.stageItemMine {
+  background: #fff7ed;
+}
+.stageItemMine:hover {
+  background: #ffedd5;
+}
+.stageItemMain {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.stageItemTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: #111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stageItemMeta {
+  font-size: 11px;
+  color: #8c8c8c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stageItemFlag {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  font-weight: 800;
+  color: #b91c1c;
+  background: #fee2e2;
+  border-radius: 999px;
+  padding: 3px 7px;
+}
+.stageItemChev {
+  flex: 0 0 auto;
+  display: inline-flex;
+  color: #c9c9c9;
+}
+.stageEmpty {
+  font-size: 12px;
+  color: #b0b0b0;
+  margin: 10px 0 2px;
+}
+.stageMore {
+  font-size: 11.5px;
+  color: #8c8c8c;
+  padding: 5px 8px 0;
+}
+
+/* ---- รายงานทีม: per-person roster ---- */
+.rosterCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 6px 16px 14px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  overflow-x: auto;
+}
+.rosterHead,
+.rosterRow {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.7fr) repeat(5, minmax(56px, 0.5fr));
+  align-items: center;
+  gap: 8px;
+  min-width: 560px;
+}
+.rosterHead {
+  padding: 12px 6px 8px;
+  border-bottom: 1px solid #f0f0f0;
+}
+.rosterHeadName,
+.rosterHeadCell {
+  font-size: 11px;
+  font-weight: 700;
+  color: #b0b0b0;
+}
+.rosterHeadCell {
+  text-align: center;
+}
+.rosterList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.rosterRow {
+  position: relative;
+  padding: 11px 6px 13px;
+  border-bottom: 1px solid #f6f6f6;
+  border-radius: 10px;
+}
+.rosterRow:last-child {
+  border-bottom: none;
+}
+.rosterRowCoach {
+  background: #fffbeb;
+}
+.rosterRowHi {
+  box-shadow: 0 0 0 2px #b53a32;
+}
+.rosterName {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.rosterAvatar {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  background: #faf5f4;
+  border-radius: 12px;
+  padding: 2px;
+}
+.rosterNameText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rosterNameMain {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: #111;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rosterMeChip {
+  font-size: 10px;
+  font-weight: 800;
+  color: #b53a32;
+  background: #b53a3214;
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+.rosterNameSub {
+  font-size: 11px;
+  color: #8c8c8c;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rosterCell {
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+  color: #111;
+}
+.rosterCellDone {
+  color: #047857;
+}
+.rosterCellOver {
+  color: #b91c1c;
+}
+/* thin completion bar pinned to the bottom edge of the row */
+.rosterBar {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 5px;
+  height: 3px;
+  background: #f2f2f2;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.rosterBarFill {
+  display: block;
+  height: 100%;
+  background: #b53a32;
+  border-radius: 999px;
+}
+.rosterFoot {
+  font-size: 11px;
+  color: #b0b0b0;
+  line-height: 1.6;
+  margin: 12px 0 0;
+}
+
+/* ---- วิเคราะห์: weekly trend bars ---- */
+.trendCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-top: 12px;
+}
+.trendLegend {
+  display: inline-flex;
+  gap: 12px;
+}
+.trendLegendItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  color: #8c8c8c;
+  font-weight: 600;
+}
+.trendSwatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.trendSwatchCreated {
+  background: #e3c9c7;
+}
+.trendSwatchDone {
+  background: #b53a32;
+}
+.trendChart {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 6px;
+  align-items: end;
+  height: 168px;
+}
+.trendCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+}
+.trendBars {
+  flex: 1;
+  width: 100%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+}
+.trendBar {
+  width: 42%;
+  max-width: 18px;
+  min-height: 2px;
+  border-radius: 4px 4px 0 0;
+  transition: height 0.4s ease;
+}
+.trendBarCreated {
+  background: #e3c9c7;
+}
+.trendBarDone {
+  background: #b53a32;
+}
+.trendLabel {
+  font-size: 10.5px;
+  color: #8c8c8c;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.trendFoot {
+  font-size: 11px;
+  color: #b0b0b0;
+  margin: 12px 0 0;
+  line-height: 1.6;
+}
+
+/* ---- วิธีใช้ ---- */
+.howtoCard {
+  background: #fff;
+  border: 1px solid #eee;
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  margin-bottom: 12px;
+}
+.howtoLead {
+  font-size: 12.5px;
+  color: #8c8c8c;
+  margin: 8px 0 14px;
+}
+.howtoList,
+.howtoSimpleList {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.howtoRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) auto;
+  gap: 4px 10px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #f6f6f6;
+}
+.howtoRow:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.howtoCmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  color: #b53a32;
+  background: #b53a3210;
+  border-radius: 8px;
+  padding: 6px 9px;
+  word-break: break-word;
+}
+.howtoWhere {
+  font-size: 11px;
+  font-weight: 700;
+  color: #8c8c8c;
+  align-self: center;
+  white-space: nowrap;
+}
+.howtoWhat {
+  grid-column: 1 / -1;
+  font-size: 12.5px;
+  color: #555;
+  line-height: 1.6;
+}
+.howtoSimpleRow {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 10px;
+  align-items: baseline;
+}
+.howtoSimpleRow .howtoWhat {
+  grid-column: auto;
+}
+.howtoChip {
+  font-size: 12px;
+  font-weight: 700;
+  color: #b53a32;
+  background: #b53a3214;
+  border-radius: 999px;
+  padding: 5px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ============================================================================
+   FLOATING CREW — one draggable character per teammate.
+   Desktop only: hidden on coarse pointers, and below the width where the page
+   actually HAS gutters to park a sprite in.
+
+   That threshold is 1280px, not 1024px. The sprites rest at x = 6% / 94% of the
+   viewport and are ~125px wide, while the content column is centred and capped
+   around 1160px — so between 1024px and ~1250px the crew sits ON the cards
+   rather than beside them. They carry `pointer-events: auto` (they have to;
+   they are draggable), so in that band they were not merely overlapping the
+   task list, they were swallowing clicks meant for it: measured at 1080px, two
+   sprites covered a task card by 2-7px each. Below 1280px the layer is simply
+   off, which is the same call the coarse-pointer rule already makes for the
+   same reason.
+   ========================================================================= */
+.mascotLayer,
+.mascotToggle {
+  display: none;
+}
+
+@media (min-width: 1280px) and (pointer: fine) {
+  .mascotLayer {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    /* the layer itself must never eat clicks — only the sprites do */
+    pointer-events: none;
+  }
+
+  .mascot {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    pointer-events: auto;
+    cursor: grab;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+  }
+  .mascot:focus-visible {
+    outline: 2px solid #b53a32;
+    outline-offset: 6px;
+    border-radius: 14px;
+  }
+  .mascotDragging {
+    cursor: grabbing;
+    z-index: 2;
+  }
+
+  /* the bob lives on an INNER element so it never fights the drag transform */
+  .mascotBob {
+    position: relative;
+    display: block;
+    filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.16));
+  }
+  .mascotDragging .mascotBob {
+    animation: none;
+    transform: scale(1.08);
+  }
+
+  .mascotImg {
+    display: block;
+    width: 78px;
+    height: 78px;
+    object-fit: contain;
+    -webkit-user-drag: none;
+  }
+
+  .mascotBadge {
+    position: absolute;
+    top: -2px;
+    right: -2px;
+    min-width: 20px;
+    height: 20px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: #e03131;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 6px rgba(224, 49, 49, 0.4);
+  }
+
+  .mascotName {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 130px;
+    background: #fff;
+    border: 1px solid #eee;
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 11px;
+    font-weight: 700;
+    color: #111;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    opacity: 0;
+    transform: translateY(-3px);
+    transition: opacity 0.18s ease, transform 0.18s ease;
+  }
+  .mascot:hover .mascotName,
+  .mascot:focus-visible .mascotName,
+  .mascotDragging .mascotName {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  .mascotNameMeta {
+    color: #b53a32;
+    font-weight: 800;
+  }
+
+  /* show/hide switch — parked above the create-task FAB */
+  .mascotToggle {
+    position: fixed;
+    right: 20px;
+    bottom: calc(84px + env(safe-area-inset-bottom));
+    z-index: 41;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fff;
+    color: #8c8c8c;
+    border: 1px solid #e5e5e5;
+    border-radius: 999px;
+    padding: 8px 14px;
+    font-size: 12.5px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    box-shadow: 0 3px 12px rgba(0, 0, 0, 0.1);
+  }
+  .mascotToggle:hover {
+    color: #b53a32;
+    border-color: #b53a32;
+  }
+}
+
+@media (min-width: 1024px) and (pointer: fine) and (prefers-reduced-motion: no-preference) {
+  .mascotBob {
+    animation: mascotFloat var(--mascot-dur, 3.6s) ease-in-out var(--mascot-delay, 0s) infinite;
+  }
+}
+
+@keyframes mascotFloat {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1.4deg);
+  }
+  50% {
+    transform: translateY(-11px) rotate(1.4deg);
+  }
+}
+
+/* ---- data-integrity notices (audit pass) ----
+   Shown when the page is knowingly showing less than the whole truth: a failed
+   profile fetch, or a task payload the server capped. Styled as information,
+   not as an error card — the page below them still works. */
+.dataNotice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #e5e5e5;
+  border-left: 3px solid #b0b0b0;
+  border-radius: 12px;
+  padding: 11px 14px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: #555;
+}
+.dataNoticeWarn {
+  background: #fffbeb;
+  border-color: #fde68a;
+  border-left-color: #f59e0b;
+  color: #92400e;
+}
+.dataNoticeIcon {
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-top: 1px;
+  color: #b0b0b0;
+}
+.dataNoticeWarn .dataNoticeIcon {
+  color: #f59e0b;
+}
+.dataNoticeText {
+  flex: 1;
+  min-width: 0;
+}
+.dataNoticeBtn {
+  flex-shrink: 0;
+  align-self: center;
+  border: 1px solid #e5e5e5;
+  background: #fff;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8c8c8c;
+  cursor: pointer;
+}
+.dataNoticeBtn:hover {
+  color: #b53a32;
+  border-color: #b53a32;
+}
+
+/* ---- page header row: title + refresh ---- */
+.titleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.refreshBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #e5e5e5;
+  background: #fff;
+  border-radius: 999px;
+  padding: 7px 13px;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: #8c8c8c;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.refreshBtn:hover:not(:disabled) {
+  color: #b53a32;
+  border-color: #b53a32;
+}
+.refreshBtn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.refreshSpin {
+  display: inline-flex;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .refreshSpin {
+    animation: refreshTurn 0.9s linear infinite;
+  }
+}
+@keyframes refreshTurn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---- ความเร่งด่วน badge on the task card (migration 050, finally readable) ---- */
+/* .urgencyBadge shape + weight live in the shared card-badge rule; its
+   colours are inline from URGENCY_META (taskUtils.ts). */
+
+/* ---- due-date sections in งานของฉัน ---- */
+.dueSection {
+  margin-bottom: 20px;
+}
+.dueSection:last-child {
+  margin-bottom: 0;
+}
+.dueHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Deliberately NOT sticky. The zone nav and the search/filter/tab bar already
+     dock to the top and together stand ~255px tall; a third sticky layer under
+     them would leave barely half the viewport for the list it is labelling. */
+  margin: 0 0 10px;
+  padding: 7px 10px;
+  background: #efefef;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #6b6b6b;
+}
+.dueHeadDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #b0b0b0;
+  flex-shrink: 0;
+}
+.dueHeadCount {
+  margin-left: auto;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #8c8c8c;
+  background: #fff;
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+.dueHeadOverdue {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.dueHeadOverdue .dueHeadDot {
+  background: #e03131;
+}
+.dueHeadOverdue .dueHeadCount {
+  color: #b91c1c;
+}
+.dueHeadToday {
+  background: #fdf1f0;
+  color: #8f2f28;
+}
+.dueHeadToday .dueHeadDot {
+  background: #b53a32;
+}
+.dueHeadToday .dueHeadCount {
+  color: #8f2f28;
 }

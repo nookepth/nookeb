@@ -13,6 +13,7 @@ import type {
   TaskLinkRecord,
   TaskRecord,
   TaskReminderRecord,
+  TaskStatus,
 } from '@nookeb/shared';
 import { toTaskAssigneeDto as assigneeDto, toTaskLinkDto as linkDto } from '@nookeb/shared';
 import { getChatMemberIds, getChatMemberProfile } from './line.service';
@@ -484,13 +485,30 @@ export async function getTaskWithDetails(
  * Every non-deleted task the user has a stake in — either they created it, or
  * they're an assignee of one of its items — across ALL their groups. Powers the
  * web dashboard "งานของฉัน" view (user-scoped, no single group boundary).
- * Capped so a heavy user can't make this unbounded; newest deadline first.
+ *
+ * Capped so a heavy user can't make this unbounded — `getTaskWithDetails` costs
+ * four round trips PER TASK, so the cap is what keeps this route from turning
+ * one page load into a thousand queries.
+ *
+ * Two things the cap used to get wrong, both fixed here:
+ *
+ * 1. **`total` is returned.** The caller now knows the cap bit, so the dashboard
+ *    can say its percentages are computed over a subset instead of quietly
+ *    reporting "เสร็จสิ้น 38" to someone who has 55. A completion rate over a
+ *    silently truncated denominator is worse than no completion rate.
+ * 2. **Which tasks survive the cap is now deliberate.** The slice used to happen
+ *    on an unordered Set, so the 100 kept were whatever order Postgres returned
+ *    — the sort below then ordered a set that had already thrown away the wrong
+ *    rows. One cheap projection query (no joins, no details) ranks the
+ *    candidates first: live tasks before finished ones, then nearest deadline,
+ *    then newest. Truncation now drops the least relevant tasks, and is stable
+ *    across reloads.
  */
 export async function listTasksForUser(
   supabase: SupabaseClient,
   lineUid: string,
   cap = 100,
-): Promise<TaskWithDetails[]> {
+): Promise<{ tasks: TaskWithDetails[]; total: number }> {
   // Tasks the user created.
   const { data: createdRows, error: createdErr } = await supabase
     .from('tasks')
@@ -518,13 +536,40 @@ export async function listTasksForUser(
     assignedTaskIds = (itemRows ?? []).map((r) => (r as { task_id: string }).task_id);
   }
 
-  const taskIds = [
+  const candidateIds = [
     ...new Set([
       ...(createdRows ?? []).map((r) => (r as { id: string }).id),
       ...assignedTaskIds,
     ]),
-  ].slice(0, cap);
-  if (taskIds.length === 0) return [];
+  ];
+  const total = candidateIds.length;
+  if (total === 0) return { tasks: [], total: 0 };
+
+  let taskIds = candidateIds;
+  if (total > cap) {
+    // Rank BEFORE slicing. Projection only — three scalar columns, one query.
+    const { data: rankRows, error: rankErr } = await supabase
+      .from('tasks')
+      .select('id, global_deadline, status, created_at')
+      .in('id', candidateIds);
+    if (rankErr) throw rankErr;
+    const ranked = (rankRows ?? []) as {
+      id: string;
+      global_deadline: string | null;
+      status: TaskStatus;
+      created_at: string;
+    }[];
+    ranked.sort((a, b) => {
+      const aLive = a.status !== 'done' && a.status !== 'cancelled';
+      const bLive = b.status !== 'done' && b.status !== 'cancelled';
+      if (aLive !== bLive) return aLive ? -1 : 1;
+      const da = a.global_deadline ? new Date(a.global_deadline).getTime() : Infinity;
+      const db = b.global_deadline ? new Date(b.global_deadline).getTime() : Infinity;
+      if (da !== db) return da - db;
+      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+    });
+    taskIds = ranked.slice(0, cap).map((r) => r.id);
+  }
 
   const details = await Promise.all(taskIds.map((id) => getTaskWithDetails(supabase, id)));
   const tasks = details.filter((t): t is TaskWithDetails => t !== null);
@@ -536,7 +581,7 @@ export async function listTasksForUser(
     if (da !== db) return da - db;
     return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
   });
-  return tasks;
+  return { tasks, total };
 }
 
 /**
@@ -1155,6 +1200,10 @@ export function toTaskDto(task: TaskWithDetails): TaskDto {
     createdByLineUid: task.created_by_line_uid,
     createdAt: task.created_at,
     notifyOnlyPending: task.notify_only_pending === true,
+    // migration 050. `?? null` rather than a ปกติ default: a pre-050 row and a
+    // chat-created task both legitimately have no urgency, and inventing one
+    // would let the dashboard sort tasks by a priority nobody chose.
+    urgency: task.urgency ?? null,
     items: task.items.map((item) => ({
       id: item.id,
       title: item.title,

@@ -27,23 +27,35 @@ import TodayFocusBanner from './TodayFocusBanner';
 import TaskCalendar from './TaskCalendar';
 import ActivityFeed from './ActivityFeed';
 import PersonalStatsSection from './PersonalStatsSection';
+import SectionNav, { SECTION_HINT, SECTION_LABEL, type Section } from './SectionNav';
+import StatusTrackingSection from './StatusTrackingSection';
+import TeamReportSection from './TeamReportSection';
+import WeeklyTrendChart from './WeeklyTrendChart';
+import HowToSection from './HowToSection';
+import MascotLayer from './MascotLayer';
+import { rosterStats } from './mascots';
 import { effectiveDeadline, isOverdue, THAI_MONTHS } from './taskUtils';
 import {
   applyFilter,
   applySort,
   computeStreak,
+  DUE_GROUP_LABEL,
+  groupByDue,
   focusTasks,
   loadCollapsed,
   loadFilterSort,
   loadPins,
+  loadSection,
   loadViewMode,
   overallProgress,
   pinnedFirst,
   saveCollapsed,
   saveFilterSort,
   savePins,
+  saveSection,
   saveViewMode,
   tasksOnDay,
+  timeAgo,
   type TaskFilter,
   type TaskSort,
   type ViewMode,
@@ -158,13 +170,16 @@ function FlameIcon({ size = 14 }: { size?: number }) {
     </svg>
   );
 }
-function ListViewIcon({ size = 15 }: { size?: number }) {
+function RefreshIcon({ size = 14 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" aria-hidden>
-      <path d="M8 6h12M8 12h12M8 18h12" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" />
-      <circle cx="4" cy="6" r="1.3" fill="currentColor" />
-      <circle cx="4" cy="12" r="1.3" fill="currentColor" />
-      <circle cx="4" cy="18" r="1.3" fill="currentColor" />
+      <path
+        d="M20 11.5a8 8 0 1 1-2.6-5.4"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+      />
+      <path d="M20.5 3v4.2h-4.2" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -247,6 +262,20 @@ export default function TasksPage() {
   const [viewerUid, setViewerUid] = useState<string>('');
   const [me, setMe] = useState<UserDto | null>(null);
   const [meLoaded, setMeLoaded] = useState(false);
+  /** GET /auth/me failed — the page degrades on purpose but says so. */
+  const [profileFailed, setProfileFailed] = useState(false);
+  /** Pre-cap task count from the API; null = the API didn't say (old build). */
+  const [totalTasks, setTotalTasks] = useState<number | null>(null);
+  /**
+   * When the current payload landed. A tracking dashboard is a page people
+   * leave open — LINE keeps changing the data behind it while the tab sits
+   * there, so the page has to say how old what you're reading is, and let you
+   * refresh without losing your zone, filters and scroll to a full reload.
+   */
+  const [loadedAt, setLoadedAt] = useState<number | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+  /** Re-renders the "อัปเดตเมื่อ …" stamp as it ages. */
+  const [, setNowTick] = useState(0);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -260,11 +289,23 @@ export default function TasksPage() {
   const [quotaGate, setQuotaGate] = useState<{ feature: string; resetAt?: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  /** see the assignment below `changeSection` */
+  const gotoMineRef = useRef<() => void>(() => {});
+  /** "/" was pressed from another zone — focus the search box once it mounts */
+  const [wantSearchFocus, setWantSearchFocus] = useState(false);
 
   // redesign state (prefs load client-side in an effect — avoids SSR mismatch)
   const [filter, setFilter] = useState<TaskFilter>('all');
   const [sort, setSort] = useState<TaskSort>('deadline');
-  const [view, setView] = useState<ViewMode>('list');
+  /**
+   * The page zone. Each one is a focused data set — the four STATUS tabs
+   * (กำลังทำ / เลยกำหนด / เสร็จสิ้น / ยกเลิก) live inside `mine` and are a
+   * different axis entirely; keeping them in the same row was what made the old
+   * single-column layout hard to scan.
+   */
+  const [section, setSection] = useState<Section>('overview');
+  /** set when a floating mascot is clicked — scrolls รายงานทีม to that person */
+  const [highlightUid, setHighlightUid] = useState<string | null>(null);
   const [selectedDay, setSelectedDay] = useState<string | null>(null);
   const [pins, setPins] = useState<string[]>([]);
   const [focusCollapsed, setFocusCollapsed] = useState(false);
@@ -279,10 +320,15 @@ export default function TasksPage() {
     const fs = loadFilterSort();
     setFilter(fs.filter);
     setSort(fs.sort);
-    setView(loadViewMode());
     setPins(loadPins());
     setFocusCollapsed(loadCollapsed('focus'));
     setFeedCollapsed(loadCollapsed('feed'));
+    // Zone restore. The old list/calendar toggle is now the ปฏิทิน zone, so a
+    // returning visitor whose last saved VIEW was calendar lands there — the
+    // preference survives the restructure rather than being silently dropped.
+    const saved = loadSection();
+    if (saved && (SECTION_LABEL as Record<string, string>)[saved]) setSection(saved as Section);
+    else if (loadViewMode() === 'calendar') setSection('calendar');
   }, []);
 
   /**
@@ -351,28 +397,81 @@ export default function TasksPage() {
       const res = await listMyTasks();
       setTasks(res.tasks);
       setViewerUid(res.viewerLineUid);
+      // The API caps how many tasks it will assemble (getTaskWithDetails costs
+      // four round trips each). `total` is the pre-cap count, so the page can
+      // say every number below is over a subset. An API that predates the field
+      // sends nothing, which reads as "not truncated" — the old behaviour.
+      setTotalTasks(typeof res.total === 'number' ? res.total : null);
       setLeavingIds(new Set());
       setError(null);
+      setLoadedAt(Date.now());
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
       else setError('เช็คสัญญาณอินเทอร์เน็ตแล้วกดลองใหม่อีกทีน้า');
     }
   }, []);
 
+  /** Best-effort profile fetch — see the note on `profileFailed`. */
+  const loadMe = useCallback(() => {
+    setProfileFailed(false);
+    getMe()
+      .then((m) => {
+        setMe(m);
+        setProfileFailed(false);
+      })
+      .catch((err) => {
+        // The page deliberately still works without a profile (name falls back,
+        // and Export stays UNLOCKED so a paying user is never blocked by a
+        // failed lookup). But "deliberately degraded" is not the same as
+        // "silently wrong": the plan badge vanishes and the reminder picker
+        // falls back to the ceiling, so the viewer is told rather than left to
+        // wonder why their Pro badge disappeared.
+        if (err instanceof ApiError && err.status === 401) setNeedsLogin(true);
+        else setProfileFailed(true);
+      })
+      .finally(() => setMeLoaded(true));
+  }, []);
+
   useEffect(() => {
     void load();
-    // profile card is best-effort — the page works without it
-    if (hasSession()) {
-      getMe()
-        .then(setMe)
-        .catch(() => {})
-        .finally(() => setMeLoaded(true));
-    } else {
-      setMeLoaded(true);
-    }
-  }, [load]);
+    if (hasSession()) loadMe();
+    else setMeLoaded(true);
+  }, [load, loadMe]);
 
-  // desktop keyboard shortcuts: 1-4 switch tabs, / focuses search
+  // Age the "อัปเดตเมื่อ …" stamp once a minute. Deliberately NOT an auto-poll:
+  // silently swapping the list under someone mid-read is worse than a stale
+  // number they can see is stale and refresh on purpose.
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick((n) => n + 1), 60_000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  /** Manual refresh — keeps zone, filters, pins and scroll position. */
+  async function handleRefresh(): Promise<void> {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await load();
+      if (hasSession() && (profileFailed || !me)) loadMe();
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
+  /**
+   * Desktop keyboard shortcuts: 1-4 switch status tabs, / focuses search.
+   *
+   * Both targets live ONLY in the งานของฉัน zone, so both used to die silently
+   * everywhere else — `/` found a null ref and did nothing, and 1-4 mutated a
+   * `tab` state with nothing on screen to show it. วิธีใช้ advertises them as
+   * page shortcuts, so they now carry the reader to the zone that can honour
+   * them instead of failing quietly in six of the seven zones.
+   *
+   * When "/" arrives from another zone the search field does not exist yet, so
+   * the focus cannot happen here — it is armed and handed to the effect below,
+   * which runs after React has committed the zone. A rAF is NOT enough: it can
+   * fire before the commit, which is the same silent no-op being fixed.
+   */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const el = e.target as HTMLElement | null;
@@ -380,15 +479,34 @@ export default function TasksPage() {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === '/') {
         e.preventDefault();
-        searchRef.current?.focus();
+        if (searchRef.current) searchRef.current.focus();
+        // Not on this zone yet — the input does not exist to focus. Arm it and
+        // let the effect below do it once React has actually mounted the field;
+        // a rAF here fires before the commit and focuses nothing.
+        else {
+          setWantSearchFocus(true);
+          gotoMineRef.current();
+        }
       } else if (e.key >= '1' && e.key <= '4') {
         const next = TAB_ORDER[Number(e.key) - 1];
-        if (next) setTab(next);
+        if (!next) return;
+        setTab(next);
+        gotoMineRef.current();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
+
+  // Runs after the งานของฉัน zone has committed, which is the first moment the
+  // search input exists to receive focus.
+  useEffect(() => {
+    if (!wantSearchFocus) return;
+    if (section === 'mine' && searchRef.current) {
+      searchRef.current.focus();
+      setWantSearchFocus(false);
+    }
+  }, [wantSearchFocus, section]);
 
   /* ---- pref setters that also persist ---- */
   const changeFilter = (f: TaskFilter) => {
@@ -399,10 +517,37 @@ export default function TasksPage() {
     setSort(s);
     saveFilterSort(filter, s);
   };
-  const changeView = (v: ViewMode) => {
-    setView(v);
+  /**
+   * Zone switch. It also carries the old view-mode preference forward
+   * (ปฏิทิน ⇔ 'calendar'), and clears the day filter on the way out — a day
+   * chip left armed in a zone that no longer shows the calendar would filter
+   * the list from somewhere the user cannot see.
+   */
+  const changeSection = (s: Section) => {
+    setSection(s);
+    saveSection(s);
+    const v: ViewMode = s === 'calendar' ? 'calendar' : 'list';
     saveViewMode(v);
     if (v === 'list') setSelectedDay(null);
+    if (s !== 'team') setHighlightUid(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
+  /**
+   * Latest `changeSection`, for the keyboard-shortcut listener. The listener is
+   * registered once (an empty dep array — it must not re-bind on every render),
+   * but it has to reach the CURRENT closure, and `changeSection` is rebuilt each
+   * render. A ref is what lets the shortcut reuse the one function that knows
+   * every zone-switch invariant (persist, clear the day chip, drop the mascot
+   * highlight, scroll up) instead of a second copy that would drift from it.
+   */
+  gotoMineRef.current = () => {
+    if (section !== 'mine') changeSection('mine');
+  };
+
+  /** KPI card / mascot click → jump to the zone that can act on it. */
+  const goToTab = (t: Tab) => {
+    setTab(t);
+    changeSection('mine');
   };
   const toggleFocus = () => {
     setFocusCollapsed((c) => {
@@ -552,6 +697,8 @@ export default function TasksPage() {
   }
 
   const all = tasks ?? [];
+  /** The API had more tasks than it was willing to assemble in one payload. */
+  const truncated = totalTasks !== null && totalTasks > all.length;
   // เลยกำหนด is its own bucket — กำลังทำ shows only live tasks NOT past deadline
   const overdue = all.filter(isOverdue);
   const active = all.filter((t) => t.status !== 'done' && t.status !== 'cancelled' && !isOverdue(t));
@@ -559,15 +706,47 @@ export default function TasksPage() {
   const cancelled = all.filter((t) => t.status === 'cancelled');
   const buckets: Record<Tab, TaskDto[]> = { active, overdue, done: finished, cancelled };
 
-  // pipeline: tab bucket → scope filter → sort → pinned-first → search → (calendar day)
+  // pipeline: tab bucket → scope filter → sort → pinned-first → search
   const scoped = applyFilter(buckets[tab], filter, viewerUid);
   const sorted = pinnedFirst(applySort(scoped, sort), pins);
   const q = search.trim().toLowerCase();
   const matches = (t: TaskDto) =>
     !q || t.title.toLowerCase().includes(q) || t.items.some((i) => i.title.toLowerCase().includes(q));
   const searched = q ? sorted.filter(matches) : sorted;
-  const dayFiltered = view === 'calendar' && selectedDay ? tasksOnDay(searched, selectedDay) : searched;
-  const shownFiltered = dayFiltered;
+  const shownFiltered = searched;
+
+  /**
+   * Due-date sections for the list. Only for the deadline sort: under "ชื่อ ก-ฮ"
+   * or "ความเร่งด่วน" the reader has explicitly asked for a different spine, and
+   * date headers would fight it. Empty array = render one flat list.
+   */
+  const dueSections = sort === 'deadline' ? groupByDue(shownFiltered) : [];
+
+  /**
+   * The ปฏิทิน zone's own list. Deliberately NOT the tab-bucketed pipeline
+   * above: a calendar is asking "what is due on this date", and answering it
+   * with "…but only the ones in the tab you left selected" is the kind of
+   * silent omission people only notice after they have planned around it. With
+   * no day picked it falls back to the next two weeks, so the zone is never a
+   * calendar sitting above dead space.
+   */
+  const calendarList = (() => {
+    if (selectedDay) return applySort(tasksOnDay(all, selectedDay), 'deadline');
+    const now = Date.now();
+    const horizon = now + 14 * 86_400_000;
+    const upcoming = all.filter((t) => {
+      if (t.status === 'cancelled') return false;
+      const dl = effectiveDeadline(t);
+      if (dl === null) return false;
+      const at = new Date(dl).getTime();
+      if (at > horizon) return false;
+      // A deadline already in the past only belongs here while the task is
+      // still live — that is work someone can still act on. A task finished
+      // last month is history, not a thing to plan around.
+      return at >= now || t.status !== 'done';
+    });
+    return applySort(upcoming, 'deadline');
+  })();
 
   // viewer's own completions today (assignee doneAt), for the motivation line
   const todayStart = new Date();
@@ -599,6 +778,24 @@ export default function TasksPage() {
   const empty = EMPTY_STATE[tab];
   const EmptyIcon = empty.icon;
 
+  // The crew: one character per person holding an assignee slot. Same roster
+  // the รายงานทีม table draws, so a face and its row always agree.
+  const roster = rosterStats(all, viewerUid);
+
+  /**
+   * Zone badges — only counts worth interrupting for. A plain total would put a
+   * permanent red dot on every tab and stop meaning anything.
+   */
+  let awaitingMyReview = 0;
+  for (const t of all) {
+    if (t.createdByLineUid !== viewerUid || t.status === 'cancelled') continue;
+    for (const item of t.items) if (item.status === 'submitted') awaitingMyReview += 1;
+  }
+  const sectionBadges: Partial<Record<Section, number>> = {
+    mine: overdue.length,
+    status: awaitingMyReview,
+  };
+
   const quickActionsFor = (task: TaskDto): TaskQuickActions => {
     const live = task.status !== 'done' && task.status !== 'cancelled';
     const isCreator = task.createdByLineUid === viewerUid;
@@ -626,16 +823,32 @@ export default function TasksPage() {
   })();
 
   return (
-    <main className={styles.wrap}>
+    <main className={`${styles.wrap} ${section === 'calendar' ? styles.wrapWide : ''}`}>
       <a className={styles.back} href="/dashboard">
         ← กลับคลัง
       </a>
-      <h1 className={styles.title}>
-        <span className={styles.titleIcon}>
-          <ListIcon size={24} />
-        </span>
-        งานของฉัน
-      </h1>
+      <div className={styles.titleRow}>
+        <h1 className={styles.title}>
+          <span className={styles.titleIcon}>
+            <ListIcon size={24} />
+          </span>
+          งานของฉัน
+        </h1>
+        {tasks !== null && !error && (
+          <button
+            type="button"
+            className={styles.refreshBtn}
+            onClick={() => void handleRefresh()}
+            disabled={refreshing}
+            title="ดึงข้อมูลล่าสุด (ไม่เสียตัวกรองและตำแหน่งที่อ่านอยู่)"
+          >
+            <span className={refreshing ? styles.refreshSpin : undefined}>
+              <RefreshIcon />
+            </span>
+            {refreshing ? 'กำลังอัปเดต...' : loadedAt ? `อัปเดต ${timeAgo(new Date(loadedAt).toISOString())}` : 'อัปเดต'}
+          </button>
+        )}
+      </div>
       <p className={styles.hint}>งานที่เธอสร้างหรือถูกมอบหมายจากทุกกลุ่ม หนูรวมมาไว้ที่เดียวให้แล้วน้า</p>
 
       {/* error → designed card with retry */}
@@ -688,6 +901,36 @@ export default function TasksPage() {
             </section>
           )}
 
+          {/* A2. data-integrity notices. Both exist so a degraded page never
+              passes itself off as a complete one — every stat in every zone is
+              derived from the one payload above. */}
+          {profileFailed && (
+            <div className={styles.dataNotice} role="status">
+              <span className={styles.dataNoticeIcon}>
+                <AlertIcon size={17} />
+              </span>
+              <span className={styles.dataNoticeText}>
+                โหลดโปรไฟล์ไม่สำเร็จ — ชื่อและแพลนที่แสดงอาจไม่ตรงน้า (รายการงานด้านล่างยังถูกต้องอยู่)
+              </span>
+              <button type="button" className={styles.dataNoticeBtn} onClick={loadMe}>
+                ลองใหม่
+              </button>
+            </div>
+          )}
+          {truncated && (
+            <div className={`${styles.dataNotice} ${styles.dataNoticeWarn}`} role="status">
+              <span className={styles.dataNoticeIcon}>
+                <AlertIcon size={17} />
+              </span>
+              <span className={styles.dataNoticeText}>
+                เธอมีงานทั้งหมด {totalTasks} งาน แต่หนูแสดงได้ทีละ {all.length} งาน — ตัวเลขสรุป
+                เปอร์เซ็นต์ และกราฟทุกอันในหน้านี้คิดจาก {all.length} งานนี้เท่านั้นน้า
+                (หนูเลือกงานที่ยังไม่เสร็จและใกล้กำหนดที่สุดมาให้ก่อน) อยากเห็นครบกว่านี้ กด Export
+                Excel ในแท็บ &quot;งานของฉัน&quot; ได้เลย ไฟล์นั้นดึงได้ถึง 500 งาน
+              </span>
+            </div>
+          )}
+
           {all.length === 0 ? (
             /* first-run: one warm hero instead of a wall of zeroes */
             <div className={`${styles.emptyCard} ${styles.emptyHero}`}>
@@ -705,176 +948,259 @@ export default function TasksPage() {
             </div>
           ) : (
             <>
-              {/* B. today's focus banner (only when something is due/overdue) */}
-              <TodayFocusBanner
-                tasks={focus.due}
-                overdueCount={focus.overdueCount}
-                collapsed={focusCollapsed}
-                onToggle={toggleFocus}
-              />
+              {/* B. zone nav — each entry below is ONE focused data set */}
+              <SectionNav section={section} onChange={changeSection} badges={sectionBadges} />
+              <p className={styles.sectionHint}>{SECTION_HINT[section]}</p>
 
-              {/* C. KPI cards — clicking filters the list below */}
-              <div className={styles.statsGrid}>
-                <TaskStatsCard icon={<PlayIcon />} count={active.length} label="กำลังทำ" tone="progress" active={tab === 'active'} onClick={() => setTab('active')} />
-                <TaskStatsCard icon={<AlertIcon />} count={overdue.length} label="เลยกำหนด" tone="overdue" active={tab === 'overdue'} onClick={() => setTab('overdue')} />
-                <TaskStatsCard icon={<DoneIcon />} count={finished.length} label="เสร็จสิ้น" tone="done" active={tab === 'done'} onClick={() => setTab('done')} />
-                <TaskStatsCard icon={<CancelIcon />} count={cancelled.length} label="ยกเลิก" tone="cancelled" active={tab === 'cancelled'} onClick={() => setTab('cancelled')} />
-              </div>
-
-              {/* D. activity summary + personal stats (client-side, no extra endpoint) */}
-              <TaskActivitySummary tasks={all} />
-              <PersonalStatsSection tasks={all} viewerUid={viewerUid} />
-
-              {/* E. sticky search + view toggle + filter/sort + tabs */}
-              <div className={styles.stickyBar}>
-                <div className={styles.searchRow}>
-                  <div className={styles.searchBar}>
-                    <span className={styles.searchIcon}>
-                      <SearchIcon size={16} />
-                    </span>
-                    <input
-                      ref={searchRef}
-                      className={styles.searchInput}
-                      placeholder="ค้นหาชื่องาน..."
-                      value={search}
-                      onChange={(e) => setSearch(e.target.value)}
-                      aria-label="ค้นหางาน"
-                    />
-                    {search && (
-                      <button type="button" className={styles.searchClear} aria-label="ล้างคำค้น" onClick={() => setSearch('')}>
-                        <CloseIcon size={14} />
-                      </button>
-                    )}
-                  </div>
-                  <div className={styles.viewToggle} role="group" aria-label="รูปแบบการแสดงผล">
-                    <button
-                      type="button"
-                      className={`${styles.viewBtn} ${view === 'list' ? styles.viewBtnActive : ''}`}
-                      aria-pressed={view === 'list'}
-                      onClick={() => changeView('list')}
-                    >
-                      <ListViewIcon /> รายการ
-                    </button>
-                    <button
-                      type="button"
-                      className={`${styles.viewBtn} ${view === 'calendar' ? styles.viewBtnActive : ''}`}
-                      aria-pressed={view === 'calendar'}
-                      onClick={() => changeView('calendar')}
-                    >
-                      <CalViewIcon /> ปฏิทิน
-                    </button>
-                  </div>
-                </div>
-                <FilterSortBar
-                  filter={filter}
-                  sort={sort}
-                  onFilter={changeFilter}
-                  onSort={changeSort}
-                  onExport={() => void handleExport()}
-                  exporting={exporting}
-                  exportLocked={exportLocked}
-                />
-                <div className={styles.tabs} role="tablist">
-                  {TABS.map((t) => (
-                    <button
-                      key={t.key}
-                      type="button"
-                      role="tab"
-                      aria-selected={tab === t.key}
-                      className={`${styles.tab} ${tab === t.key ? styles.tabActive : ''} ${
-                        t.alert ? styles.tabAlert : ''
-                      }`}
-                      onClick={() => setTab(t.key)}
-                    >
-                      {t.label} ({t.count})
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* F. calendar (toggle view) */}
-              {view === 'calendar' && (
+              {/* ---------- ZONE 1: ภาพรวม ---------- */}
+              {section === 'overview' && (
                 <>
-                  <TaskCalendar tasks={all} selected={selectedDay} onSelect={setSelectedDay} />
-                  {selectedDay && (
-                    <div className={styles.dayFilterChip}>
-                      <span>แสดงงานวันที่ {selectedDayLabel}</span>
-                      <button type="button" className={styles.dayFilterClear} aria-label="ล้างตัวกรองวัน" onClick={() => setSelectedDay(null)}>
-                        <CloseIcon size={12} />
-                      </button>
-                    </div>
-                  )}
+                  <TodayFocusBanner
+                    tasks={focus.due}
+                    overdueCount={focus.overdueCount}
+                    collapsed={focusCollapsed}
+                    onToggle={toggleFocus}
+                  />
+
+                  {/* KPI cards — clicking picks the status AND jumps to the zone
+                      that can act on it, so a card is never a dead end */}
+                  <div className={styles.statsGrid}>
+                    <TaskStatsCard icon={<PlayIcon />} count={active.length} label="กำลังทำ" tone="progress" active={tab === 'active'} onClick={() => goToTab('active')} />
+                    <TaskStatsCard icon={<AlertIcon />} count={overdue.length} label="เลยกำหนด" tone="overdue" active={tab === 'overdue'} onClick={() => goToTab('overdue')} />
+                    <TaskStatsCard icon={<DoneIcon />} count={finished.length} label="เสร็จสิ้น" tone="done" active={tab === 'done'} onClick={() => goToTab('done')} />
+                    <TaskStatsCard icon={<CancelIcon />} count={cancelled.length} label="ยกเลิก" tone="cancelled" active={tab === 'cancelled'} onClick={() => goToTab('cancelled')} />
+                  </div>
+
+                  <TaskActivitySummary tasks={all} />
+                  <ActivityFeed tasks={all} collapsed={feedCollapsed} onToggle={toggleFeed} />
                 </>
               )}
 
-              <div className={styles.listArea}>
-                {shownFiltered.length > 0 ? (
-                  <div className={styles.list} style={{ marginTop: 16 }}>
-                    {shownFiltered.map((task) => (
-                      <TaskListItem
-                        key={task.id}
-                        task={task}
-                        viewerUid={viewerUid}
-                        busyId={busyId}
-                        onDone={(t, item) => void handleDone(t, item)}
-                        pinned={pins.includes(task.id)}
-                        onTogglePin={() => togglePin(task.id)}
-                        actions={quickActionsFor(task)}
-                        leaving={leavingIds.has(task.id)}
-                      />
-                    ))}
-                  </div>
-                ) : view === 'calendar' && selectedDay ? (
-                  <div className={styles.emptyCard}>
-                    <span className={styles.emptyIconWrap}>
-                      <CalViewIcon size={30} />
-                    </span>
-                    <h2 className={styles.emptyTitle}>วันที่ {selectedDayLabel} ไม่มีงานครบกำหนดน้า</h2>
-                    <p className={styles.emptyBody}>ลองแตะวันอื่นที่มีจุด หรือล้างตัวกรองวันดูน้า</p>
-                    <button type="button" className={styles.emptyCta} onClick={() => setSelectedDay(null)}>
-                      ล้างตัวกรองวัน
-                    </button>
-                  </div>
-                ) : q ? (
-                  <div className={styles.emptyCard}>
-                    <span className={styles.emptyIconWrap}>
-                      <SearchIcon size={30} />
-                    </span>
-                    <h2 className={styles.emptyTitle}>ไม่พบงานที่ตรงกับ &quot;{search.trim()}&quot;</h2>
-                    <p className={styles.emptyBody}>ลองคำอื่น หรือสลับแท็บดูน้า</p>
-                    <button type="button" className={styles.emptyCta} onClick={() => setSearch('')}>
-                      ล้างคำค้น
-                    </button>
-                  </div>
-                ) : filter !== 'all' && buckets[tab].length > 0 ? (
-                  <div className={styles.emptyCard}>
-                    <span className={styles.emptyIconWrap}>
-                      <EmptyIcon size={34} />
-                    </span>
-                    <h2 className={styles.emptyTitle}>ไม่มีงานในตัวกรองนี้น้า</h2>
-                    <p className={styles.emptyBody}>ลองเปลี่ยนตัวกรองเป็น &quot;ทั้งหมด&quot; ดูน้า</p>
-                    <button type="button" className={styles.emptyCta} onClick={() => changeFilter('all')}>
-                      ดูทั้งหมด
-                    </button>
-                  </div>
-                ) : (
-                  <div className={styles.emptyCard}>
-                    <span className={styles.emptyIconWrap}>
-                      <EmptyIcon size={34} />
-                    </span>
-                    <h2 className={styles.emptyTitle}>{empty.title}</h2>
-                    <p className={styles.emptyBody}>{empty.body}</p>
-                    {empty.cta && (
-                      <button type="button" className={styles.emptyCta} onClick={() => setCreateOpen(true)}>
-                        <PlusIcon size={16} /> สร้างงานส่วนตัว
+              {/* ---------- ZONE 2: งานของฉัน ---------- */}
+              {section === 'mine' && (
+                <>
+                  <div className={styles.stickyBar}>
+                    <div className={styles.searchRow}>
+                      <div className={styles.searchBar}>
+                        <span className={styles.searchIcon}>
+                          <SearchIcon size={16} />
+                        </span>
+                        <input
+                          ref={searchRef}
+                          className={styles.searchInput}
+                          placeholder="ค้นหาชื่องาน..."
+                          value={search}
+                          onChange={(e) => setSearch(e.target.value)}
+                          aria-label="ค้นหางาน"
+                        />
+                        {search && (
+                          <button type="button" className={styles.searchClear} aria-label="ล้างคำค้น" onClick={() => setSearch('')}>
+                            <CloseIcon size={14} />
+                          </button>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        className={styles.gotoCalBtn}
+                        onClick={() => changeSection('calendar')}
+                        title="เปิดมุมมองปฏิทิน"
+                      >
+                        <CalViewIcon /> ปฏิทิน
                       </button>
+                    </div>
+                    <FilterSortBar
+                      filter={filter}
+                      sort={sort}
+                      onFilter={changeFilter}
+                      onSort={changeSort}
+                      onExport={() => void handleExport()}
+                      exporting={exporting}
+                      exportLocked={exportLocked}
+                    />
+                    <div className={styles.tabs} role="tablist">
+                      {TABS.map((t) => (
+                        <button
+                          key={t.key}
+                          type="button"
+                          role="tab"
+                          aria-selected={tab === t.key}
+                          className={`${styles.tab} ${tab === t.key ? styles.tabActive : ''} ${
+                            t.alert ? styles.tabAlert : ''
+                          }`}
+                          onClick={() => setTab(t.key)}
+                        >
+                          {t.label} ({t.count})
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className={styles.listArea}>
+                    {shownFiltered.length > 0 ? (
+                      dueSections.length > 0 ? (
+                        /* grouped by due date — see groupByDue */
+                        <div style={{ marginTop: 16 }}>
+                          {dueSections.map((sec) => (
+                            <section key={sec.group} className={styles.dueSection}>
+                              <h3
+                                className={`${styles.dueHead} ${
+                                  sec.group === 'overdue' ? styles.dueHeadOverdue : ''
+                                } ${sec.group === 'today' ? styles.dueHeadToday : ''}`}
+                              >
+                                <span className={styles.dueHeadDot} />
+                                {DUE_GROUP_LABEL[sec.group]}
+                                <span className={styles.dueHeadCount}>{sec.tasks.length}</span>
+                              </h3>
+                              <div className={styles.list}>
+                                {sec.tasks.map((task) => (
+                                  <TaskListItem
+                                    key={task.id}
+                                    task={task}
+                                    viewerUid={viewerUid}
+                                    busyId={busyId}
+                                    onDone={(t, item) => void handleDone(t, item)}
+                                    pinned={pins.includes(task.id)}
+                                    onTogglePin={() => togglePin(task.id)}
+                                    actions={quickActionsFor(task)}
+                                    leaving={leavingIds.has(task.id)}
+                                  />
+                                ))}
+                              </div>
+                            </section>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className={styles.list} style={{ marginTop: 16 }}>
+                          {shownFiltered.map((task) => (
+                            <TaskListItem
+                              key={task.id}
+                              task={task}
+                              viewerUid={viewerUid}
+                              busyId={busyId}
+                              onDone={(t, item) => void handleDone(t, item)}
+                              pinned={pins.includes(task.id)}
+                              onTogglePin={() => togglePin(task.id)}
+                              actions={quickActionsFor(task)}
+                              leaving={leavingIds.has(task.id)}
+                            />
+                          ))}
+                        </div>
+                      )
+                    ) : q ? (
+                      <div className={styles.emptyCard}>
+                        <span className={styles.emptyIconWrap}>
+                          <SearchIcon size={30} />
+                        </span>
+                        <h2 className={styles.emptyTitle}>ไม่พบงานที่ตรงกับ &quot;{search.trim()}&quot;</h2>
+                        <p className={styles.emptyBody}>ลองคำอื่น หรือสลับแท็บดูน้า</p>
+                        <button type="button" className={styles.emptyCta} onClick={() => setSearch('')}>
+                          ล้างคำค้น
+                        </button>
+                      </div>
+                    ) : filter !== 'all' && buckets[tab].length > 0 ? (
+                      <div className={styles.emptyCard}>
+                        <span className={styles.emptyIconWrap}>
+                          <EmptyIcon size={34} />
+                        </span>
+                        <h2 className={styles.emptyTitle}>ไม่มีงานในตัวกรองนี้น้า</h2>
+                        <p className={styles.emptyBody}>ลองเปลี่ยนตัวกรองเป็น &quot;ทั้งหมด&quot; ดูน้า</p>
+                        <button type="button" className={styles.emptyCta} onClick={() => changeFilter('all')}>
+                          ดูทั้งหมด
+                        </button>
+                      </div>
+                    ) : (
+                      <div className={styles.emptyCard}>
+                        <span className={styles.emptyIconWrap}>
+                          <EmptyIcon size={34} />
+                        </span>
+                        <h2 className={styles.emptyTitle}>{empty.title}</h2>
+                        <p className={styles.emptyBody}>{empty.body}</p>
+                        {empty.cta && (
+                          <button type="button" className={styles.emptyCta} onClick={() => setCreateOpen(true)}>
+                            <PlusIcon size={16} /> สร้างงานส่วนตัว
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
+                </>
+              )}
 
-              {/* G. activity feed */}
-              <ActivityFeed tasks={all} collapsed={feedCollapsed} onToggle={toggleFeed} />
+              {/* ---------- ZONE 3: ติดตามสถานะ ---------- */}
+              {section === 'status' && <StatusTrackingSection tasks={all} viewerUid={viewerUid} />}
+
+              {/* ---------- ZONE 4: ปฏิทิน ---------- */}
+              {section === 'calendar' && (
+                <>
+                  <TaskCalendar tasks={all} selected={selectedDay} onSelect={setSelectedDay} />
+                  <div className={styles.calListHead}>
+                    {selectedDay ? (
+                      <div className={styles.dayFilterChip}>
+                        <span>แสดงงานวันที่ {selectedDayLabel}</span>
+                        <button type="button" className={styles.dayFilterClear} aria-label="ล้างตัวกรองวัน" onClick={() => setSelectedDay(null)}>
+                          <CloseIcon size={12} />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className={styles.calListLabel}>
+                        งานที่ต้องส่งใน 14 วันข้างหน้า และงานที่ยังค้างจากที่ผ่านมา
+                      </span>
+                    )}
+                  </div>
+                  <div className={styles.listArea}>
+                    {calendarList.length > 0 ? (
+                      <div className={styles.list} style={{ marginTop: 12 }}>
+                        {calendarList.map((task) => (
+                          <TaskListItem
+                            key={task.id}
+                            task={task}
+                            viewerUid={viewerUid}
+                            busyId={busyId}
+                            onDone={(t, item) => void handleDone(t, item)}
+                            pinned={pins.includes(task.id)}
+                            onTogglePin={() => togglePin(task.id)}
+                            actions={quickActionsFor(task)}
+                            leaving={leavingIds.has(task.id)}
+                          />
+                        ))}
+                      </div>
+                    ) : (
+                      <div className={styles.emptyCard}>
+                        <span className={styles.emptyIconWrap}>
+                          <CalViewIcon size={30} />
+                        </span>
+                        <h2 className={styles.emptyTitle}>
+                          {selectedDay ? `วันที่ ${selectedDayLabel} ไม่มีงานครบกำหนดน้า` : 'ช่วงนี้ยังไม่มีงานครบกำหนดน้า'}
+                        </h2>
+                        <p className={styles.emptyBody}>
+                          {selectedDay ? 'ลองแตะวันอื่นที่มีจุด หรือล้างตัวกรองวันดูน้า' : 'แตะวันที่มีจุดในปฏิทินเพื่อดูงานของวันนั้นได้เลย'}
+                        </p>
+                        {selectedDay && (
+                          <button type="button" className={styles.emptyCta} onClick={() => setSelectedDay(null)}>
+                            ล้างตัวกรองวัน
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {/* ---------- ZONE 5: รายงานทีม ---------- */}
+              {section === 'team' && (
+                <TeamReportSection tasks={all} viewerUid={viewerUid} highlightUid={highlightUid} />
+              )}
+
+              {/* ---------- ZONE 6: วิเคราะห์ ---------- */}
+              {section === 'analysis' && (
+                <>
+                  <PersonalStatsSection tasks={all} viewerUid={viewerUid} />
+                  <WeeklyTrendChart tasks={all} viewerUid={viewerUid} />
+                </>
+              )}
+
+              {/* ---------- ZONE 7: วิธีใช้ ---------- */}
+              {section === 'howto' && <HowToSection />}
             </>
           )}
         </>
@@ -885,6 +1211,20 @@ export default function TasksPage() {
         <button type="button" className={styles.fab} onClick={() => setCreateOpen(true)}>
           <PlusIcon /> สร้างงานส่วนตัว
         </button>
+      )}
+
+      {/* H1. the floating crew — one draggable character per teammate. Desktop
+          only for this pass (hidden under 1024px / coarse pointers in CSS). */}
+      {!error && tasks !== null && all.length > 0 && (
+        <MascotLayer
+          people={roster}
+          onSelect={(uid) => {
+            // changeSection keeps the highlight for 'team' specifically — it is
+            // only cleared on the way to any OTHER zone
+            setHighlightUid(uid);
+            changeSection('team');
+          }}
+        />
       )}
       {createOpen && (
         <CreatePersonalTaskModal

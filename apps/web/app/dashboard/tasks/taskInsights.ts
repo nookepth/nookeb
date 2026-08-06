@@ -1,10 +1,10 @@
 import type { TaskDto } from '@nookeb/shared';
-import { completionTime, effectiveDeadline, isOverdue } from './taskUtils';
+import { completionTime, effectiveDeadline, isOverdue, urgencyRank } from './taskUtils';
 
 /* ---- client-side preferences (no DB — survives per the spec'd storage) ---- */
 
 export type TaskFilter = 'all' | 'group' | 'personal' | 'assigned' | 'created';
-export type TaskSort = 'deadline' | 'created' | 'title';
+export type TaskSort = 'deadline' | 'urgency' | 'created' | 'title';
 export type ViewMode = 'list' | 'calendar';
 
 export const FILTER_LABEL: Record<TaskFilter, string> = {
@@ -17,12 +17,14 @@ export const FILTER_LABEL: Record<TaskFilter, string> = {
 
 export const SORT_LABEL: Record<TaskSort, string> = {
   deadline: 'ใกล้ deadline',
+  urgency: 'ความเร่งด่วน',
   created: 'สร้างล่าสุด',
   title: 'ชื่อ ก-ฮ',
 };
 
 const FILTER_SORT_KEY = 'nookeb.tasks.filterSort';
 const VIEW_KEY = 'nookeb.tasks.view';
+const SECTION_KEY = 'nookeb.tasks.section';
 const FOCUS_KEY = 'nookeb.tasks.focusCollapsed';
 const FEED_KEY = 'nookeb.tasks.feedCollapsed';
 const PIN_KEY = 'nookeb.tasks.pinned';
@@ -61,6 +63,30 @@ export function loadViewMode(): ViewMode {
 export function saveViewMode(v: ViewMode): void {
   try {
     sessionStorage.setItem(VIEW_KEY, v);
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * The page ZONE the viewer was last in. sessionStorage, like the other browsing
+ * prefs: coming back tomorrow should land on ภาพรวม (the summary), but a
+ * round-trip into a task detail and back should not throw away where they were.
+ *
+ * Deliberately un-typed here — `Section` lives in the nav component, and
+ * importing it back into this pure module would make the derivation layer
+ * depend on a 'use client' file. The caller validates.
+ */
+export function loadSection(): string | null {
+  try {
+    return sessionStorage.getItem(SECTION_KEY);
+  } catch {
+    return null;
+  }
+}
+export function saveSection(section: string): void {
+  try {
+    sessionStorage.setItem(SECTION_KEY, section);
   } catch {
     /* ignore */
   }
@@ -127,7 +153,22 @@ export function applyFilter(tasks: TaskDto[], filter: TaskFilter, viewerUid: str
 
 export function applySort(tasks: TaskDto[], sort: TaskSort): TaskDto[] {
   const copy = [...tasks];
-  if (sort === 'created') {
+  if (sort === 'urgency') {
+    // Priority first, then the nearest deadline inside each band — two ด่วนมาก
+    // tasks are still ordered by which one is actually due sooner, which is the
+    // question the reader asks next.
+    copy.sort((a, b) => {
+      const ra = urgencyRank(a.urgency);
+      const rb = urgencyRank(b.urgency);
+      if (ra !== rb) return ra - rb;
+      const da = effectiveDeadline(a);
+      const db = effectiveDeadline(b);
+      if (da === null && db === null) return 0;
+      if (da === null) return 1;
+      if (db === null) return -1;
+      return da < db ? -1 : da > db ? 1 : 0;
+    });
+  } else if (sort === 'created') {
     copy.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
   } else if (sort === 'title') {
     copy.sort((a, b) => a.title.localeCompare(b.title, 'th'));
@@ -142,6 +183,67 @@ export function applySort(tasks: TaskDto[], sort: TaskSort): TaskDto[] {
     });
   }
   return copy;
+}
+
+/* ---- due-date grouping (งานของฉัน list) ---- */
+
+export type DueGroup = 'overdue' | 'today' | 'tomorrow' | 'week' | 'later' | 'none';
+
+export const DUE_GROUP_LABEL: Record<DueGroup, string> = {
+  overdue: 'เลยกำหนดแล้ว',
+  today: 'วันนี้',
+  tomorrow: 'พรุ่งนี้',
+  week: 'ภายใน 7 วัน',
+  later: 'หลังจากนั้น',
+  none: 'ไม่มีกำหนดส่ง',
+};
+
+const DUE_GROUP_ORDER: DueGroup[] = ['overdue', 'today', 'tomorrow', 'week', 'later', 'none'];
+
+/** Which due-date band a task falls in, from the viewer's local clock. */
+export function dueGroupOf(task: TaskDto): DueGroup {
+  const dl = effectiveDeadline(task);
+  if (!dl) return 'none';
+  // A finished or cancelled task is never "เลยกำหนด" — isOverdue already says
+  // so, and a done task filed under a red header reads as a problem it isn't.
+  if (isOverdue(task)) return 'overdue';
+  const todayK = dayKey(new Date());
+  const dueK = dayKey(new Date(dl));
+  if (dueK === todayK) return 'today';
+  const tomorrow = new Date();
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  if (dueK === dayKey(tomorrow)) return 'tomorrow';
+  const week = new Date();
+  week.setDate(week.getDate() + 7);
+  week.setHours(23, 59, 59, 999);
+  return new Date(dl).getTime() <= week.getTime() ? 'week' : 'later';
+}
+
+/**
+ * Split an already-sorted list into due-date sections, preserving the incoming
+ * order inside each one.
+ *
+ * A flat list answers "what do I have"; sections answer "what do I have TODAY",
+ * which is the question a todo tool exists for — it is the one structural idea
+ * every serious task tool (Linear's grouping, Asana's My Tasks, Todoist's
+ * Today/Upcoming) converges on. Returns an empty array when fewer than two
+ * bands are populated, so a single-band view (the เลยกำหนด tab, or a short
+ * list) is left as a plain list instead of gaining a header that says nothing.
+ */
+export function groupByDue(tasks: TaskDto[]): { group: DueGroup; tasks: TaskDto[] }[] {
+  if (tasks.length === 0) return [];
+  const byGroup = new Map<DueGroup, TaskDto[]>();
+  for (const t of tasks) {
+    const g = dueGroupOf(t);
+    const list = byGroup.get(g);
+    if (list) list.push(t);
+    else byGroup.set(g, [t]);
+  }
+  if (byGroup.size < 2) return [];
+  return DUE_GROUP_ORDER.filter((g) => byGroup.has(g)).map((g) => ({
+    group: g,
+    tasks: byGroup.get(g)!,
+  }));
 }
 
 /** Pinned tasks float to the top; relative order inside each half is kept. */
@@ -337,6 +439,12 @@ export function personalStats(tasks: TaskDto[], viewerUid: string): PersonalStat
           item.deadline &&
           item.status !== 'cancelled' &&
           t.status !== 'cancelled' &&
+          // …and not already closed. A done item whose assignee row carries no
+          // `doneAt` is finished work, not late work — without this guard it was
+          // filed under "งานที่เลยกำหนดบ่อยที่สุด" permanently, with no action
+          // left that could ever clear it. Same guard as `rosterStats`.
+          item.status !== 'done' &&
+          t.status !== 'done' &&
           new Date(item.deadline).getTime() < now
         ) {
           late.set(scopeLabel, (late.get(scopeLabel) ?? 0) + 1);
@@ -358,13 +466,37 @@ export function personalStats(tasks: TaskDto[], viewerUid: string): PersonalStat
 
 /* ---- calendar ---- */
 
+/** How a task should read on a calendar chip — drives the chip's tint. */
+export type DayTaskTone = 'overdue' | 'done' | 'upcoming';
+
+export interface DayTask {
+  id: string;
+  title: string;
+  tone: DayTaskTone;
+  /** effective deadline, for the "14:30" time shown on the chip */
+  deadline: string;
+  isPersonal: boolean;
+}
+
 export interface DayMarks {
   count: number;
   hasOverdue: boolean;
   hasDone: boolean;
+  /** the day's tasks, earliest deadline first — what the cell actually renders */
+  tasks: DayTask[];
 }
 
-/** Map of dayKey → dots for the calendar (keyed on each task's effective deadline). */
+/**
+ * Map of dayKey → the day's tasks, keyed on each task's effective deadline.
+ *
+ * The calendar used to draw dots only, so a month view could tell you *that*
+ * the 14th was busy but never *what* was due — every answer cost a click. The
+ * shape now carries the titles; `count`/`hasOverdue`/`hasDone` are kept because
+ * the legend and the day-cell summary still read them.
+ *
+ * Cancelled tasks stay out: the calendar answers "what is due", and called-off
+ * work is not due. They remain reachable in the ยกเลิก tab.
+ */
 export function tasksByDay(tasks: TaskDto[]): Map<string, DayMarks> {
   const map = new Map<string, DayMarks>();
   for (const t of tasks) {
@@ -372,18 +504,45 @@ export function tasksByDay(tasks: TaskDto[]): Map<string, DayMarks> {
     const dl = effectiveDeadline(t);
     if (!dl) continue;
     const key = dayKey(new Date(dl));
-    const cur = map.get(key) ?? { count: 0, hasOverdue: false, hasDone: false };
+    const cur = map.get(key) ?? { count: 0, hasOverdue: false, hasDone: false, tasks: [] };
     cur.count += 1;
-    if (t.status === 'done') cur.hasDone = true;
-    else if (isOverdue(t)) cur.hasOverdue = true;
+    const done = t.status === 'done';
+    const over = !done && isOverdue(t);
+    if (done) cur.hasDone = true;
+    else if (over) cur.hasOverdue = true;
+    cur.tasks.push({
+      id: t.id,
+      title: t.title,
+      tone: done ? 'done' : over ? 'overdue' : 'upcoming',
+      deadline: dl,
+      isPersonal: t.isPersonal,
+    });
     map.set(key, cur);
+  }
+  // Within a day: overdue first (they are the ones that need a decision), then
+  // by time of day, so the chip a cell has room for is the one worth showing.
+  const TONE_RANK: Record<DayTaskTone, number> = { overdue: 0, upcoming: 1, done: 2 };
+  for (const marks of map.values()) {
+    marks.tasks.sort((a, b) => {
+      if (TONE_RANK[a.tone] !== TONE_RANK[b.tone]) return TONE_RANK[a.tone] - TONE_RANK[b.tone];
+      return a.deadline < b.deadline ? -1 : a.deadline > b.deadline ? 1 : 0;
+    });
   }
   return map;
 }
 
-/** Tasks whose effective deadline falls on the given local day. */
+/**
+ * Tasks whose effective deadline falls on the given local day.
+ *
+ * Cancelled tasks are excluded for the same reason `tasksByDay` excludes them —
+ * and it has to be the SAME reason, because these two functions are read against
+ * each other: the cell prints "มี 2 งาน" from `tasksByDay`, and tapping it lists
+ * the day from here. While this filter was missing, a day holding a cancelled
+ * task showed a count that its own list then contradicted.
+ */
 export function tasksOnDay(tasks: TaskDto[], key: string): TaskDto[] {
   return tasks.filter((t) => {
+    if (t.status === 'cancelled') return false;
     const dl = effectiveDeadline(t);
     return dl !== null && dayKey(new Date(dl)) === key;
   });

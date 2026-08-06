@@ -12,7 +12,9 @@ const TONE_CLASS: Record<StatTone, string> = {
   cancelled: styles.statToneCancelled ?? '',
 };
 
-/** One clickable KPI card in the stats grid — clicking filters the list below. */
+/** One clickable KPI card in the stats grid. Clicking selects that status tab
+ *  AND moves to the งานของฉัน zone (see `goToTab`) — the list it filters is not
+ *  on this zone, so a card that only set the tab would look inert. */
 export default function TaskStatsCard({
   icon,
   count,

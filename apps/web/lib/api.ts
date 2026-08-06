@@ -1978,6 +1978,14 @@ export async function startDownload(fileId: string, mimeType?: string): Promise<
 export interface MyTasksResponse {
   tasks: TaskDto[];
   viewerLineUid: string;
+  /**
+   * How many tasks the user actually has a stake in, BEFORE the server's cap.
+   * `total > tasks.length` means the payload is a subset and every derived
+   * percentage on the dashboard is over that subset — the page says so rather
+   * than presenting a truncated number as the whole picture. Optional: an API
+   * that predates this field simply reads as "not truncated".
+   */
+  total?: number;
 }
 
 /** Every task the logged-in user created or is assigned to, across all groups. */

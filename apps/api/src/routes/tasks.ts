@@ -494,8 +494,12 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
   // view. Static path — Fastify matches it before the `/tasks/:id` param route.
   app.get('/tasks/mine', { preHandler: app.authenticate }, async (request) => {
     const lineUid = request.authUser!.lineUserId;
-    const tasks = await listTasksForUser(app.supabase, lineUid);
-    return { tasks: tasks.map(toTaskDto), viewerLineUid: lineUid };
+    const { tasks, total } = await listTasksForUser(app.supabase, lineUid);
+    // `total` is the pre-cap count. The dashboard computes every percentage,
+    // rollup and chart from this one payload, so it has to be able to tell the
+    // user when it is looking at a subset — a completion rate over a silently
+    // truncated denominator reads as fact and is wrong.
+    return { tasks: tasks.map(toTaskDto), viewerLineUid: lineUid, total };
   });
 
   // ---- GET /tasks/export — .xlsx of everything the caller can see ----
@@ -519,7 +523,7 @@ const tasksRoutes: FastifyPluginAsync = async (app) => {
     }
     const { from, to, status } = parsed.data;
     const lineUid = request.authUser!.lineUserId;
-    const tasks = await listTasksForUser(app.supabase, lineUid, EXPORT_TASK_CAP);
+    const { tasks } = await listTasksForUser(app.supabase, lineUid, EXPORT_TASK_CAP);
 
     // Resolve every line_uid that appears as a CREATOR. Assignees already carry
     // a display-name snapshot on their own rows; creators don't, so they're
