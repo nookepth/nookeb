@@ -90,10 +90,34 @@ export function reconnectLiff(): Promise<LiffState> {
 // it into sessionStorage (scoped to this LIFF tab, cleared on close) and read it
 // back as the last-resort fallback.
 const GROUP_ID_KEY = 'nookeb:liff:groupId';
+// Second belt, in LOCAL storage. sessionStorage is per-TAB: the LINE login round
+// trip can hand the user back in a different webview/tab (external browser
+// login, "open in browser", a cold LIFF reopen), and everything sessionStorage
+// held is gone at that point — which is how a user who genuinely opened the card
+// from a group landed on the "หน้านี้ต้องเปิดจากในกลุ่ม LINE" blocker right
+// AFTER logging in. localStorage survives that, so it is the last resort.
+// Time-boxed on purpose: a group id is a capability, and a stale one from last
+// week must never silently scope a new task to the wrong group. Fresh enough to
+// cover a login round trip, short enough that it is never a surprise.
+const GROUP_ID_LOCAL_KEY = 'nookeb:liff:groupId:last';
+const GROUP_ID_TTL_MS = 30 * 60 * 1000;
 
 function storedGroupId(): string | null {
   try {
-    return sessionStorage.getItem(GROUP_ID_KEY);
+    const fromSession = sessionStorage.getItem(GROUP_ID_KEY);
+    if (fromSession) return fromSession;
+  } catch {
+    /* private mode — fall through to the localStorage belt */
+  }
+  try {
+    const raw = localStorage.getItem(GROUP_ID_LOCAL_KEY);
+    if (!raw) return null;
+    const { id, at } = JSON.parse(raw) as { id?: string; at?: number };
+    if (!id || typeof at !== 'number' || Date.now() - at > GROUP_ID_TTL_MS) {
+      localStorage.removeItem(GROUP_ID_LOCAL_KEY);
+      return null;
+    }
+    return id;
   } catch {
     return null;
   }
@@ -104,6 +128,11 @@ function persistGroupId(id: string | null): void {
     sessionStorage.setItem(GROUP_ID_KEY, id);
   } catch {
     /* private mode — the URL/liff.state path still carries it */
+  }
+  try {
+    localStorage.setItem(GROUP_ID_LOCAL_KEY, JSON.stringify({ id, at: Date.now() }));
+  } catch {
+    /* storage blocked — the session belt above is still in play */
   }
 }
 
@@ -282,7 +311,10 @@ async function doInit(): Promise<LiffState> {
   // LIFF-less dev mode: no LIFF id → no id-token exchange is possible. Trust an
   // existing dashboard cookie (the documented dev workflow: log in first).
   if (!liffId) {
-    return { groupId: queryGroupId(), profile: null, inClient: false, authed: true, authError: null };
+    // resolveGroupId() rather than queryGroupId(): it also PERSISTS what it
+    // finds, so the storage belts behave the same in dev as they do under a
+    // real LIFF (where readContext does the persisting).
+    return { groupId: resolveGroupId(), profile: null, inClient: false, authed: true, authError: null };
   }
 
   // The MINI App migration was REVERTED: this LIFF is hosted under the LINE

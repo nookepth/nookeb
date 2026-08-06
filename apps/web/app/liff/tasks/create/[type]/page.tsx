@@ -81,6 +81,22 @@ export default function CreateTypeEntryPage({ params }: { params: { type: string
       .catch(() => setState('error'));
   };
 
+  // "no-group" retry: the session is already valid, only the group id is
+  // missing, so re-read it from the live URL + both storage belts rather than
+  // re-authenticating. Falls back to the type picker, which offers the personal
+  // flow, instead of leaving the user on a dead end.
+  const retryGroup = () => {
+    const groupId = resolveGroupId();
+    if (!groupId || !isTaskType(params.type)) {
+      router.replace('/liff/tasks/create');
+      return;
+    }
+    const draft = emptyDraft(params.type as TaskDraft['type']);
+    draft.groupId = groupId;
+    saveDraft(draft);
+    router.replace(`/liff/tasks/create/${params.type}/members`);
+  };
+
   const reconnect = () => {
     setState('loading');
     reconnectLiff()
@@ -106,10 +122,15 @@ export default function CreateTypeEntryPage({ params }: { params: { type: string
         </div>
       )}
 
+      {/* Valid session, missing group id — see the same state on the picker
+          page. Never tell someone to "open via LINE" when they just did. */}
       {state === 'no-group' && (
-        <div className={styles.errorBox}>
-          หน้านี้ต้องเปิดจากในกลุ่ม LINE น้า — กดปุ่มสร้างงานจากการ์ดในกลุ่มที่ต้องการมอบหมายงาน
-        </div>
+        <StateNotice
+          title="กรุณาเปิดหน้านี้ใหม่อีกครั้งน้า"
+          body="หนูยังไม่รู้ว่าจะสร้างงานให้กลุ่มไหน ลองกด 'ลองใหม่อีกครั้ง' หรือกดปุ่มสร้างงานจากการ์ดในกลุ่มอีกทีน้า"
+          onRetry={retryGroup}
+          retryLabel="ลองใหม่อีกครั้ง"
+        />
       )}
 
       {state === 'unauth' && (

@@ -279,20 +279,22 @@ export function buildCreateTaskCard(
  *  3. ผูกกลุ่มนี้เข้าทีม → the team page's "ผูกกลุ่ม" picker, then open the room here
  *
  * Buttons: [สร้างทีม →] (primary, the first action) + [สร้างงานใหม่] (secondary →
- * the web create-task page, carrying this group's id/name so the form opens
- * already scoped to the group the card was posted in). NO emoji
- * (brand rule) — the step numbers are native colored badges.
+ * the LIFF create flow, carrying this group's id so the form opens already
+ * scoped to the group the card was posted in). NO emoji (brand rule) — the step
+ * numbers are native colored badges.
  *
- * `groupName` is best-effort (LINE's group summary endpoint, rooms have none):
- * when it — or the group id itself — is missing, the link degrades to the bare
- * create-task page rather than carrying a half-filled query string.
+ * The create link is byte-for-byte the one buildTaskCommandHelpCard uses
+ * (`/liff/tasks/create?groupId=`, LIFF deep link when LINE_LIFF_ID is set).
+ * It used to point at `/tasks/new?groupId=&groupName=` — a route that has never
+ * existed in apps/web, so every tap 404'd. Keep the two entry points identical:
+ * a second URL shape here is a second thing to break.
  */
-export function buildGroupWelcomeCard(groupId: string, groupName?: string): FlexMessage {
+export function buildGroupWelcomeCard(groupId: string, liffId?: string): FlexMessage {
   const teamsUrl = `${config.WEB_URL}/dashboard/teams`;
-  const newTaskUrl = groupId
-    ? `${config.WEB_URL}/tasks/new?groupId=${encodeURIComponent(groupId)}` +
-      (groupName ? `&groupName=${encodeURIComponent(groupName)}` : '')
-    : `${config.WEB_URL}/tasks/new`;
+  const q = groupId ? `?groupId=${encodeURIComponent(groupId)}` : '';
+  const newTaskUrl = liffId
+    ? `https://liff.line.me/${liffId}/create${q}`
+    : `${config.WEB_URL}/liff/tasks/create${q}`;
 
   const step = (n: number, title: string, desc: string): Record<string, unknown> => ({
     type: 'box',
@@ -350,7 +352,7 @@ export function buildGroupWelcomeCard(groupId: string, groupName?: string): Flex
         contents: [
           step(1, 'สร้างทีม', 'ไปที่เมนูทีม แล้วกดสร้างทีมได้เลยน้า'),
           step(2, 'เพิ่มสมาชิก', 'เพิ่มสมาชิกเข้าทีมผ่าน LINE หรืออีเมลได้เลยน้า'),
-          step(3, 'ผูกกลุ่มนี้เข้ากับทีม', 'พิมพ์ "หนูเก็บผูกกลุ่ม" ในกลุ่มนี้ แล้วหนูจะพาไปผูกกลุ่มกับทีมให้น้า'),
+          step(3, 'ผูกกลุ่มนี้เข้ากับทีม', 'พิมพ์ "หนูเก็บผูกทีม" ในกลุ่มนี้ แล้วหนูจะพาไปผูกกลุ่มกับทีมให้น้า'),
           step(4, 'สร้างงาน', 'พิมพ์ "หนูเก็บเตือนงาน" แล้วหนูจะเปิดหน้าสร้างงานให้เลยน้า'),
           step(5, 'เก็บไฟล์', 'ส่งไฟล์หรือรูปมาในกลุ่มนี้ได้เลย หนูเก็บจะเก็บเข้าล็อคเกอร์ทีมให้อัตโนมัติน้า'),
         ],

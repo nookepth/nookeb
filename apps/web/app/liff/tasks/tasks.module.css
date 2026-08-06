@@ -20,8 +20,14 @@
 
   min-height: 100dvh;
   /* Constrain the content column on desktop so the LIFF page doesn't stretch
-     edge-to-edge — matches the dashboard task detail (.wrap max-width: 860px). */
-  max-width: 860px;
+     edge-to-edge — matches the dashboard task detail (.wrap max-width: 860px).
+     The width lives in a custom property because the sticky footer is
+     position:fixed and therefore NOT inside this column: it has to be told the
+     same number, or the "ต่อไป" bar spans the whole viewport while the content
+     above it stops at the column edge (the reported mismatch). Every fixed bar
+     in this stylesheet reads --liff-col — do not hardcode a width in one. */
+  --liff-col: 860px;
+  max-width: var(--liff-col);
   margin: 0 auto;
   background: var(--bg);
   font-family: var(--font-liff), var(--font-ibm-plex-sans-thai), system-ui, -apple-system,
@@ -548,15 +554,35 @@
 
 /* ---- sticky footer ---- */
 
+/* Fixed, but width-matched to the content column: left/right 0 + max-width +
+   auto margins centre it over .page exactly (see --liff-col on .page). On a
+   phone the column is wider than the viewport, so this is a no-op there — it
+   only changes desktop, where a full-bleed bar under an 860px column looked
+   like a mistake. */
 .stickyFooter {
   position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
+  max-width: var(--liff-col);
+  margin: 0 auto;
   background: var(--card);
   border-top: 1px solid var(--border);
+  /* Rounded top corners + a lifted edge, so the bar reads as the bottom of the
+     column rather than a cut-off strip once it stops touching the viewport. */
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.06);
   padding: 10px 20px calc(12px + env(safe-area-inset-bottom));
   z-index: 20;
+}
+
+/* Phones: the bar IS the viewport edge — no corners, no shadow, no illusion of
+   a floating card. Keeps the existing mobile look byte-for-byte. */
+@media (max-width: 900px) {
+  .stickyFooter {
+    border-radius: 0;
+    box-shadow: none;
+  }
 }
 
 .footerCount {
@@ -589,6 +615,9 @@
   z-index: 30;
   display: flex;
   align-items: flex-end;
+  /* Same column discipline as .stickyFooter: the sheet sits over the content
+     column, not over the whole desktop viewport. */
+  justify-content: center;
 }
 
 .sheet {
@@ -596,6 +625,7 @@
   border-radius: 20px 20px 0 0;
   padding: 20px 20px calc(20px + env(safe-area-inset-bottom));
   width: 100%;
+  max-width: var(--liff-col);
   max-height: 85dvh;
   overflow-y: auto;
 }
@@ -1332,4 +1362,21 @@
   padding: 6px 10px;
   margin: 2px 0 4px;
   white-space: pre-wrap;
+}
+
+/* =========================================================================
+   DESKTOP COLUMN — the LIFF flow is opened on LINE Desktop often enough that
+   an 860px column on a 1440px screen reads as a phone screenshot pasted into
+   a browser. One step up, and only one: these are single-column forms, so past
+   ~1000px a field label and its input drift apart and the form reads worse,
+   not better. The dashboard's task page steps further (950/1180/1300) because
+   it is a multi-zone layout — a form is not.
+
+   Widening happens through --liff-col alone, so .stickyFooter and the bottom
+   sheet follow automatically. Never re-declare a width on either.
+   ========================================================================= */
+@media (min-width: 1024px) {
+  .page {
+    --liff-col: 960px;
+  }
 }

@@ -113,6 +113,27 @@ export default function CreateTaskPage() {
       .catch(() => setState('error'));
   };
 
+  // "no-group" retry. The session is already valid here (applyState checked it
+  // first), so re-authenticating would be the wrong move — what is missing is
+  // only the group id, which resolveGroupId() re-reads from the live URL and
+  // both storage belts. Cheap, and it recovers the common case where the id
+  // landed after this component first read it.
+  const retryGroup = () => {
+    const resolved = resolveGroupId();
+    if (!resolved) return;
+    setGroupId(resolved);
+    setState('ready');
+  };
+
+  // Last resort when no group id can be recovered: งานส่วนตัว is a real,
+  // complete flow that needs no group at all — better than dead-ending someone
+  // who is logged in and standing in the app.
+  const continuePersonal = () => {
+    setScope('personal');
+    setGroupId(null);
+    setState('ready');
+  };
+
   const reconnect = () => {
     setState('loading');
     reconnectLiff()
@@ -153,10 +174,24 @@ export default function CreateTaskPage() {
         </div>
       )}
 
+      {/* Reached only with a VALID session but no group id (the id was dropped
+          somewhere in the login round trip). The old copy said "เปิดผ่าน LINE"
+          — which the user just did — so it read as a bug. Ask for a reopen, and
+          offer the personal flow so nobody is dead-ended. */}
       {state === 'no-group' && (
-        <div className={styles.errorBox}>
-          หน้านี้ต้องเปิดจากในกลุ่ม LINE น้า — กดปุ่มสร้างงานจากเมนูในกลุ่มที่ต้องการมอบหมายงาน
-        </div>
+        <>
+          <StateNotice
+            title="กรุณาเปิดหน้านี้ใหม่อีกครั้งน้า"
+            body="หนูยังไม่รู้ว่าจะสร้างงานให้กลุ่มไหน ลองกด 'ลองใหม่อีกครั้ง' หรือกดปุ่มสร้างงานจากการ์ดในกลุ่มอีกทีน้า"
+            onRetry={retryGroup}
+            retryLabel="ลองใหม่อีกครั้ง"
+          />
+          <div className={styles.cardList}>
+            <button type="button" className={styles.secondaryBtn} onClick={continuePersonal}>
+              สร้างเป็นงานส่วนตัวแทน
+            </button>
+          </div>
+        </>
       )}
 
       {state === 'unauth' && (

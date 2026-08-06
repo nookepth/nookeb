@@ -10,7 +10,6 @@ import type {
 import { verifyLineSignature } from '../../middleware/line-verify';
 import {
   getChatMemberProfile,
-  getChatSummary,
   getProfile,
   replyMessage,
   type LineMessage,
@@ -209,13 +208,13 @@ const REFERRAL_GB = 1024 * 1024 * 1024;
 async function sendOnboarding(event: LineMessageEvent): Promise<void> {
   if (!event.replyToken) return;
   const groupId = event.source.groupId ?? event.source.roomId;
-  // Group name is only decoration on the "สร้างงานใหม่" link — never let a slow
-  // or 403ing summary call eat the reply token (LINE's group-summary endpoint
-  // returns null for rooms and for any failure, see getChatSummary).
-  const groupName = groupId ? (await getChatSummary(groupId))?.groupName : undefined;
+  // No getChatSummary() call any more: the group name was only decoration on the
+  // old (404ing) /tasks/new?groupName= link, and the LIFF create URL that
+  // replaced it carries the group id alone. One less blocking LINE API call
+  // inside the 1-second webhook budget.
   await replyMessage(event.replyToken, [
     buildOnboardingCarouselMessage(),
-    ...(groupId ? [buildGroupWelcomeCard(groupId, groupName)] : []),
+    ...(groupId ? [buildGroupWelcomeCard(groupId, config.LINE_LIFF_ID)] : []),
   ]);
 }
 

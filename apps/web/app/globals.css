@@ -271,6 +271,25 @@ button {
   padding: 20px 24px 48px;
 }
 
+/* Same principle as the task page's column (dashboard/tasks .wrap): the column
+   steps up on real desktops instead of leaving a third of a wide screen as bare
+   backdrop, and the horizontal padding grows with it so the cards don't just
+   stretch to the column edge. Two steps only, and capped at 1360 — the file
+   grid is the widest thing here and a wider column only adds a column of
+   thumbnails, not readability. */
+@media (min-width: 1440px) {
+  .container {
+    max-width: 1280px;
+    padding: 22px 28px 52px;
+  }
+}
+@media (min-width: 1728px) {
+  .container {
+    max-width: 1360px;
+    padding: 24px 32px 56px;
+  }
+}
+
 /* room for the mobile bottom nav */
 @media (max-width: 768px) {
   .container {
