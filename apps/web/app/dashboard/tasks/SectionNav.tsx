@@ -124,13 +124,12 @@ export default function SectionNav({
   /**
    * Keep the selected tab inside the scroller.
    *
-   * Seven tabs need ~770px; a 375px phone shows two and a half, so วิเคราะห์ or
-   * วิธีใช้ could be the ACTIVE zone with its tab parked off-screen — the row
-   * then reads as if some other zone were selected. `inline: 'nearest'` is a
-   * no-op once the tab is already fully visible, which is every width wide
-   * enough to fit the row, so desktop never scrolls. `block: 'nearest'` is
-   * load-bearing: the default 'start' would scroll the PAGE to this sticky nav
-   * on first paint.
+   * Both 'nearest' values make this a no-op once the tab is fully visible,
+   * which is now the normal case at every width: mobile wraps the seven tabs
+   * into a 2-row grid and wide viewports fit them on one line. It survives as
+   * the guard for the in-between widths where the row can still overflow.
+   * `block: 'nearest'` is load-bearing: the default 'start' would scroll the
+   * PAGE to this sticky nav on first paint.
    */
   useEffect(() => {
     activeRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
@@ -154,7 +153,7 @@ export default function SectionNav({
               <span className={styles.sectionTabIcon}>
                 <SectionIcon section={s} />
               </span>
-              {SECTION_LABEL[s]}
+              <span className={styles.sectionTabLabel}>{SECTION_LABEL[s]}</span>
               {badge > 0 && <span className={styles.sectionTabBadge}>{badge}</span>}
             </button>
           );

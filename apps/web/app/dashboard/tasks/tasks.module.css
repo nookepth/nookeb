@@ -2516,6 +2516,9 @@
   display: inline-flex;
   opacity: 0.9;
 }
+.sectionTabLabel {
+  display: inline-block;
+}
 .sectionTabBadge {
   display: inline-flex;
   align-items: center;
@@ -3450,36 +3453,74 @@
   }
 
   /* ---- zone nav ------------------------------------------------------ */
-  /* Seven zones need ~770px and the phone has 375, so this row scrolls no
-     matter what. Full-bleed is what makes that scroll feel deliberate rather
-     than clipped: the strip runs edge to edge, tabs are cut off BY the screen
-     instead of by a rounded card sitting inside a gutter, and the last tab can
-     be flicked to with the thumb already at the edge. SectionNav keeps the
-     active tab in view, so the selected zone is never the one off-screen. */
+  /* Seven zones laid out as a WRAPPED 2-row grid, not a horizontal scroller:
+     side-scrolling hid four of the seven behind a gesture nobody performs
+     unless they already know something is over there, so the zones past
+     ปฏิทิน were effectively undiscoverable on a phone.
+
+     A 12-column track split 3-then-4 is what makes the labels fit without
+     shrinking the type: the three longest — ภาพรวม / งานของฉัน / ติดตามสถานะ —
+     take the wide span-4 cells of row 1 (110px at 375px, against a 77px
+     label), and the four short ones take span-3 in row 2 (82px, against
+     รายงานทีม's 60px). The order is the existing SECTION_ORDER, which happens
+     to put the long labels first; it is not free to reshuffle.
+
+     Icon sits ABOVE the label rather than beside it. Side by side, the icon
+     plus its gap costs ~21px of an 82px cell — the width that decides whether
+     รายงานทีม fits — and stacking buys it back while making each tab a
+     54px-tall target instead of a 40px one. */
   .sectionNav {
-    margin: 4px -12px 0;
+    margin: 4px 0 0;
     padding: 8px 0 0;
   }
   .sectionNavRow {
-    border-radius: 0;
-    border-left: none;
-    border-right: none;
-    gap: 2px;
-    padding: 5px 12px;
-    scroll-padding-inline: 12px;
-    scroll-snap-type: x proximity;
-    /* a visible scrollbar under a 50px strip is all noise */
-    scrollbar-width: none;
-  }
-  .sectionNavRow::-webkit-scrollbar {
-    display: none;
+    display: grid;
+    grid-template-columns: repeat(12, 1fr);
+    gap: 4px;
+    padding: 5px;
+    overflow: visible;
   }
   .sectionTab {
-    min-height: 40px;
-    padding: 9px 11px;
+    /* row 1 — the three wide cells; see the note above */
+    grid-column: span 4;
+    position: relative;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 50px;
+    padding: 6px 4px;
     font-size: 13px;
-    gap: 5px;
-    scroll-snap-align: start;
+    gap: 2px;
+  }
+  .sectionTab:nth-child(n + 4) {
+    /* row 2 — the remaining four */
+    grid-column: span 3;
+  }
+  .sectionTabIcon {
+    /* the stacked icon is the tab's visual anchor, so it carries a touch more
+       weight than the 16px inline one it replaces */
+    width: 18px;
+    height: 18px;
+  }
+  .sectionTabIcon svg {
+    width: 18px;
+    height: 18px;
+  }
+  /* inline, the badge pushed the label sideways out of an already-tight cell;
+     pinned to the corner it costs the label nothing */
+  .sectionTabBadge {
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    font-size: 10px;
+  }
+  .sectionTabActive .sectionTabBadge {
+    /* on the red active fill the translucent-white pill loses its edge at this
+       size — a solid one keeps the count legible */
+    background: #fff;
+    color: #b53a32;
   }
   .sectionHint {
     font-size: 12px;
@@ -3937,5 +3978,16 @@
   }
   .memberPick {
     padding: 12px 8px;
+  }
+}
+
+/* Narrow phones (Galaxy A-series and below). The 2-row zone nav clears 360px
+   with ~10px to spare on รายงานทีม, its longest row-2 label; a step down in
+   type is what keeps that from clipping on the handsets under it. Nothing else
+   on the page needs the breakpoint. */
+@media (max-width: 359px) {
+  .sectionTab {
+    font-size: 12px;
+    padding: 6px 2px;
   }
 }
