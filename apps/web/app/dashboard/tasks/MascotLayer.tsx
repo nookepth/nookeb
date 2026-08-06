@@ -184,7 +184,7 @@ export default function MascotLayer({
                 }}
                 role="button"
                 tabIndex={0}
-                aria-label={`${p.name} — งาน ${p.total} รายการ, เสร็จ ${p.done}`}
+                aria-label={`${p.name} — ค้างอยู่ ${p.pending} งาน จากทั้งหมด ${p.total} งาน, เสร็จแล้ว ${p.done}`}
                 onPointerDown={(e) => onPointerDown(e, p.lineUid)}
                 onPointerMove={onPointerMove}
                 onPointerUp={(e) => endDrag(e, p.lineUid)}
@@ -199,9 +199,22 @@ export default function MascotLayer({
                 <div className={styles.mascotBob}>
                   {/* eslint-disable-next-line @next/next/no-img-element -- static sprite, next/image adds nothing here */}
                   <img className={styles.mascotImg} src={characterSrc(p.characterIndex)} alt="" draggable={false} />
-                  {p.overdue > 0 && (
-                    <span className={styles.mascotBadge} title={`เลยกำหนด ${p.overdue} งาน`}>
-                      {p.overdue}
+                  {/* What this person is actually holding right now — live,
+                      not-yet-done assignee slots (`pending`), the same unit the
+                      รายงานทีม row and the .xlsx export count in. It used to
+                      show `overdue` alone, so someone carrying eight on-time
+                      tasks wore no badge at all and read as free. Overdue is
+                      still surfaced, in the tooltip, where it belongs. */}
+                  {p.pending > 0 && (
+                    <span
+                      className={styles.mascotBadge}
+                      title={
+                        p.overdue > 0
+                          ? `${p.name} — ค้างอยู่ ${p.pending} งาน (เลยกำหนด ${p.overdue} งาน)`
+                          : `${p.name} — ค้างอยู่ ${p.pending} งาน`
+                      }
+                    >
+                      {p.pending}
                     </span>
                   )}
                 </div>

@@ -792,7 +792,12 @@ export default function TasksPage() {
     for (const item of t.items) if (item.status === 'submitted') awaitingMyReview += 1;
   }
   const sectionBadges: Partial<Record<Section, number>> = {
-    mine: overdue.length,
+    // งานของฉัน = the work still on this viewer's plate: กำลังทำ + เลยกำหนด.
+    // `active` deliberately EXCLUDES overdue tasks (see the bucket split above),
+    // so the two add up to every live task without double-counting one. The
+    // badge used to carry `overdue.length` alone, which read as "you have
+    // nothing" on a page holding a dozen live-but-not-yet-late tasks.
+    mine: active.length + overdue.length,
     status: awaitingMyReview,
   };
 
@@ -823,7 +828,9 @@ export default function TasksPage() {
   })();
 
   return (
-    <main className={`${styles.wrap} ${section === 'calendar' ? styles.wrapWide : ''}`}>
+    // One container for every zone — ปฏิทิน used to widen it on its own, which
+    // shifted the whole page sideways on each tab switch. See `.wrap`.
+    <main className={styles.wrap}>
       <a className={styles.back} href="/dashboard">
         ← กลับคลัง
       </a>

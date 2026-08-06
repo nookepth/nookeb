@@ -8,7 +8,14 @@
   padding: 24px 16px 80px;
   /* light-gray page backdrop to match the LIFF task view (--bg #f5f5f5) */
   background: #f5f5f5;
-  min-height: 100vh;
+  /* The +1px is load-bearing, not a typo. At exactly 100vh the short zones
+     (ติดตามสถานะ / รายงานทีม / วิเคราะห์) fit without overflowing, so the
+     scrollbar disappears — and a centred column jumps ~7px sideways every time
+     you switch to or from one of them. Forcing a hair of overflow keeps the
+     gutter reserved on every zone, which is what makes the tab row feel fixed.
+     `scrollbar-gutter: stable` would be the tidier answer, but it belongs on the
+     scroll container (html), and this is a route-scoped module. */
+  min-height: calc(100vh + 1px);
 }
 
 .back {
@@ -2418,22 +2425,43 @@
    status palette from STATUS_BADGE). Nothing above this line changed.
    ========================================================================= */
 
-/* The content column widens on real desktops so รายงานทีม and the stage board
-   are not squeezed into a phone-width strip. Deliberately stops at 980px: the
-   gutter that is left is where the floating crew lives. */
-@media (min-width: 1200px) {
+/* The content column widens progressively on real desktops. It used to stop at
+   980px, which left roughly a third of a 1440px screen as bare backdrop while
+   รายงานทีม and the stage board were squeezed into a strip. The horizontal
+   padding grows with each step on purpose — widening the cap alone just
+   stretches the cards to the edge of the column and the page stops looking
+   deliberate. Capped at 1300px: past that a task title line gets uncomfortable
+   to read, and the gutters that are left are where the floating crew lives.
+
+   ONE container for every zone. ปฏิทิน used to opt into a wider `.wrapWide`
+   because a seven-column month grid needs the room, which meant the whole page
+   jumped sideways on every tab switch. The shared column is now wider than that
+   exception ever was (1140/1300 vs 1160), so the calendar keeps its space and
+   the layout stays put. Do not re-add a per-zone width. */
+/* 950, not 1000: at a 1024 viewport a 1000px column leaves ~5px of backdrop
+   either side once the scrollbar is counted, which reads as content bleeding
+   off the page rather than as a wide layout. */
+@media (min-width: 1024px) {
   .wrap {
-    max-width: 980px;
+    max-width: 950px;
+    padding: 28px 24px 88px;
   }
 }
-/* ปฏิทิน only. A month grid is seven columns wide whatever the content column
-   does, so at 980px each day gets ~134px and a task title truncates after about
-   a dozen characters — which defeats the point of printing titles at all. The
-   extra 180px buys roughly six more characters per chip. Stops at 1160 so the
-   gutters stay wide enough for the floating crew to rest clear of the card. */
+/* 1180 rather than a rounder 1140 for one measured reason: this is the exact
+   width at which a ปฏิทิน day cell is no NARROWER than it was under the old
+   calendar-only `.wrapWide` (1160 + 16px padding). Folding the calendar back
+   into the shared column must not cost it space at the breakpoint where it was
+   tightest. */
 @media (min-width: 1280px) {
-  .wrapWide {
-    max-width: 1160px;
+  .wrap {
+    max-width: 1180px;
+    padding: 30px 24px 92px;
+  }
+}
+@media (min-width: 1536px) {
+  .wrap {
+    max-width: 1300px;
+    padding: 32px 32px 96px;
   }
 }
 
@@ -3092,22 +3120,28 @@
     -webkit-user-drag: none;
   }
 
+  /* Sized against the 78px sprite (~36% of it) rather than against other badges
+     on the page: this one sits on a drop-shadowed illustration in the gutter,
+     not in a dense row, and at 20px/11px it read as a speck. The white ring is
+     what keeps it legible where it overlaps the character's outline. */
   .mascotBadge {
     position: absolute;
-    top: -2px;
-    right: -2px;
-    min-width: 20px;
-    height: 20px;
-    padding: 0 5px;
+    top: -5px;
+    right: -6px;
+    min-width: 28px;
+    height: 28px;
+    padding: 0 7px;
+    border: 2px solid #fff;
     border-radius: 999px;
     background: #e03131;
     color: #fff;
-    font-size: 11px;
+    font-size: 15px;
     font-weight: 800;
+    line-height: 1;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 2px 6px rgba(224, 49, 49, 0.4);
+    box-shadow: 0 2px 8px rgba(224, 49, 49, 0.45);
   }
 
   .mascotName {
