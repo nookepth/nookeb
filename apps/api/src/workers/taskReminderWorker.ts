@@ -455,7 +455,10 @@ export function createTaskReminderWorker(): Worker<TaskJob> {
     {
       connection: createRedis(),
       concurrency: 5,
-      drainDelay: 20000,
+      // Raised 20s → 60s (see upload.worker): higher drainDelay adds no pickup
+      // latency (an added job wakes the blocked worker via the marker) and only
+      // trims idle re-poll commands when the delayed set is empty.
+      drainDelay: 60000,
       stalledInterval: 60_000,
       lockDuration: 60_000,
       // ---- LINE push throttle ----

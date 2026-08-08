@@ -162,11 +162,11 @@ describe('getPushEnabled — caching', () => {
     assert.equal(await getPushEnabled(fakeDb({ value: 'throw' })), false);
   });
 
-  it('caches a real read under settings:push_enabled with a 60s TTL', async () => {
+  it('caches a real read under settings:push_enabled with a 300s TTL', async () => {
     const { cache, log } = recordingCache();
     __setPushFlagCacheForTests(cache);
     await getPushEnabled(fakeDb({ value: false }));
-    assert.deepEqual(log.sets, [{ key: 'settings:push_enabled', value: '0', ttl: 60 }]);
+    assert.deepEqual(log.sets, [{ key: 'settings:push_enabled', value: '0', ttl: 300 }]);
   });
 });
 

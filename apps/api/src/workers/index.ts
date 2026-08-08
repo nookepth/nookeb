@@ -58,8 +58,75 @@ function durationOf(job: Job | undefined): number | undefined {
   return job.finishedOn - job.processedOn;
 }
 
+// --- Grep-able command-volume safeguard ----------------------------------
+//
+// The Upstash command-quota incident that prompted the worker tuning was driven
+// by IDLE polling and per-queue job churn, and the only way we localised it was
+// a live INFO dump + a manual SCAN. This counter makes the next spike greppable
+// from the worker log alone: one `[cmd-volume]` summary line per queue per hour,
+// then reset. It is PURELY IN-PROCESS — it increments off the same completed/
+// failed listeners already attached below and costs ZERO extra Redis commands,
+// so it can never itself contribute to the quota it exists to watch.
+//
+// What it shows: settled-job throughput per queue (the churn half of the bill).
+// What it deliberately does NOT try to show: raw idle BZPOPMIN/EVALSHA polls —
+// counting those would mean wrapping ioredis' hot path, which this task must not
+// do. A queue that is quiet here but still burning quota points at idle polling
+// (a standing delayed job) — which is exactly the membership-queue signature.
+interface QueueVolume {
+  completed: number;
+  failed: number;
+  totalDurationMs: number;
+  durationSamples: number;
+}
+const volumeCounters = new Map<string, QueueVolume>();
+const CMD_VOLUME_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+// The four queues, named the same way as services/queue-stats.service.ts so the
+// log and the /admin/system depth table line up.
+const QUEUE_KEYS_FOR_LOG = ['file', 'task', 'sheets', 'membership'] as const;
+
+function bumpVolume(queue: string, status: 'completed' | 'failed', durationMs?: number): void {
+  let v = volumeCounters.get(queue);
+  if (!v) {
+    v = { completed: 0, failed: 0, totalDurationMs: 0, durationSamples: 0 };
+    volumeCounters.set(queue, v);
+  }
+  v[status] += 1;
+  if (typeof durationMs === 'number') {
+    v.totalDurationMs += durationMs;
+    v.durationSamples += 1;
+  }
+}
+
+/** Emit one summary line per queue for the elapsed window, then reset counters. */
+function flushVolumeLog(): void {
+  for (const queue of QUEUE_KEYS_FOR_LOG) {
+    const v = volumeCounters.get(queue);
+    const completed = v?.completed ?? 0;
+    const failed = v?.failed ?? 0;
+    const avgMs =
+      v && v.durationSamples > 0 ? Math.round(v.totalDurationMs / v.durationSamples) : 0;
+    // Always logged, even at zero — a queue that settled nothing yet is still
+    // consuming Redis quota via idle polling, and the zero line is the clue that
+    // the burn is polling, not work.
+    console.log(
+      `[cmd-volume] window=1h queue=${queue} completed=${completed} failed=${failed} avgMs=${avgMs}`,
+    );
+  }
+  volumeCounters.clear();
+}
+
+const volumeTimer: ReturnType<typeof setInterval> = setInterval(
+  flushVolumeLog,
+  CMD_VOLUME_WINDOW_MS,
+);
+// Don't let the summary timer hold the process open on shutdown.
+volumeTimer.unref?.();
+
 function recordThroughput(queue: string, worker: Worker): void {
   worker.on('completed', (job) => {
+    bumpVolume(queue, 'completed', durationOf(job));
     void writeJobLog({
       queue,
       jobName: jobTypeOf(job, 'unknown'),
@@ -72,6 +139,7 @@ function recordThroughput(queue: string, worker: Worker): void {
     // succeeds on its third try is a different health signal from one that
     // succeeds first time, and collapsing them would hide exactly the
     // degradation this table exists to show.
+    bumpVolume(queue, 'failed', durationOf(job));
     void writeJobLog({
       queue,
       jobName: jobTypeOf(job, 'unknown'),
@@ -181,6 +249,8 @@ void Promise.all([
 
 async function shutdown(): Promise<void> {
   console.log('[worker] shutting down...');
+  clearInterval(volumeTimer);
+  flushVolumeLog(); // emit the partial window so a restart doesn't swallow it
   healthServer.close();
   await uploadWorker.close();
   await taskWorker.close();

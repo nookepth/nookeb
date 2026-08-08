@@ -49,7 +49,7 @@ import { StackedBars } from '../StackedBars';
  * /admin answers "how is the product doing". This page answers "is the machine
  * running". Two different questions with two different refresh rates, which is
  * why they are two pages: the queue and health blocks are LIVE-POLLED every
- * 10 s and are range-independent (a queue depth has no "last 30 days"), while
+ * 30 s and are range-independent (a queue depth has no "last 30 days"), while
  * the notification and diary blocks are historical and follow the 7/30/90
  * selector. Mixing them onto one page would force one cadence onto both.
  *
@@ -61,7 +61,13 @@ import { StackedBars } from '../StackedBars';
 const RANGES = [7, 30, 90] as const;
 type Range = (typeof RANGES)[number];
 
-const POLL_MS = 10_000;
+// Live-poll cadence for the health + queue blocks. Each tick fans out to
+// getAdminHealth() + getAdminQueues(), and the latter runs getJobCounts across
+// all four queues — ~25-30 Upstash commands per tick. At 10s a single tab left
+// open cost ~230k commands/day; 30s cuts that ~3x, and the visibility gate in
+// the tick loop zeroes it entirely for a backgrounded tab. This is a refresh
+// cadence only — it changes nothing about the queues or jobs being observed.
+const POLL_MS = 30_000;
 
 const QUEUE_LABELS: Record<AdminQueueKey, string> = {
   file: 'ไฟล์ / สแกน / ไดอารี่',
@@ -137,11 +143,18 @@ export default function AdminSystemPage() {
     else setError('โหลดข้อมูลไม่สำเร็จ');
   }, []);
 
-  // --- Live poll: health + queues, every 10s. -------------------------------
+  // --- Live poll: health + queues, every POLL_MS (30s). ---------------------
   // The interval id is captured in the effect's own closure and cleared on
   // unmount AND on any re-run, so a fast unmount can never leave a timer firing
   // setState on a dead component. `cancelled` guards the in-flight request that
   // the clearInterval cannot reach.
+  //
+  // Visibility gate: a scheduled tick is SKIPPED while the tab is hidden
+  // (document.hidden) — a backgrounded/minimized tab must not keep billing
+  // Upstash for a page nobody is looking at. When the tab becomes visible again
+  // we tick once immediately so the operator does not stare at up-to-30s-stale
+  // numbers waiting for the next interval. This is purely about WHEN we poll;
+  // the data fetched is identical.
   useEffect(() => {
     if (!hasSession()) {
       setError('กรุณาเข้าสู่ระบบก่อน');
@@ -150,6 +163,8 @@ export default function AdminSystemPage() {
     let cancelled = false;
 
     async function tick(): Promise<void> {
+      // Don't poll a tab nobody is looking at.
+      if (typeof document !== 'undefined' && document.hidden) return;
       try {
         const [h, q] = await Promise.all([getAdminHealth(), getAdminQueues(false)]);
         if (cancelled) return;
@@ -161,11 +176,19 @@ export default function AdminSystemPage() {
       }
     }
 
+    // Refresh immediately when the tab returns to the foreground, rather than
+    // waiting out the remainder of the current interval.
+    function onVisible(): void {
+      if (!document.hidden) void tick();
+    }
+
     void tick();
     const id = setInterval(() => void tick(), POLL_MS);
+    document.addEventListener('visibilitychange', onVisible);
     return () => {
       cancelled = true;
       clearInterval(id);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [report]);
 

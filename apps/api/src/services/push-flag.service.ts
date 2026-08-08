@@ -29,15 +29,16 @@
  *
  * pushMessage() is called once per reminder, behind the task worker's
  * 10/second limiter, so an uncached read would be a Supabase round trip per
- * push. Redis caches the resolved boolean for 60 s under `settings:push_enabled`
- * — the same TTL and the same reasoning as the auth middleware's session_version
- * cache. setPushEnabled() DELETES the key rather than overwriting it, so the
- * next read re-derives from the DB and a failed cache write cannot pin a stale
- * value for a minute.
+ * push. Redis caches the resolved boolean for 300 s under `settings:push_enabled`.
+ * setPushEnabled() DELETES the key rather than overwriting it, so the next read
+ * re-derives from the DB and a flip takes effect at once — the TTL only bounds
+ * the FALLBACK staleness window if that explicit DELETE were itself lost. Raised
+ * 60 s → 300 s purely to cut Upstash reads (this key is read on every push);
+ * correctness is unchanged because the DELETE, not the TTL, makes a flip prompt.
  *
- * Worst case after a flip: 60 s of pushes on the old setting, in the API and the
- * worker independently. That is the accepted cost of not reading the DB on every
- * push, and it is bounded.
+ * Worst case after a flip WHOSE INVALIDATION WAS LOST: 300 s of pushes on the
+ * old setting, in the API and the worker independently. That is the accepted
+ * cost of not reading the DB on every push, and it is bounded.
  *
  * Clients are LAZY SINGLETONS (same idiom as pending-notify.service and
  * progress-store): this module is imported by line.service.ts, which the LIFF-
@@ -54,7 +55,9 @@ import { createRedis } from '../plugins/redis';
 import { requireAdminAction } from './admin-audit.service';
 
 const CACHE_KEY = 'settings:push_enabled';
-const CACHE_TTL_SECONDS = 60;
+// Fallback staleness window only — the explicit DELETE in setPushEnabled is what
+// makes a flip prompt. Raised 60 → 300 to cut per-push Upstash reads 5x.
+const CACHE_TTL_SECONDS = 300;
 const SETTING_KEY = 'push_enabled';
 
 /**

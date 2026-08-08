@@ -2192,7 +2192,11 @@ export function createUploadWorker(): Worker<FileJob> {
       // scheduler), so BullMQ caps the block at its hard `maximumBlockTimeout`
       // (10s, worker.js) and drainDelay is bypassed — see the root-cause note in
       // scheduleRepeatableJobs. Kept high for the empty-delayed-set case anyway.
-      drainDelay: 20000,
+      // Raised 20s → 60s: a newly add()ed job bumps the marker and wakes a
+      // blocked worker immediately, so a higher drainDelay adds NO job-pickup
+      // latency — it only cuts idle re-poll commands ~3x when the delayed set is
+      // genuinely empty.
+      drainDelay: 60000,
       // Halve the periodic stalled-job check EVALSHA (moveStalledJobsToWait),
       // default 30s → one fewer idle command every minute. 60s is also safer for
       // legitimately long jobs (OCR/scan under concurrency) — fewer false stalls.

@@ -28,14 +28,18 @@
  *
  * ── Caching ───────────────────────────────────────────────────────────────
  *
- * 60 s in Redis per key, under `flag:{key}`. Same TTL and same reasoning as the
- * push switch and the auth middleware's session_version cache — bounded
- * staleness in exchange for not hitting Postgres on every scan page. setFlag()
- * DELETES the key rather than overwriting it, so a failed cache write cannot
- * pin a stale value for a minute; the next read re-derives.
+ * 300 s in Redis per key, under `flag:{key}`. setFlag() DELETES the key rather
+ * than overwriting it, so a flip takes effect at once (bounded only by the 60 s
+ * session_version cache on the request that carries it, not by this TTL) and a
+ * failed cache write cannot pin a stale value; the next read re-derives. The TTL
+ * therefore governs only the FALLBACK staleness window — how long a flip could
+ * linger if its explicit DELETE were itself lost — in exchange for not hitting
+ * Postgres on every scan page. Raised 60 s → 300 s purely to cut Upstash reads
+ * (5x fewer cold-cache misses); correctness is unchanged because the DELETE, not
+ * the TTL, is what makes a flip prompt.
  *
- * Worst case after a flip: 60 s on the old value, independently in the API and
- * the worker. Bounded, and the accepted cost.
+ * Worst case after a flip WHOSE INVALIDATION WAS LOST: 300 s on the old value,
+ * independently in the API and the worker. Bounded, and the accepted cost.
  *
  * ── This file does NOT own push_enabled ───────────────────────────────────
  *
@@ -55,7 +59,11 @@ import { config } from '../config';
 import { createRedis } from '../plugins/redis';
 import { requireAdminAction } from './admin-audit.service';
 
-const CACHE_TTL_SECONDS = 60;
+// Fallback staleness window only — an explicit DELETE on write (see setFlag)
+// is what makes a flip prompt, so this TTL just bounds a lost invalidation.
+// Raised 60 → 300 to cut cold-cache Upstash reads 5x. Do NOT align the
+// session_version (sv:*) cache to this — that one stays 60 s (revocation lag).
+const CACHE_TTL_SECONDS = 300;
 const cacheKey = (key: string): string => `flag:${key}`;
 
 /**

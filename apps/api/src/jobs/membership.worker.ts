@@ -91,6 +91,27 @@ export function createMembershipWorker(): Worker<MembershipJob> {
       // Maintenance work is sequential by nature and touches whole tables —
       // concurrency 1 keeps two sweeps from fighting over the same rows.
       concurrency: 1,
+      // ---- Idle-cost tuning (Upstash bills every poll/check) ----
+      //
+      // This worker previously ran on BullMQ defaults (drainDelay 5s,
+      // stalledInterval 30s, lockDuration 30s) — the other three workers were
+      // all tuned and this one was missed. These are POLLING-frequency knobs
+      // only; none of them change what a job does or when a scheduled job is
+      // due to run.
+      //
+      // drainDelay: matches the other workers. Note it is effectively capped to
+      // BullMQ's 10s maximumBlockTimeout here for now, because the cron
+      // repeatables always leave a delayed job pending — fix C converts them to
+      // a zero-delay pattern so this value can actually take effect at idle.
+      // stalledInterval/lockDuration: maintenance jobs are rare and can run for
+      // a while (whole-table sweeps), so a 5-minute stalled check is both far
+      // cheaper than the 30s default (10x fewer moveStalledJobsToWait EVALSHAs)
+      // and safer against false-reaping a slow-but-alive sweep. lockDuration is
+      // widened in step so a long job's lock never lapses before the stalled
+      // check would notice — a job is re-locked every lockDuration/2.
+      drainDelay: 60_000,
+      stalledInterval: 300_000,
+      lockDuration: 300_000,
     },
   );
 

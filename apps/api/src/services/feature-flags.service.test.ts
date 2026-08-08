@@ -167,12 +167,12 @@ describe('getFlag — caching', () => {
     assert.equal(await getFlag('scan_ocr_enabled', true), false);
   });
 
-  it('caches a real read under flag:{key} with a 60s TTL', async () => {
+  it('caches a real read under flag:{key} with a 300s TTL', async () => {
     const { cache, log } = recordingCache();
     __setFeatureFlagCacheForTests(cache);
     __setFeatureFlagDbForTests(fakeDb({ value: false }));
     await getFlag('scan_enhance_enabled', true);
-    assert.deepEqual(log.sets, [{ key: 'flag:scan_enhance_enabled', value: '0', ttl: 60 }]);
+    assert.deepEqual(log.sets, [{ key: 'flag:scan_enhance_enabled', value: '0', ttl: 300 }]);
   });
 });
 
@@ -227,7 +227,7 @@ describe('setFlag', () => {
 });
 
 describe('readFlagUncached', () => {
-  it('never consults the cache — an admin must see the DB, not a 60s-old copy', async () => {
+  it('never consults the cache — an admin must see the DB, not a cached copy', async () => {
     const { cache, log } = recordingCache({ 'flag:scan_ocr_enabled': '0' });
     __setFeatureFlagCacheForTests(cache);
     assert.equal(await readFlagUncached(fakeDb({ value: true }), 'scan_ocr_enabled'), true);

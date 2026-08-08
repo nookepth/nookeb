@@ -309,8 +309,10 @@ export function createSheetsWorker(): Worker<SheetsJob> {
     // scheduler job, so blockUntil stays 0 and drainDelay DOES take effect: an
     // idle sheets worker blocks ~indefinitely on BZPOPMIN and polls near-zero,
     // waking instantly when enqueueSheetsSync adds a job. This is the queue that
-    // actually benefits from a high drainDelay.
-    drainDelay: 20000,
+    // actually benefits from a high drainDelay. Raised 20s → 60s: no pickup
+    // latency cost (an added job wakes the blocked worker via the marker), fewer
+    // idle re-poll commands.
+    drainDelay: 60000,
     // See upload.worker: halve the stalled-check EVALSHA; longer active-processing
     // lock renewal (no idle effect).
     stalledInterval: 60_000,
